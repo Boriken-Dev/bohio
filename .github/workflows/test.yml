@@ -1,0 +1,56 @@
+name: Test
+
+# On demand: workflow_dispatch (optionally at a ref), or a pushed "ci-*" tag, deleted after its run.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to test (branch, tag, or SHA)"
+        required: false
+        default: ""
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref to test (branch, tag, or SHA)"
+        type: string
+        required: false
+        default: ""
+  push:
+    tags:
+      - "ci-*"
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        toolchain: [stable, "1.89"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install socat, the serial test's null-modem cable
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y socat
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace --all-features -- --nocapture
+      - name: The vectors are current
+        # The vectors test rewrites a file that differs; a clean tree means they were current.
+        shell: bash
+        run: |
+          git status --porcelain -- vectors
+          test -z "$(git status --porcelain -- vectors)"
+      - run: cargo doc --workspace --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
