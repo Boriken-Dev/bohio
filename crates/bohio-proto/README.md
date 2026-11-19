@@ -15,7 +15,7 @@ messages. Documentation: <https://docs.rs/bohio-proto>.
 - One stream per operation, named by a protocol (`bohio/1`, `bohio-exec/1`, ...); the open's
   metadata is the request.
 - Control messages are CBOR maps with string keys; a client ignores keys it does not know.
-- Bulk bytes (process output, input) travel as raw stream messages behind a one-byte tag, never
+- Bulk bytes (process output, input, file contents) travel as raw stream messages behind a one-byte tag, never
   inside CBOR.
 - Errors are `{code, message}` with a closed list of codes.
 

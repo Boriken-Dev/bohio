@@ -7,7 +7,7 @@ with the source at <https://github.com/Boriken-Dev/bohio>.
 No Cargo features. MSRV Rust 1.89. Depends on `serde`, `ciborium` and `thiserror`. Version `0.0.0-alpha.0`, not published.
 
 Imports: the root holds `decode`, `decode_with_depth`, `encode`, `DEFAULT_DEPTH`, `Error`, `ErrorBody`, `ErrorCode` and
-`PROTOCOL_VERSION`. Public modules: `codec`, `control`, `error`, `exec`, `info`, `protocol`, `shell`. No `unsafe` code
+`PROTOCOL_VERSION`. Public modules: `codec`, `control`, `error`, `exec`, `fs`, `info`, `protocol`, `shell`. No `unsafe` code
 (`#![forbid(unsafe_code)]`); no I/O; no process-wide state.
 
 ## Protocols (`bohio_proto::protocol`)
@@ -45,11 +45,45 @@ pub struct ErrorBody { pub code: ErrorCode, pub message: String }          // Er
 
 ```rust
 pub struct Request { pub id: u64, pub call: Call }
-#[non_exhaustive] pub enum Call { Hello { version: u32, client: String }, Info }
+#[non_exhaustive] pub enum Call {
+    Hello { version: u32, client: String }, Info,
+    Stat { path, follow }, List { path, after: Option<String>, limit: Option<u64> }, Mkdir { path, parents, mode: Option<u32> },
+    Remove { path, recursive }, Rename { from, to, overwrite }, Copy { from, to, overwrite }, Symlink { target, link }, Readlink { path },
+    SetTimes { path, accessed: Option<Timestamp>, modified: Option<Timestamp> }, SetMode { path, mode: u32 },
+    SetAttributes { path, readonly: Option<bool> }, Checksum { path, offset: u64, length: Option<u64> } }   // `bool`s default false
 pub struct Response { pub id: u64, pub reply: Option<Reply>, pub error: Option<ErrorBody> }   // exactly one is present
 impl Response { pub const fn ok(id, reply) -> Self; pub const fn failed(id, error) -> Self; pub fn into_result(self) -> Result<Reply, ErrorBody>; }
-#[non_exhaustive] pub enum Reply { Hello { version: u32 }, Info(Box<Info>) }
+#[non_exhaustive] pub enum Reply { Hello { version: u32 }, Info(Box<Info>), Stat(Box<Metadata>), List(Listing), Done,
+                                    Link { target: String }, Checksum { sha256: String, length: u64 } }
 ```
+
+The control stream's messages are bare CBOR, one request or response per stream message (no tag byte). `Done` answers every call
+that returns nothing. The `bohio/1` open carries no metadata.
+
+## Filesystem (`bohio_proto::fs`)
+
+```rust
+pub struct Timestamp { pub secs: i64, pub nanos: u32 }                                   // Copy, Default; secs since 1970, negative before
+#[non_exhaustive] pub enum FileKind { File, Directory, Symlink, Other }                  // snake_case; unknown kinds decode as Other
+pub struct Metadata { kind, size: u64, modified/accessed/created: Option<Timestamp>, mode: Option<u32> /* unix bits, 0o7777 */,
+                      readonly: bool, attributes: Option<u32> /* windows */ }
+pub struct Entry { pub name: String, pub metadata: Metadata }                            // not following a link
+pub struct Listing { pub entries: Vec<Entry>, pub next: Option<String>, pub skipped: u64 }   // ascending by name; `next` = pass as `after`
+pub struct ReadRequest { path, offset: u64 /* 0 */, length: Option<u64> }               // open metadata of bohio-read/1; ReadRequest::whole(path)
+pub struct ReadHeader { pub size: u64, pub length: u64 }
+#[non_exhaustive] pub enum ReadOutput { Header(ReadHeader), Data(Vec<u8>), Done, Error(ErrorBody) }
+#[non_exhaustive] pub enum WriteMode { Replace /* default */, Create, Append, At { offset: u64 } }   // tagged by "type"
+pub struct WriteRequest { path, mode: WriteMode, parents: bool, file_mode: Option<u32>, expect_sha256: Option<String> }   // WriteRequest::replace(path)
+pub struct WriteDone { pub written: u64, pub sha256: String }
+#[non_exhaustive] pub enum WriteOutput { Ready, Done(WriteDone), Error(ErrorBody) }
+#[non_exhaustive] pub enum WriteInput { Data(Vec<u8>), End }
+// each Request: to_metadata() / from_metadata(&[u8]); each frame enum: encode() / decode(&[u8]) (Error::Tag for an unknown tag)
+```
+
+Paths are the host's native text (`info.filesystem.separator`); a Windows host also accepts `/`. A relative path starts at the
+host's first granted root. `bohio-read/1` frames: host to client `0x01` header (CBOR), `0x02` data (raw), `0x04` done, `0x05` error
+(CBOR); `done` follows exactly `header.length` data bytes. `bohio-write/1`: host to client `0x01` ready, `0x04` done (CBOR
+`WriteDone`), `0x05` error; client to host `0x10` data (raw), `0x11` end. A write is in place only after the host's `done`.
 
 ## Info (`bohio_proto::info`)
 

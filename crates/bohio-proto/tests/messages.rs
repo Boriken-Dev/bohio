@@ -277,3 +277,195 @@ proptest! {
         prop_assert_eq!(Input::decode(&input.encode()).unwrap(), input);
     }
 }
+
+fn sample_metadata() -> bohio_proto::fs::Metadata {
+    use bohio_proto::fs::{FileKind, Metadata, Timestamp};
+    Metadata {
+        kind: FileKind::File,
+        size: 42,
+        modified: Some(Timestamp {
+            secs: -3,
+            nanos: 999_999_999,
+        }),
+        accessed: Some(Timestamp {
+            secs: 1_700_000_000,
+            nanos: 5,
+        }),
+        created: None,
+        mode: Some(0o640),
+        readonly: false,
+        attributes: Some(32),
+    }
+}
+
+#[test]
+fn every_filesystem_call_and_reply_round_trips() {
+    use bohio_proto::fs::{Entry, Listing, Timestamp};
+    let stamp = Some(Timestamp { secs: 7, nanos: 8 });
+    let calls = [
+        Call::Stat {
+            path: "a".into(),
+            follow: true,
+        },
+        Call::List {
+            path: "d".into(),
+            after: Some("m".into()),
+            limit: Some(10),
+        },
+        Call::Mkdir {
+            path: "d".into(),
+            parents: true,
+            mode: Some(0o755),
+        },
+        Call::Remove {
+            path: "d".into(),
+            recursive: true,
+        },
+        Call::Rename {
+            from: "a".into(),
+            to: "b".into(),
+            overwrite: true,
+        },
+        Call::Copy {
+            from: "a".into(),
+            to: "b".into(),
+            overwrite: false,
+        },
+        Call::Symlink {
+            target: "../t".into(),
+            link: "l".into(),
+        },
+        Call::Readlink { path: "l".into() },
+        Call::SetTimes {
+            path: "a".into(),
+            accessed: stamp,
+            modified: None,
+        },
+        Call::SetMode {
+            path: "a".into(),
+            mode: 0o600,
+        },
+        Call::SetAttributes {
+            path: "a".into(),
+            readonly: Some(true),
+        },
+        Call::Checksum {
+            path: "a".into(),
+            offset: 5,
+            length: Some(9),
+        },
+    ];
+    for (id, call) in (1..).zip(calls) {
+        round_trips(&ControlRequest { id, call });
+    }
+    let replies = [
+        Reply::Stat(Box::new(sample_metadata())),
+        Reply::List(Listing {
+            entries: vec![Entry {
+                name: "x".into(),
+                metadata: sample_metadata(),
+            }],
+            next: Some("x".into()),
+            skipped: 2,
+        }),
+        Reply::Done,
+        Reply::Link {
+            target: "../t".into(),
+        },
+        Reply::Checksum {
+            sha256: "ab".repeat(32),
+            length: 3,
+        },
+    ];
+    for (id, reply) in (1..).zip(replies) {
+        round_trips(&Response::ok(id, reply));
+    }
+}
+
+#[test]
+fn every_transfer_message_round_trips() {
+    use bohio_proto::fs::{
+        ReadHeader, ReadOutput, ReadRequest, WriteDone, WriteInput, WriteMode, WriteOutput,
+        WriteRequest,
+    };
+    let read = ReadRequest {
+        path: "f".into(),
+        offset: 4,
+        length: Some(8),
+    };
+    assert_eq!(
+        ReadRequest::from_metadata(&read.to_metadata().unwrap()).unwrap(),
+        read
+    );
+    for mode in [
+        WriteMode::Replace,
+        WriteMode::Create,
+        WriteMode::Append,
+        WriteMode::At { offset: 9 },
+    ] {
+        let write = WriteRequest {
+            path: "f".into(),
+            mode,
+            parents: true,
+            file_mode: Some(0o600),
+            expect_sha256: Some("cd".repeat(32)),
+        };
+        assert_eq!(
+            WriteRequest::from_metadata(&write.to_metadata().unwrap()).unwrap(),
+            write
+        );
+    }
+    let error = ErrorBody::new(ErrorCode::OutsideRoot, "no");
+    for output in [
+        ReadOutput::Header(ReadHeader { size: 5, length: 3 }),
+        ReadOutput::Data(vec![0, 1, 255]),
+        ReadOutput::Done,
+        ReadOutput::Error(error.clone()),
+    ] {
+        assert_eq!(
+            ReadOutput::decode(&output.encode().unwrap()).unwrap(),
+            output
+        );
+    }
+    for output in [
+        WriteOutput::Ready,
+        WriteOutput::Done(WriteDone {
+            written: 3,
+            sha256: "ef".repeat(32),
+        }),
+        WriteOutput::Error(error),
+    ] {
+        assert_eq!(
+            WriteOutput::decode(&output.encode().unwrap()).unwrap(),
+            output
+        );
+    }
+    for input in [WriteInput::Data(vec![9, 8]), WriteInput::End] {
+        assert_eq!(WriteInput::decode(&input.encode()).unwrap(), input);
+    }
+    assert_eq!(ReadOutput::decode(&[]), Err(Error::Short));
+    assert_eq!(ReadOutput::decode(&[0x7f]), Err(Error::Tag(0x7f)));
+    assert_eq!(WriteInput::decode(&[0x7f]), Err(Error::Tag(0x7f)));
+}
+
+#[test]
+fn a_file_kind_a_newer_host_adds_decodes_as_other_and_a_write_mode_defaults_to_replace() {
+    use bohio_proto::fs::{FileKind, Metadata, WriteMode, WriteRequest};
+    #[derive(Serialize)]
+    struct Newer {
+        kind: &'static str,
+    }
+    let bytes = encode(&Newer { kind: "whiteout" }).unwrap();
+    let meta: Metadata = decode(&bytes).unwrap();
+    assert_eq!(
+        (meta.kind, meta.size, meta.mode),
+        (FileKind::Other, 0, None)
+    );
+    #[derive(Serialize)]
+    struct Bare {
+        path: &'static str,
+    }
+    let bare = WriteRequest::from_metadata(&encode(&Bare { path: "p" }).unwrap()).unwrap();
+    assert_eq!(bare.mode, WriteMode::Replace);
+    assert!(!bare.parents && bare.file_mode.is_none() && bare.expect_sha256.is_none());
+}

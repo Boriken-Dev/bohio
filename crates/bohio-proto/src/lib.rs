@@ -5,6 +5,7 @@ pub mod codec;
 pub mod control;
 pub mod error;
 pub mod exec;
+pub mod fs;
 pub mod info;
 pub mod shell;
 
