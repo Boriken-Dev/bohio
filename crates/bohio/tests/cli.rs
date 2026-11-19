@@ -179,3 +179,15 @@ fn scratch(name: &str) -> PathBuf {
     std::fs::create_dir_all(&directory).unwrap();
     directory
 }
+
+#[test]
+fn service_install_refuses_a_bad_name_before_it_touches_the_service_manager() {
+    let output = bohio(&["service", "install", "--name", "a/b"]);
+    assert_eq!(output.status.code(), Some(1));
+    let err = text(&output.stderr);
+    assert!(
+        err.starts_with("bohio: ") && err.contains("service name"),
+        "{err}"
+    );
+    assert!(output.stdout.is_empty());
+}

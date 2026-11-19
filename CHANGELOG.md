@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `bohio service install|uninstall|run` runs the host as a Windows service (`windows-service`): `install` registers it to start
+  automatically as `NT AUTHORITY\LocalService` (or `--account`), `uninstall` stops and removes it, and the service serves the configured
+  `[[listen]]` endpoints until the manager stops it. The account must be able to write `[service] data_dir`.
 - Every coqui transport carries the link: `pipe://` (Windows named pipes and Unix domain sockets, `coqui-transport-pipe`), `ws://`
   (WebSocket binary messages, `coqui-transport-web`), `serial://port?baud=N` (COBS frames with a CRC-32C, `coqui-transport-serial`) and
   standard input and output. `bohio serve --stdio` serves one link on standard input and output (for `docker exec -i`), and

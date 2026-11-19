@@ -17,7 +17,7 @@ use super::commands::{load, source};
 use super::{
     ApproveArgs, JoinArgs, PairArgs, PeerAction, PeerArgs, RevokeArgs, ServeArgs, StatusArgs,
 };
-use crate::config::{Environment, ListenConfig, Span};
+use crate::config::{Config, Environment, ListenConfig, Span};
 use crate::listen::Listening;
 use crate::peer;
 use crate::policy::{Grant, Permission};
@@ -58,15 +58,26 @@ pub(super) fn serve(args: &ServeArgs, environment: &Environment) -> Result<(), S
         endpoint: endpoint.clone(),
         ..ListenConfig::default()
     }));
+    serve_endpoints(&config, environment, &entries, &AtomicBool::new(false))
+}
+
+/// Binds every entry, prints what is listening, and serves them until `stop` is set. A host started
+/// by the Windows service manager stops through the flag; `bohio serve` runs until it is killed.
+pub(super) fn serve_endpoints(
+    config: &Config,
+    environment: &Environment,
+    entries: &[ListenConfig],
+    stop: &AtomicBool,
+) -> Result<(), String> {
     if entries.is_empty() {
         return Err(
             "nothing to listen on: add a [[listen]] entry to bohio.cfg or pass --listen".to_owned(),
         );
     }
-    let server = Server::new(&config, environment).map_err(|error| error.to_string())?;
+    let server = Server::new(config, environment).map_err(|error| error.to_string())?;
     let settings = config.link.settings();
     let mut listeners = Vec::new();
-    for entry in &entries {
+    for entry in entries {
         let (listening, bound) =
             Listening::bind(entry, &settings).map_err(|error| error.to_string())?;
         say!("listening {bound}");
@@ -74,11 +85,10 @@ pub(super) fn serve(args: &ServeArgs, environment: &Environment) -> Result<(), S
     }
     say!("host {}", server.host());
     tracing::info!(host = %server.host(), "serving");
-    let stop = AtomicBool::new(false);
     thread::scope(|scope| {
         let handles: Vec<_> = listeners
             .iter()
-            .map(|listening| scope.spawn(|| server.serve_listening(listening, &stop)))
+            .map(|listening| scope.spawn(|| server.serve_listening(listening, stop)))
             .collect();
         for handle in handles {
             if let Ok(Err(error)) = handle.join() {

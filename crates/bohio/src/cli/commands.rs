@@ -5,7 +5,9 @@ use std::process::ExitCode;
 
 use bohio_proto::info::Info;
 
-use super::{CheckArgs, Command, ConfigAction, ConfigOption, Format, InfoArgs, host, remote};
+use super::{
+    CheckArgs, Command, ConfigAction, ConfigOption, Format, InfoArgs, host, remote, service,
+};
 use crate::config::{Config, Environment};
 use crate::info;
 use crate::peer::Data;
@@ -24,6 +26,7 @@ pub(super) fn run(command: &Command, environment: &Environment) -> Result<ExitCo
         Command::Peer(args) => done(host::peer(args, environment)),
         Command::Pair(args) => done(host::pair(args, environment)),
         Command::Join(args) => done(host::join(args, environment)),
+        Command::Service(args) => done(service::run(args, environment)),
         Command::Remote(args) => remote::run(args, environment),
     }
 }

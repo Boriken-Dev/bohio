@@ -27,7 +27,7 @@ doc = false
 [features]
 default = ["cli"]
 # The `bohio` command: arguments, output and the diagnostics subscriber. An embedding host takes the library alone.
-cli = ["dep:clap", "dep:tracing-subscriber", "dep:serde_json", "dep:crossterm"]
+cli = ["dep:clap", "dep:tracing-subscriber", "dep:serde_json", "dep:crossterm", "dep:windows-service"]
 
 [dependencies]
 bohio-proto.workspace = true
@@ -55,6 +55,7 @@ rustix.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 win32job.workspace = true
+windows-service = { workspace = true, optional = true }
 
 [dev-dependencies]
 sysinfo.workspace = true

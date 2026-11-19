@@ -6,6 +6,7 @@
 mod commands;
 mod host;
 mod remote;
+pub mod service;
 
 use std::ffi::OsString;
 use std::io::IsTerminal;
@@ -56,6 +57,8 @@ pub enum Command {
     Pair(PairArgs),
     /// Join a host that shows a PIN: each side then keeps the other's key.
     Join(JoinArgs),
+    /// Install, remove or run the host as a Windows service.
+    Service(service::ServiceArgs),
     /// Use a host: info, run a program, read a file or open a shell.
     Remote(RemoteArgs),
 }
