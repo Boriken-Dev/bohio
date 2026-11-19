@@ -7,7 +7,7 @@ with the source at <https://github.com/Boriken-Dev/bohio>.
 No Cargo features. MSRV Rust 1.89. Depends on `bohio-proto`, `coqui-transport` (git revision) and `thiserror`. Version
 `0.0.0-alpha.0`, not published.
 
-Imports: the root holds `Open` and `Error`. Public modules: `control`, `exec`, `fs`. No `unsafe` code (`#![forbid(unsafe_code)]`); no threads, no
+Imports: the root holds `Open` and `Error`. Public modules: `control`, `exec`, `fs`, `shell`. No `unsafe` code (`#![forbid(unsafe_code)]`); no threads, no
 I/O of its own: every call blocks on the channel it was given.
 
 ## Opening streams (crate root)
@@ -44,6 +44,28 @@ pub struct Completed { pub pid: Option<u32>, pub stdout: Vec<u8>, pub stderr: Ve
 nothing arrived in `timeout` (the stream goes on). `wait` collects output until the exit; `Error::Closed` when the stream ends
 first, `Error::Timeout` when `timeout` passes (the process keeps running). `write_stdin` and `finish_stdin` only mean something
 for a request with `Stdin::Open`. Dropping an `Exec` before the exit closes the stream, and the host ends the process tree.
+
+## Shells (`bohio_client::shell`)
+
+```rust
+pub struct Shell;                                                 // Debug; every method takes &self; Drop closes the stream: the host ends the tree
+impl Shell {
+    pub fn start(link: &dyn Open, request: &bohio_proto::shell::Request, timeout: Option<Duration>) -> Result<Self, Error>;   // waits for `started`
+    pub const fn pid(&self) -> u32;                               // the host's process id of the shell
+    pub fn next(&self, timeout: Option<Duration>) -> Result<Option<Event>, Error>;          // Ok(None): the host closed in order
+    pub fn write(&self, bytes: &[u8]) -> Result<(), Error>;       // typed input, split to the channel's message size; Enter is \r
+    pub fn resize(&self, cols: u16, rows: u16) -> Result<(), Error>;
+    pub fn kill(&self) -> Result<(), Error>;
+    pub fn read_until(&self, needle: &[u8], timeout: Option<Duration>) -> Result<Vec<u8>, Error>;   // everything read, up to and past the match
+    pub fn wait(&self, timeout: Option<Duration>) -> Result<(Vec<u8>, bohio_proto::shell::Exit), Error>;
+    pub fn close(&self);
+}
+#[non_exhaustive] pub enum Event { Data(Vec<u8>), Exit(Exit) }
+```
+
+A refusal (`denied`, `not_found`, `busy`, `bad_request`, ...) comes from `Shell::start` as `Error::Remote`. `read_until` is
+`Error::Closed` when the shell ends before the text appears; the typed text is echoed by the terminal, so match something the
+echo does not hold. Output is a terminal's rendering with escape sequences, not the program's bytes.
 
 ## Control stream (`bohio_client::control`)
 

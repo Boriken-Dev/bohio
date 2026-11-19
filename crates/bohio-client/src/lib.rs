@@ -5,6 +5,7 @@ pub mod control;
 mod error;
 pub mod exec;
 pub mod fs;
+pub mod shell;
 
 pub use error::Error;
 
