@@ -6,9 +6,9 @@
 use std::io;
 use std::net::{SocketAddr, TcpListener};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
 use bohio_client::dial::{Endpoint, SerialOptions, web_limits};
 use bohio_client::link::{Settings, socket, stream};
@@ -16,9 +16,16 @@ use coqui_peer_tls::{ClientAuth, Identity, ServerBuilder};
 use coqui_transport::{Channel, Failure};
 use coqui_transport_pipe::Listener as PipeListener;
 use coqui_transport_web::websocket::{Frames, Listener as WebSocketListener, Pending, ServerTls};
+use coqui_transport_web::webtransport::{
+    Listener as WebTransportListener, Pending as WebTransportPending, ServerTls as WebTransportTls,
+};
 
 use crate::config::ListenConfig;
 use crate::serve::ServeError;
+
+/// How many days a certificate the host makes for WebTransport is valid when the entry says nothing:
+/// a browser pinning it by hash accepts at most 14, and a day short of that leaves room for a slow clock.
+const DEFAULT_CERTIFICATE_DAYS: u32 = 13;
 
 /// The TLS configuration of a `wss` entry: the certificate chain and key `tls_cert` and `tls_key`
 /// name. The key is read here and never logged; a client presents no certificate, because the link's
@@ -28,6 +35,11 @@ use crate::serve::ServeError;
 ///
 /// Why the files are missing or do not hold a certificate chain with its key.
 pub fn server_config(config: &ListenConfig) -> Result<Arc<rustls::ServerConfig>, String> {
+    server_config_of(&server_identity(config)?)
+}
+
+/// The certificate chain and key `tls_cert` and `tls_key` name.
+fn server_identity(config: &ListenConfig) -> Result<Identity, String> {
     let (Some(certificate), Some(key)) = (&config.tls_cert, &config.tls_key) else {
         return Err(format!(
             "`{}` needs tls_cert and tls_key: set them on its [[listen]] entry",
@@ -40,19 +52,109 @@ pub fn server_config(config: &ListenConfig) -> Result<Arc<rustls::ServerConfig>,
     let mut pem = read(certificate)?;
     pem.push('\n');
     pem.push_str(&read(key)?);
-    let identity = Identity::from_pem_chain(&pem).map_err(|_| {
+    Identity::from_pem_chain(&pem).map_err(|_| {
         format!(
             "{} and {} do not hold a certificate chain and the key of its first certificate",
             certificate.display(),
             key.display()
         )
-    })?;
+    })
+}
+
+fn server_config_of(identity: &Identity) -> Result<Arc<rustls::ServerConfig>, String> {
     let built = ServerBuilder::new()
-        .identity(&identity)
+        .identity(identity)
         .client_auth(ClientAuth::None)
         .build()
         .map_err(|error| error.to_string())?;
     Ok(Arc::new(built.config))
+}
+
+/// The self-signed certificate a WebTransport listener makes when its entry names none: ECDSA P-256,
+/// valid for the days the entry gives, so a browser can pin it by hash (`serverCertificateHashes`).
+/// A new one is made when half the validity has passed; connections that follow get it, and its hash
+/// is logged.
+#[derive(Debug)]
+pub struct MadeCertificate {
+    validity: Duration,
+    backdate: Duration,
+    current: Mutex<Made>,
+}
+
+#[derive(Debug)]
+struct Made {
+    config: Arc<rustls::ServerConfig>,
+    hash: String,
+    renew_at: Instant,
+}
+
+impl MadeCertificate {
+    /// A certificate valid for `validity`, started `backdate` ago so a client whose clock is a little
+    /// behind accepts it.
+    ///
+    /// # Errors
+    ///
+    /// Why a certificate cannot be made.
+    pub fn new(validity: Duration, backdate: Duration) -> Result<Arc<Self>, String> {
+        let current = Self::make(validity, backdate)?;
+        Ok(Arc::new(Self {
+            validity,
+            backdate,
+            current: Mutex::new(current),
+        }))
+    }
+
+    fn make(validity: Duration, backdate: Duration) -> Result<Made, String> {
+        let identity = Identity::builder()
+            .not_before(SystemTime::now() - backdate)
+            .valid_for(validity)
+            .generate()
+            .map_err(|error| format!("a certificate cannot be made: {error}"))?;
+        Ok(Made {
+            config: server_config_of(&identity)?,
+            hash: identity.fingerprint().to_string(),
+            renew_at: Instant::now() + validity / 2,
+        })
+    }
+
+    /// The configuration for the next connection, made anew when the certificate is half spent.
+    pub fn config(&self) -> Arc<rustls::ServerConfig> {
+        let mut current = self
+            .current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if Instant::now() >= current.renew_at {
+            match Self::make(self.validity, self.backdate) {
+                Ok(made) => {
+                    tracing::info!(certificate = %made.hash, "a new WebTransport certificate was made");
+                    *current = made;
+                }
+                // The old one still serves until it expires; the next connection tries again.
+                Err(error) => {
+                    tracing::warn!("a new WebTransport certificate was not made: {error}")
+                }
+            }
+        }
+        Arc::clone(&current.config)
+    }
+
+    /// The SHA-256 of the certificate now in use, `sha256:` and 64 hex digits.
+    pub fn hash(&self) -> String {
+        self.current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .hash
+            .clone()
+    }
+}
+
+/// Where a WebTransport listener's certificate comes from.
+#[derive(Debug)]
+pub enum Certificate {
+    /// The files `tls_cert` and `tls_key` name; the hash is of the first certificate.
+    Files(String),
+    /// A certificate the host makes and renews.
+    Made(Arc<MadeCertificate>),
 }
 
 /// A bound listener.
@@ -65,6 +167,13 @@ pub enum Listening {
     Pipe(PipeListener),
     /// A WebSocket, with TLS for `wss`.
     WebSocket(WebSocketListener),
+    /// WebTransport over QUIC.
+    WebTransport {
+        /// The listener.
+        listener: WebTransportListener,
+        /// Its certificate.
+        certificate: Certificate,
+    },
     /// A serial port: there is one peer at the other end of the line, so nothing is bound; the port
     /// is opened for each link.
     Serial {
@@ -82,6 +191,8 @@ pub enum Arrival {
     /// A WebSocket whose handshake has not run: it runs on the connection's own thread, so one
     /// slow peer cannot hold the others up.
     Handshake(Box<Pending>),
+    /// A WebTransport session whose handshake has not run, on the connection's own thread too.
+    SessionHandshake(Box<WebTransportPending>),
 }
 
 impl Arrival {
@@ -90,6 +201,7 @@ impl Arrival {
         match self {
             Self::Ready(_, source) => *source,
             Self::Handshake(pending) => Some(pending.peer_addr()),
+            Self::SessionHandshake(pending) => Some(pending.peer_addr()),
         }
     }
 
@@ -102,6 +214,13 @@ impl Arrival {
         match self {
             Self::Ready(channel, source) => Ok((channel, source)),
             Self::Handshake(pending) => {
+                let source = pending.peer_addr();
+                let channel = pending
+                    .handshake()
+                    .map_err(|failure| io::Error::other(failure.to_string()))?;
+                Ok((Box::new(channel), Some(source)))
+            }
+            Self::SessionHandshake(pending) => {
                 let source = pending.peer_addr();
                 let channel = pending
                     .handshake()
@@ -171,6 +290,46 @@ impl Listening {
                 let url = Endpoint::parse(&format!("{}://{bound}", url.scheme())).map_err(fail)?;
                 Ok((Self::WebSocket(listener), url))
             }
+            Endpoint::WebTransport { url, .. } => {
+                let address = url
+                    .socket_addrs(|| None)
+                    .map_err(|e| fail(e.to_string()))?
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| fail("the address does not resolve".to_owned()))?;
+                let (tls, certificate) = if config.tls_cert.is_some() {
+                    let identity = server_identity(config).map_err(fail)?;
+                    let hash = identity.fingerprint().to_string();
+                    let tls = WebTransportTls::Config(server_config_of(&identity).map_err(fail)?);
+                    (tls, Certificate::Files(hash))
+                } else {
+                    let days = u64::from(config.tls_valid_days.unwrap_or(DEFAULT_CERTIFICATE_DAYS));
+                    // An hour back: a client whose clock is behind still accepts it. Browsers allow 14 days.
+                    let made = MadeCertificate::new(
+                        Duration::from_secs(days * 24 * 3600),
+                        Duration::from_secs(3600),
+                    )
+                    .map_err(fail)?;
+                    let renewing = Arc::clone(&made);
+                    let tls = WebTransportTls::per_connection(move |_, _| renewing.config());
+                    (tls, Certificate::Made(made))
+                };
+                let listener = WebTransportListener::builder(address, tls)
+                    .limits(web_limits(settings))
+                    .origins(config.origins.clone().unwrap_or_default())
+                    .build()
+                    .map_err(|e| fail(e.to_string()))?;
+                let bound = listener.local_addr();
+                let shown =
+                    Endpoint::parse(&format!("webtransport://{bound}")).map_err(fail)?;
+                Ok((
+                    Self::WebTransport {
+                        listener,
+                        certificate,
+                    },
+                    shown,
+                ))
+            }
             Endpoint::Serial { path, options } => {
                 let from_keys = config
                     .serial_options()
@@ -187,6 +346,19 @@ impl Listening {
                     .to_owned(),
             )),
             _ => Err(fail("this build cannot listen there".to_owned())),
+        }
+    }
+
+    /// The SHA-256 of the certificate a WebTransport listener presents now, which a client pins with
+    /// `--cert-hash` (a browser with `serverCertificateHashes`). A listener that makes its own
+    /// certificate changes it halfway through its validity.
+    pub fn certificate_hash(&self) -> Option<String> {
+        match self {
+            Self::WebTransport { certificate, .. } => Some(match certificate {
+                Certificate::Files(hash) => hash.clone(),
+                Certificate::Made(made) => made.hash(),
+            }),
+            _ => None,
         }
     }
 
@@ -227,10 +399,38 @@ impl Listening {
                     Ok(None)
                 }
             },
+            Self::WebTransport { listener, .. } => match listener.next(Some(wait)) {
+                Ok(pending) => Ok(Some(Arrival::SessionHandshake(Box::new(pending)))),
+                Err(Failure::Timeout) => Ok(None),
+                Err(failure) => {
+                    // A refused source or a broken request is one connection's failure, not the listener's.
+                    tracing::debug!("a WebTransport connection was not taken: {failure}");
+                    thread::sleep(wait.min(Duration::from_millis(20)));
+                    Ok(None)
+                }
+            },
             Self::Serial { .. } => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "a serial line has one peer: it is served in turn, not accepted",
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_made_certificate_is_replaced_when_half_its_validity_has_passed() {
+        let made = MadeCertificate::new(Duration::from_secs(4), Duration::ZERO).unwrap();
+        let first = made.hash();
+        assert!(first.starts_with("sha256:") && first.len() == "sha256:".len() + 64);
+        // The same certificate serves until it is half spent.
+        let _ = made.config();
+        assert_eq!(made.hash(), first);
+        thread::sleep(Duration::from_millis(2300));
+        let _ = made.config();
+        assert_ne!(made.hash(), first, "the certificate was not renewed");
     }
 }

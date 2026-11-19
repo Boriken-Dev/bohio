@@ -648,43 +648,45 @@ fn a_listen_key_for_another_scheme_is_refused_naming_it() {
 }
 
 #[test]
-fn tls_keys_come_in_a_pair_and_belong_to_wss() {
+fn tls_keys_come_in_a_pair_and_belong_to_the_tls_schemes() {
     let world = World::new("");
+    let pair = "tls_cert = \"c.pem\"\ntls_key = \"k.pem\"\n";
     for (entry, key) in [
         (
-            "endpoint = \"wss://127.0.0.1:1\"
-tls_cert = \"c.pem\"
-",
+            "endpoint = \"wss://127.0.0.1:1\"\ntls_cert = \"c.pem\"\n".to_owned(),
             "listen.tls_key",
         ),
         (
-            "endpoint = \"wss://127.0.0.1:1\"
-tls_key = \"k.pem\"
-",
+            "endpoint = \"wss://127.0.0.1:1\"\ntls_key = \"k.pem\"\n".to_owned(),
             "listen.tls_cert",
         ),
         (
-            "endpoint = \"wss://127.0.0.1:1\"
-",
+            "endpoint = \"wss://127.0.0.1:1\"\n".to_owned(),
             "listen.tls_cert",
         ),
         (
-            "endpoint = \"ws://127.0.0.1:1\"
-tls_cert = \"c.pem\"
-tls_key = \"k.pem\"
-",
+            format!("endpoint = \"ws://127.0.0.1:1\"\n{pair}"),
             "listen.tls_cert",
+        ),
+        (
+            "endpoint = \"webtransport://127.0.0.1:1\"\ntls_valid_days = 15\n".to_owned(),
+            "listen.tls_valid_days",
+        ),
+        (
+            "endpoint = \"webtransport://127.0.0.1:1\"\ntls_valid_days = 0\n".to_owned(),
+            "listen.tls_valid_days",
+        ),
+        (
+            format!("endpoint = \"webtransport://127.0.0.1:1\"\n{pair}tls_valid_days = 3\n"),
+            "listen.tls_valid_days",
+        ),
+        (
+            format!("endpoint = \"wss://127.0.0.1:1\"\n{pair}tls_valid_days = 3\n"),
+            "listen.tls_valid_days",
         ),
     ] {
         let config = world.path("tls.cfg");
-        std::fs::write(
-            &config,
-            format!(
-                "[[listen]]
-{entry}"
-            ),
-        )
-        .unwrap();
+        std::fs::write(&config, format!("[[listen]]\n{entry}")).unwrap();
         let checked = run(&["config", "check", "--config", &config.to_string_lossy()]);
         assert_eq!(checked.code, Some(1), "{entry}: {}", checked.stdout);
         assert!(checked.stderr.contains(key), "{entry}: {}", checked.stderr);
@@ -859,4 +861,147 @@ fn wss_is_reached_by_the_certificates_hash_and_not_by_another() {
         "{}",
         wrong.stderr
     );
+}
+
+/// A hash in the right form that no certificate has.
+const NO_CERTIFICATE: &str =
+    "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+
+#[test]
+fn webtransport_info_read_and_exec_over_a_certificate_pinned_by_hash() {
+    let world = World::new("");
+    let (mut host, bound) = world.serve("webtransport://127.0.0.1:0");
+    assert!(bound.starts_with("webtransport://127.0.0.1:"), "{bound}");
+    // The host made the certificate and says its hash: what a browser's `serverCertificateHashes` takes.
+    let line = host.expect_line("certificate ");
+    let hash = line.split(' ').next().unwrap().to_owned();
+    assert!(line.ends_with(&format!(" for {bound}")), "{line}");
+    world.exercise(&["--cert-hash", &hash, &bound], 1);
+}
+
+#[test]
+fn webtransport_with_the_wrong_hash_fails_as_a_certificate_failure() {
+    let world = World::new("");
+    let (_host, bound) = world.serve("webtransport://127.0.0.1:0");
+    let failed = world.remote(&["--cert-hash", NO_CERTIFICATE, &bound], &["info"]);
+    assert_eq!(failed.code, Some(1), "{}", failed.stdout);
+    assert!(
+        failed.stderr.contains("TLS certificate was refused"),
+        "{}",
+        failed.stderr
+    );
+    // No pin and no CA: the system's roots do not hold the host's own certificate.
+    let unknown = world.remote(&[&bound], &["info"]);
+    assert_eq!(unknown.code, Some(1), "{}", unknown.stdout);
+    assert!(
+        unknown.stderr.contains("TLS certificate was refused"),
+        "{}",
+        unknown.stderr
+    );
+}
+
+#[test]
+fn webtransport_takes_the_longest_validity_a_browser_pins() {
+    let world =
+        World::new("[[listen]]\nendpoint = \"webtransport://127.0.0.1:0\"\ntls_valid_days = 14\n");
+    let (mut host, bound) = world.serve_listed("warn");
+    let hash = host
+        .expect_line("certificate ")
+        .split(' ')
+        .next()
+        .unwrap()
+        .to_owned();
+    // The proof refuses a key the host has not approved; the certificate itself is taken.
+    let reached = world.remote(&["--cert-hash", &hash, &bound], &["info"]);
+    assert_eq!(reached.code, Some(1), "{}", reached.stderr);
+    assert!(
+        !reached.stderr.contains("TLS certificate"),
+        "{}",
+        reached.stderr
+    );
+}
+
+#[test]
+fn webtransport_over_a_certificate_from_files_is_trusted_through_its_authority() {
+    let certificates = Certificates::new();
+    let world = World::new(&certificates.listen("webtransport://127.0.0.1:0"));
+    let (mut host, bound) = world.serve_listed("warn");
+    let line = host.expect_line("certificate ");
+    assert_eq!(line, format!("{} for {bound}", certificates.hash));
+    world.exercise(&["--ca", &certificates.ca, &bound], 1);
+}
+
+#[test]
+fn a_blocked_udp_path_falls_back_to_the_websocket_endpoint_and_a_refused_certificate_does_not() {
+    let world = World::new(
+        "[[listen]]\nendpoint = \"webtransport://127.0.0.1:0\"\n[[listen]]\nendpoint = \"ws://127.0.0.1:0\"\n",
+    );
+    let (mut host, _) = world.serve_listed("warn");
+    let wt = host.expect_line("listening webtransport://");
+    let ws = format!("ws://{}", host.expect_line("listening ws://"));
+    let hash = {
+        let line = host.expect_line("certificate ");
+        line.split(' ').next().unwrap().to_owned()
+    };
+    // The host learns the key when it is first refused; then it can be approved.
+    assert_eq!(world.remote(&[&ws], &["info"]).code, Some(1));
+    run_ok(&[
+        "peer",
+        "approve",
+        &world.client_id,
+        "--config",
+        &world.host,
+        "--allow",
+        "info",
+    ]);
+    // Nothing answers on this UDP port, which is what a path that blocks QUIC looks like.
+    let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let blocked = format!("webtransport://{}", silent.local_addr().unwrap());
+    let started = Instant::now();
+    let fell_back = world.remote(
+        &["--fallback", &ws, &blocked],
+        &["info", "--format", "json"],
+    );
+    assert_eq!(
+        fell_back.code,
+        Some(0),
+        "stdout: {}\nstderr: {}",
+        fell_back.stdout,
+        fell_back.stderr
+    );
+    assert!(
+        fell_back
+            .stdout
+            .contains(&format!("\"host_id\":\"{}\"", world.host_id)),
+        "{}",
+        fell_back.stdout
+    );
+    // It waited for the QUIC deadline first (`proof_timeout`, 5 s here): the fallback is the second try.
+    assert!(
+        started.elapsed() >= Duration::from_secs(4),
+        "{:?}",
+        started.elapsed()
+    );
+    // Without a fallback the same blocked path fails.
+    let alone = world.remote(&[&blocked], &["info"]);
+    assert_eq!(alone.code, Some(1), "{}", alone.stdout);
+
+    // The path works but its certificate is refused: nothing is dialled on the WebSocket endpoint.
+    let live = format!("webtransport://{wt}");
+    let refused = world.remote(
+        &["--cert-hash", NO_CERTIFICATE, "--fallback", &ws, &live],
+        &["info"],
+    );
+    assert_eq!(refused.code, Some(1), "{}", refused.stdout);
+    assert!(
+        refused.stderr.contains("TLS certificate was refused"),
+        "{}",
+        refused.stderr
+    );
+    // The control: the right hash on the same pair reaches the WebTransport host itself.
+    let pinned = world.remote(
+        &["--cert-hash", &hash, "--fallback", &ws, &live],
+        &["info", "--format", "json"],
+    );
+    assert_eq!(pinned.code, Some(0), "{}", pinned.stderr);
 }

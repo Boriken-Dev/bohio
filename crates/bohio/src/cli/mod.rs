@@ -232,7 +232,7 @@ pub struct RemoteArgs {
     /// The configuration.
     #[command(flatten)]
     pub config: ConfigOption,
-    /// The host: `tcp://host:port`, `pipe://name`, `ws://host:port`, `wss://host:port`, `serial://port?baud=N` or
+    /// The host: `tcp://host:port`, `pipe://name`, `ws://host:port`, `wss://host:port`, `webtransport://host:port`, `serial://port?baud=N` or
     /// `stdio://program args` (the program is started and its standard streams are the link). With
     /// `--command` there is none.
     #[arg(required_unless_present = "command")]
@@ -245,15 +245,20 @@ pub struct RemoteArgs {
     /// The host's id to trust instead of the keys `bohio join` stored.
     #[arg(long, value_name = "ID")]
     pub server: Option<String>,
-    /// For `wss://`: trust the certificates in this PEM file instead of the system's roots, for a host
+    /// For `wss://` and `webtransport://`: trust the certificates in this PEM file instead of the system's roots, for a host
     /// whose certificate no public authority issued. May be repeated. The link's proof, not TLS, says
     /// who the host is.
     #[arg(long, value_name = "FILE")]
     pub ca: Vec<PathBuf>,
-    /// For `wss://`: also trust the certificate with this SHA-256 hash (`sha256:` and 64 hex digits)
+    /// For `wss://` and `webtransport://`: trust the certificate with this SHA-256 hash (`sha256:` and 64 hex digits)
     /// whatever its name and issuer, as a self-signed host needs. May be repeated.
     #[arg(long, value_name = "HASH")]
     pub cert_hash: Vec<String>,
+    /// For a `webtransport://` host: a `ws://` or `wss://` endpoint of the same host to dial when the
+    /// UDP path is blocked. A certificate that is refused never falls back, and `ws://` is taken only
+    /// on a loopback address.
+    #[arg(long, value_name = "ENDPOINT")]
+    pub fallback: Option<String>,
     /// What to ask of it.
     #[command(subcommand)]
     pub action: RemoteAction,

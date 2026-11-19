@@ -170,18 +170,24 @@ pub struct ListenConfig {
     /// `false`.
     #[serde(default)]
     pub remote_clients: Option<bool>,
-    /// `ws`, `wss`: the origins a browser may connect from; a connection that names another origin is
+    /// `ws`, `wss`, `webtransport`: the origins a browser may connect from; a connection that names another origin is
     /// refused. Default none: any origin, and a client that names none.
     #[serde(default)]
     pub origins: Option<Vec<String>>,
-    /// `wss`: the PEM file holding the host's certificate and the intermediates that follow it, leaf
-    /// first. Required with `tls_key`.
+    /// `wss`, `webtransport`: the PEM file holding the host's certificate and the intermediates that
+    /// follow it, leaf first. Required with `tls_key`, and by `wss`. A `webtransport` entry without
+    /// one makes its own certificate (see `tls_valid_days`).
     #[serde(default)]
     pub tls_cert: Option<PathBuf>,
-    /// `wss`: the PEM file holding the private key of `tls_cert`. Read when the listener starts and
+    /// `wss`, `webtransport`: the PEM file holding the private key of `tls_cert`. Read when the listener starts and
     /// never logged. Required with `tls_cert`.
     #[serde(default)]
     pub tls_key: Option<PathBuf>,
+    /// `webtransport` without `tls_cert`: how many days the certificate the host makes is valid, from 1
+    /// to 14 (a browser pinning a certificate by its hash accepts no more). The host makes a new one
+    /// halfway through and prints its hash. Default `13`.
+    #[serde(default)]
+    pub tls_valid_days: Option<u32>,
     /// `serial`: bits per second. Not zero. Default `115200`.
     #[serde(default)]
     pub baud: Option<u32>,
@@ -672,9 +678,14 @@ impl Config {
             let given = [
                 ("socket_mode", "pipe", listen.socket_mode.is_some()),
                 ("remote_clients", "pipe", listen.remote_clients.is_some()),
-                ("origins", "ws, wss", listen.origins.is_some()),
-                ("tls_cert", "wss", listen.tls_cert.is_some()),
-                ("tls_key", "wss", listen.tls_key.is_some()),
+                ("origins", "ws, wss, webtransport", listen.origins.is_some()),
+                ("tls_cert", "wss, webtransport", listen.tls_cert.is_some()),
+                ("tls_key", "wss, webtransport", listen.tls_key.is_some()),
+                (
+                    "tls_valid_days",
+                    "webtransport",
+                    listen.tls_valid_days.is_some(),
+                ),
                 ("baud", "serial", listen.baud.is_some()),
                 ("data_bits", "serial", listen.data_bits.is_some()),
                 ("parity", "serial", listen.parity.is_some()),
@@ -694,6 +705,20 @@ impl Config {
                                 .join("` or `"),
                             listen.endpoint
                         ),
+                    ));
+                }
+            }
+            if let Some(days) = listen.tls_valid_days {
+                if !(1..=14).contains(&days) {
+                    return Err(invalid(
+                        "listen.tls_valid_days",
+                        "must be from 1 to 14: a browser pins no certificate valid longer",
+                    ));
+                }
+                if listen.tls_cert.is_some() {
+                    return Err(invalid(
+                        "listen.tls_valid_days",
+                        "is for the certificate the host makes: drop it, or drop `tls_cert`",
                     ));
                 }
             }

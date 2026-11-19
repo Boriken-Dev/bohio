@@ -41,6 +41,10 @@ fn connect(args: &RemoteArgs, environment: &Environment) -> Result<Connection, S
         (None, Some(command)) => Endpoint::Command(split_command(command)?),
         _ => return Err("name the host as an endpoint or with --command, not both".to_owned()),
     };
+    let endpoint = match &args.fallback {
+        Some(text) => endpoint.with_fallback(Endpoint::parse(text)?)?,
+        None => endpoint,
+    };
     let identity = data.identity().map_err(|error| error.to_string())?;
     let trust = match &args.server {
         Some(id) => Trust::pinned([id
@@ -58,7 +62,12 @@ fn connect(args: &RemoteArgs, environment: &Environment) -> Result<Connection, S
     for hash in &args.cert_hash {
         trust.pin(hash)?;
     }
-    if matches!(&endpoint, Endpoint::WebSocket(url) if url.scheme() == "wss") {
+    let needs_tls = match &endpoint {
+        Endpoint::WebSocket(url) => url.scheme() == "wss",
+        Endpoint::WebTransport { .. } => true,
+        _ => false,
+    };
+    if needs_tls {
         trust
             .client_config()
             .map_err(|reason| format!("the TLS trust cannot be set up: {reason}"))?;

@@ -101,6 +101,9 @@ pub(super) fn serve_endpoints(
         let (listening, bound) =
             Listening::bind(entry, &settings).map_err(|error| error.to_string())?;
         say!("listening {bound}");
+        if let Some(hash) = listening.certificate_hash() {
+            say!("certificate {hash} for {bound}");
+        }
         listeners.push(listening);
     }
     say!("host {}", server.host());
@@ -179,6 +182,7 @@ fn answers(endpoint: &Endpoint) -> &'static str {
                 "device not checked"
             }
         }
+        Endpoint::WebTransport { .. } => "UDP not checked",
         Endpoint::Command(_) => "not a listening endpoint",
         _ => "not served by this build",
     }

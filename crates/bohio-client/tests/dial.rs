@@ -111,3 +111,26 @@ fn a_trust_file_that_cannot_be_read_is_named() {
     let reason = trust.client_config().unwrap_err();
     assert!(reason.contains("no-such-ca.pem"), "{reason}");
 }
+
+#[test]
+fn webtransport_needs_a_udp_port_and_takes_a_websocket_fallback_of_its_host() {
+    let wt = Endpoint::parse("webtransport://127.0.0.1:4433/bohio").unwrap();
+    assert_eq!(wt.to_string(), "webtransport://127.0.0.1:4433/bohio");
+    assert!(Endpoint::parse("webtransport://127.0.0.1").is_err());
+    assert!(Endpoint::parse("webtransport://:4433").is_err());
+
+    let ws = Endpoint::parse("ws://127.0.0.1:7621").unwrap();
+    let paired = wt.clone().with_fallback(ws.clone()).unwrap();
+    assert_eq!(
+        paired.to_string(),
+        "webtransport://127.0.0.1:4433/bohio (or ws://127.0.0.1:7621/)"
+    );
+    // Another host, a non-WebSocket fallback and a fallback on a non-WebTransport endpoint are refused.
+    let other = Endpoint::parse("ws://127.0.0.2:7621").unwrap();
+    assert!(wt.clone().with_fallback(other).is_err());
+    assert!(
+        wt.with_fallback(Endpoint::parse("tcp://127.0.0.1:7620").unwrap())
+            .is_err()
+    );
+    assert!(ws.clone().with_fallback(ws).is_err());
+}
