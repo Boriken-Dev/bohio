@@ -22,3 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   closed-stream handling that end the whole process tree, and a bound on concurrent processes
   (`[execution] max_processes`).
 - `bohio-client`: the `Open` trait for a link and `exec::Exec` to run a process.
+- Filesystem access confined to a peer's `fs_roots` (`bohio::fs`, `bohio::control`): `stat`, `list` (paged), `mkdir`,
+  `remove`, `rename`, `copy`, `symlink`, `readlink`, `set_times`, `set_mode`, `set_attributes` and `checksum` on the control
+  stream, and file streams `bohio-read/1` and `bohio-write/1` (atomic replace through a temporary sibling, or create, append
+  and write at an offset). A `..` or a symbolic link that leaves a root is refused as `outside_root`, with every component
+  resolved against a directory handle; the header states what is race-free on each operating system. New `[filesystem]`
+  settings bound transfers, chunks, listing pages and idle time.
+- `bohio-proto`: the filesystem calls, metadata and the transfer frames. `bohio-client`: `control::Control`, `fs::Fs`,
+  `fs::Reader` and `fs::Writer`.
