@@ -483,6 +483,14 @@ struct Cable {
 #[cfg(unix)]
 impl Cable {
     fn new() -> Option<Self> {
+        // Without `socat` there is no cable: the test says so and passes.
+        Command::new("socat")
+            .arg("-V")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .ok()?;
         let mut process = Proc::start(
             "socat",
             &["-d", "-d", "pty,raw,echo=0", "pty,raw,echo=0"],
