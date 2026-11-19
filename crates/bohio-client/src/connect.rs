@@ -15,7 +15,7 @@ use coqui_link::mux::{LinkState, Mux, Side};
 use coqui_peer::PeerId;
 use coqui_transport::{Channel, Failure};
 
-use crate::dial::Endpoint;
+use crate::dial::{Endpoint, ServerTrust};
 use crate::link::Settings;
 use crate::relay::{Relay, relay};
 use crate::{Error, Open};
@@ -64,7 +64,22 @@ impl Connection {
         proof: &Proof,
         settings: &Settings,
     ) -> Result<Self, Error> {
-        let channel = endpoint.dial(timeout, settings)?;
+        Self::connect_with(endpoint, timeout, proof, settings, &ServerTrust::default())
+    }
+
+    /// As [`Connection::connect`], checking a TLS host's certificate by `trust`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Connection::connect`]; a certificate `trust` refuses is `Error::Transport(Failure::Certificate)`.
+    pub fn connect_with(
+        endpoint: &Endpoint,
+        timeout: Duration,
+        proof: &Proof,
+        settings: &Settings,
+        trust: &ServerTrust,
+    ) -> Result<Self, Error> {
+        let channel = endpoint.dial_with(timeout, settings, trust)?;
         Self::over(channel, proof, settings)
     }
 

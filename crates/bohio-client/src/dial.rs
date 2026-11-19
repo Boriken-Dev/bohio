@@ -8,15 +8,19 @@
 //! | --- | --- |
 //! | `tcp://host:port` | a TCP socket |
 //! | `pipe://NAME`, `pipe:///path/to.sock` | a Windows named pipe or a Unix domain socket |
-//! | `ws://host:port[/path]` | a WebSocket, binary messages |
+//! | `ws://host:port[/path]`, `wss://host:port[/path]` | a WebSocket (TLS for `wss`), binary messages |
 //! | `serial://PORT?baud=115200` | a serial port, COBS frames with a CRC |
 //! | `stdio://PROGRAM ARG...` | a program started with its standard streams as the channel |
 
 use std::io;
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use coqui_link::auth::MAX_PROOF_MESSAGE;
+use coqui_peer::PeerId;
+use coqui_peer_tls::{ClientBuilder, Pins, Roots, Trust};
 use coqui_transport::process::{ErrorOutput, Launch, ProcessBuilder};
 use coqui_transport::{Channel, Connector as _, Failure};
 use coqui_transport_pipe::PipeName;
@@ -118,6 +122,72 @@ impl SerialOptions {
     }
 }
 
+/// Whom a client accepts as the host's TLS certificate on `wss://`.
+///
+/// The link's proof, not TLS, says who the host is; this decides only whether the carrier's own
+/// handshake succeeds. With nothing set the system's roots decide. CA files replace the system's
+/// roots; pins accept the certificate they name whatever its name and issuer. With both, a
+/// certificate that matches a pin or chains to a CA file is accepted.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ServerTrust {
+    /// PEM files whose certificates are the trusted roots, instead of the system's.
+    pub ca_files: Vec<PathBuf>,
+    /// SHA-256 digests of certificates trusted as they are, each `sha256:` and 64 hex digits.
+    pub pins: Vec<PeerId>,
+}
+
+impl ServerTrust {
+    /// Adds the pin `text` (`sha256:` and 64 hex digits).
+    ///
+    /// # Errors
+    ///
+    /// The reason, for text that is not a SHA-256 digest.
+    pub fn pin(&mut self, text: &str) -> Result<(), String> {
+        let id = text.trim().parse::<PeerId>().map_err(|_| {
+            format!("`{text}` is not a certificate hash: write `sha256:` and 64 hex digits")
+        })?;
+        if !id.to_string().starts_with("sha256:") {
+            return Err(format!("`{text}` is not a SHA-256 certificate hash"));
+        }
+        self.pins.push(id);
+        Ok(())
+    }
+
+    /// The configuration a TLS client uses to check the host's certificate.
+    ///
+    /// # Errors
+    ///
+    /// Why a CA file cannot be read or holds no usable certificate.
+    pub fn client_config(&self) -> Result<Arc<rustls::ClientConfig>, String> {
+        let roots = if self.ca_files.is_empty() {
+            Roots::platform()
+        } else {
+            let mut bundle = String::new();
+            for path in &self.ca_files {
+                let text = std::fs::read_to_string(path)
+                    .map_err(|error| format!("{}: {error}", path.display()))?;
+                bundle.push_str(&text);
+                bundle.push('\n');
+            }
+            Roots::bundle_pem(bundle)
+        };
+        let trust = match (self.pins.is_empty(), self.ca_files.is_empty()) {
+            (true, _) => Trust::Roots(roots),
+            (false, true) => Trust::Pinned(Pins::fixed(self.pins.iter().copied())),
+            (false, false) => Trust::PinnedOrRoots {
+                pins: Pins::fixed(self.pins.iter().copied()),
+                roots,
+            },
+        };
+        let built = ClientBuilder::new()
+            .server(trust)
+            .build()
+            .map_err(|error| error.to_string())?;
+        Ok(Arc::new(built.config))
+    }
+}
+
 /// A place to listen or connect to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -126,7 +196,7 @@ pub enum Endpoint {
     Tcp(SocketAddr),
     /// A named pipe or a Unix socket.
     Pipe(PipeName),
-    /// A WebSocket, `ws://`.
+    /// A WebSocket, `ws://` or `wss://`.
     WebSocket(Url),
     /// A serial port: a device path on Unix, a port name such as `COM3` on Windows.
     Serial {
@@ -147,7 +217,7 @@ impl Endpoint {
     /// The reason, for a scheme this build does not serve or an address that does not parse.
     pub fn parse(text: &str) -> Result<Self, String> {
         let (scheme, rest) = text.split_once("://").ok_or_else(|| {
-            "an endpoint looks like `tcp://host:port`, `pipe://name`, `ws://host:port`, `serial://port?baud=N` or `stdio://program args`"
+            "an endpoint looks like `tcp://host:port`, `pipe://name`, `ws://host:port`, `wss://host:port`, `serial://port?baud=N` or `stdio://program args`"
                 .to_owned()
         })?;
         match scheme {
@@ -162,14 +232,14 @@ impl Endpoint {
                     .map(Self::Pipe)
                     .map_err(|error| format!("`{rest}` is not a pipe name: {error}"))
             }
-            "ws" => {
-                let url = Url::parse(text).map_err(|error| format!("`{text}` is not a URL: {error}"))?;
+            "ws" | "wss" => {
+                let url =
+                    Url::parse(text).map_err(|error| format!("`{text}` is not a URL: {error}"))?;
                 if url.host_str().is_none() || url.port_or_known_default().is_none() {
                     return Err(format!("`{text}` names no host"));
                 }
                 Ok(Self::WebSocket(url))
             }
-            "wss" => Err("`wss` is not served by this build: TLS for WebSocket endpoints is not set up; use `ws` (the link is sealed by the proof)".to_owned()),
             "serial" => {
                 let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
                 if path.is_empty() {
@@ -189,7 +259,7 @@ impl Endpoint {
             }
             "stdio" => split_command(rest).map(Self::Command),
             other => Err(format!(
-                "the scheme `{other}` is not served; use tcp, pipe, ws, serial or stdio"
+                "the scheme `{other}` is not served; use tcp, pipe, ws, wss, serial or stdio"
             )),
         }
     }
@@ -200,6 +270,21 @@ impl Endpoint {
     ///
     /// [`Error::Transport`] with why the path could not be opened.
     pub fn dial(&self, timeout: Duration, settings: &Settings) -> Result<Box<dyn Channel>, Error> {
+        self.dial_with(timeout, settings, &ServerTrust::default())
+    }
+
+    /// As [`Endpoint::dial`], checking a TLS host's certificate by `trust`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Transport`] with why the path could not be opened (a certificate the trust refuses is
+    /// `Failure::Certificate`), [`Error::Link`] when the trust cannot be set up.
+    pub fn dial_with(
+        &self,
+        timeout: Duration,
+        settings: &Settings,
+        trust: &ServerTrust,
+    ) -> Result<Box<dyn Channel>, Error> {
         match self {
             Self::Tcp(address) => {
                 let stream = TcpStream::connect_timeout(address, timeout)
@@ -219,7 +304,11 @@ impl Endpoint {
                 Ok(Box::new(channel))
             }
             Self::WebSocket(url) => {
-                let dialer = Dialer::builder()
+                let mut builder = Dialer::builder();
+                if url.scheme() == "wss" {
+                    builder = builder.tls(trust.client_config().map_err(Error::Link)?);
+                }
+                let dialer = builder
                     .frames(Frames::Binary)
                     .limits(web_limits(settings))
                     // The proof seals everything after it, so the carrier's own protection is not what the link relies on.

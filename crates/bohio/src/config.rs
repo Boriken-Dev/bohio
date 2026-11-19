@@ -160,7 +160,7 @@ impl Default for ServiceConfig {
 #[serde(deny_unknown_fields)]
 pub struct ListenConfig {
     /// `scheme://address`: `tcp://127.0.0.1:7620`, `pipe://bohio`, `pipe:///run/bohio.sock`,
-    /// `ws://127.0.0.1:7621`, `serial:///dev/ttyUSB0`. Required.
+    /// `ws://127.0.0.1:7621`, `wss://0.0.0.0:7622`, `serial:///dev/ttyUSB0`. Required.
     pub endpoint: String,
     /// `pipe`, Unix: the socket's mode as octal text with the `0o` prefix. Default `"0o600"`: the
     /// owner alone.
@@ -170,10 +170,18 @@ pub struct ListenConfig {
     /// `false`.
     #[serde(default)]
     pub remote_clients: Option<bool>,
-    /// `ws`: the origins a browser may connect from; a connection that names another origin is
+    /// `ws`, `wss`: the origins a browser may connect from; a connection that names another origin is
     /// refused. Default none: any origin, and a client that names none.
     #[serde(default)]
     pub origins: Option<Vec<String>>,
+    /// `wss`: the PEM file holding the host's certificate and the intermediates that follow it, leaf
+    /// first. Required with `tls_key`.
+    #[serde(default)]
+    pub tls_cert: Option<PathBuf>,
+    /// `wss`: the PEM file holding the private key of `tls_cert`. Read when the listener starts and
+    /// never logged. Required with `tls_cert`.
+    #[serde(default)]
+    pub tls_key: Option<PathBuf>,
     /// `serial`: bits per second. Not zero. Default `115200`.
     #[serde(default)]
     pub baud: Option<u32>,
@@ -664,20 +672,45 @@ impl Config {
             let given = [
                 ("socket_mode", "pipe", listen.socket_mode.is_some()),
                 ("remote_clients", "pipe", listen.remote_clients.is_some()),
-                ("origins", "ws", listen.origins.is_some()),
+                ("origins", "ws, wss", listen.origins.is_some()),
+                ("tls_cert", "wss", listen.tls_cert.is_some()),
+                ("tls_key", "wss", listen.tls_key.is_some()),
                 ("baud", "serial", listen.baud.is_some()),
                 ("data_bits", "serial", listen.data_bits.is_some()),
                 ("parity", "serial", listen.parity.is_some()),
                 ("stop_bits", "serial", listen.stop_bits.is_some()),
                 ("flow_control", "serial", listen.flow_control.is_some()),
             ];
-            for (key, scheme, set) in given {
-                if set && listen.scheme() != scheme {
+            for (key, schemes, set) in given {
+                if set && !schemes.split(", ").any(|scheme| scheme == listen.scheme()) {
                     return Err(invalid(
                         &format!("listen.{key}"),
-                        &format!("is for `{scheme}://` endpoints, not `{}`", listen.endpoint),
+                        &format!(
+                            "is for `{}` endpoints, not `{}`",
+                            schemes
+                                .split(", ")
+                                .map(|scheme| format!("{scheme}://"))
+                                .collect::<Vec<_>>()
+                                .join("` or `"),
+                            listen.endpoint
+                        ),
                     ));
                 }
+            }
+            match (&listen.tls_cert, &listen.tls_key) {
+                (Some(_), None) => {
+                    return Err(invalid("listen.tls_key", "is required with `tls_cert`"));
+                }
+                (None, Some(_)) => {
+                    return Err(invalid("listen.tls_cert", "is required with `tls_key`"));
+                }
+                (None, None) if listen.scheme() == "wss" => {
+                    return Err(invalid(
+                        "listen.tls_cert",
+                        &format!("`{}` needs `tls_cert` and `tls_key`", listen.endpoint),
+                    ));
+                }
+                _ => {}
             }
             if let Err((key, reason)) = listen.serial_options() {
                 return Err(invalid(&format!("listen.{key}"), &reason));

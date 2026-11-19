@@ -7,6 +7,7 @@ fn each_scheme_parses_and_prints_back() {
     for text in [
         "tcp://127.0.0.1:7620",
         "ws://127.0.0.1:7621/",
+        "wss://127.0.0.1:7622/",
         "serial:///dev/ttyUSB0?baud=9600",
         "serial://COM3",
         "stdio://docker exec -i box bohio serve --stdio",
@@ -57,9 +58,12 @@ fn a_serial_query_sets_the_line_and_refuses_what_it_does_not_know() {
 }
 
 #[test]
-fn wss_and_an_unknown_scheme_say_why() {
-    let wss = Endpoint::parse("wss://host:443").unwrap_err();
-    assert!(wss.contains("TLS"), "{wss}");
+fn wss_is_a_web_socket_and_an_unknown_scheme_says_why() {
+    let Endpoint::WebSocket(url) = Endpoint::parse("wss://127.0.0.1:443/bohio").unwrap() else {
+        panic!("wss is not a WebSocket endpoint");
+    };
+    assert_eq!(url.scheme(), "wss");
+    assert!(Endpoint::parse("wss://").is_err());
     let other = Endpoint::parse("gopher://host").unwrap_err();
     assert!(other.contains("not served"), "{other}");
     assert!(Endpoint::parse("nowhere").is_err());
@@ -80,4 +84,30 @@ fn a_command_line_splits_on_spaces_and_groups_quotes_without_escapes() {
     assert_eq!(split_command("a '' b").unwrap(), ["a", "", "b"]);
     assert!(split_command("   ").is_err());
     assert!(split_command("a \"b").is_err());
+}
+
+#[test]
+fn a_certificate_pin_is_a_sha256_digest() {
+    let mut trust = bohio_client::dial::ServerTrust::default();
+    let digest = "ab".repeat(32);
+    trust.pin(&format!("sha256:{digest}")).unwrap();
+    assert_eq!(trust.pins.len(), 1);
+    for bad in [
+        "",
+        "sha256:abcd",
+        "md5:d41d8cd98f00b204e9800998ecf8427e",
+        &format!("sha384:{}", "ab".repeat(48)),
+        &format!("sha256:{}", "zz".repeat(32)),
+    ] {
+        assert!(trust.pin(bad).is_err(), "{bad} was accepted");
+    }
+    assert_eq!(trust.pins.len(), 1);
+}
+
+#[test]
+fn a_trust_file_that_cannot_be_read_is_named() {
+    let mut trust = bohio_client::dial::ServerTrust::default();
+    trust.ca_files.push("no-such-dir/no-such-ca.pem".into());
+    let reason = trust.client_config().unwrap_err();
+    assert!(reason.contains("no-such-ca.pem"), "{reason}");
 }

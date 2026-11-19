@@ -5,17 +5,55 @@
 
 use std::io;
 use std::net::{SocketAddr, TcpListener};
+use std::path::Path;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use bohio_client::dial::{Endpoint, SerialOptions, web_limits};
 use bohio_client::link::{Settings, socket, stream};
+use coqui_peer_tls::{ClientAuth, Identity, ServerBuilder};
 use coqui_transport::{Channel, Failure};
 use coqui_transport_pipe::Listener as PipeListener;
 use coqui_transport_web::websocket::{Frames, Listener as WebSocketListener, Pending, ServerTls};
 
 use crate::config::ListenConfig;
 use crate::serve::ServeError;
+
+/// The TLS configuration of a `wss` entry: the certificate chain and key `tls_cert` and `tls_key`
+/// name. The key is read here and never logged; a client presents no certificate, because the link's
+/// proof, not TLS, says who it is.
+///
+/// # Errors
+///
+/// Why the files are missing or do not hold a certificate chain with its key.
+pub fn server_config(config: &ListenConfig) -> Result<Arc<rustls::ServerConfig>, String> {
+    let (Some(certificate), Some(key)) = (&config.tls_cert, &config.tls_key) else {
+        return Err(format!(
+            "`{}` needs tls_cert and tls_key: set them on its [[listen]] entry",
+            config.endpoint
+        ));
+    };
+    let read = |path: &Path| {
+        std::fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))
+    };
+    let mut pem = read(certificate)?;
+    pem.push('\n');
+    pem.push_str(&read(key)?);
+    let identity = Identity::from_pem_chain(&pem).map_err(|_| {
+        format!(
+            "{} and {} do not hold a certificate chain and the key of its first certificate",
+            certificate.display(),
+            key.display()
+        )
+    })?;
+    let built = ServerBuilder::new()
+        .identity(&identity)
+        .client_auth(ClientAuth::None)
+        .build()
+        .map_err(|error| error.to_string())?;
+    Ok(Arc::new(built.config))
+}
 
 /// A bound listener.
 #[derive(Debug)]
@@ -25,7 +63,7 @@ pub enum Listening {
     Tcp(TcpListener),
     /// A named pipe or a Unix socket.
     Pipe(PipeListener),
-    /// A WebSocket.
+    /// A WebSocket, with TLS for `wss`.
     WebSocket(WebSocketListener),
     /// A serial port: there is one peer at the other end of the line, so nothing is bound; the port
     /// is opened for each link.
@@ -116,7 +154,12 @@ impl Listening {
                     .into_iter()
                     .next()
                     .ok_or_else(|| fail("the address does not resolve".to_owned()))?;
-                let listener = WebSocketListener::builder(address, ServerTls::Plain)
+                let tls = if url.scheme() == "wss" {
+                    ServerTls::Config(server_config(config).map_err(fail)?)
+                } else {
+                    ServerTls::Plain
+                };
+                let listener = WebSocketListener::builder(address, tls)
                     .limits(web_limits(settings))
                     .frames(Frames::Binary)
                     // The proof seals everything after it, so the carrier's own protection is not what the link relies on.
@@ -125,7 +168,7 @@ impl Listening {
                     .build()
                     .map_err(|e| fail(e.to_string()))?;
                 let bound = listener.local_addr().map_err(|e| fail(e.to_string()))?;
-                let url = Endpoint::parse(&format!("ws://{bound}")).map_err(fail)?;
+                let url = Endpoint::parse(&format!("{}://{bound}", url.scheme())).map_err(fail)?;
                 Ok((Self::WebSocket(listener), url))
             }
             Endpoint::Serial { path, options } => {

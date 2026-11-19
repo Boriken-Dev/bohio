@@ -9,7 +9,7 @@ use std::time::Duration;
 use bohio_client::Error;
 use bohio_client::connect::Connection;
 use bohio_client::control::Control;
-use bohio_client::dial::split_command;
+use bohio_client::dial::{ServerTrust, split_command};
 use bohio_client::exec::{Event, Exec};
 use bohio_client::fs::Reader;
 use bohio_client::shell::{Event as ShellEvent, Shell};
@@ -53,16 +53,29 @@ fn connect(args: &RemoteArgs, environment: &Environment) -> Result<Connection, S
         .build()
         .map_err(|error| error.to_string())?;
     let settings = config.link.settings();
-    Connection::connect(&endpoint, settings.proof_timeout, &proof, &settings).map_err(|error| {
-        match error {
+    let mut trust = ServerTrust::default();
+    trust.ca_files.clone_from(&args.ca);
+    for hash in &args.cert_hash {
+        trust.pin(hash)?;
+    }
+    if matches!(&endpoint, Endpoint::WebSocket(url) if url.scheme() == "wss") {
+        trust
+            .client_config()
+            .map_err(|reason| format!("the TLS trust cannot be set up: {reason}"))?;
+    }
+    Connection::connect_with(&endpoint, settings.proof_timeout, &proof, &settings, &trust).map_err(
+        |error| match error {
+            Error::Transport(coqui_transport::Failure::Certificate) => format!(
+                "the host's TLS certificate was refused: trust its issuer with --ca FILE, or the                  certificate itself with --cert-hash HASH (endpoint {endpoint})"
+            ),
             Error::Transport(_) | Error::Closed => format!(
                 "the link to {endpoint} ended before it was proven: the host may not be listening, \
                  may not trust this key yet (it waits for `bohio peer approve`), or this side does \
                  not trust the host (`bohio join`, or --server ID)"
             ),
             other => other.to_string(),
-        }
-    })
+        },
+    )
 }
 
 /// `bohio remote`.

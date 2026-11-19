@@ -648,10 +648,54 @@ fn a_listen_key_for_another_scheme_is_refused_naming_it() {
 }
 
 #[test]
-fn wss_and_an_unknown_scheme_are_refused_with_the_reason() {
+fn tls_keys_come_in_a_pair_and_belong_to_wss() {
+    let world = World::new("");
+    for (entry, key) in [
+        (
+            "endpoint = \"wss://127.0.0.1:1\"
+tls_cert = \"c.pem\"
+",
+            "listen.tls_key",
+        ),
+        (
+            "endpoint = \"wss://127.0.0.1:1\"
+tls_key = \"k.pem\"
+",
+            "listen.tls_cert",
+        ),
+        (
+            "endpoint = \"wss://127.0.0.1:1\"
+",
+            "listen.tls_cert",
+        ),
+        (
+            "endpoint = \"ws://127.0.0.1:1\"
+tls_cert = \"c.pem\"
+tls_key = \"k.pem\"
+",
+            "listen.tls_cert",
+        ),
+    ] {
+        let config = world.path("tls.cfg");
+        std::fs::write(
+            &config,
+            format!(
+                "[[listen]]
+{entry}"
+            ),
+        )
+        .unwrap();
+        let checked = run(&["config", "check", "--config", &config.to_string_lossy()]);
+        assert_eq!(checked.code, Some(1), "{entry}: {}", checked.stdout);
+        assert!(checked.stderr.contains(key), "{entry}: {}", checked.stderr);
+    }
+}
+
+#[test]
+fn wss_without_a_certificate_and_an_unknown_scheme_are_refused_with_the_reason() {
     let world = World::new("");
     for (endpoint, reason) in [
-        ("wss://127.0.0.1:1", "TLS"),
+        ("wss://127.0.0.1:1", "needs tls_cert and tls_key"),
         ("gopher://x", "is not served"),
     ] {
         let attempt = run(&["serve", "--config", &world.host, "--listen", endpoint]);
@@ -662,4 +706,157 @@ fn wss_and_an_unknown_scheme_are_refused_with_the_reason() {
             attempt.stderr
         );
     }
+}
+
+/// A certificate authority and a certificate for `127.0.0.1` it issued, generated for one test and
+/// written under the world's directory; nothing here is kept.
+struct Certificates {
+    /// Holds the files, and removes them when the test ends.
+    _dir: TempDir,
+    /// The authority's certificate: what a client trusts with `--ca`.
+    ca: String,
+    /// The host's certificate and key, for `tls_cert` and `tls_key`.
+    cert: std::path::PathBuf,
+    key: std::path::PathBuf,
+    /// The host certificate's SHA-256, as `--cert-hash` takes it.
+    hash: String,
+    /// One line of the key's base64 body, which no log may hold.
+    key_body: String,
+}
+
+impl Certificates {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().expect("a directory");
+        let path = |name: &str| dir.path().join(name);
+        use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair};
+        use sha2::{Digest, Sha256};
+        let authority = || {
+            let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
+            params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+            params
+                .distinguished_name
+                .push(DnType::CommonName, "bohio test authority");
+            params
+        };
+        let authority_key = KeyPair::generate().unwrap();
+        let trusted = authority().self_signed(&authority_key).unwrap();
+        let signer = Issuer::new(authority(), authority_key);
+        let leaf_key = KeyPair::generate().unwrap();
+        let leaf = CertificateParams::new(vec!["127.0.0.1".to_owned()])
+            .unwrap()
+            .signed_by(&leaf_key, &signer)
+            .unwrap();
+        let ca_path = path("ca.pem");
+        std::fs::write(&ca_path, trusted.pem()).unwrap();
+        let cert = path("cert.pem");
+        std::fs::write(&cert, leaf.pem()).unwrap();
+        let key = path("key.pem");
+        let key_pem = leaf_key.serialize_pem();
+        std::fs::write(&key, &key_pem).unwrap();
+        let digest = Sha256::digest(leaf.der());
+        Self {
+            _dir: dir,
+            ca: ca_path.to_string_lossy().into_owned(),
+            cert,
+            key,
+            hash: format!(
+                "sha256:{}",
+                digest
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+            ),
+            key_body: key_pem
+                .lines()
+                .find(|line| !line.starts_with("-----"))
+                .unwrap()
+                .to_owned(),
+        }
+    }
+
+    /// A `[[listen]]` entry for `endpoint` with this host certificate.
+    fn listen(&self, endpoint: &str) -> String {
+        format!(
+            "[[listen]]\nendpoint = \"{endpoint}\"\ntls_cert = {}\ntls_key = {}\n",
+            toml_path(&self.cert),
+            toml_path(&self.key)
+        )
+    }
+}
+
+impl World {
+    /// Starts `bohio serve` on the configuration's own `[[listen]]` entries, logging at `log`, and
+    /// waits for it to say where it listens.
+    fn serve_listed(&self, log: &str) -> (Proc, String) {
+        let mut host = Proc::start(
+            env!("CARGO_BIN_EXE_bohio"),
+            &["serve", "--config", &self.host],
+            false,
+            log,
+        );
+        let bound = host.expect_line("listening ");
+        (host, bound)
+    }
+}
+
+#[test]
+fn wss_info_and_exec_over_a_generated_certificate() {
+    let certificates = Certificates::new();
+    let world = World::new(&certificates.listen("wss://127.0.0.1:0"));
+    let (host, bound) = world.serve_listed("trace");
+    assert!(bound.starts_with("wss://127.0.0.1:"), "{bound}");
+    world.exercise(&["--ca", &certificates.ca, &bound], 1);
+    // The private key is never logged, at the most verbose level.
+    let mut host = host;
+    let _ = host.child.kill();
+    let done = host.finish();
+    assert!(
+        !done.stderr.contains(&certificates.key_body)
+            && !done.stdout.contains(&certificates.key_body),
+        "the host logged its private key"
+    );
+}
+
+#[test]
+fn wss_with_a_certificate_the_client_does_not_trust_fails_as_a_certificate_failure() {
+    let certificates = Certificates::new();
+    let other = Certificates::new();
+    let world = World::new(&certificates.listen("wss://127.0.0.1:0"));
+    let (_host, bound) = world.serve_listed("warn");
+    // The system's roots do not hold the test authority, and neither does another authority's file.
+    for target in [
+        vec![bound.as_str()],
+        vec!["--ca", other.ca.as_str(), bound.as_str()],
+    ] {
+        let failed = world.remote(&target, &["info"]);
+        assert_eq!(failed.code, Some(1), "{target:?}: {}", failed.stdout);
+        assert!(
+            failed.stderr.contains("TLS certificate was refused"),
+            "{target:?}: {}",
+            failed.stderr
+        );
+    }
+}
+
+#[test]
+fn wss_is_reached_by_the_certificates_hash_and_not_by_another() {
+    let certificates = Certificates::new();
+    let other = Certificates::new();
+    let world = World::new(&certificates.listen("wss://127.0.0.1:0"));
+    let (_host, bound) = world.serve_listed("warn");
+    // The link's proof still refuses a key the host has not approved: reaching the host is not trusting it.
+    let reached = world.remote(&["--cert-hash", &certificates.hash, &bound], &["info"]);
+    assert_eq!(reached.code, Some(1), "{}", reached.stderr);
+    assert!(
+        !reached.stderr.contains("TLS certificate"),
+        "the pinned certificate was refused: {}",
+        reached.stderr
+    );
+    let wrong = world.remote(&["--cert-hash", &other.hash, &bound], &["info"]);
+    assert_eq!(wrong.code, Some(1), "{}", wrong.stdout);
+    assert!(
+        wrong.stderr.contains("TLS certificate was refused"),
+        "{}",
+        wrong.stderr
+    );
 }
