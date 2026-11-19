@@ -77,7 +77,7 @@ pub struct Span(pub Duration);                                    // a number of
 #[non_exhaustive] pub enum Permission { Info, FsRead, FsWrite, Exec, Shell, Admin }   // Ord; names "info","fs.read","fs.write","exec","shell","admin"
 impl Permission { pub const fn name(self) -> &'static str; }
 pub struct Grant;                                                // Default = nothing
-impl Grant { pub fn none() -> Self; pub fn allowing(permissions) -> Self; pub fn with_fs_roots(self, roots) -> Self; pub fn with_programs(self, programs) -> Self;
+impl Grant { pub fn none() -> Self; pub fn allowing(permissions) -> Self; pub fn with_fs_roots(self, roots) -> Self; pub fn with_programs(self, programs) -> Self; pub fn restricts_programs(&self) -> bool;
              pub fn allows(&self, Permission) -> bool; pub fn permissions(&self) -> impl Iterator<Item = Permission>; pub fn fs_roots(&self) -> &[PathBuf];
              pub fn permits_program(&self, program: &str) -> bool; pub fn permits_shell_script(&self) -> bool; }
 pub struct Policies;                                             // Default = no peer
@@ -89,12 +89,16 @@ impl Policies { pub fn from_toml(text, path: &str) -> Result<Self, PolicyError>;
 `peers.cfg`: `[peer.<id>]` with `allow = [..]`, `fs_roots = [..]`, and `[peer.<id>.exec]` with `programs = [..]`. An unknown key or
 permission is `PolicyError::Parse`. A peer with no entry, or no `allow`, holds nothing. `programs` empty means any program and
 explicit shell scripts; non-empty means only those programs, each named exactly as the peer asks for it, and no shell script
-(a shell runs anything). `fs_roots` empty means no file operation is allowed.
+(a shell runs anything). Under a non-empty list each name is resolved on the host's own `PATH` (a name with a directory
+must be absolute; a relative one is `not_found`) and that absolute path is started, never what the request's `PATH` or working
+directory would find, and a request that sets or removes `PATH` (any case on Windows) or clears the environment is `denied`. The list
+limits which program starts, not what it does: `git -c alias.x=!cmd`, `make`, `find -exec` and interpreters run anything they are
+given, so list only programs that are safe with every argument. `fs_roots` empty means no file operation is allowed.
 
 ## Execution (`bohio::exec`)
 
 ```rust
-pub struct Context<'a> { pub grant: &'a Grant, pub config: &'a ExecutionConfig, pub slots: &'a Slots }   // Copy
+pub struct Context<'a> { pub grant: &'a Grant, pub config: &'a ExecutionConfig, pub slots: &'a Slots, pub path: &'a OsStr }   // Copy; `path` is the host's own PATH
 pub fn serve(channel: Arc<dyn Channel>, metadata: &[u8], context: &Context<'_>) -> Result<bohio_proto::exec::Exit, ErrorBody>;
 ```
 
@@ -239,8 +243,9 @@ status: 0 success, 1 the operation failed (one line on standard error), 2 the in
 - A `kill` frame queued behind standard input the process is not reading is seen only when it reads, when the deadline passes or
   when the stream closes.
 - Standard input sent to a request that asked for `Stdin::Closed` is ignored.
-- The program name is looked up as the host's `PATH` finds it (on Windows also the application's directory and the current one);
-  `programs` compares the name exactly as requested, so `git` and `/usr/bin/git` are different entries.
+- Without a program list the name is looked up as the host's `PATH` finds it, with the request's own `PATH` if it sets one (on Windows
+  also the application's directory and the current one): such a peer may run anything anyway. `programs` compares the name exactly as
+  requested, so `git` and `/usr/bin/git` are different entries.
 - Windows: a process starts a moment before it joins its job object; a process it starts in that instant is outside the tree. A
   shell's terminal (ConPTY) starts the child itself, so the same moment applies to a shell session.
 - Windows ConPTY asks the terminal for its cursor position before the program's first output and holds that output until it is

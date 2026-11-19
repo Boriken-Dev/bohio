@@ -15,6 +15,7 @@ machines and containers. It is an application: the `coqui-*` names are reserved 
 - **Execution**: a program and its arguments run directly, never through a shell unless the caller
   names one; output streams as it is written; a deadline, a kill request or a closed stream ends
   the whole process tree.
+  A program list limits which program starts, not what it does: a listed `git` can still run any alias it is told.
 - **Per-peer grants**: who a peer is comes from the trust store; what it may do (`info`,
   `fs.read`, `fs.write`, `exec`, `shell`, `admin`, filesystem roots, a program list) comes from
   `peers.cfg`. A peer with no grant gets nothing.

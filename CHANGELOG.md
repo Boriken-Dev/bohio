@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A program list (`exec.programs`) is now checked against what starts: each listed name is resolved on the host's own
+  `PATH` to an absolute path and that path is spawned, and a request that sets or removes `PATH`, or clears the
+  environment, is refused. A peer allowed `git` can no longer run its own `git` by pointing `PATH` at a directory it
+  controls. `exec::Context` and `shell::Context` carry the host's `PATH` (`exec::Context::path`).
+
 ### Added
 
 - Interactive shells (`bohio::shell`, `bohio-shell/1`): a shell kind from `info` or an explicit program on a
