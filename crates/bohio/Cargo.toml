@@ -27,11 +27,14 @@ doc = false
 [features]
 default = ["cli"]
 # The `bohio` command: arguments, output and the diagnostics subscriber. An embedding host takes the library alone.
-cli = ["dep:clap", "dep:tracing-subscriber", "dep:serde_json"]
+cli = ["dep:clap", "dep:tracing-subscriber", "dep:serde_json", "dep:crossterm"]
 
 [dependencies]
 bohio-proto.workspace = true
+bohio-client.workspace = true
 coqui-transport.workspace = true
+coqui-link.workspace = true
+coqui-peer.workspace = true
 serde.workspace = true
 toml.workspace = true
 portable-pty.workspace = true
@@ -43,6 +46,7 @@ tracing.workspace = true
 clap = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+crossterm = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 rustix.workspace = true
@@ -51,7 +55,6 @@ rustix.workspace = true
 win32job.workspace = true
 
 [dev-dependencies]
-bohio-client.workspace = true
 sysinfo.workspace = true
 tempfile.workspace = true
 sha2.workspace = true

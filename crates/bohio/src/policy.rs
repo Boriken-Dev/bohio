@@ -15,10 +15,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// One thing a peer may be allowed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
 #[non_exhaustive]
 pub enum Permission {
     /// Ask for the host's capabilities.
@@ -42,6 +42,23 @@ pub enum Permission {
 }
 
 impl Permission {
+    /// Every permission, in order.
+    pub const ALL: [Self; 6] = [
+        Self::Info,
+        Self::FsRead,
+        Self::FsWrite,
+        Self::Exec,
+        Self::Shell,
+        Self::Admin,
+    ];
+
+    /// The permission named `name` as `peers.cfg` writes it.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|permission| permission.name() == name)
+    }
+
     /// The name `peers.cfg` uses.
     pub const fn name(self) -> &'static str {
         match self {
@@ -56,19 +73,21 @@ impl Permission {
 }
 
 /// What one peer may do.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Grant {
     /// The permissions held. Empty: nothing.
     allow: BTreeSet<Permission>,
     /// The directories file operations are confined to. Empty: no file operation is allowed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     fs_roots: Vec<PathBuf>,
     /// Limits on `exec`.
+    #[serde(skip_serializing_if = "ExecGrant::is_unlimited")]
     exec: ExecGrant,
 }
 
 /// `[peer.<id>.exec]`.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ExecGrant {
     /// The programs the peer may run, each named exactly as the peer asks for it. Empty: any
@@ -77,6 +96,12 @@ pub struct ExecGrant {
     /// may not set or remove `PATH` or clear the environment. The list limits which program
     /// starts, not what it does.
     programs: Vec<String>,
+}
+
+impl ExecGrant {
+    fn is_unlimited(&self) -> bool {
+        self.programs.is_empty()
+    }
 }
 
 impl Grant {
@@ -168,7 +193,7 @@ pub enum PolicyError {
 }
 
 /// Every peer's grant, by the peer's id.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Policies {
     peer: BTreeMap<String, Grant>,
@@ -215,6 +240,26 @@ impl Policies {
     /// What `peer` may do: its grant, or nothing.
     pub fn grant_for(&self, peer: &str) -> Grant {
         self.peer.get(peer).cloned().unwrap_or_default()
+    }
+
+    /// Gives `peer` exactly `grant`, replacing any entry it had.
+    pub fn set(&mut self, peer: &str, grant: Grant) {
+        self.peer.insert(peer.to_owned(), grant);
+    }
+
+    /// Removes `peer`'s entry; `true` when it had one.
+    pub fn remove(&mut self, peer: &str) -> bool {
+        self.peer.remove(peer).is_some()
+    }
+
+    /// Whether `peer` has an entry, even one that grants nothing.
+    pub fn has(&self, peer: &str) -> bool {
+        self.peer.contains_key(peer)
+    }
+
+    /// The file's text: what [`Policies::from_toml`] reads back.
+    pub fn to_toml(&self) -> String {
+        toml::to_string(self).unwrap_or_default()
     }
 
     /// The ids with an entry, in order.

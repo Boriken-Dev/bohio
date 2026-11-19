@@ -170,14 +170,74 @@ pub struct LinkConfig {
     pub recheck: Span,
     /// The most streams one peer may have open at once. At least 1. Default `64`.
     pub max_streams: usize,
+    /// The most links open at once across peers, counting those still proving themselves; a
+    /// connection past it is closed unread. At least 1. Default `128`.
+    pub max_connections: usize,
+    /// How long a peer has to prove itself. Same units as `recheck`; not zero. Default `10s`.
+    pub proof_timeout: Span,
+    /// Bytes a peer may send on one stream ahead of what the host has read from it (the stream's
+    /// credit window): the most a sender gets ahead of a slow reader. At least 1. Default `1048576`.
+    pub window: u32,
+    /// The most bytes of one message in one frame (a longer message is sent in parts), so a long
+    /// message cannot hold other streams up. At least 1. Default `65536`.
+    pub max_frame: usize,
+    /// The largest message on a stream: more than the largest `chunk_size` (a frame carries a tag
+    /// byte besides the chunk). Default `1048576`.
+    pub max_message: usize,
+    /// Bytes a stream holds in each direction between the link and its engine; a message larger
+    /// than this passes alone. At least 1. Default `262144`.
+    pub queue_bytes: usize,
+    /// Messages the socket's reader holds ahead of the link once a peer is proven (one before).
+    /// At least 1. Default `8`.
+    pub read_ahead: usize,
+    /// Bytes the socket's writer may have queued. At least 1. Default `1048576`.
+    pub queued_bytes: usize,
+    /// How long a frame the socket takes nothing of ends the link, and how long a finished
+    /// stream's queue is given to drain. Not zero. Default `10s`.
+    pub send_limit: Span,
+    /// How long a send waits for credit before it reports no progress and is tried again. Not
+    /// zero. Default `250ms`.
+    pub send_wait: Span,
+    /// How often a stream's threads look at whether it was closed. Not zero. Default `50ms`.
+    pub poll_interval: Span,
 }
 
 impl Default for LinkConfig {
     fn default() -> Self {
+        let link = bohio_client::link::Settings::default();
         Self {
             recheck: Span(Duration::from_secs(5)),
             max_streams: 64,
+            max_connections: 128,
+            proof_timeout: Span(link.proof_timeout),
+            window: link.window,
+            max_frame: link.max_frame,
+            max_message: link.max_message,
+            queue_bytes: link.queue_bytes,
+            read_ahead: link.read_ahead,
+            queued_bytes: link.queued_bytes,
+            send_limit: Span(link.send_limit),
+            send_wait: Span(link.send_wait),
+            poll_interval: Span(link.poll_interval),
         }
+    }
+}
+
+impl LinkConfig {
+    /// The link bounds the host and a client share.
+    pub fn settings(&self) -> bohio_client::link::Settings {
+        let mut settings = bohio_client::link::Settings::default();
+        settings.proof_timeout = self.proof_timeout.0;
+        settings.window = self.window;
+        settings.max_frame = self.max_frame;
+        settings.max_message = self.max_message;
+        settings.queue_bytes = self.queue_bytes;
+        settings.read_ahead = self.read_ahead;
+        settings.queued_bytes = self.queued_bytes;
+        settings.send_limit = self.send_limit.0;
+        settings.send_wait = self.send_wait.0;
+        settings.poll_interval = self.poll_interval.0;
+        settings
     }
 }
 
@@ -424,6 +484,43 @@ impl Config {
         }
         if self.link.recheck.0.is_zero() {
             return Err(invalid("link.recheck", "must not be zero"));
+        }
+        let link = &self.link;
+        for (key, zero) in [
+            ("link.max_connections", link.max_connections == 0),
+            ("link.window", link.window == 0),
+            ("link.max_message", link.max_message == 0),
+            ("link.queue_bytes", link.queue_bytes == 0),
+            ("link.read_ahead", link.read_ahead == 0),
+            ("link.queued_bytes", link.queued_bytes == 0),
+        ] {
+            if zero {
+                return Err(invalid(key, "must be at least 1"));
+            }
+        }
+        for (key, zero) in [
+            ("link.proof_timeout", link.proof_timeout.0.is_zero()),
+            ("link.send_limit", link.send_limit.0.is_zero()),
+            ("link.send_wait", link.send_wait.0.is_zero()),
+            ("link.poll_interval", link.poll_interval.0.is_zero()),
+        ] {
+            if zero {
+                return Err(invalid(key, "must not be zero"));
+            }
+        }
+        let largest_chunk = self
+            .execution
+            .chunk_size
+            .max(self.filesystem.chunk_size)
+            .max(self.shell.chunk_size);
+        if link.max_message <= largest_chunk {
+            return Err(invalid(
+                "link.max_message",
+                "must be more than the largest chunk_size",
+            ));
+        }
+        if link.max_frame == 0 {
+            return Err(invalid("link.max_frame", "must be at least 1"));
         }
         if self.execution.max_processes == 0 {
             return Err(invalid("execution.max_processes", "must be at least 1"));
