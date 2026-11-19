@@ -257,21 +257,23 @@ impl Open for Link {
     }
 }
 
-/// The helper program built from `examples/exec_helper.rs`.
+/// The helper program built from `examples/exec_helper.rs`: the `examples` directory of the nearest
+/// ancestor of the test executable that has it (cargo keeps intermediate files under `deps` or under
+/// `build/<package>/<hash>`, and the built example beside them).
 pub fn helper() -> String {
     let exe = std::env::current_exe().expect("the test's own path");
     let name = format!("exec_helper{}", std::env::consts::EXE_SUFFIX);
-    let path: PathBuf = exe
-        .parent()
-        .and_then(std::path::Path::parent)
-        .expect("target directory")
-        .join("examples")
-        .join(name);
-    assert!(
-        path.is_file(),
-        "the helper is not built: run `cargo build -p bohio --example exec_helper` before a narrow cargo test ({})",
-        path.display()
-    );
+    let found = exe
+        .ancestors()
+        .skip(1)
+        .map(|directory| directory.join("examples").join(&name))
+        .find(|candidate| candidate.is_file());
+    let path: PathBuf = found.unwrap_or_else(|| {
+        panic!(
+            "the helper is not built: run `cargo build -p bohio --example exec_helper` before a narrow cargo test (looked above {})",
+            exe.display()
+        )
+    });
     path.to_string_lossy().into_owned()
 }
 
