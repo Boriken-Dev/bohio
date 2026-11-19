@@ -63,5 +63,9 @@ sha2.workspace = true
 name = "cli"
 required-features = ["cli"]
 
+[[test]]
+name = "link"
+required-features = ["cli"]
+
 [lints]
 workspace = true

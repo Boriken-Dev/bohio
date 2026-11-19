@@ -4,6 +4,8 @@
 //! subscriber; the library below it does none of those.
 
 mod commands;
+mod host;
+mod remote;
 
 use std::ffi::OsString;
 use std::io::IsTerminal;
@@ -42,6 +44,20 @@ pub enum Command {
     Config(ConfigArgs),
     /// Print this host's capabilities.
     Info(InfoArgs),
+    /// Serve links on the configured endpoints until stopped.
+    Serve(ServeArgs),
+    /// Print this host's id, data directory and peers.
+    Status(StatusArgs),
+    /// Print this host's id.
+    Id(StatusArgs),
+    /// List, approve and revoke peers.
+    Peer(PeerArgs),
+    /// Show a PIN and accept the key of the one peer that joins with it.
+    Pair(PairArgs),
+    /// Join a host that shows a PIN: each side then keeps the other's key.
+    Join(JoinArgs),
+    /// Use a host: info, run a program, read a file or open a shell.
+    Remote(RemoteArgs),
 }
 
 /// `bohio config`.
@@ -90,6 +106,187 @@ pub struct InfoArgs {
     pub format: Format,
 }
 
+/// The configuration file every command takes.
+#[derive(Debug, Args)]
+pub struct ConfigOption {
+    /// The configuration file; otherwise `BOHIO_CONFIG`, then the user's, then the system's.
+    #[arg(long, value_name = "FILE")]
+    pub config: Option<PathBuf>,
+}
+
+/// `bohio serve`.
+#[derive(Debug, Args)]
+pub struct ServeArgs {
+    /// The configuration.
+    #[command(flatten)]
+    pub config: ConfigOption,
+    /// An endpoint to listen on besides the configured ones, `tcp://host:port`; port 0 picks a free
+    /// one. Standard output says `listening <endpoint>` for each once it is bound.
+    #[arg(long, value_name = "ENDPOINT")]
+    pub listen: Vec<String>,
+}
+
+/// `bohio status`, `bohio id` and `bohio peer list`.
+#[derive(Debug, Args)]
+pub struct StatusArgs {
+    /// The configuration.
+    #[command(flatten)]
+    pub config: ConfigOption,
+}
+
+/// `bohio peer`.
+#[derive(Debug, Args)]
+pub struct PeerArgs {
+    /// What to do.
+    #[command(subcommand)]
+    pub action: PeerAction,
+}
+
+/// The `bohio peer` actions.
+#[derive(Debug, Subcommand)]
+pub enum PeerAction {
+    /// Accepted peers with what each may do, the proven keys waiting for approval, and stray grants.
+    List(StatusArgs),
+    /// Accept a waiting or paired peer; with `--allow`, `--fs-root` or `--program`, set its grant.
+    Approve(ApproveArgs),
+    /// Take away a peer's grant and key; its running streams end within `[link] recheck`.
+    Revoke(RevokeArgs),
+}
+
+/// `bohio peer approve`.
+#[derive(Debug, Args)]
+pub struct ApproveArgs {
+    /// The configuration.
+    #[command(flatten)]
+    pub config: ConfigOption,
+    /// The peer's id, as `bohio peer list` prints it.
+    pub id: String,
+    /// What the peer may do: info, fs.read, fs.write, exec, shell, admin (repeat or separate with
+    /// commas). Setting any of `--allow`, `--fs-root` and `--program` replaces the peer's whole grant;
+    /// without them an existing grant stays and a new peer holds nothing.
+    #[arg(long, value_delimiter = ',', value_name = "PERMISSION")]
+    pub allow: Vec<String>,
+    /// A directory file operations are confined to (repeat).
+    #[arg(long, value_name = "DIR")]
+    pub fs_root: Vec<PathBuf>,
+    /// A program the peer may run, as the host finds it on its own PATH (repeat); with none, any.
+    #[arg(long, value_name = "NAME")]
+    pub program: Vec<String>,
+}
+
+/// `bohio peer revoke`.
+#[derive(Debug, Args)]
+pub struct RevokeArgs {
+    /// The configuration.
+    #[command(flatten)]
+    pub config: ConfigOption,
+    /// The peer's id.
+    pub id: String,
+}
+
+/// `bohio pair`.
+#[derive(Debug, Args)]
+pub struct PairArgs {
+    /// The configuration.
+    #[command(flatten)]
+    pub config: ConfigOption,
+    /// Where to wait for the joiner, `tcp://host:port`; default `tcp://127.0.0.1:0`. Anyone who can
+    /// reach it may try the PIN, once.
+    #[arg(long, value_name = "ENDPOINT")]
+    pub listen: Option<String>,
+    /// How long to wait for the joiner: a number of seconds or a unit (`30s`, `5m`). Default `5m`.
+    #[arg(long, value_name = "TIME")]
+    pub timeout: Option<String>,
+}
+
+/// `bohio join`.
+#[derive(Debug, Args)]
+pub struct JoinArgs {
+    /// The configuration.
+    #[command(flatten)]
+    pub config: ConfigOption,
+    /// The host that shows the PIN, `tcp://host:port`.
+    pub endpoint: String,
+    /// The PIN the host shows; read from standard input when absent, so it stays out of process lists.
+    #[arg(long, value_name = "PIN")]
+    pub pin: Option<String>,
+}
+
+/// `bohio remote`.
+#[derive(Debug, Args)]
+pub struct RemoteArgs {
+    /// The configuration.
+    #[command(flatten)]
+    pub config: ConfigOption,
+    /// The host, `tcp://host:port`.
+    pub endpoint: String,
+    /// The host's id to trust instead of the keys `bohio join` stored.
+    #[arg(long, value_name = "ID")]
+    pub server: Option<String>,
+    /// What to ask of it.
+    #[command(subcommand)]
+    pub action: RemoteAction,
+}
+
+/// The `bohio remote` actions.
+#[derive(Debug, Subcommand)]
+pub enum RemoteAction {
+    /// Print the host's capabilities.
+    Info(RemoteInfoArgs),
+    /// Run a program on the host and exit with its status.
+    Exec(RemoteExecArgs),
+    /// Write a file of the host to standard output.
+    Read(RemoteReadArgs),
+    /// Open an interactive shell on the host.
+    Shell(RemoteShellArgs),
+}
+
+/// `bohio remote ... info`.
+#[derive(Debug, Args)]
+pub struct RemoteInfoArgs {
+    /// The output format.
+    #[arg(long, value_enum, default_value = "text")]
+    pub format: Format,
+}
+
+/// `bohio remote ... exec`.
+#[derive(Debug, Args)]
+pub struct RemoteExecArgs {
+    /// The program's working directory on the host.
+    #[arg(long, value_name = "DIR")]
+    pub cwd: Option<String>,
+    /// End the program's tree after this many milliseconds.
+    #[arg(long, value_name = "MS")]
+    pub timeout_ms: Option<u64>,
+    /// A variable to set for the program, `NAME=VALUE` (repeat).
+    #[arg(long, value_name = "NAME=VALUE")]
+    pub env: Vec<String>,
+    /// Send this process's standard input to the program.
+    #[arg(long)]
+    pub stdin: bool,
+    /// The program and its arguments, after `--`; run directly, never through a shell.
+    #[arg(last = true, required = true, value_name = "ARGV")]
+    pub argv: Vec<String>,
+}
+
+/// `bohio remote ... read`.
+#[derive(Debug, Args)]
+pub struct RemoteReadArgs {
+    /// The file, in the host's own path text.
+    pub path: String,
+}
+
+/// `bohio remote ... shell`.
+#[derive(Debug, Args)]
+pub struct RemoteShellArgs {
+    /// One of the host's shells: sh, bash, zsh, cmd, powershell or pwsh. The host's `sh` or `cmd` by default.
+    #[arg(long, value_name = "SHELL")]
+    pub kind: Option<String>,
+    /// The shell's working directory on the host.
+    #[arg(long, value_name = "DIR")]
+    pub cwd: Option<String>,
+}
+
 /// Parses the process arguments, runs the command and returns its exit status.
 pub fn main() -> ExitCode {
     run(std::env::args_os(), &capture_environment())
@@ -106,7 +303,7 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>, environment: &Environm
     };
     install_subscriber();
     match commands::run(&cli.command, environment) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(error) => {
             eprintln!("bohio: {error}");
             ExitCode::from(1)
