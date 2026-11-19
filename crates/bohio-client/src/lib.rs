@@ -1,8 +1,10 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+pub mod control;
 mod error;
 pub mod exec;
+pub mod fs;
 
 pub use error::Error;
 
