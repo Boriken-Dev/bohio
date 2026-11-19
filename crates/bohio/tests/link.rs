@@ -116,9 +116,14 @@ impl Proc {
                 }
             }
             if let Ok(Some(status)) = self.child.try_wait() {
+                // Its last output may still be in a reader thread: look once more before giving up.
+                thread::sleep(Duration::from_millis(300));
+                let out = text(&self.stdout);
+                if let Some(rest) = out.lines().find_map(|line| line.strip_prefix(prefix)) {
+                    return rest.trim().to_owned();
+                }
                 panic!(
-                    "the child ended ({status}) before printing `{prefix}`\nstdout: {}\nstderr: {}",
-                    text(&self.stdout),
+                    "the child ended ({status}) before printing `{prefix}`\nstdout: {out}\nstderr: {}",
                     text(&self.stderr)
                 );
             }
@@ -864,7 +869,7 @@ fn a_shell_session_runs_a_command_through_the_command_line() {
     let (kind, script) = ("sh", "echo $((20 + 22))\rexit\r");
     #[cfg(windows)]
     let (kind, script) = ("cmd", "set /a 20 + 22\rexit\r");
-    let mut process = Proc::start(
+    let process = Proc::start(
         &[
             "remote",
             &host.endpoint,
@@ -877,10 +882,16 @@ fn a_shell_session_runs_a_command_through_the_command_line() {
         Some(script),
         "warn",
     );
-    let found = process.expect_line("42");
-    let _ = found;
     let done = process.finish();
-    assert!(done.stdout.contains("42"), "{}", done.stdout);
+    assert_eq!(done.code, Some(0), "{}", done.stderr);
+    // The terminal echoes what was typed, which holds `20 + 22`; only a shell that ran it prints 42 alone.
+    assert!(
+        done.stdout
+            .lines()
+            .any(|line| line.split('\r').any(|part| part.trim() == "42")),
+        "{}",
+        done.stdout
+    );
 }
 
 /// Every run of the pairing and the session below logs at `trace`; none of it may hold a secret.
