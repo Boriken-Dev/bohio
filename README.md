@@ -27,8 +27,8 @@ machines and containers. It is an application: the `coqui-*` names are reserved 
   [`coqui-link`](https://github.com/Boriken-Dev/coqui-link); a key the host has not accepted waits for
   `bohio peer approve`. Memory per link is bounded by settings, never by the size of a file.
 
-The filesystem, interactive shells and the authenticated link over TCP are built; the other transports
-(pipe, websocket, serial, stdio) are not yet.
+The filesystem, interactive shells and the authenticated link are built, over TCP, a named pipe or Unix socket,
+a WebSocket, a serial line and standard input and output (see the endpoints below).
 
 ## Installation
 
@@ -72,6 +72,20 @@ then on the host `bohio peer approve <id> --allow info,exec,fs.read --fs-root /s
 `bohio remote tcp://host:7620 info`, `... exec -- git status`, `... read /srv/data/file`, `... shell`. A peer
 that proves a key the host has not accepted is refused and listed by `bohio peer list` as waiting; `bohio peer
 revoke <id>` takes everything away and ends what the peer is running within `[link] recheck`.
+
+Every transport is one endpoint scheme; the proof, the grants and the engines are the same for each:
+
+| Endpoint | Transport |
+| --- | --- |
+| `tcp://host:port` | a TCP socket |
+| `pipe://name`, `pipe:///path/to.sock` | a Windows named pipe, a Unix domain socket |
+| `ws://host:port` | a WebSocket (binary messages); `wss://` is not served yet |
+| `serial://PORT?baud=115200` | a serial line (`serial:///dev/ttyUSB0`, `serial://COM3`), COBS frames with a CRC |
+| `bohio serve --stdio` | one link on standard input and output, for `docker exec -i NAME bohio serve --stdio` |
+| `stdio://program args`, `bohio remote --command "program args"` | the client starts a program and uses its standard streams |
+
+For example `bohio remote --command "docker exec -i box bohio serve --stdio" --server <host id> info`. A peer is
+approved by its id over any transport (`bohio peer approve`); pairing by PIN (`pair`, `join`) is TCP only.
 
 ## Command line
 

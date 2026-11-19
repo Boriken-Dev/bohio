@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Every coqui transport carries the link: `pipe://` (Windows named pipes and Unix domain sockets, `coqui-transport-pipe`), `ws://`
+  (WebSocket binary messages, `coqui-transport-web`), `serial://port?baud=N` (COBS frames with a CRC-32C, `coqui-transport-serial`) and
+  standard input and output. `bohio serve --stdio` serves one link on standard input and output (for `docker exec -i`), and
+  `bohio remote --command "program args"` or `stdio://program args` starts a program and uses its standard streams as the link.
+  `[[listen]]` takes the settings of its scheme (`socket_mode`, `remote_clients`, `origins`, `baud`, `data_bits`, `parity`,
+  `stop_bits`, `flow_control`), `bohio status` reports every configured endpoint, and `bohio-client` has `dial::Endpoint`.
+  The proof and the grants are unchanged; `wss://` is refused until its TLS setup exists.
 - The authenticated link over TCP, on `coqui-link`: `bohio serve` proves each peer (Noise by default) within `[link] proof_timeout` and
   serves its streams; a key that proves itself and is not accepted is recorded as waiting under its source address and refused. Each
   stream is decided from `peers.cfg` when it opens and every `[link] recheck` while it runs, so a revoke or a narrowed grant ends
