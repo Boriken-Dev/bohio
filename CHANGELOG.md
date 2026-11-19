@@ -17,4 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `peers.cfg` per-peer grants (`info`, `fs.read`, `fs.write`, `exec`, `shell`, `admin`, filesystem
   roots, a program list), and the host's capabilities.
 - `bohio config check` and `bohio info` (text or `--format json`); exit status 0, 1 or 2.
-
+- Process execution (`bohio::exec::serve`): argv run directly or an explicit shell script, working
+  directory and environment changes, standard input, streamed output and error, a deadline, kill and
+  closed-stream handling that end the whole process tree, and a bound on concurrent processes
+  (`[execution] max_processes`).
+- `bohio-client`: the `Open` trait for a link and `exec::Exec` to run a process.

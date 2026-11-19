@@ -2,7 +2,9 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod config;
+pub mod exec;
 pub mod info;
+pub mod limit;
 pub mod policy;
 
 #[cfg(feature = "cli")]

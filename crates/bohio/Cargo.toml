@@ -47,6 +47,7 @@ rustix.workspace = true
 win32job.workspace = true
 
 [dev-dependencies]
+bohio-client.workspace = true
 sysinfo.workspace = true
 
 [[test]]

@@ -12,6 +12,9 @@ machines and containers. It is an application: the `coqui-*` names are reserved 
 
 ## Features
 
+- **Execution**: a program and its arguments run directly, never through a shell unless the caller
+  names one; output streams as it is written; a deadline, a kill request or a closed stream ends
+  the whole process tree.
 - **Per-peer grants**: who a peer is comes from the trust store; what it may do (`info`,
   `fs.read`, `fs.write`, `exec`, `shell`, `admin`, filesystem roots, a program list) comes from
   `peers.cfg`. A peer with no grant gets nothing.
@@ -20,7 +23,7 @@ machines and containers. It is an application: the `coqui-*` names are reserved 
 - **Threads, not an async runtime**: one thread per stream, bounded by configuration.
 - **No hard-coded limits**: every bound is a setting in `bohio.cfg` with a documented default.
 
-Process execution, the filesystem, interactive shells, the authenticated link and the transports (tcp, pipe,
+The filesystem, interactive shells, the authenticated link and the transports (tcp, pipe,
 websocket, serial, stdio) are not built yet.
 
 ## Installation
@@ -36,6 +39,7 @@ cargo build --release
 | Crate | Purpose |
 | --- | --- |
 | `bohio-proto` | the wire types and their CBOR codec; no I/O |
+| `bohio-client` | a Rust client over any coqui channel |
 | `bohio` | the host library and the `bohio` command |
 
 ## Quick start
@@ -61,6 +65,7 @@ configuration search order, the exit statuses and the environment variables.
 | Crate | Where to look |
 | --- | --- |
 | `bohio-proto` | [`crates/bohio-proto/AGENTS.md`](https://github.com/Boriken-Dev/bohio/blob/main/crates/bohio-proto/AGENTS.md) |
+| `bohio-client` | [`crates/bohio-client/AGENTS.md`](https://github.com/Boriken-Dev/bohio/blob/main/crates/bohio-client/AGENTS.md) |
 | `bohio` | [`crates/bohio/AGENTS.md`](https://github.com/Boriken-Dev/bohio/blob/main/crates/bohio/AGENTS.md) |
 
 ## Development

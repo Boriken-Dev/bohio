@@ -13,6 +13,9 @@ Documentation: <https://docs.rs/bohio>.
 
 ## Features
 
+- Process execution: a program and its arguments run directly, never through a shell unless the
+  caller names one; output streams as it is written; a deadline, a kill request or a closed
+  stream ends the whole process tree.
 - Per-peer grants (`peers.cfg`): an approved peer with no `allow` gets nothing.
 - Threads, not an async runtime: one thread per stream, bounded by configuration.
 - Every bound is a setting with a documented default; nothing is hard-coded.
@@ -31,23 +34,31 @@ An embedding host takes the library alone with `default-features = false`.
 
 ## Quick start
 
-Read a peer grant and a configuration:
+Grant a peer `exec` and serve one request over an in-process channel:
 
 ```rust
-use bohio::policy::{Permission, Policies};
-use bohio::Config;
+use std::sync::Arc;
+
+use bohio::config::ExecutionConfig;
+use bohio::exec::{self, Context};
+use bohio::limit::Slots;
+use bohio::{Grant, Permission};
+use bohio_proto::exec::Request;
+use coqui_transport::frame::LengthPrefix;
+use coqui_transport::{memory, StreamChannel};
 
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
-let config = Config::from_toml("[execution]
-max_processes = 4
-", "bohio.cfg")?;
-assert_eq!(config.execution.max_processes, 4);
+let (host_end, _client_end) = memory::pipe(64 * 1024);
+let channel = Arc::new(StreamChannel::start(host_end, LengthPrefix::u32_be())?);
 
-let policies = Policies::from_toml("[peer.laptop]
-allow = [\"info\", \"exec\"]
-", "peers.cfg")?;
-assert!(policies.grant_for("laptop").allows(Permission::Exec));
-assert!(!policies.grant_for("stranger").allows(Permission::Info));
+let grant = Grant::allowing([Permission::Info]);
+let config = ExecutionConfig::default();
+let slots = Slots::new(config.max_processes);
+let context = Context { grant: &grant, config: &config, slots: &slots };
+
+// This peer lacks `exec`, so the request is refused.
+let metadata = Request::argv(["echo", "hi"]).to_metadata()?;
+assert!(exec::serve(channel, &metadata, &context).is_err());
 # Ok(())
 # }
 ```
@@ -79,7 +90,9 @@ system's is used, and with none the defaults apply.
 | --- | --- |
 | `config` | `bohio.cfg`: `Config`, its sections and the `Environment` searches read |
 | `policy` | `peers.cfg`: `Policies`, `Grant` and `Permission` |
+| `exec` | serves one `bohio-exec/1` stream |
 | `info` | this host's capabilities |
+| `limit` | a counted bound on concurrent work |
 | `cli` | the command line (feature `cli`) |
 
 ## Development

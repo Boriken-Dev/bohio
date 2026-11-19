@@ -5,6 +5,7 @@ Contributor guidance for this checkout. Each crate has an `AGENTS.md` API header
 | Header | Covers |
 | --- | --- |
 | `crates/bohio-proto/AGENTS.md` | the wire types and the CBOR codec |
+| `crates/bohio-client/AGENTS.md` | the Rust client and the `Open` trait |
 | `crates/bohio/AGENTS.md` | the host library, configuration, peer grants and the `bohio` command |
 
 ## Layout
@@ -14,7 +15,8 @@ One Cargo workspace (`Cargo.toml`, one committed `Cargo.lock`: the repository bu
 | Path | What |
 | --- | --- |
 | `crates/bohio-proto/` | wire types and codec, no I/O, for any client |
-| `crates/bohio/` | host library (configuration, grants, capabilities) and the `bohio` binary behind feature `cli` |
+| `crates/bohio-client/` | Rust client over a `coqui_transport::Channel`; the link is the caller's `Open` |
+| `crates/bohio/` | host library (engines, `platform`, configuration, grants) and the `bohio` binary behind feature `cli` |
 | `examples/bohio.cfg` | every setting with its default |
 
 ## Commands
@@ -28,6 +30,9 @@ cargo test --workspace --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 ```
 
+A narrow run of an integration test that starts the helper program needs it built first, because a test run builds examples
+under another name: `cargo build -p bohio --example exec_helper`, then `cargo test -p bohio --test exec`.
+
 ## Rules
 
 - Operations are engines: each serves one operation over a `coqui_transport::Channel` with the caller's `Grant`, and is tested
@@ -40,6 +45,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 - Threads, not Tokio: one thread per stream. Nothing buffers without bound; a full stream makes the sender wait.
 - A started process runs in a tree that is always ended: after it exits, when its stream closes and at its deadline. A test
   that leaves a process behind fails.
+- Tests that start processes use the `exec_helper` example, read with timeouts, and kill what they start.
 - Nothing logs a key, a PIN or a token; argument vectors are never logged.
 - `unsafe` is forbidden in every crate.
 - Only text and images are committed.

@@ -8,11 +8,12 @@ with the source at <https://github.com/Boriken-Dev/bohio>.
 | --- | --- | --- | --- |
 | `cli` | module `cli`, the `bohio` binary; `clap`, `tracing-subscriber`, `serde_json` | the command | on |
 
-MSRV Rust 1.89. A library-only build (`default-features = false`) depends on `bohio-proto`, `serde`, `toml`, `thiserror`, `tracing`. Version `0.0.0-alpha.0`, not published.
+MSRV Rust 1.89. A library-only build (`default-features = false`) depends on `bohio-proto`, `coqui-transport` (git revision),
+`serde`, `toml`, `thiserror`, `tracing`, and `rustix` (Unix) or `win32job` (Windows). Version `0.0.0-alpha.0`, not published.
 
 Imports: the root holds `Config`, `ConfigError`, `Environment`, `Grant`, `Permission`, `Policies`, `PolicyError`. Public modules:
-`config`, `info`, `policy`, `cli` (feature `cli`). No `unsafe` code (`#![forbid(unsafe_code)]`). The library
-prints nothing, reads no environment variable and installs no logger.
+`config`, `exec`, `info`, `limit`, `policy`, `cli` (feature `cli`). No `unsafe` code (`#![forbid(unsafe_code)]`). The library
+prints nothing, reads no environment variable and installs no logger; it starts threads only inside `exec::serve`.
 
 ## Configuration (`bohio::config`)
 
@@ -78,6 +79,29 @@ permission is `PolicyError::Parse`. A peer with no entry, or no `allow`, holds n
 explicit shell scripts; non-empty means only those programs, each named exactly as the peer asks for it, and no shell script
 (a shell runs anything). `fs_roots` empty means no file operation is allowed.
 
+## Execution (`bohio::exec`)
+
+```rust
+pub struct Context<'a> { pub grant: &'a Grant, pub config: &'a ExecutionConfig, pub slots: &'a Slots }   // Copy
+pub fn serve(channel: Arc<dyn Channel>, metadata: &[u8], context: &Context<'_>) -> Result<bohio_proto::exec::Exit, ErrorBody>;
+```
+
+Serves one `bohio-exec/1` stream: `metadata` is the open's CBOR request. Order of checks: decode (`bad_request`), execution enabled
+(`unsupported`), the grant holds `exec` (`denied`), the command (empty argv or a NUL: `bad_request`; unlisted program or a shell
+script under a program list: `denied`), the working directory exists (`not_found`), a free slot (`busy`), the start
+(`not_found`, `denied`, else `io`). A refused request gets one `error` frame, the same error is returned, and the stream stays
+open for the caller to close.
+
+A started process runs in a tree of its own (a job object on Windows; a process group on Unix, plus on Linux a walk of `/proc`
+for processes that left it). Frames out: `started`, then `stdout` and `stderr` chunks as the process writes them, then `exit`
+after every output byte. The tree is ended by a `kill` frame, the stream closing or failing, the request's `timeout_ms`
+(`Exit::timed_out` and `killed`), and always after the process exits: output is awaited for `drain_timeout`, then whatever the
+process left running is killed, so nothing outlives a request. Sending waits while the stream has no room, so a slow client
+slows the process instead of growing a buffer. `serve` does not close the channel.
+
+`bohio::limit`: `Slots::new(limit)`, `Slots::acquire() -> Option<Permit<'_>>`, `in_use()`, `limit()`; a `Permit` frees its slot
+when dropped. One `Slots` is shared by every stream that counts against a bound.
+
 ## Capabilities (`bohio::info`)
 
 ```rust
@@ -108,6 +132,16 @@ status: 0 success, 1 the operation failed (one line on standard error), 2 the in
 | `BOHIO_CONFIG` | the configuration file when `--config` is not given; must exist when set |
 | `BOHIO_LOG` | log level or filter for standard error, default `warn` |
 | `NO_COLOR` | set: no colour in log lines |
-| `PATH` | where shells are looked for in `info` |
+| `PATH` | where shells are looked for in `info` and programs by `exec` |
 | `APPDATA`, `LOCALAPPDATA`, `ProgramData` (Windows); `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `HOME` (Unix) | where the configuration and data directory are looked for |
 
+## Gotchas
+
+- `serve` takes `Arc<dyn Channel>` because its output threads outlive a wedged pipe: a descendant the platform cannot end that
+  keeps a pipe open leaves a thread behind after `drain_timeout`, not a hung stream.
+- A `kill` frame queued behind standard input the process is not reading is seen only when it reads, when the deadline passes or
+  when the stream closes.
+- Standard input sent to a request that asked for `Stdin::Closed` is ignored.
+- The program name is looked up as the host's `PATH` finds it (on Windows also the application's directory and the current one);
+  `programs` compares the name exactly as requested, so `git` and `/usr/bin/git` are different entries.
+- Windows: a process starts a moment before it joins its job object; a process it starts in that instant is outside the tree.
