@@ -20,6 +20,12 @@ Documentation: <https://docs.rs/bohio>.
   resolved on the host's own `PATH` to an absolute path and that path is started, and a request may not set or
   remove `PATH` or clear the environment. `git`, `make`, `find` and interpreters still run whatever they are given,
   so list only programs that are safe with every argument.
+- An authenticated link over TCP (`bohio serve`, `bohio pair`, `bohio join`, `bohio remote`): each side proves a key to the
+  other with [`coqui-link`](https://github.com/Boriken-Dev/coqui-link) (Noise by default); a key the host has not accepted is
+  refused and waits for `bohio peer approve`; each stream a peer opens is decided from `peers.cfg` when it opens and every
+  `[link] recheck` while it runs, so a revoke ends running processes, shells and transfers.
+- Memory per link is bounded by `[link]` settings (a credit window per stream, a queue per direction, a read-ahead), never by
+  the size of a file.
 - Interactive shells on a pseudo-terminal (ConPTY on Windows): output streams as it is produced, the
   terminal can be resized, and a closed stream ends the shell and everything it started.
 - Filesystem access confined to the peer's granted roots: a `..` or a symbolic link that leaves a root is refused,
@@ -87,6 +93,11 @@ the file, the position and the problem. `bohio info` prints this host's capabili
 `--config`, the first file that exists of `$BOHIO_CONFIG`, the user's `bohio.cfg` and the
 system's is used, and with none the defaults apply.
 
+`bohio serve [--config F] [--listen tcp://host:port]...` serves the `[[listen]]` endpoints and each `--listen` and prints
+`listening <endpoint>` and `host <id>` once bound. `bohio status`, `bohio id` and `bohio peer list|approve|revoke` show and change
+who may do what; `bohio pair` shows a PIN and accepts the one peer that joins with it (`bohio join <endpoint>` is the other side);
+`bohio remote <endpoint> info|exec -- <argv>|read <path>|shell` uses a host. See the header (`AGENTS.md`) for every flag.
+
 | Status | Meaning |
 | --- | --- |
 | 0 | success |
@@ -101,6 +112,9 @@ system's is used, and with none the defaults apply.
 | `policy` | `peers.cfg`: `Policies`, `Grant` and `Permission` |
 | `exec` | serves one `bohio-exec/1` stream |
 | `info` | this host's capabilities |
+| `link` | who may open which protocol: the trust store as a peer store, `peers.cfg` as admission |
+| `peer` | the data directory, the identity, `list`, `approve`, `revoke` and PIN pairing |
+| `serve` | `Server`: accepts links, proves peers and runs each stream's engine |
 | `limit` | a counted bound on concurrent work |
 | `cli` | the command line (feature `cli`) |
 

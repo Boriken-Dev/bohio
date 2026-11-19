@@ -6,16 +6,18 @@ with the source at <https://github.com/Boriken-Dev/bohio>.
 
 | Feature | Adds | Needed for | Default |
 | --- | --- | --- | --- |
-| `cli` | module `cli`, the `bohio` binary; `clap`, `tracing-subscriber`, `serde_json` | the command | on |
+| `cli` | module `cli`, the `bohio` binary; `clap`, `tracing-subscriber`, `serde_json`, `crossterm` | the command | on |
 
-MSRV Rust 1.89. A library-only build (`default-features = false`) depends on `bohio-proto`, `coqui-transport` (git revision),
-`serde`, `toml`, `thiserror`, `tracing`, `portable-pty` (terminals), `cap-std` and `cap-fs-ext` (confined file access), `sha2`, and
-`rustix` (Unix) or
+MSRV Rust 1.89. A library-only build (`default-features = false`) depends on `bohio-proto`, `bohio-client` (the link and its relay),
+`coqui-transport`, `coqui-link` (with `sealed`) and `coqui-peer` (each a git revision; one copy of each builds), `serde`, `toml`,
+`thiserror`, `tracing`, `portable-pty` (terminals), `cap-std` and `cap-fs-ext` (confined file access), `sha2`, and `rustix` (Unix) or
 `win32job` (Windows). Version `0.0.0-alpha.0`, not published.
 
 Imports: the root holds `Config`, `ConfigError`, `Environment`, `Grant`, `Permission`, `Policies`, `PolicyError`. Public modules:
-`config`, `control`, `exec`, `fs`, `info`, `limit`, `policy`, `shell`, `cli` (feature `cli`). No `unsafe` code (`#![forbid(unsafe_code)]`). The library
-prints nothing, reads no environment variable and installs no logger; it starts threads only inside `exec::serve`, `shell::serve` and the transfer and control engines.
+`config`, `control`, `exec`, `fs`, `info`, `limit`, `link`, `peer`, `policy`, `serve`, `shell`, `cli` (feature `cli`). No `unsafe` code
+(`#![forbid(unsafe_code)]`). The library prints nothing, reads no environment variable and installs no logger; it starts threads only inside
+`exec::serve`, `shell::serve`, the transfer and control engines, `serve::Server` (a thread per connection, per stream and per relay) and
+`peer::pair`.
 
 ## Configuration (`bohio::config`)
 
@@ -47,6 +49,17 @@ pub struct Span(pub Duration);                                    // a number of
 | `[[listen]] endpoint` | none | `scheme://address`; required in each entry |
 | `[link] recheck` | `5s` | how often a running stream's permission is decided again; not zero |
 | `[link] max_streams` | `64` | streams per peer; at least 1 |
+| `[link] max_connections` | `128` | links open at once across peers, those still proving included; one past it is closed unread; at least 1 |
+| `[link] proof_timeout` | `10s` | how long a peer has to prove itself; not zero |
+| `[link] window` | `1048576` | bytes a peer may send on one stream ahead of what the host has read (the credit window); at least 1 |
+| `[link] max_frame` | `65536` | most bytes of one message in one frame (a longer message is sent in parts); at least 1 |
+| `[link] max_message` | `1048576` | largest message on a stream; more than the largest `chunk_size` |
+| `[link] queue_bytes` | `262144` | bytes a stream holds each way between the link and its engine; a larger message passes alone; at least 1 |
+| `[link] read_ahead` | `8` | messages the socket's reader holds ahead of the link once a peer is proven (one before); at least 1 |
+| `[link] queued_bytes` | `1048576` | bytes the socket's writer may have queued; at least 1 |
+| `[link] send_limit` | `10s` | how long a frame the socket takes nothing of ends the link, and a finished stream's queue is given to drain; not zero |
+| `[link] send_wait` | `250ms` | how long a send waits for credit before it reports no progress and is tried again; not zero |
+| `[link] poll_interval` | `50ms` | how often a stream's threads look at whether it was closed; not zero |
 | `[filesystem] enabled` | `true` | whether filesystem calls are served |
 | `[filesystem] max_transfers` | `16` | concurrent `bohio-read/1` and `bohio-write/1` streams across peers; at least 1 |
 | `[filesystem] chunk_size` | `65536` | most file bytes in one frame, and the buffer a copy or checksum reads with; at least 1; a smaller message bound of the stream wins |
@@ -213,27 +226,89 @@ The operating system and architecture, the shells found on `environment.path` (`
 `pwsh`), the filesystem features (`unix_modes` on Unix, `windows_attributes` on Windows, `case_sensitive` off on Windows and
 macOS, the native separator), whether execution and shells are enabled, and the configured bounds. `host_id` is `None`.
 
+## The link (`bohio::serve`, `bohio::link`, `bohio::peer`)
+
+```rust
+pub enum Endpoint { Tcp(SocketAddr) }                              // non_exhaustive, Display "tcp://addr"; Endpoint::parse("tcp://host:port") -> Result<_, String>
+pub struct Server;                                                 // Debug
+impl Server {
+    pub fn new(config: &Config, environment: &Environment) -> Result<Self, ServeError>;   // opens or makes the identity and trust store in the data directory
+    pub const fn host(&self) -> coqui_peer::PeerId;
+    pub fn serve_listener(&self, listener: &TcpListener, stop: &AtomicBool) -> io::Result<()>;   // accepts until `stop`; a thread per connection
+    pub fn serve_channel<C: Channel>(&self, channel: &C, source: Option<SocketAddr>);   // proves the peer on any unproven channel, serves its link to the end; the caller closes it
+}
+#[non_exhaustive] pub enum ServeError { Peer(PeerError), Proof(String), Listen { endpoint, reason } }
+
+pub const PROTOCOLS: [(&str, &[Permission]); 5];                   // each protocol with the permissions of which a peer needs one to open it
+pub struct TrustPeers;                                             // coqui_link::peers::PeerStore over the trust store: an accepted key may open every protocol
+pub fn admission(policy: PathBuf, needs: &'static [Permission]) -> coqui_link::link::Admission;   // reads peers.cfg afresh each call
+pub fn grant_of(policy: &Path, peer: &str) -> Result<Grant, String>;
+pub struct LogEvents;                                              // link events as log lines: a peer id and a protocol name, nothing else
+
+pub struct Data;                                                   // Data::new(dir): identity_path(), policy_path(), identity(), store(), policies()
+pub fn list(data: &Data) -> Result<Listing, PeerError>;            // Listing { accepted: Vec<Accepted{id, grant}>, waiting: Vec<Waiting{id, source}>, orphaned: Vec<String> }
+pub fn approve(data: &Data, id: &PeerId, grant: Option<Grant>) -> Result<(), PeerError>;   // waiting or accepted -> accepted; Some(grant) replaces the grant
+pub fn revoke(data: &Data, id: &PeerId) -> Result<Revoked, PeerError>;   // the grant first, then the key; NoSuchPeer when neither existed
+pub fn pair(data: &Data, listener: &TcpListener, settings: &Settings, timeout: Duration, shown: impl FnOnce(&str)) -> Result<PeerId, PeerError>;
+#[non_exhaustive] pub enum PeerError { Identity(String), Store(String), Policy(PolicyError), Write(String), NoSuchPeer, Pairing(String) }
+```
+
+The data directory holds `identity` (this host's key, a Noise key made on first use, mode 0600 on Unix), `peers/{accepted,waiting}/` (the trust
+store) and `peers.cfg` (what each accepted peer may do). A connection proves itself first, within `[link] proof_timeout`, with an unproven peer held to
+one proof-sized message. A key that proves it holds the key it presents and is not accepted is recorded as waiting by the proof itself, under the
+connection's source address (bounded by coqui-peer's waiting limits), and the connection ends: the peer sees only that. An accepted peer's link is
+served by `coqui_link::link::serve`: each stream's open is decided by the trust store (`TrustPeers`, accepted keys only) and then by `admission`
+(`peers.cfg`: the peer must hold a permission the protocol needs, `bohio/1` needs one of `info`, `fs.read`, `fs.write`), and each running stream is
+decided again every `[link] recheck`, so removing a key or a grant closes the stream with a revoke whose reason reaches the peer (a `Permission`
+failure). A store or `peers.cfg` that cannot be read refuses. The link itself checks that the key is still accepted every `2 x recheck`. The
+stream's engine then runs behind a `Relay` with the grant `peers.cfg` gives the peer at that moment.
+
+`approve` never changes a grant unless one is given; `revoke` removes the `peers.cfg` entry before the key, so a running stream ends at the next
+re-check even if the link still holds. `peers.cfg` is rewritten whole (comments are not kept) by `approve` and `revoke`, atomically; two commands run
+at the same instant can lose one change. `pair` shows one PIN, once (`shown` is called with it; it is never logged), accepts the one peer that joins
+with it, and gives it no grant; the joiner stores the host's key, so it then trusts the host with `Trust::Store`. A wrong PIN uses the PIN up.
+
 ## Command line (`bohio::cli`, feature `cli`)
 
 ```rust
 pub fn main() -> ExitCode;                                       // arguments and environment from the process
 pub fn run(arguments: impl IntoIterator<Item = OsString>, environment: &Environment) -> ExitCode;
 pub fn capture_environment() -> Environment;
-pub struct Cli { pub command: Command }                          // clap Parser; Command: Config(ConfigArgs), Info(InfoArgs)
+pub struct Cli { pub command: Command }                          // clap Parser; Command: Config, Info, Serve, Status, Id, Peer, Pair, Join, Remote
 ```
 
-`bohio config check [--config FILE] [--format text|json]` reads the configuration and prints `ok` with a summary;
-`bohio info [--config FILE] [--format text|json]` prints this host's capabilities (`json` is `bohio_proto::info::Info`). Exit
-status: 0 success, 1 the operation failed (one line on standard error), 2 the invocation was wrong.
+Every command takes `--config FILE` (otherwise `BOHIO_CONFIG`, the user's, the system's; the data directory is the configuration's). A line that
+a person or a script reads is printed to standard output and flushed; diagnostics go to standard error.
+
+| Command | What it does |
+| --- | --- |
+| `config check [--format text\|json]` | reads the configuration and prints `ok` with a summary |
+| `info [--format text\|json]` | prints this host's capabilities (`json` is `bohio_proto::info::Info`) |
+| `serve [--listen ENDPOINT]...` | serves each `[[listen]]` endpoint and `--listen` (`tcp://host:port`, port 0 picks one) until killed; prints `listening <endpoint>` for each, then `host <id>` |
+| `status` | the host's id, key method, data directory, counts of accepted and waiting peers, and whether each configured endpoint answers |
+| `id` | the id of this machine's key, made on first use |
+| `peer list` | `accepted <id> allow: ...`, `waiting <id> from <ip>` and `grant-only <id>` lines |
+| `peer approve <id> [--allow P,P] [--fs-root DIR]... [--program NAME]...` | accepts a waiting or paired peer; any of the three flags replaces its whole grant, none leaves it |
+| `peer revoke <id>` | removes the grant and the key; running streams end within `[link] recheck` |
+| `pair [--listen ENDPOINT] [--timeout TIME]` | prints `pairing on <endpoint>`, `host <id>`, `pin <PIN>` (default `tcp://127.0.0.1:0`, `5m`), waits for one peer, prints `paired <id>` |
+| `join <endpoint> [--pin PIN]` | pairs with a host that shows a PIN (the PIN is read from standard input when absent); both sides keep the other's key; the joiner holds nothing until approved |
+| `remote <endpoint> [--server ID] info [--format text\|json]` | the host's capabilities over the link |
+| `remote <endpoint> exec [--cwd D] [--timeout-ms N] [--env K=V]... [--stdin] -- <argv>` | runs the program, streams its output, and exits with its status (124 on a deadline, `128+signal` when signalled) |
+| `remote <endpoint> read <path>` | writes the host's file to standard output |
+| `remote <endpoint> shell [--kind sh\|bash\|zsh\|cmd\|powershell\|pwsh] [--cwd D]` | an interactive shell; the local terminal is put in raw mode when standard input is one, and its size is followed |
+
+`remote` trusts the keys `join` stored, or only `--server ID`. A host that ends the link before the proof is reported as "may not be listening, may not
+trust this key yet, or this side does not trust the host"; a stream the host refuses or ends for lost access is "the host refused or ended the stream".
+Exit status: 0 success, 1 the operation failed (one line on standard error), 2 the invocation was wrong; `remote exec` exits with the program's.
 
 ## Environment variables
 
 | Name | Effect |
 | --- | --- |
 | `BOHIO_CONFIG` | the configuration file when `--config` is not given; must exist when set |
-| `BOHIO_LOG` | log level or filter for standard error, default `warn` |
+| `BOHIO_LOG` | log level or filter for standard error, default `warn` (`trace` shows every link event; none holds a secret) |
 | `NO_COLOR` | set: no colour in log lines |
-| `PATH` | where shells are looked for in `info` and programs by `exec` |
+| `PATH` | where shells are looked for in `info`, and the programs a grant lists by `exec` and `shell` |
 | `APPDATA`, `LOCALAPPDATA`, `ProgramData` (Windows); `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `HOME` (Unix) | where the configuration and data directory are looked for |
 
 ## Gotchas
@@ -251,3 +326,12 @@ status: 0 success, 1 the operation failed (one line on standard error), 2 the in
 - Windows ConPTY asks the terminal for its cursor position before the program's first output and holds that output until it is
   answered: the host removes the query (`ESC[6n`) from the output and answers it with `ESC[1;1R`.
 - A `kill` frame queued behind typed input the shell is not reading is seen only when it reads, or when the stream closes.
+- Nothing logs a key, a PIN or a request: link events carry a peer id and a protocol name, and `bohio pair` writes the PIN to standard output
+  only. `tests/link.rs` captures every process's log at `trace` and fails when a PIN or any stored key bytes appear in it. `bohio` has no
+  invitation flow, so there is no invitation secret.
+- A peer id is public; `bohio peer list` and the log print them. A key that proves itself and is not accepted is recorded under the connection's source
+  address, so a flood from one source cannot fill the waiting list for the others.
+- A revoked peer's link ends at the second re-check (`2 x recheck`) at the latest; its streams end at the first.
+- `bohio serve` stops only when killed: the exec trees it started are ended when the stream drops, and on Windows by the job object when the
+  process dies; on Unix a killed host leaves nothing to end them.
+- A loopback connect to a closed port in the ephemeral range can connect a socket to itself; `Connection::connect_tcp` and `bohio join` refuse one.

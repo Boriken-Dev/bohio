@@ -23,9 +23,12 @@ machines and containers. It is an application: the `coqui-*` names are reserved 
   are CBOR; bulk bytes travel raw behind a one-byte tag.
 - **Threads, not an async runtime**: one thread per stream, bounded by configuration.
 - **No hard-coded limits**: every bound is a setting in `bohio.cfg` with a documented default.
+- **A proven link**: each side holds a key and proves it to the other (Noise by default) over TCP with
+  [`coqui-link`](https://github.com/Boriken-Dev/coqui-link); a key the host has not accepted waits for
+  `bohio peer approve`. Memory per link is bounded by settings, never by the size of a file.
 
-The filesystem, interactive shells, the authenticated link and the transports (tcp, pipe,
-websocket, serial, stdio) are not built yet.
+The filesystem, interactive shells and the authenticated link over TCP are built; the other transports
+(pipe, websocket, serial, stdio) are not yet.
 
 ## Installation
 
@@ -51,11 +54,33 @@ cargo run -p bohio -- info --config examples/bohio.cfg
 
 prints this host's capabilities. `examples/bohio.cfg` documents every setting with its default.
 
+To serve a peer, on the host:
+
+```text
+bohio serve --listen tcp://0.0.0.0:7620     # prints `listening tcp://...` and `host sha256:...`
+bohio pair --listen tcp://0.0.0.0:7621      # prints a PIN; waits for one peer to join with it
+```
+
+and on the peer:
+
+```text
+bohio join tcp://host:7621 --pin 123456     # each side now keeps the other's key
+bohio id                                    # the peer's id, for the host to approve
+```
+
+then on the host `bohio peer approve <id> --allow info,exec,fs.read --fs-root /srv/data`, and from the peer
+`bohio remote tcp://host:7620 info`, `... exec -- git status`, `... read /srv/data/file`, `... shell`. A peer
+that proves a key the host has not accepted is refused and listed by `bohio peer list` as waiting; `bohio peer
+revoke <id>` takes everything away and ends what the peer is running within `[link] recheck`.
+
 ## Command line
 
 ```text
 bohio config check --config examples/bohio.cfg
 bohio info --config examples/bohio.cfg --format json
+bohio serve | status | id | pair | join <endpoint>
+bohio peer list | approve <id> [--allow ...] | revoke <id>
+bohio remote <endpoint> info | exec -- <argv> | read <path> | shell
 ```
 
 See the [`bohio` crate](https://github.com/Boriken-Dev/bohio/tree/main/crates/bohio) for the
