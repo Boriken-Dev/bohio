@@ -125,7 +125,7 @@ script under a program list: `denied`), the working directory exists (`not_found
 (`not_found`, `denied`, else `io`). A refused request gets one `error` frame, the same error is returned, and the stream stays
 open for the caller to close.
 
-A started process runs in a tree of its own (a job object on Windows; a process group on Unix, plus on Linux a walk of `/proc`
+A started process runs in a tree of its own (a job object on Windows; a process group on Unix, plus a walk of the descendants (`/proc` on Linux, `ps` elsewhere)
 for processes that left it). Frames out: `started`, then `stdout` and `stderr` chunks as the process writes them, then `exit`
 after every output byte. The tree is ended by a `kill` frame, the stream closing or failing, the request's `timeout_ms`
 (`Exit::timed_out` and `killed`), and always after the process exits: output is awaited for `drain_timeout`, then whatever the
@@ -152,7 +152,7 @@ directory (`not_found`), a free slot (`busy`), the start (`not_found`, `denied`,
 the same error is returned, and the stream stays open for the caller to close.
 
 The program runs on a terminal (`portable-pty`: `openpty` on Unix, ConPTY on Windows) in a tree of its own (a job object on Windows; on
-Unix `portable-pty` makes it a session and group leader, and on Linux the host also walks `/proc` for what left the group, such as a
+Unix `portable-pty` makes it a session and group leader, and the host also walks the descendants (`/proc` on Linux, `ps` elsewhere) for what left the group, such as a
 job-control shell's background jobs). Frames out: `started {pid}`, `data` as the terminal produces output, then `exit` after every
 output byte (the terminal must be quiet for `drain_quiet` after the program exited, since a pseudo-console can deliver the last of
 the output after the exit). The tree is ended by a `kill` frame, the stream closing or failing, and always after the program exits:

@@ -48,7 +48,7 @@ mod unix {
         Ok(Tree)
     }
 
-    /// Kills the group, and on Linux and Android first stops and then kills every process
+    /// Kills the group, and first stops and then kills every process
     /// descended from the child, those that left the group or session included. Called while the
     /// child is not yet collected: a collected child's id, and its group's, may belong to another
     /// process.
@@ -102,8 +102,8 @@ mod unix {
         use rustix::process::Pid;
 
         /// Every process descended from `root`, each stopped so it starts no more, found again
-        /// until no new one appears. Empty where there is no `/proc` to read.
-        #[cfg(any(target_os = "linux", target_os = "android"))]
+        /// until no new one appears. Parents come from `/proc` on Linux and Android and from `ps`
+        /// elsewhere.
         pub(super) fn stopped(root: Pid) -> Vec<Pid> {
             use std::collections::BTreeSet;
 
@@ -131,9 +131,28 @@ mod unix {
             found.into_iter().filter_map(Pid::from_raw).collect()
         }
 
+        /// Each process's parent, from `ps` where there is no `/proc` (macOS and the BSDs).
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
-        pub(super) fn stopped(_root: Pid) -> Vec<Pid> {
-            Vec::new()
+        fn parents() -> std::collections::BTreeMap<i32, i32> {
+            let mut parents = std::collections::BTreeMap::new();
+            let Ok(output) = std::process::Command::new("/bin/ps")
+                .args(["-A", "-o", "pid=,ppid="])
+                .stdin(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .output()
+            else {
+                return parents;
+            };
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                let mut fields = line.split_whitespace();
+                if let (Some(pid), Some(parent)) = (
+                    fields.next().and_then(|field| field.parse::<i32>().ok()),
+                    fields.next().and_then(|field| field.parse::<i32>().ok()),
+                ) {
+                    parents.insert(pid, parent);
+                }
+            }
+            parents
         }
 
         /// Each process's parent, as `/proc/<pid>/stat` says.
