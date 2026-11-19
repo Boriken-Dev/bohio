@@ -96,11 +96,27 @@ pub struct ExecGrant {
     /// may not set or remove `PATH` or clear the environment. The list limits which program
     /// starts, not what it does.
     programs: Vec<String>,
+    /// Under a program list, the environment variables a request may set or remove, each named
+    /// exactly (without case on Windows); any other is refused, as is `PATH` whether listed or
+    /// not. A variable is as strong as an argument: `LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`,
+    /// `BASH_ENV` or `GIT_SSH_COMMAND` make a listed program run code the peer chose. Without a
+    /// program list a peer may set any.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    env: Vec<String>,
 }
 
 impl ExecGrant {
     fn is_unlimited(&self) -> bool {
-        self.programs.is_empty()
+        self.programs.is_empty() && self.env.is_empty()
+    }
+}
+
+/// Whether two environment variable names are one name on this host.
+fn same_variable(a: &str, b: &str) -> bool {
+    if cfg!(windows) {
+        a.eq_ignore_ascii_case(b)
+    } else {
+        a == b
     }
 }
 
@@ -146,6 +162,36 @@ impl Grant {
     /// The directories file operations are confined to.
     pub fn fs_roots(&self) -> &[PathBuf] {
         &self.fs_roots
+    }
+
+    /// Under a program list, lets a request set or remove the variables `names` and no others.
+    #[must_use]
+    pub fn with_env(mut self, names: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.exec.env = names.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// The variables a request may change under a program list.
+    pub fn env_names(&self) -> &[String] {
+        &self.exec.env
+    }
+
+    /// Whether a request may make the environment changes `env`: always without a program list;
+    /// under one, only variables the grant names, never `PATH`, and never from an empty
+    /// environment.
+    pub fn permits_env(&self, env: &bohio_proto::exec::Env) -> bool {
+        if self.exec.programs.is_empty() {
+            return true;
+        }
+        let allowed = |name: &String| {
+            !same_variable(name, "PATH")
+                && self
+                    .exec
+                    .env
+                    .iter()
+                    .any(|listed| same_variable(listed, name))
+        };
+        !env.clear && env.set.keys().all(allowed) && env.remove.iter().all(allowed)
     }
 
     /// Whether the peer may run `program`, named exactly as it asked.

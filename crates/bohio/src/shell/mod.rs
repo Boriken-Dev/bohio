@@ -24,7 +24,7 @@ use coqui_transport::{Channel, Failure};
 use crate::config::ShellConfig;
 use crate::limit::{Permit, Slots};
 use crate::platform::{
-    self, ProcessExit, PtySpec, Session, Terminal, find_program, resolve_listed, touches_search,
+    self, ProcessExit, PtySpec, Session, Terminal, find_program, resolve_listed,
 };
 use crate::policy::{Grant, Permission};
 
@@ -120,9 +120,11 @@ pub fn serve(
 /// read is covered, so [`serve`] answers it.
 pub(crate) fn covers(grant: &Grant, metadata: &[u8]) -> bool {
     Request::from_metadata(metadata).map_or(true, |request| match &request.program {
-        Program::Argv { argv } => argv
-            .first()
-            .is_none_or(|program| grant.permits_program(program)),
+        Program::Argv { argv } => {
+            argv.first()
+                .is_none_or(|program| grant.permits_program(program))
+                && grant.permits_env(&request.env)
+        }
         _ => true,
     })
 }
@@ -319,13 +321,13 @@ fn resolve(
                 ));
             }
             // Under a list the program is the one the host finds at the listed name on its own
-            // `PATH`, and the request may not change where programs are found.
+            // `PATH`, and the request changes only the variables the grant names.
             let named = std::path::Path::new(first);
             let located = if context.grant.restricts_programs() {
-                if touches_search(env) {
+                if !context.grant.permits_env(env) {
                     return Err(refuse(
                         ErrorCode::Denied,
-                        "this peer may not change PATH or clear the environment",
+                        "under a program list a peer may change only the variables its grant names, never PATH, and may not clear the environment",
                     ));
                 }
                 resolve_listed(first, context.path)

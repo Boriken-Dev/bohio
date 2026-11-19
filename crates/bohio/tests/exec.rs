@@ -463,6 +463,64 @@ fn whoami(link: &Link, env: Env, cwd: Option<&std::path::Path>) -> Result<String
     }
 }
 
+/// A variable can make a listed program run code the peer chose (`LD_PRELOAD` loads a library into it,
+/// `BASH_ENV` runs a file in every shell it starts), so under a program list a request may change only
+/// the variables the grant names.
+#[test]
+fn under_a_program_list_a_peer_changes_only_the_variables_its_grant_names() {
+    let scratch = tempfile::tempdir().expect("a directory");
+    let good = scratch.path().join("good");
+    git_in(&good);
+    let link = git_only(&good);
+    let setting = |name: &str| {
+        let mut env = Env::default();
+        env.set.insert(name.to_owned(), "x".to_owned());
+        env
+    };
+    for name in [
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
+        "DYLD_INSERT_LIBRARIES",
+        "BASH_ENV",
+        "GIT_SSH_COMMAND",
+        "LANG",
+    ] {
+        assert_eq!(
+            whoami(&link, setting(name), None),
+            Err(ErrorCode::Denied),
+            "{name} was accepted under a program list"
+        );
+    }
+    let mut removing = Env::default();
+    removing.remove.push("HOME".to_owned());
+    assert_eq!(whoami(&link, removing, None), Err(ErrorCode::Denied));
+    assert_eq!(link.slots.in_use(), 0);
+
+    // What the grant names may be changed, and nothing else; PATH stays refused even when named.
+    let mut named = Link::new(
+        Grant::allowing([Permission::Exec])
+            .with_programs(["git"])
+            .with_env(["LANG", "PATH"]),
+        ExecutionConfig::default(),
+    );
+    named.path = std::sync::Arc::new(good.as_os_str().to_owned());
+    assert!(whoami(&named, setting("LANG"), None).is_ok());
+    let mut both = setting("LANG");
+    both.remove.push("LANG".to_owned());
+    assert!(whoami(&named, both, None).is_ok());
+    assert_eq!(
+        whoami(&named, setting("LD_PRELOAD"), None),
+        Err(ErrorCode::Denied)
+    );
+    assert_eq!(
+        whoami(&named, setting_path(scratch.path()), None),
+        Err(ErrorCode::Denied)
+    );
+    if cfg!(windows) {
+        assert!(whoami(&named, setting("lang"), None).is_ok());
+    }
+}
+
 fn setting_path(dir: &std::path::Path) -> Env {
     let mut env = Env::default();
     env.set

@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A peer can no longer make a set-user-ID or set-group-ID file: a mode with `0o6000` in `set_mode`, `mkdir` or a write's
   `file_mode` is `denied`, and a `copy` or a `replace` drops those bits from the mode it keeps. Such a file, written by a
   peer that may only write under one root, ran as the service's account for any local user who started it.
+- Under a program list a request may set or remove only the environment variables the grant names (`[peer.<id>.exec] env`,
+  `bohio peer approve --env NAME`), never `PATH`: a peer allowed one harmless program could make it load a library of its own
+  with `LD_PRELOAD` (or `DYLD_INSERT_LIBRARIES`, or run a file with `BASH_ENV`). `Grant::with_env`, `env_names` and
+  `permits_env` are the grant's side.
 - A program list (`exec.programs`) is now checked against what starts: each listed name is resolved on the host's own
   `PATH` to an absolute path and that path is spawned, and a request that sets or removes `PATH`, or clears the
   environment, is refused. A peer allowed `git` can no longer run its own `git` by pointing `PATH` at a directory it

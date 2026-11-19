@@ -189,6 +189,9 @@ fn describe(grant: &Grant) -> String {
     }
     if grant.restricts_programs() {
         text.push_str(" programs=listed");
+        if !grant.env_names().is_empty() {
+            text.push_str(&format!(" env={}", grant.env_names().join(",")));
+        }
     }
     text
 }
@@ -236,6 +239,7 @@ fn peer_approve(args: &ApproveArgs, environment: &Environment) -> Result<(), Str
             Grant::allowing(permissions)
                 .with_fs_roots(args.fs_root.iter().cloned())
                 .with_programs(args.program.iter().cloned())
+                .with_env(args.env.iter().cloned())
         });
     peer::approve(&data, &id, grant).map_err(|error| error.to_string())?;
     let held = data

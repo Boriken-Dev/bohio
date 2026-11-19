@@ -250,6 +250,7 @@ fs_roots = ["/srv/data"]
 
 [peer.laptop.exec]
 programs = ["git", "make"]
+env = ["LANG"]
 
 [peer.guest]
 allow = ["info"]
@@ -263,9 +264,19 @@ allow = ["info"]
     assert_eq!(laptop.fs_roots(), [PathBuf::from("/srv/data")]);
     assert!(laptop.permits_program("git") && !laptop.permits_program("rm"));
     assert!(!laptop.permits_shell_script());
+    assert_eq!(laptop.env_names(), ["LANG"]);
+    let mut lang = bohio_proto::exec::Env::default();
+    lang.set.insert("LANG".to_owned(), "C".to_owned());
+    assert!(laptop.permits_env(&lang));
+    lang.set.insert("LD_PRELOAD".to_owned(), "x".to_owned());
+    assert!(!laptop.permits_env(&lang));
     let guest = policies.grant_for("guest");
     assert!(guest.allows(Permission::Info) && !guest.allows(Permission::Exec));
     assert!(guest.permits_program("anything") && guest.permits_shell_script());
+    assert!(
+        guest.permits_env(&lang),
+        "without a program list any variable may be set"
+    );
     assert_eq!(policies.peers().collect::<Vec<_>>(), ["guest", "laptop"]);
 }
 

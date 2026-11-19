@@ -181,6 +181,10 @@ pub struct ApproveArgs {
     /// A program the peer may run, as the host finds it on its own PATH (repeat); with none, any.
     #[arg(long, value_name = "NAME")]
     pub program: Vec<String>,
+    /// With `--program`: an environment variable the peer's requests may set or remove (repeat);
+    /// with none, they may change none. PATH is refused even when named.
+    #[arg(long, value_name = "NAME", requires = "program")]
+    pub env: Vec<String>,
 }
 
 /// `bohio peer revoke`.

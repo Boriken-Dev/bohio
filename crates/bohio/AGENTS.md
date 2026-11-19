@@ -96,19 +96,22 @@ impl Permission { pub const fn name(self) -> &'static str; }
 pub struct Grant;                                                // Default = nothing
 impl Grant { pub fn none() -> Self; pub fn allowing(permissions) -> Self; pub fn with_fs_roots(self, roots) -> Self; pub fn with_programs(self, programs) -> Self; pub fn restricts_programs(&self) -> bool;
              pub fn allows(&self, Permission) -> bool; pub fn permissions(&self) -> impl Iterator<Item = Permission>; pub fn fs_roots(&self) -> &[PathBuf];
-             pub fn permits_program(&self, program: &str) -> bool; pub fn permits_shell_script(&self) -> bool; }
+             pub fn permits_program(&self, program: &str) -> bool; pub fn permits_shell_script(&self) -> bool;
+             pub fn with_env(self, names) -> Self; pub fn env_names(&self) -> &[String]; pub fn permits_env(&self, env: &bohio_proto::exec::Env) -> bool; }
 pub struct Policies;                                             // Default = no peer
 impl Policies { pub fn from_toml(text, path: &str) -> Result<Self, PolicyError>; pub fn load(path: &Path) -> Result<Self, PolicyError>;   // missing file: empty
                 pub fn grant_for(&self, peer: &str) -> Grant; pub fn peers(&self) -> impl Iterator<Item = &str>; }
 #[non_exhaustive] pub enum PolicyError { Read { path, reason }, Parse { path, line, column, message } }
 ```
 
-`peers.cfg`: `[peer.<id>]` with `allow = [..]`, `fs_roots = [..]`, and `[peer.<id>.exec]` with `programs = [..]`. An unknown key or
+`peers.cfg`: `[peer.<id>]` with `allow = [..]`, `fs_roots = [..]`, and `[peer.<id>.exec]` with `programs = [..]` and `env = [..]`. An unknown key or
 permission is `PolicyError::Parse`. A peer with no entry, or no `allow`, holds nothing. `programs` empty means any program and
 explicit shell scripts; non-empty means only those programs, each named exactly as the peer asks for it, and no shell script
 (a shell runs anything). Under a non-empty list each name is resolved on the host's own `PATH` (a name with a directory
 must be absolute; a relative one is `not_found`) and that absolute path is started, never what the request's `PATH` or working
-directory would find, and a request that sets or removes `PATH` (any case on Windows) or clears the environment is `denied`. The list
+directory would find, and a request may set or remove only the variables `env` names (exactly; without case on Windows), never `PATH`
+(even when named), and may not clear the environment, else it is `denied`: a variable is as strong as an argument (`LD_PRELOAD`,
+`DYLD_INSERT_LIBRARIES`, `BASH_ENV` load or run code the peer chose). `permits_env` is that check; without a program list it always holds. The list
 limits which program starts, not what it does: `git -c alias.x=!cmd`, `make`, `find -exec` and interpreters run anything they are
 given, so list only programs that are safe with every argument. `fs_roots` empty means no file operation is allowed.
 

@@ -242,16 +242,3 @@ pub fn resolve_listed(program: &str, path: &OsStr) -> Option<PathBuf> {
     }?;
     std::path::absolute(found).ok()
 }
-
-/// Whether `env` changes how a program is found or what the child starts with: it sets or
-/// removes `PATH` (any case on Windows) or starts from an empty environment.
-pub fn touches_search(env: &Env) -> bool {
-    let is_path = |name: &String| {
-        if cfg!(windows) {
-            name.eq_ignore_ascii_case("PATH")
-        } else {
-            name == "PATH"
-        }
-    };
-    env.clear || env.set.keys().any(is_path) || env.remove.iter().any(is_path)
-}
