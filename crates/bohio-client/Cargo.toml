@@ -1,0 +1,26 @@
+[package]
+name = "bohio-client"
+description = "A Rust client for Bohío over any coqui channel"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["bohio", "client", "remote-host"]
+categories = ["network-programming"]
+exclude = [".*", "*.local.*"]
+# Its git dependencies are unpublished: released once they are.
+publish = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+bohio-proto.workspace = true
+coqui-transport.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

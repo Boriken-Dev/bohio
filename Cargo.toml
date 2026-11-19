@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/bohio-proto", "crates/bohio"]
+members = ["crates/bohio-proto", "crates/bohio-client", "crates/bohio"]
 
 [workspace.package]
 version = "0.0.0-alpha.0"
@@ -34,6 +34,7 @@ win32job = "2.0.3"
 proptest = { version = "1", default-features = false, features = ["std"] }
 sysinfo = { version = "0.37", default-features = false, features = ["system"] }
 bohio-proto = { path = "crates/bohio-proto" }
+bohio-client = { path = "crates/bohio-client" }
 
 [workspace.lints.rust]
 missing_docs = "warn"
