@@ -44,6 +44,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y socat
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      # The exec and shell tests start this helper by its plain name, which a test run does not build.
+      - run: cargo build -p bohio --example exec_helper
       - run: cargo test --workspace --all-features -- --nocapture
       - name: The vectors are current
         # The vectors test rewrites a file that differs; a clean tree means they were current.
