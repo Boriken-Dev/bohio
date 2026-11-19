@@ -188,11 +188,36 @@ pub struct FilesystemConfig {
     /// Whether the host serves filesystem calls. Default `true`; a peer still needs `fs.read` or
     /// `fs.write` and a root.
     pub enabled: bool,
+    /// The most file transfers (`bohio-read/1` and `bohio-write/1` streams) running at once,
+    /// across peers. At least 1. Default `16`.
+    pub max_transfers: usize,
+    /// The most file bytes in one frame, and the size of the buffer a copy or a checksum reads
+    /// with. At least 1; a smaller message bound of the stream wins. Default `65536`.
+    pub chunk_size: usize,
+    /// The most entries in one page of a directory listing, whatever the client asks for. At
+    /// least 1. Default `1000`.
+    pub list_page: usize,
+    /// How long a transfer may make no progress (a client that stops reading or writing) before
+    /// the host abandons it and frees its slot. Same units as `link.recheck`; not zero.
+    /// Default `5m`.
+    pub idle_timeout: Span,
+    /// How often a transfer looks at its stream while it waits. Not zero. Default `20ms`.
+    pub poll_interval: Span,
+    /// Whether a write is flushed to storage before it is put in place. Default `true`.
+    pub sync_writes: bool,
 }
 
 impl Default for FilesystemConfig {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            max_transfers: 16,
+            chunk_size: 64 * 1024,
+            list_page: 1000,
+            idle_timeout: Span(Duration::from_secs(300)),
+            poll_interval: Span(Duration::from_millis(20)),
+            sync_writes: true,
+        }
     }
 }
 
@@ -392,6 +417,21 @@ impl Config {
         }
         if self.execution.poll_interval.0.is_zero() {
             return Err(invalid("execution.poll_interval", "must not be zero"));
+        }
+        if self.filesystem.max_transfers == 0 {
+            return Err(invalid("filesystem.max_transfers", "must be at least 1"));
+        }
+        if self.filesystem.chunk_size == 0 {
+            return Err(invalid("filesystem.chunk_size", "must be at least 1"));
+        }
+        if self.filesystem.list_page == 0 {
+            return Err(invalid("filesystem.list_page", "must be at least 1"));
+        }
+        if self.filesystem.idle_timeout.0.is_zero() {
+            return Err(invalid("filesystem.idle_timeout", "must not be zero"));
+        }
+        if self.filesystem.poll_interval.0.is_zero() {
+            return Err(invalid("filesystem.poll_interval", "must not be zero"));
         }
         if self.shell.max_sessions == 0 {
             return Err(invalid("shell.max_sessions", "must be at least 1"));

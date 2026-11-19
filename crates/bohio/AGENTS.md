@@ -9,10 +9,11 @@ with the source at <https://github.com/Boriken-Dev/bohio>.
 | `cli` | module `cli`, the `bohio` binary; `clap`, `tracing-subscriber`, `serde_json` | the command | on |
 
 MSRV Rust 1.89. A library-only build (`default-features = false`) depends on `bohio-proto`, `coqui-transport` (git revision),
-`serde`, `toml`, `thiserror`, `tracing`, and `rustix` (Unix) or `win32job` (Windows). Version `0.0.0-alpha.0`, not published.
+`serde`, `toml`, `thiserror`, `tracing`, `cap-std` and `cap-fs-ext` (confined file access), `sha2`, and `rustix` (Unix) or
+`win32job` (Windows). Version `0.0.0-alpha.0`, not published.
 
 Imports: the root holds `Config`, `ConfigError`, `Environment`, `Grant`, `Permission`, `Policies`, `PolicyError`. Public modules:
-`config`, `exec`, `info`, `limit`, `policy`, `cli` (feature `cli`). No `unsafe` code (`#![forbid(unsafe_code)]`). The library
+`config`, `control`, `exec`, `fs`, `info`, `limit`, `policy`, `cli` (feature `cli`). No `unsafe` code (`#![forbid(unsafe_code)]`). The library
 prints nothing, reads no environment variable and installs no logger; it starts threads only inside `exec::serve`.
 
 ## Configuration (`bohio::config`)
@@ -46,6 +47,12 @@ pub struct Span(pub Duration);                                    // a number of
 | `[link] recheck` | `5s` | how often a running stream's permission is decided again; not zero |
 | `[link] max_streams` | `64` | streams per peer; at least 1 |
 | `[filesystem] enabled` | `true` | whether filesystem calls are served |
+| `[filesystem] max_transfers` | `16` | concurrent `bohio-read/1` and `bohio-write/1` streams across peers; at least 1 |
+| `[filesystem] chunk_size` | `65536` | most file bytes in one frame, and the buffer a copy or checksum reads with; at least 1; a smaller message bound of the stream wins |
+| `[filesystem] list_page` | `1000` | most entries in one listing page, whatever the client asks for; at least 1 |
+| `[filesystem] idle_timeout` | `5m` | how long a transfer may make no progress before the host abandons it; not zero |
+| `[filesystem] poll_interval` | `20ms` | how often a transfer looks at its stream while it waits; not zero |
+| `[filesystem] sync_writes` | `true` | whether a write is flushed to storage before it is put in place |
 | `[execution] enabled` | `true` | whether processes are run |
 | `[execution] max_processes` | `16` | concurrent processes across peers; at least 1 |
 | `[execution] chunk_size` | `16384` | most output bytes in one frame; at least 1; a smaller message bound of the stream wins |
@@ -101,6 +108,66 @@ slows the process instead of growing a buffer. `serve` does not close the channe
 
 `bohio::limit`: `Slots::new(limit)`, `Slots::acquire() -> Option<Permit<'_>>`, `in_use()`, `limit()`; a `Permit` frees its slot
 when dropped. One `Slots` is shared by every stream that counts against a bound.
+
+## Filesystem (`bohio::fs`)
+
+```rust
+pub struct Context<'a> { pub grant: &'a Grant, pub config: &'a FilesystemConfig, pub slots: &'a Slots }   // Copy
+pub fn call(context: &Context<'_>, call: &bohio_proto::control::Call, budget: usize) -> Result<Reply, ErrorBody>;
+pub fn serve_read(channel: Arc<dyn Channel>, metadata: &[u8], context: &Context<'_>) -> Result<u64, ErrorBody>;     // bytes sent
+pub fn serve_write(channel: Arc<dyn Channel>, metadata: &[u8], context: &Context<'_>) -> Result<WriteDone, ErrorBody>;
+```
+
+`call` answers one filesystem call of the control stream; `budget` is the largest reply the stream carries (a listing page is cut
+to fit it). `serve_read` and `serve_write` serve one `bohio-read/1` and `bohio-write/1` stream whose open carried `metadata`. A
+refused request gets one `error` frame, the same error is returned, and the stream stays open for the caller to close. Order of
+checks: decode (`bad_request`), `[filesystem] enabled` (`unsupported`), the permission (`denied`: `fs.read` for `stat`, `list`,
+`readlink`, `checksum` and reads; `fs.write` for `mkdir`, `remove`, `rename`, `symlink`, `set_*` and writes; both for `copy`), at
+least one root in the grant (`denied`), a free transfer slot (`busy`, transfers only), the path (`bad_request`, `outside_root`),
+then the operation (`not_found`, `exists`, `denied`, `unsupported`, `io`). Messages name what failed, never a path.
+
+**Roots and paths.** `fs_roots` is the whole of what a peer can reach. A relative path starts at the first root; an absolute one
+must lie under a root (the longest match; compared without case on Windows and macOS, and `\\?\C:\x` equals `C:\x`). `.` and
+`..` are folded lexically; a `..` that would leave the path's start is `outside_root`. Windows also refuses device names (`CON`,
+`NUL`, `COM1`...), a colon in a name (alternate data streams), a name ending in a dot or space, `\\.\` and `\\?\GLOBALROOT`
+forms and a drive-relative `C:x` (`bad_request`); both separators are accepted there.
+
+**Symbolic links.** The rest of the path is resolved by `cap-std` against the root's directory handle, which follows a link only
+while it stays under that handle: a link out of a root, at the end or in the middle of a path, is `outside_root`, and so is an
+absolute link even when it points back inside. `remove` removes a link, never what it points at; `stat` without `follow` describes
+the link. `symlink` refuses an absolute target or one that climbs above the roots (`outside_root`); `readlink` returns the text
+as stored.
+
+**What is race-free** (no gap between checking a component and using it, so a link swapped in meanwhile cannot lead out):
+
+| OS | Race-free | Not race-free |
+| --- | --- | --- |
+| Linux | every lookup: one `openat2` with `RESOLVE_BENEATH` (kernel 5.6+), else `openat` + `O_NOFOLLOW` per component; changes and removals are `*at` calls on the parent's handle | the configured root itself is opened by its path once per call |
+| macOS and other Unix | the same `openat` + `O_NOFOLLOW` walk, `*at` calls on the parent's handle | the root's own path |
+| Windows | `stat`, `checksum`, reads and the opens of writes: relative to the root's handle, reparse points not followed | `list`, `readlink`, `mkdir`, `remove`, `rename`, `symlink` and `set_mode` or `set_attributes`: the parent's handle becomes its current path and the name is joined to it, so a user who can rename a directory inside the root during the call can redirect it; also the root's own path |
+
+On every OS the root's owner is trusted: a hard link another local user makes to a file outside a root exposes that file, and a
+bind mount or junction an administrator places inside a root is part of the root. Windows has no POSIX modes (`set_mode` and a
+`mode` are `unsupported`, `Metadata::mode` is absent); `set_attributes` sets the read-only attribute there and is `unsupported`
+elsewhere.
+
+**Transfers.** Reads send `header`, `data` frames of at most `chunk_size` bytes, `done`; sending waits while the stream has no room.
+A `replace` write goes to a temporary sibling (`.bohio-<pid>-<n>.tmp`) and is renamed over the target after `end` (and a matching
+`expect_sha256`), keeping the target's mode on Unix; a stream that closes, fails or stays idle for `idle_timeout` leaves the
+target as it was and removes the temporary file. `create` removes the file it made when abandoned; `append` and `at` write in
+place and keep what was written. A transfer holds one `max_transfers` slot until it ends. Memory is one chunk plus what the
+link's channel queues and reads ahead: a channel that queues `n` bytes can hold `n` more.
+
+## Control stream (`bohio::control`)
+
+```rust
+pub struct Context<'a> { pub filesystem: fs::Context<'a>, pub info: &'a Info }              // Copy
+pub fn serve(channel: &Arc<dyn Channel>, context: &Context<'_>) -> u64;                       // requests answered
+```
+
+Serves one `bohio/1` stream until the peer closes it or it fails, answering each request in order. `hello` needs no permission
+(version 0 is `bad_request`; the answer is the lower of the two versions), `info` needs `info`, filesystem calls as above. A request
+that cannot be read is answered with id `0` and `bad_request`; a reply too large for the stream is replaced by an `internal` error.
 
 ## Capabilities (`bohio::info`)
 

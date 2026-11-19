@@ -88,6 +88,20 @@ fn values_out_of_range_name_their_key() {
             "[execution]\npoll_interval = 0\n",
             "execution.poll_interval",
         ),
+        (
+            "[filesystem]\nmax_transfers = 0\n",
+            "filesystem.max_transfers",
+        ),
+        ("[filesystem]\nchunk_size = 0\n", "filesystem.chunk_size"),
+        ("[filesystem]\nlist_page = 0\n", "filesystem.list_page"),
+        (
+            "[filesystem]\nidle_timeout = 0\n",
+            "filesystem.idle_timeout",
+        ),
+        (
+            "[filesystem]\npoll_interval = 0\n",
+            "filesystem.poll_interval",
+        ),
         ("[shell]\nmax_sessions = 0\n", "shell.max_sessions"),
         ("[[listen]]\nendpoint = \"nowhere\"\n", "listen.endpoint"),
     ] {

@@ -33,6 +33,13 @@ win32job = "2.0.3"
 # Tests: arbitrary bytes for the codecs; the process list for the survivor checks.
 proptest = { version = "1", default-features = false, features = ["std"] }
 sysinfo = { version = "0.37", default-features = false, features = ["system"] }
+# Capability-style file access: every path resolves against a directory handle and cannot leave it.
+cap-std = "4"
+cap-fs-ext = "4"
+# SHA-256 for the checksum call.
+sha2 = "0.10"
+# Tests: scratch directories that remove themselves.
+tempfile = "3"
 bohio-proto = { path = "crates/bohio-proto" }
 bohio-client = { path = "crates/bohio-client" }
 

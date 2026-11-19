@@ -16,6 +16,8 @@ Documentation: <https://docs.rs/bohio>.
 - Process execution: a program and its arguments run directly, never through a shell unless the
   caller names one; output streams as it is written; a deadline, a kill request or a closed
   stream ends the whole process tree.
+- Filesystem access confined to the peer's granted roots: a `..` or a symbolic link that leaves a root is refused,
+  every path component is resolved against a directory handle, and files stream in chunks with atomic replace.
 - Per-peer grants (`peers.cfg`): an approved peer with no `allow` gets nothing.
 - Threads, not an async runtime: one thread per stream, bounded by configuration.
 - Every bound is a setting with a documented default; nothing is hard-coded.
