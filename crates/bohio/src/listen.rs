@@ -82,7 +82,7 @@ impl Listening {
             endpoint: config.endpoint.clone(),
             reason,
         };
-        let endpoint = Endpoint::parse(&config.endpoint).map_err(&fail)?;
+        let endpoint = Endpoint::parse(&config.endpoint).map_err(fail)?;
         match endpoint {
             Endpoint::Tcp(address) => {
                 let listener = TcpListener::bind(address).map_err(|e| fail(e.to_string()))?;
@@ -92,7 +92,7 @@ impl Listening {
             }
             Endpoint::Pipe(name) => {
                 let mut builder = PipeListener::builder().name(&name);
-                if let Some(bits) = config.socket_mode_bits().map_err(&fail)? {
+                if let Some(bits) = config.socket_mode_bits().map_err(fail)? {
                     builder = builder.socket_mode(bits);
                 }
                 if let Some(remote) = config.remote_clients {
@@ -117,7 +117,7 @@ impl Listening {
                     .build()
                     .map_err(|e| fail(e.to_string()))?;
                 let bound = listener.local_addr().map_err(|e| fail(e.to_string()))?;
-                let url = Endpoint::parse(&format!("ws://{bound}")).map_err(&fail)?;
+                let url = Endpoint::parse(&format!("ws://{bound}")).map_err(fail)?;
                 Ok((Self::WebSocket(listener), url))
             }
             Endpoint::Serial { path, options } => {
