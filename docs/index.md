@@ -1,6 +1,6 @@
 # Bohío
 
-**A remote host runtime: a proven peer runs commands, reads and writes files and opens shells on a machine without SSH, WinRM or Python**, over TCP, a named pipe, a WebSocket, a serial line or standard input and output, on computers, virtual machines and containers.
+**A remote host runtime: a proven peer runs commands, reads and writes files and opens shells on a machine without SSH, WinRM or Python**, over TCP, a named pipe, a WebSocket (with TLS), WebTransport, a serial line or standard input and output, on computers, virtual machines and containers.
 
 Three rules hold the design together:
 

@@ -28,7 +28,7 @@ machines and containers. It is an application: the `coqui-*` names are reserved 
   `bohio peer approve`. Memory per link is bounded by settings, never by the size of a file.
 
 The filesystem, interactive shells and the authenticated link are built, over TCP, a named pipe or Unix socket,
-a WebSocket, a serial line and standard input and output (see the endpoints below).
+a WebSocket (with TLS), WebTransport, a serial line and standard input and output (see the endpoints below).
 
 ## Installation
 
@@ -79,7 +79,8 @@ Every transport is one endpoint scheme; the proof, the grants and the engines ar
 | --- | --- |
 | `tcp://host:port` | a TCP socket |
 | `pipe://name`, `pipe:///path/to.sock` | a Windows named pipe, a Unix domain socket |
-| `ws://host:port` | a WebSocket (binary messages); `wss://` is not served yet |
+| `ws://host:port`, `wss://host:port` | a WebSocket (binary messages), with TLS for `wss`: the host's `tls_cert` and `tls_key`; a client's `--ca FILE` or `--cert-hash HASH` |
+| `webtransport://host:port` | WebTransport over QUIC (UDP), always TLS: files, or a certificate the host makes and prints the hash of; a client's `--fallback ws://...` for a blocked UDP path |
 | `serial://PORT?baud=115200` | a serial line (`serial:///dev/ttyUSB0`, `serial://COM3`), COBS frames with a CRC |
 | `bohio serve --stdio` | one link on standard input and output, for `docker exec -i NAME bohio serve --stdio` |
 | `stdio://program args`, `bohio remote --command "program args"` | the client starts a program and uses its standard streams |

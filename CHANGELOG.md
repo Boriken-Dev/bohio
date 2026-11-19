@@ -38,6 +38,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `wss://` and `webtransport://` endpoints, to listen and to dial, for browsers and TLS-only proxies. The proof still decides who the
+  host is; TLS only has to be accepted. A `[[listen]]` entry takes `tls_cert` and `tls_key` (PEM, read at start, never logged; `wss`
+  needs both), and a `webtransport://` entry without them makes its own ECDSA P-256 certificate (`tls_valid_days`, 1 to 14, default
+  13), prints `certificate sha256:... for ...` and makes a new one halfway through. `bohio remote` takes `--ca FILE` (roots instead of
+  the system's) and `--cert-hash HASH` (a certificate trusted as it is) and, for a `webtransport://` host, `--fallback ENDPOINT`: a
+  `ws://` (loopback only) or `wss://` endpoint of the same host, dialled when the QUIC path fails before anything crossed; a refused
+  certificate never falls back. `bohio-client` has `dial::ServerTrust`, `Endpoint::dial_with`, `Endpoint::with_fallback`,
+  `Endpoint::WebTransport` and `Connection::connect_with`; `bohio::listen` has `server_config` and `MadeCertificate`.
 - `docs/protocol.md` is the wire for an implementer in another language: the carriers, the open metadata and CBOR messages of
   each protocol in CDDL, the one-byte frame tags, the error codes and the capability negotiation. `vectors/*.json` holds every
   message as hex, and `crates/bohio-proto/tests/vectors.rs` writes and checks them. `docs/security.md` covers the service's privileges
@@ -55,7 +63,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `bohio remote --command "program args"` or `stdio://program args` starts a program and uses its standard streams as the link.
   `[[listen]]` takes the settings of its scheme (`socket_mode`, `remote_clients`, `origins`, `baud`, `data_bits`, `parity`,
   `stop_bits`, `flow_control`), `bohio status` reports every configured endpoint, and `bohio-client` has `dial::Endpoint`.
-  The proof and the grants are unchanged; `wss://` is refused until its TLS setup exists.
+  The proof and the grants are unchanged.
 - The authenticated link over TCP, on `coqui-link`: `bohio serve` proves each peer (Noise by default) within `[link] proof_timeout` and
   serves its streams; a key that proves itself and is not accepted is recorded as waiting under its source address and refused. Each
   stream is decided from `peers.cfg` when it opens and every `[link] recheck` while it runs, so a revoke or a narrowed grant ends

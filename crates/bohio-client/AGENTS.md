@@ -4,7 +4,7 @@ Header-file-style reference for the `bohio-client` crate: every public item with
 crate can be used without reading its source. It ships inside the package and is self-contained. Development documentation lives
 with the source at <https://github.com/Boriken-Dev/bohio>.
 
-No Cargo features. MSRV Rust 1.89. Depends on `bohio-proto`, `coqui-transport` (with `process`), `coqui-link` (with `sealed`), `coqui-peer`, `coqui-transport-pipe` (`channel`), `coqui-transport-web` (`websocket`) and
+No Cargo features. MSRV Rust 1.89. Depends on `bohio-proto`, `coqui-transport` (with `process`), `coqui-link` (with `sealed`), `coqui-peer`, `coqui-transport-pipe` (`channel`), `coqui-transport-web` (`websocket`, `webtransport`), `coqui-peer-tls`, `rustls` and
 `coqui-transport-serial` (each a git revision, one copy), `url` and `thiserror`. Version
 `0.0.0-alpha.0`, not published.
 
@@ -128,11 +128,15 @@ place for `replace` and `create`.
 ## Endpoints and dialing (`bohio_client::dial`)
 
 ```rust
-#[non_exhaustive] pub enum Endpoint { Tcp(SocketAddr), Pipe(PipeName), WebSocket(Url), Serial { path: String, options: SerialOptions }, Command(Vec<String>) }   // Clone, Eq, Display
+#[non_exhaustive] pub enum Endpoint { Tcp(SocketAddr), Pipe(PipeName), WebSocket(Url), WebTransport { url: Url, fallback: Option<Url> }, Serial { path: String, options: SerialOptions }, Command(Vec<String>) }   // Clone, Eq, Display; WebSocket is `ws` or `wss`
 impl Endpoint {
-    pub fn parse(text: &str) -> Result<Endpoint, String>;     // the reason, for an unknown scheme, `wss://` (TLS is not set up) or a bad address
-    pub fn dial(&self, timeout: Duration, settings: &Settings) -> Result<Box<dyn Channel>, Error>;   // an unproven channel; Error::Transport(why)
+    pub fn parse(text: &str) -> Result<Endpoint, String>;     // the reason, for an unknown scheme or a bad address; `webtransport://` needs a UDP port
+    pub fn dial(&self, timeout: Duration, settings: &Settings) -> Result<Box<dyn Channel>, Error>;   // an unproven channel; Error::Transport(why); dial_with and the default trust
+    pub fn dial_with(&self, timeout: Duration, settings: &Settings, trust: &ServerTrust) -> Result<Box<dyn Channel>, Error>;   // a refused certificate is Transport(Failure::Certificate); Error::Link when the trust cannot be set up (an unreadable CA file)
+    pub fn with_fallback(self, fallback: Endpoint) -> Result<Endpoint, String>;   // a `ws://` or `wss://` endpoint of the same host after a `webtransport://` one
 }
+#[non_exhaustive] pub struct ServerTrust { pub ca_files: Vec<PathBuf>, pub pins: Vec<PeerId> }   // Default, Clone, Eq; who a TLS client accepts as the host's certificate
+impl ServerTrust { pub fn pin(&mut self, text: &str) -> Result<(), String>; pub fn client_config(&self) -> Result<Arc<rustls::ClientConfig>, String>; }   // pin: `sha256:` and 64 hex digits
 #[non_exhaustive] pub struct SerialOptions { pub baud: Option<u32>, pub data_bits: Option<DataBits>, pub parity: Option<Parity>, pub stop_bits: Option<StopBits>, pub flow_control: Option<FlowControl> }   // Default, Copy, Eq
 impl SerialOptions { pub fn set(&mut self, key: &str, value: &str) -> Result<(), String>; pub fn or(self, fallback: Self) -> Self; }
 pub fn serial(path: &str, options: &SerialOptions, settings: &Settings) -> io::Result<StreamChannel>;   // opens the port: COBS + CRC-32C frames
@@ -146,6 +150,8 @@ pub fn split_command(line: &str) -> Result<Vec<String>, String>;                
 | `tcp://host:port` | a socket; a name is resolved and its first address taken; a socket that connected to itself is refused |
 | `pipe://NAME`, `pipe:///path/to.sock`, `pipe://\\.\pipe\NAME` | a Windows named pipe, a Unix domain socket (`NAME` in `$XDG_RUNTIME_DIR` or `$TMPDIR`); an endpoint never names another host's pipe |
 | `ws://host:port[/path]` | a WebSocket, binary messages, no TLS (plain beyond loopback too: the proof seals what follows) |
+| `wss://host:port[/path]` | the same over TLS, the host's certificate checked by the `ServerTrust`: the system's roots by default (`rustls-platform-verifier`), `ca_files` instead of them, `pins` accepted as they are whatever their name and issuer, either when both are set |
+| `webtransport://host:port[/path]` | WebTransport over QUIC, always TLS, the same trust; only pins is a browser's pin (ECDSA P-256, valid at most 14 days, else `Failure::Certificate`). With a fallback: a failure of the path (not a certificate, permission or protocol failure) before anything crossed dials the WebSocket endpoint, which for `ws://` must be loopback and for another host `wss://`; both name one host |
 | `serial://PORT[?baud=N&data_bits=N&parity=P&stop_bits=N&flow_control=F]` | `PORT` is a device path or `COM3`; `parity` is `none`, `odd`, `even`; `flow_control` is `none` or `hardware` |
 | `stdio://PROGRAM ARG...` | the program is run directly with its standard streams as the channel |
 
@@ -160,6 +166,7 @@ link ended from the mux's close frames, and a first message sent to a host that 
 pub struct Connection;                                            // Debug; Open; Drop ends the link and every stream
 impl Connection {
     pub fn connect(endpoint: &Endpoint, timeout: Duration, proof: &coqui_link::auth::Proof, settings: &Settings) -> Result<Self, Error>;   // any transport
+    pub fn connect_with(endpoint: &Endpoint, timeout: Duration, proof: &coqui_link::auth::Proof, settings: &Settings, trust: &ServerTrust) -> Result<Self, Error>;   // connect() with a TLS trust
     pub fn connect_tcp(address: SocketAddr, timeout: Duration, proof: &coqui_link::auth::Proof, settings: &Settings) -> Result<Self, Error>;   // connect() for tcp
     pub fn over<C: Channel + 'static>(channel: C, proof: &Proof, settings: &Settings) -> Result<Self, Error>;   // an unproven channel to the host
     pub const fn host(&self) -> coqui_peer::PeerId;                // the host's proven id

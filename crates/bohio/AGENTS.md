@@ -46,10 +46,12 @@ pub struct Span(pub Duration);                                    // a number of
 | --- | --- | --- |
 | `[service] name` | `"bohio"` | name shown in `info` |
 | `[service] data_dir` | `bohio` under `%LOCALAPPDATA%` / `$XDG_DATA_HOME` (else `~/.local/share`) | identity, trust store, `peers.cfg` |
-| `[[listen]] endpoint` | none | `tcp://host:port`, `pipe://name` or `pipe:///path.sock`, `ws://host:port`, `serial://port?baud=N`; required in each entry |
+| `[[listen]] endpoint` | none | `tcp://host:port`, `pipe://name` or `pipe:///path.sock`, `ws://host:port`, `wss://host:port`, `webtransport://host:port`, `serial://port?baud=N`; required in each entry |
 | `[[listen]] socket_mode` | `"0o600"` | `pipe`, Unix: the socket's mode, octal text with the `0o` prefix |
 | `[[listen]] remote_clients` | `false` | `pipe`, Windows: clients on other hosts through file sharing |
-| `[[listen]] origins` | none | `ws`: the origins a browser may connect from; none allows any |
+| `[[listen]] origins` | none | `ws`, `wss`, `webtransport`: the origins a browser may connect from; none allows any |
+| `[[listen]] tls_cert`, `tls_key` | none | `wss`, `webtransport`: PEM files, the certificate (leaf first, then its intermediates) and its private key; both or neither; `wss` needs both; read at start, never logged; a `webtransport` entry with neither makes its own certificate |
+| `[[listen]] tls_valid_days` | `13` | `webtransport` without `tls_cert`: the made certificate's validity, 1 to 14 (a browser's limit for a pin); a new one is made halfway through and its hash logged |
 | `[[listen]] baud`, `data_bits`, `parity`, `stop_bits`, `flow_control` | `115200`, `8`, `none`, `1`, `none` | `serial`: the line; the endpoint's query (`?baud=9600`) wins; `flow_control` is `none` or `hardware`; a key for another scheme is refused naming it |
 | `[link] recheck` | `5s` | how often a running stream's permission is decided again; not zero |
 | `[link] max_streams` | `64` | streams per peer; at least 1 |
@@ -289,19 +291,24 @@ with it, and gives it no grant; the joiner stores the host's key, so it then tru
 ## Listeners (`bohio::listen`)
 
 ```rust
-#[non_exhaustive] pub enum Listening { Tcp(TcpListener), Pipe(coqui_transport_pipe::Listener), WebSocket(coqui_transport_web::websocket::Listener), Serial { path: String, options: SerialOptions } }
+#[non_exhaustive] pub enum Listening { Tcp(TcpListener), Pipe(coqui_transport_pipe::Listener), WebSocket(coqui_transport_web::websocket::Listener), WebTransport { listener: coqui_transport_web::webtransport::Listener, certificate: Certificate }, Serial { path: String, options: SerialOptions } }
 impl Listening {
     pub fn bind(config: &ListenConfig, settings: &Settings) -> Result<(Listening, Endpoint), ServeError>;   // the endpoint as bound: port 0 becomes the port chosen
     pub fn accept(&self, wait: Duration, settings: &Settings) -> io::Result<Option<Arrival>>;               // None when none came; not for Serial
+    pub fn certificate_hash(&self) -> Option<String>;                                                        // WebTransport: `sha256:...` of the certificate now presented, for `--cert-hash`
 }
-pub enum Arrival { Ready(Box<dyn Channel>, Option<SocketAddr>), Handshake(Box<Pending>) }
+pub fn server_config(config: &ListenConfig) -> Result<Arc<rustls::ServerConfig>, String>;                    // the chain and key `tls_cert` and `tls_key` name; no client certificate
+pub enum Certificate { Files(String), Made(Arc<MadeCertificate>) }
+impl MadeCertificate { pub fn new(validity: Duration, backdate: Duration) -> Result<Arc<Self>, String>; pub fn config(&self) -> Arc<rustls::ServerConfig>; pub fn hash(&self) -> String; }   // renewed by config() when half the validity has passed
+pub enum Arrival { Ready(Box<dyn Channel>, Option<SocketAddr>), Handshake(Box<Pending>), SessionHandshake(Box<webtransport::Pending>) }
 impl Arrival { pub fn source(&self) -> Option<SocketAddr>; pub fn open(self) -> io::Result<(Box<dyn Channel>, Option<SocketAddr>)>; }   // a WebSocket handshake runs here, on the connection's own thread
 ```
 
 Each scheme yields an unproven channel that holds a peer to one proof-sized message until the proof raises it (`bohio_client::link::framed`);
 `max_frame + 5` (plus the seal) is the bound the proof sets, which every carrier takes (a stream channel and a WebSocket's `Limits::max_message` both
-follow `set_max_message`). `ws://` is served without TLS beyond loopback too: the proof seals everything after it. `wss://` is refused with that
-reason (a rustls configuration and a certificate are not set up). A serial host opens its port, proves the peer, serves the link and opens the
+follow `set_max_message`). `ws://` is served without TLS beyond loopback too: the proof seals everything after it. `wss://` and `webtransport://` add TLS without trusting
+it: no client certificate is asked for, the proof says who the peer is. A `webtransport://` listener prints `certificate sha256:... for <endpoint>`
+after `listening`. A serial host opens its port, proves the peer, serves the link and opens the
 port again; a client whose first message arrives before the host reopened it (a second `remote` right behind the first) is dropped and must try
 again. `serve --stdio` binds none of the `[[listen]]` entries.
 
@@ -321,9 +328,9 @@ a person or a script reads is printed to standard output and flushed; diagnostic
 | --- | --- |
 | `config check [--format text\|json]` | reads the configuration and prints `ok` with a summary |
 | `info [--format text\|json]` | prints this host's capabilities (`json` is `bohio_proto::info::Info`) |
-| `serve [--listen ENDPOINT]...` | serves each `[[listen]]` endpoint and `--listen` (`tcp://host:port`, port 0 picks one; `pipe://name`, `ws://host:port`, `serial://port?baud=N`) until killed; prints `listening <endpoint>` for each, then `host <id>` |
+| `serve [--listen ENDPOINT]...` | serves each `[[listen]]` endpoint and `--listen` (`tcp://host:port`, port 0 picks one; `pipe://name`, `ws://host:port`, `wss://host:port` (needs a `[[listen]]` entry with `tls_cert` and `tls_key`), `webtransport://host:port`, `serial://port?baud=N`) until killed; prints `listening <endpoint>` for each, then `host <id>` |
 | `serve --stdio` | serves one link on standard input and output until it ends; prints nothing to standard output, logs to standard error; excludes `--listen` and binds no `[[listen]]` |
-| `status` | the host's id, key method, data directory, counts of accepted and waiting peers, and one `listen: <endpoint> <state>` line per configured endpoint: `reachable` / `not reachable` (a connect is made; a TCP, WebSocket or pipe host sees it), `device present` / `device missing` (serial, Unix) or `device not checked` (Windows), `not served by this build` |
+| `status` | the host's id, key method, data directory, counts of accepted and waiting peers, and one `listen: <endpoint> <state>` line per configured endpoint: `reachable` / `not reachable` (a connect is made; a TCP, WebSocket or pipe host sees it), `device present` / `device missing` (serial, Unix) or `device not checked` (Windows), `UDP not checked` (WebTransport), `not served by this build` |
 | `id` | the id of this machine's key, made on first use |
 | `peer list` | `accepted <id> allow: ...`, `waiting <id> from <ip>` and `grant-only <id>` lines |
 | `peer approve <id> [--allow P,P] [--fs-root DIR]... [--program NAME]... [--env VAR]...` | accepts a waiting or paired peer; any of `--allow`, `--fs-root` and `--program` replaces its whole grant, none leaves it; `--env` (with `--program`) names the variables its requests may change |
@@ -333,7 +340,7 @@ a person or a script reads is printed to standard output and flushed; diagnostic
 | `service install [--config FILE] [--name NAME] [--account ACCOUNT]` | Windows: registers the service `NAME` (default `bohio`), automatic start, as `ACCOUNT` (default `NT AUTHORITY\LocalService`), running `bohio service run --name NAME [--config ABSOLUTE FILE]`; needs an elevated prompt (`access denied: run this from an elevated prompt` otherwise); elsewhere an error naming the systemd unit |
 | `service uninstall [--name NAME]` | Windows: stops and deletes the service |
 | `service run [--config FILE] [--name NAME]` | Windows: the service's entry point, started by the service manager (a person running it gets a one-line explanation); serves the configured `[[listen]]` endpoints until the manager sends stop or shutdown, then reports stopped and the process exits, which closes the job objects that end every process it started |
-| `remote <endpoint> [--server ID] info [--format text\|json]` | the host's capabilities over the link; the endpoint is any scheme above, or `stdio://program args` |
+| `remote <endpoint> [--server ID] [--ca FILE]... [--cert-hash HASH]... [--fallback ENDPOINT] info [--format text\|json]` | the host's capabilities over the link; the endpoint is any scheme above, or `stdio://program args`; `--ca`/`--cert-hash` check a `wss://` or `webtransport://` host's certificate (the system's roots without them), `--fallback` is a `ws://` (loopback) or `wss://` endpoint of the same host for a blocked UDP path |
 | `remote --command "program args" [--server ID] info` | the same over a program the command starts, its standard streams the link (for example `docker exec -i NAME bohio serve --stdio`); the program is run directly, never through a shell, and its tree ends when the command does |
 | `remote <endpoint> exec [--cwd D] [--timeout-ms N] [--env K=V]... [--stdin] -- <argv>` | runs the program, streams its output, and exits with its status (124 on a deadline, `128+signal` when signalled) |
 | `remote <endpoint> read <path>` | writes the host's file to standard output |

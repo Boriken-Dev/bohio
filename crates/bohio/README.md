@@ -93,7 +93,7 @@ the file, the position and the problem. `bohio info` prints this host's capabili
 `--config`, the first file that exists of `$BOHIO_CONFIG`, the user's `bohio.cfg` and the
 system's is used, and with none the defaults apply.
 
-`bohio serve [--config F] [--listen ENDPOINT]... [--stdio]` serves the `[[listen]]` endpoints (`tcp://`, `pipe://`, `ws://`, `serial://`)
+`bohio serve [--config F] [--listen ENDPOINT]... [--stdio]` serves the `[[listen]]` endpoints (`tcp://`, `pipe://`, `ws://`, `wss://`, `webtransport://`, `serial://`)
 and each `--listen` and prints `listening <endpoint>` and `host <id>` once bound; `--stdio` serves one link on standard input and output. `bohio status`, `bohio id` and `bohio peer list|approve|revoke` show and change
 who may do what; `bohio pair` shows a PIN and accepts the one peer that joins with it (`bohio join <endpoint>` is the other side);
 `bohio remote <endpoint> info|exec -- <argv>|read <path>|shell` uses a host. See the header (`AGENTS.md`) for every flag.

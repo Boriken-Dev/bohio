@@ -26,8 +26,11 @@ The proof and the link run on any channel that delivers whole messages in order.
 | `tcp://host:port` | a 4-byte big-endian length, then the message |
 | `pipe://name` | the same, on a Windows named pipe or a Unix domain socket |
 | standard input and output (`bohio serve --stdio`) | the same, on the process's standard streams |
-| `ws://host:port/path` | one binary WebSocket message |
+| `ws://host:port/path`, `wss://host:port/path` | one binary WebSocket message (TLS for `wss`) |
+| `webtransport://host:port/path` | one message on a WebTransport bidirectional stream, behind a 4-byte little-endian length (QUIC, always TLS) |
 | `serial://port?baud=N` | a COBS-delimited frame with a CRC-32C, as `coqui-transport-serial` defines |
+
+TLS, where a carrier has it, decides whether the carrier's own handshake succeeds and keeps a network observer from the message sizes; it never says who the peer is. The proof does that for every carrier, and a peer that arrives over TLS is refused or admitted by it exactly as one over TCP. A client may open WebTransport first and fall back to a WebSocket endpoint of the same host when the QUIC path fails before anything crossed (a blocked UDP port); a refused certificate never falls back, and the proof runs on whichever opened. Datagrams are outside the proof and Bohío does not use them.
 
 A host serves a serial line to one peer at a time. A message never exceeds the link's `max_message` setting (1 MiB by default); a longer one is the link's job to cut into `more` frames of at most `max_frame` bytes (64 KiB by default).
 
