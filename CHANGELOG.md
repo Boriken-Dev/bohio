@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   stayed open), and the admission of an exec, a shell or a transfer checks that the program is still listed and the file
   still under a root, so such a stream ends at the next `[link] recheck`. `link::admission` takes the protocol, `link::covers`
   is the check, and `control::Context::current` is where the control stream reads the grant.
+- One source, or one peer, can no longer hold every connection: `[link] max_unproven_per_source` (default 16) closes a
+  connection unread when its source (an IPv4 address or an IPv6 /64) already has that many proving themselves, and
+  `[link] max_links_per_peer` (default 16) closes a proven peer's link past that many. Before, anyone who could reach a
+  listener could keep it from serving everyone by opening `max_connections` connections and sending nothing.
+  `listen::Arrival::source` names a connection's source.
 - A peer can no longer make a set-user-ID or set-group-ID file: a mode with `0o6000` in `set_mode`, `mkdir` or a write's
   `file_mode` is `denied`, and a `copy` or a `replace` drops those bits from the mode it keeps. Such a file, written by a
   peer that may only write under one root, ran as the service's account for any local user who started it.

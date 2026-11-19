@@ -47,6 +47,14 @@ pub enum Arrival {
 }
 
 impl Arrival {
+    /// The address the peer connected from, when the transport has one.
+    pub fn source(&self) -> Option<SocketAddr> {
+        match self {
+            Self::Ready(_, source) => *source,
+            Self::Handshake(pending) => Some(pending.peer_addr()),
+        }
+    }
+
     /// The channel and the address the peer connected from, running a pending handshake.
     ///
     /// # Errors

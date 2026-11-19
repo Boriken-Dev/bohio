@@ -83,6 +83,14 @@ fn values_out_of_range_name_their_key() {
         ("[link]\nqueue_bytes = 0\n", "link.queue_bytes"),
         ("[link]\nread_ahead = 0\n", "link.read_ahead"),
         ("[link]\nmax_connections = 0\n", "link.max_connections"),
+        (
+            "[link]\nmax_unproven_per_source = 0\n",
+            "link.max_unproven_per_source",
+        ),
+        (
+            "[link]\nmax_links_per_peer = 0\n",
+            "link.max_links_per_peer",
+        ),
         ("[link]\nproof_timeout = 0\n", "link.proof_timeout"),
         ("[link]\nmax_message = 4096\n", "link.max_message"),
         (

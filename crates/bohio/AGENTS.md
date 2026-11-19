@@ -54,6 +54,8 @@ pub struct Span(pub Duration);                                    // a number of
 | `[link] recheck` | `5s` | how often a running stream's permission is decided again; not zero |
 | `[link] max_streams` | `64` | streams per peer; at least 1 |
 | `[link] max_connections` | `128` | links open at once across peers, those still proving included; one past it is closed unread; at least 1 |
+| `[link] max_unproven_per_source` | `16` | connections from one source (an IPv4 address or an IPv6 /64) still proving themselves; one past it is closed unread; a pipe, serial line or stdio link has no source; at least 1 |
+| `[link] max_links_per_peer` | `16` | links one proven peer may have open; one past it is closed after its proof; at least 1 |
 | `[link] proof_timeout` | `10s` | how long a peer has to prove itself; not zero |
 | `[link] window` | `1048576` | bytes a peer may send on one stream ahead of what the host has read (the credit window); at least 1 |
 | `[link] max_frame` | `65536` | most bytes of one message in one frame (a longer message is sent in parts); at least 1 |
@@ -248,7 +250,7 @@ impl Server {
     pub const fn host(&self) -> coqui_peer::PeerId;
     pub fn serve_listening(&self, listening: &Listening, stop: &AtomicBool) -> io::Result<()>;   // accepts until `stop`; a thread per connection (a serial line: one link at a time, the port reopened after each)
     pub fn serve_stdio(&self) -> io::Result<()>;                   // the one link on standard input and output; nothing else may write to standard output
-    pub fn serve_channel<C: Channel>(&self, channel: &C, source: Option<SocketAddr>);   // proves the peer on any unproven channel, serves its link to the end; the caller closes it
+    pub fn serve_channel<C: Channel>(&self, channel: &C, source: Option<SocketAddr>);   // proves the peer on any unproven channel, serves its link to the end (at most max_links_per_peer per peer); the caller closes it
 }
 #[non_exhaustive] pub enum ServeError { Peer(PeerError), Proof(String), Listen { endpoint, reason } }
 
@@ -292,7 +294,7 @@ impl Listening {
     pub fn accept(&self, wait: Duration, settings: &Settings) -> io::Result<Option<Arrival>>;               // None when none came; not for Serial
 }
 pub enum Arrival { Ready(Box<dyn Channel>, Option<SocketAddr>), Handshake(Box<Pending>) }
-impl Arrival { pub fn open(self) -> io::Result<(Box<dyn Channel>, Option<SocketAddr>)>; }   // a WebSocket handshake runs here, on the connection's own thread
+impl Arrival { pub fn source(&self) -> Option<SocketAddr>; pub fn open(self) -> io::Result<(Box<dyn Channel>, Option<SocketAddr>)>; }   // a WebSocket handshake runs here, on the connection's own thread
 ```
 
 Each scheme yields an unproven channel that holds a peer to one proof-sized message until the proof raises it (`bohio_client::link::framed`);

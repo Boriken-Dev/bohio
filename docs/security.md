@@ -49,7 +49,7 @@ The risk grows with the account. A service run as `root`, `SYSTEM`, or any accou
 - `fs_roots` set to `/` or a drive root, or a root that holds the account's own configuration (`bohio.cfg`, `peers.cfg`, the `identity` key) lets a peer with `fs.write` change who else is trusted. Keep roots away from the data directory.
 - A peer with `admin` is trusted to manage the host; no engine needs it today. Grant it to nobody.
 - `ws://` is served without TLS beyond loopback, because the proof seals every message after it. A peer that reads the network sees metadata (message sizes and timing) and the source address, not content. `wss://` is not served yet.
-- A listener that is reachable is attackable: bind to the narrowest address, use a firewall, and prefer `pipe://`, `serve --stdio` or a loopback address behind a tunnel when a peer is on the same machine. `[link] max_connections` and `proof_timeout` bound what an unproven connection may cost.
+- A listener that is reachable is attackable: bind to the narrowest address, use a firewall, and prefer `pipe://`, `serve --stdio` or a loopback address behind a tunnel when a peer is on the same machine. `[link] max_connections` and `proof_timeout` bound what an unproven connection may cost; `max_unproven_per_source` keeps one address (or one IPv6 /64) from holding every slot while proving nothing, and `max_links_per_peer` keeps one proven peer from holding them with links. Behind a reverse proxy every peer has the proxy's address, so the per-source bound is shared by all of them there; many sources at once can still fill `max_connections`.
 
 ## Known limits
 

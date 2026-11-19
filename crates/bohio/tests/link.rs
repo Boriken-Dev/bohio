@@ -688,6 +688,97 @@ fn narrowing_a_program_list_ends_a_running_exec_of_a_program_it_no_longer_lists(
     assert!(gone_within(pid, Duration::from_secs(15)));
 }
 
+/// Whether the host has closed `stream`: a read sees the end or a reset within `within`, rather than
+/// waiting, as it does while the host waits for the peer's proof.
+fn closed_by_host(stream: &mut TcpStream, within: Duration) -> bool {
+    stream.set_read_timeout(Some(within)).unwrap();
+    let mut byte = [0_u8; 1];
+    match stream.read(&mut byte) {
+        Ok(0) => true,
+        Ok(_) => false,
+        Err(error) => !matches!(
+            error.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ),
+    }
+}
+
+#[test]
+fn one_source_cannot_hold_every_connection_while_proving_nothing() {
+    let world = World::new("max_unproven_per_source = 2\nproof_timeout = \"30s\"");
+    let host = world.serve("warn");
+    // The host's own reachability probe is a connection too: let it be seen to end.
+    thread::sleep(Duration::from_secs(1));
+    let mut idle: Vec<TcpStream> = (0..2)
+        .map(|_| TcpStream::connect(host.address).expect("a connection"))
+        .collect();
+    for stream in &mut idle {
+        assert!(
+            !closed_by_host(stream, Duration::from_millis(500)),
+            "a connection within the bound was closed"
+        );
+    }
+    let mut third = TcpStream::connect(host.address).expect("a connection");
+    assert!(
+        closed_by_host(&mut third, Duration::from_secs(5)),
+        "a third connection from one source was held while two were proving nothing"
+    );
+
+    // Once they go, the source may connect again, and a proven link is not counted against it.
+    drop(idle);
+    let client = approved(&world, "late", &["--allow", "info"]);
+    let until = Instant::now() + DEADLINE;
+    let link = loop {
+        match connect(&client, &host) {
+            Ok(link) => break link,
+            Err(error) if Instant::now() < until => {
+                eprintln!("retrying: {error}");
+                thread::sleep(Duration::from_millis(200));
+            }
+            Err(error) => panic!("{error:?}"),
+        }
+    };
+    let _more: Vec<TcpStream> = (0..2)
+        .map(|_| TcpStream::connect(host.address).expect("a connection"))
+        .collect();
+    let control = bohio_client::control::Control::open(&link).expect("the control stream opens");
+    assert!(control.info(Some(DEADLINE)).is_ok());
+}
+
+#[test]
+fn one_peer_cannot_hold_more_links_than_max_links_per_peer() {
+    let world = World::new("max_links_per_peer = 1");
+    let host = world.serve("warn");
+    let client = approved(&world, "greedy", &["--allow", "info"]);
+    let first = connect(&client, &host).expect("the first link is up");
+    let info = |link: &Connection| {
+        bohio_client::control::Control::open(link)
+            .and_then(|control| control.info(Some(Duration::from_secs(10))))
+    };
+    assert!(info(&first).is_ok());
+    let second = connect(&client, &host).and_then(|link| info(&link).map(|_| ()));
+    assert!(
+        second.is_err(),
+        "a second link was served past max_links_per_peer = 1"
+    );
+    assert!(info(&first).is_ok(), "the first link still works");
+
+    // The link given back makes room for another.
+    drop(first);
+    let until = Instant::now() + DEADLINE;
+    loop {
+        let again = connect(&client, &host).and_then(|link| info(&link).map(|_| ()));
+        if again.is_ok() {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "no link after the first ended: {again:?}"
+        );
+        thread::sleep(Duration::from_millis(200));
+    }
+}
+
 #[test]
 fn a_revoke_ends_a_running_shell_within_recheck_and_its_process() {
     let world = World::new("");

@@ -252,6 +252,13 @@ pub struct LinkConfig {
     /// The most links open at once across peers, counting those still proving themselves; a
     /// connection past it is closed unread. At least 1. Default `128`.
     pub max_connections: usize,
+    /// The most connections from one source (an IPv4 address, or an IPv6 /64) still proving
+    /// themselves at once; one past it is closed unread, so one source cannot hold every
+    /// `max_connections` slot. Behind a proxy every peer shares its source. At least 1. Default `16`.
+    pub max_unproven_per_source: usize,
+    /// The most links one proven peer may have open at once; a link past it is closed after its
+    /// proof, so one peer cannot hold every `max_connections` slot. At least 1. Default `16`.
+    pub max_links_per_peer: usize,
     /// How long a peer has to prove itself. Same units as `recheck`; not zero. Default `10s`.
     pub proof_timeout: Span,
     /// Bytes a peer may send on one stream ahead of what the host has read from it (the stream's
@@ -288,6 +295,8 @@ impl Default for LinkConfig {
             recheck: Span(Duration::from_secs(5)),
             max_streams: 64,
             max_connections: 128,
+            max_unproven_per_source: 16,
+            max_links_per_peer: 16,
             proof_timeout: Span(link.proof_timeout),
             window: link.window,
             max_frame: link.max_frame,
@@ -568,6 +577,11 @@ impl Config {
         let link = &self.link;
         for (key, zero) in [
             ("link.max_connections", link.max_connections == 0),
+            (
+                "link.max_unproven_per_source",
+                link.max_unproven_per_source == 0,
+            ),
+            ("link.max_links_per_peer", link.max_links_per_peer == 0),
             ("link.window", link.window == 0),
             ("link.max_message", link.max_message == 0),
             ("link.queue_bytes", link.queue_bytes == 0),

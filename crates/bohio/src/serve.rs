@@ -6,10 +6,12 @@
 //! stream it opens is decided by [`crate::link`] at open and at every `[link] recheck`, and runs one
 //! engine behind a bounded [`Relay`](bohio_client::relay::Relay).
 
+use std::collections::HashMap;
 use std::ffi::OsString;
-use std::net::SocketAddr;
-use std::sync::Arc;
+use std::hash::Hash;
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
@@ -86,6 +88,73 @@ pub struct Server {
     services: Services,
     host: PeerId,
     connections: AtomicUsize,
+    /// Connections still proving themselves, by source: `[link] max_unproven_per_source` each.
+    unproven: Counted<IpAddr>,
+    /// Proven links, by peer: `[link] max_links_per_peer` each.
+    links: Counted<String>,
+}
+
+/// How many of something each key holds, at most `limit` at once.
+struct Counted<K> {
+    held: Mutex<HashMap<K, usize>>,
+    limit: usize,
+}
+
+impl<K: Eq + Hash + Clone> Counted<K> {
+    fn new(limit: usize) -> Self {
+        Self {
+            held: Mutex::new(HashMap::new()),
+            limit,
+        }
+    }
+
+    /// One more for `key`, given back when the hold drops; `None` when `key` holds `limit`.
+    fn take(&self, key: K) -> Option<Hold<'_, K>> {
+        let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+        let count = held.entry(key.clone()).or_insert(0);
+        if *count >= self.limit {
+            return None;
+        }
+        *count += 1;
+        Some(Hold { counted: self, key })
+    }
+}
+
+/// One of a key's [`Counted`] holds.
+struct Hold<'a, K: Eq + Hash> {
+    counted: &'a Counted<K>,
+    key: K,
+}
+
+impl<K: Eq + Hash> Drop for Hold<'_, K> {
+    fn drop(&mut self) {
+        let mut held = self
+            .counted
+            .held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(count) = held.get_mut(&self.key) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                held.remove(&self.key);
+            }
+        }
+    }
+}
+
+/// The source a connection counts against: an IPv4 address (an IPv4-mapped IPv6 address is its IPv4
+/// address), or the /64 an IPv6 address lies in, since one holder controls every address of a /64.
+fn source_key(source: SocketAddr) -> IpAddr {
+    match source.ip() {
+        IpAddr::V6(address) => match address.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => {
+                let bits = u128::from(address) & !u128::from(u64::MAX);
+                IpAddr::V6(Ipv6Addr::from(bits))
+            }
+        },
+        v4 @ IpAddr::V4(_) => v4,
+    }
 }
 
 impl core::fmt::Debug for Server {
@@ -170,6 +239,8 @@ impl Server {
             services,
             host,
             connections: AtomicUsize::new(0),
+            unproven: Counted::new(config.link.max_unproven_per_source),
+            links: Counted::new(config.link.max_links_per_peer),
         })
     }
 
@@ -197,6 +268,18 @@ impl Server {
                 let Some(arrival) = listening.accept(ACCEPT_WAIT, settings)? else {
                     continue;
                 };
+                let proving = match arrival.source() {
+                    Some(source) => match self.unproven.take(source_key(source)) {
+                        Some(hold) => Some(hold),
+                        None => {
+                            tracing::info!(
+                                "a connection was closed: its source has max_unproven_per_source connections proving themselves"
+                            );
+                            continue;
+                        }
+                    },
+                    None => None,
+                };
                 if self.connections.fetch_add(1, Ordering::SeqCst) >= limit {
                     self.connections.fetch_sub(1, Ordering::SeqCst);
                     tracing::info!("a connection was closed: max_connections are open");
@@ -205,7 +288,7 @@ impl Server {
                 scope.spawn(move || {
                     match arrival.open() {
                         Ok((channel, source)) => {
-                            self.serve_channel(&channel, source);
+                            self.serve_proving(&channel, source, proving);
                             channel.close();
                         }
                         Err(error) => tracing::info!("a connection could not be set up: {error}"),
@@ -248,8 +331,19 @@ impl Server {
         Ok(())
     }
 
-    /// Proves the peer on `channel` and serves its link until it ends. The caller closes `channel`.
+    /// Proves the peer on `channel` and serves its link until it ends, at most `[link]
+    /// max_links_per_peer` links per peer at once. The caller closes `channel`.
     pub fn serve_channel<C: Channel>(&self, channel: &C, source: Option<SocketAddr>) {
+        self.serve_proving(channel, source, None);
+    }
+
+    /// As [`Server::serve_channel`], giving `proving` back once the proof has ended either way.
+    fn serve_proving<C: Channel>(
+        &self,
+        channel: &C,
+        source: Option<SocketAddr>,
+        proving: Option<Hold<'_, IpAddr>>,
+    ) {
         let settings = &self.shared.settings;
         let sourced = Sourced {
             proof: &self.proof,
@@ -269,8 +363,12 @@ impl Server {
             }
             Err(error) => return tracing::info!("a connection ended before its proof: {error}"),
         };
-        let _ = channel.set_pending(settings.read_ahead);
+        drop(proving);
         let peer = established.peer;
+        let Some(_link) = self.links.take(peer.to_string()) else {
+            return tracing::info!(%peer, "a link was closed: the peer has max_links_per_peer links open");
+        };
+        let _ = channel.set_pending(settings.read_ahead);
         let recheck = self.shared.config.link.recheck.0;
         let store = self.store.clone();
         // A revoked key's streams end at the next re-check; the link itself ends at the second.
