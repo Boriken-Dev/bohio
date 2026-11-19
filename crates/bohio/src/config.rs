@@ -227,6 +227,7 @@ impl LinkConfig {
     /// The link bounds the host and a client share.
     pub fn settings(&self) -> bohio_client::link::Settings {
         let mut settings = bohio_client::link::Settings::default();
+        settings.max_streams = self.max_streams;
         settings.proof_timeout = self.proof_timeout.0;
         settings.window = self.window;
         settings.max_frame = self.max_frame;

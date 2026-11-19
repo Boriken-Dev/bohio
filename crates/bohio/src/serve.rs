@@ -280,7 +280,7 @@ impl Server {
             .with_check(move || store.is_accepted(&peer))
             .with_check_every(recheck.saturating_mul(2));
         let mut options = Options::default();
-        options.limits = settings.limits(self.shared.config.link.max_streams);
+        options.limits = settings.limits();
         options.recheck = recheck;
         let host = Host {
             store: &self.peers,

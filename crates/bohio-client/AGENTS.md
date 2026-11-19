@@ -135,12 +135,11 @@ impl Connection {
     pub fn is_up(&self) -> bool;                                   // false once the host or the network ended the link
     pub fn close(&self);                                           // closes every stream and joins the link's thread
 }
-pub const DEFAULT_MAX_STREAMS: usize = 64;
 
-#[non_exhaustive] pub struct Settings { pub proof_timeout: Duration /*10 s*/, pub window: u32 /*1 MiB*/, pub max_frame: usize /*64 KiB*/,
+#[non_exhaustive] pub struct Settings { pub max_streams: usize /*64*/, pub proof_timeout: Duration /*10 s*/, pub window: u32 /*1 MiB*/, pub max_frame: usize /*64 KiB*/,
     pub max_message: usize /*1 MiB*/, pub queue_bytes: usize /*256 KiB*/, pub read_ahead: usize /*8*/, pub queued_bytes: usize /*1 MiB*/,
     pub send_limit: Duration /*10 s*/, pub send_wait: Duration /*250 ms*/, pub poll_interval: Duration /*50 ms*/ }   // Default; the host's `[link]` section
-impl Settings { pub fn limits(&self, max_streams: usize) -> coqui_link::mux::Limits; pub fn record_length(&self, method: coqui_link::auth::Method) -> usize; }
+impl Settings { pub fn limits(&self) -> coqui_link::mux::Limits; pub fn record_length(&self, method: coqui_link::auth::Method) -> usize; }
 pub fn socket(stream: TcpStream, settings: &Settings) -> io::Result<StreamChannel>;   // length-prefixed, an unproven peer held to one proof-sized message
 
 pub struct Relay;                                                 // Debug; Channel: an owned, bounded channel over one stream of a link

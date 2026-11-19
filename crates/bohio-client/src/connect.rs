@@ -19,10 +19,6 @@ use crate::link::{Settings, socket};
 use crate::relay::{Relay, relay};
 use crate::{Error, Open};
 
-/// How many streams one connection has open at once, unless [`Connection::with_max_streams`] says
-/// otherwise.
-pub const DEFAULT_MAX_STREAMS: usize = 64;
-
 /// One request to open a stream, answered on `reply`.
 struct Request {
     protocol: String,
@@ -46,7 +42,6 @@ pub struct Connection {
 /// What reaches the connection's own thread once the link is up.
 struct Link {
     settings: Settings,
-    max_streams: usize,
     requests: Receiver<Request>,
     relays: Arc<Mutex<Vec<Weak<Relay>>>>,
     up: Arc<AtomicBool>,
@@ -93,7 +88,6 @@ impl Connection {
         let (ready, ready_rx) = mpsc::channel();
         let link = Link {
             settings: *settings,
-            max_streams: DEFAULT_MAX_STREAMS,
             requests: receiver,
             relays: Arc::clone(&relays),
             up: Arc::clone(&up),
@@ -246,55 +240,49 @@ fn run<C: Channel>(channel: C, proof: &Proof, link: Link, ready: &Sender<Result<
     let _ = channel.set_pending(settings.read_ahead.max(1));
     let host = established.peer;
     let sealed = Sealed::new(&channel, established.session);
-    Mux::run(
-        &sealed,
-        Side::Dialed,
-        settings.limits(link.max_streams),
-        None,
-        |mux| {
-            link.up.store(true, Ordering::SeqCst);
-            let _ = ready.send(Ok(host));
-            thread::scope(|scope| {
-                loop {
-                    match link
-                        .requests
-                        .recv_timeout(settings.poll_interval.max(Duration::from_millis(1)))
-                    {
-                        Ok(request) => {
-                            let opened = mux
-                                .open_with(&request.protocol, &request.metadata)
-                                .map_err(Error::from);
-                            let answer = opened.map(|stream| {
-                                let relay = relay(scope, Arc::new(stream), &settings);
-                                let mut relays =
-                                    link.relays.lock().unwrap_or_else(PoisonError::into_inner);
-                                relays.retain(|known| known.strong_count() > 0);
-                                relays.push(Arc::downgrade(&relay));
-                                Box::new(Handle(relay)) as Box<dyn Channel>
-                            });
-                            let _ = request.reply.send(answer);
-                        }
-                        Err(RecvTimeoutError::Timeout) => {
-                            if !matches!(mux.link_state(), LinkState::Up) {
-                                break;
-                            }
-                        }
-                        Err(RecvTimeoutError::Disconnected) => break,
-                    }
-                }
-                link.up.store(false, Ordering::SeqCst);
-                // The connection is over: whatever is still open is closed, so the scope can end.
-                for open in link
-                    .relays
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .iter()
-                    .filter_map(Weak::upgrade)
+    Mux::run(&sealed, Side::Dialed, settings.limits(), None, |mux| {
+        link.up.store(true, Ordering::SeqCst);
+        let _ = ready.send(Ok(host));
+        thread::scope(|scope| {
+            loop {
+                match link
+                    .requests
+                    .recv_timeout(settings.poll_interval.max(Duration::from_millis(1)))
                 {
-                    open.close();
+                    Ok(request) => {
+                        let opened = mux
+                            .open_with(&request.protocol, &request.metadata)
+                            .map_err(Error::from);
+                        let answer = opened.map(|stream| {
+                            let relay = relay(scope, Arc::new(stream), &settings);
+                            let mut relays =
+                                link.relays.lock().unwrap_or_else(PoisonError::into_inner);
+                            relays.retain(|known| known.strong_count() > 0);
+                            relays.push(Arc::downgrade(&relay));
+                            Box::new(Handle(relay)) as Box<dyn Channel>
+                        });
+                        let _ = request.reply.send(answer);
+                    }
+                    Err(RecvTimeoutError::Timeout) => {
+                        if !matches!(mux.link_state(), LinkState::Up) {
+                            break;
+                        }
+                    }
+                    Err(RecvTimeoutError::Disconnected) => break,
                 }
-            });
-        },
-    );
+            }
+            link.up.store(false, Ordering::SeqCst);
+            // The connection is over: whatever is still open is closed, so the scope can end.
+            for open in link
+                .relays
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .iter()
+                .filter_map(Weak::upgrade)
+            {
+                open.close();
+            }
+        });
+    });
     channel.close();
 }

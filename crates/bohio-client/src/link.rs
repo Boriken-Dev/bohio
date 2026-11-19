@@ -18,6 +18,8 @@ use coqui_transport::{StreamChannel, StreamChannelBuilder};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Settings {
+    /// The most streams open at once, in both directions together. At least 1. Default 64.
+    pub max_streams: usize,
     /// How long a peer has to prove itself. Default 10 seconds.
     pub proof_timeout: Duration,
     /// Bytes a peer may send on one stream ahead of what has been read from it: the stream's credit
@@ -48,6 +50,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            max_streams: 64,
             proof_timeout: Duration::from_secs(10),
             window: 1024 * 1024,
             max_frame: 64 * 1024,
@@ -63,8 +66,9 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// The mux limits these settings make, for at most `max_streams` streams at once.
-    pub fn limits(&self, max_streams: usize) -> Limits {
+    /// The mux limits these settings make.
+    pub fn limits(&self) -> Limits {
+        let max_streams = self.max_streams;
         let mut limits = Limits::default();
         limits.max_streams = max_streams.max(1);
         limits.max_per_protocol = max_streams.max(1);
