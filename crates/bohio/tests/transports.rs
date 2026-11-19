@@ -375,6 +375,10 @@ fn processes_with(needles: &[&str]) -> Vec<u32> {
         .processes()
         .values()
         .filter(|process| {
+            // Linux lists a process's threads beside it, with the same command line.
+            if process.thread_kind().is_some() {
+                return false;
+            }
             let line = process
                 .cmd()
                 .iter()

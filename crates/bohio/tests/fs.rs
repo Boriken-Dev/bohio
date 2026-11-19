@@ -711,6 +711,8 @@ fn a_link_swapped_in_while_paths_are_read_never_leads_outside() {
                                 | ErrorCode::NotFound
                                 | ErrorCode::Io
                                 | ErrorCode::Denied
+                                // macOS answers a link met under `O_NOFOLLOW` with an invalid path.
+                                | ErrorCode::BadRequest
                         ),
                         "{body:?}"
                     );
@@ -1146,7 +1148,8 @@ fn a_listing_is_paged_sorted_and_bounded_by_the_host() {
     assert_eq!(code(fs.list("f00", None, None)), ErrorCode::BadRequest);
 }
 
-#[cfg(unix)]
+// macOS file systems refuse a name that is not valid text, so there is none to list.
+#[cfg(all(unix, not(target_os = "macos")))]
 #[test]
 fn a_name_that_is_not_text_is_counted_and_left_out() {
     use std::os::unix::ffi::OsStrExt;
