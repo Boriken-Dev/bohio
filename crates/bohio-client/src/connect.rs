@@ -3,7 +3,7 @@
 //! The host proves itself to this side as this side proves itself to the host (a key each way),
 //! with [`coqui_link`]'s proof; what follows is a link of streams, one per operation.
 
-use std::net::{SocketAddr, TcpStream};
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
@@ -15,7 +15,8 @@ use coqui_link::mux::{LinkState, Mux, Side};
 use coqui_peer::PeerId;
 use coqui_transport::{Channel, Failure};
 
-use crate::link::{Settings, socket};
+use crate::dial::Endpoint;
+use crate::link::Settings;
 use crate::relay::{Relay, relay};
 use crate::{Error, Open};
 
@@ -48,28 +49,37 @@ struct Link {
 }
 
 impl Connection {
-    /// Connects to `address`, proves this side by `proof` and the host by the trust `proof` names,
-    /// within `settings.proof_timeout` (and `timeout` for the socket).
+    /// Connects to `endpoint`, proves this side by `proof` and the host by the trust `proof` names,
+    /// within `settings.proof_timeout` (and `timeout` for opening the path: the socket, the pipe, the
+    /// WebSocket handshake, the port or the program).
     ///
     /// # Errors
     ///
     /// [`Error::Transport`] when the host cannot be reached or ends the connection, [`Error::Link`]
     /// when the proof fails (a host whose key is not trusted ends the connection without a word, so
-    /// that is a `Transport` failure too). A socket that connected to itself is refused.
+    /// that is a `Transport` failure too). A TCP socket that connected to itself is refused.
+    pub fn connect(
+        endpoint: &Endpoint,
+        timeout: Duration,
+        proof: &Proof,
+        settings: &Settings,
+    ) -> Result<Self, Error> {
+        let channel = endpoint.dial(timeout, settings)?;
+        Self::over(channel, proof, settings)
+    }
+
+    /// Connects to the TCP `address`: [`Connection::connect`] for a `tcp://` endpoint.
+    ///
+    /// # Errors
+    ///
+    /// As [`Connection::connect`].
     pub fn connect_tcp(
         address: SocketAddr,
         timeout: Duration,
         proof: &Proof,
         settings: &Settings,
     ) -> Result<Self, Error> {
-        let stream = TcpStream::connect_timeout(&address, timeout)
-            .map_err(|_| Error::Transport(Failure::PathLost))?;
-        // A loopback connect to a closed port in the ephemeral range can connect a socket to itself.
-        if stream.local_addr().ok() == stream.peer_addr().ok() {
-            return Err(Error::Transport(Failure::PathLost));
-        }
-        let channel = socket(stream, settings).map_err(|_| Error::Transport(Failure::PathLost))?;
-        Self::over(channel, proof, settings)
+        Self::connect(&Endpoint::Tcp(address), timeout, proof, settings)
     }
 
     /// Proves over `channel`, an unproven channel to the host, and starts the link.

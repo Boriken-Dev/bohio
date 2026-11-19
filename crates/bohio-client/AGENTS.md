@@ -4,10 +4,11 @@ Header-file-style reference for the `bohio-client` crate: every public item with
 crate can be used without reading its source. It ships inside the package and is self-contained. Development documentation lives
 with the source at <https://github.com/Boriken-Dev/bohio>.
 
-No Cargo features. MSRV Rust 1.89. Depends on `bohio-proto`, `coqui-transport`, `coqui-link` (with `sealed`) and `coqui-peer` (each a git revision, one copy) and `thiserror`. Version
+No Cargo features. MSRV Rust 1.89. Depends on `bohio-proto`, `coqui-transport` (with `process`), `coqui-link` (with `sealed`), `coqui-peer`, `coqui-transport-pipe` (`channel`), `coqui-transport-web` (`websocket`) and
+`coqui-transport-serial` (each a git revision, one copy), `url` and `thiserror`. Version
 `0.0.0-alpha.0`, not published.
 
-Imports: the root holds `Open` and `Error`. Public modules: `connect`, `control`, `exec`, `fs`, `link`, `relay`, `shell`. No `unsafe` code
+Imports: the root holds `Open` and `Error`. Public modules: `connect`, `control`, `dial`, `exec`, `fs`, `link`, `relay`, `shell`. No `unsafe` code
 (`#![forbid(unsafe_code)]`). The operations start no threads and do no I/O of their own: every call blocks on the channel it was given
 (only `connect` and `relay` start threads, and `connect` opens a socket).
 
@@ -124,12 +125,42 @@ A refusal (`denied`, `outside_root`, `not_found`, `exists`, `busy`, ...) comes f
 bytes than the header announced. `finish` is the only proof a write is in place: `Error::Remote` there means nothing was put in
 place for `replace` and `create`.
 
+## Endpoints and dialing (`bohio_client::dial`)
+
+```rust
+#[non_exhaustive] pub enum Endpoint { Tcp(SocketAddr), Pipe(PipeName), WebSocket(Url), Serial { path: String, options: SerialOptions }, Command(Vec<String>) }   // Clone, Eq, Display
+impl Endpoint {
+    pub fn parse(text: &str) -> Result<Endpoint, String>;     // the reason, for an unknown scheme, `wss://` (TLS is not set up) or a bad address
+    pub fn dial(&self, timeout: Duration, settings: &Settings) -> Result<Box<dyn Channel>, Error>;   // an unproven channel; Error::Transport(why)
+}
+#[non_exhaustive] pub struct SerialOptions { pub baud: Option<u32>, pub data_bits: Option<DataBits>, pub parity: Option<Parity>, pub stop_bits: Option<StopBits>, pub flow_control: Option<FlowControl> }   // Default, Copy, Eq
+impl SerialOptions { pub fn set(&mut self, key: &str, value: &str) -> Result<(), String>; pub fn or(self, fallback: Self) -> Self; }
+pub fn serial(path: &str, options: &SerialOptions, settings: &Settings) -> io::Result<StreamChannel>;   // opens the port: COBS + CRC-32C frames
+pub fn command(argv: &[String], settings: &Settings) -> io::Result<StreamChannel>;                       // starts the program; stderr is this process's; its tree ends on close
+pub fn web_limits(settings: &Settings) -> coqui_transport_web::Limits;                                    // one proof-sized message, read ahead one at a time, until the proof
+pub fn split_command(line: &str) -> Result<Vec<String>, String>;                                         // spaces separate, quotes group, nothing escapes
+```
+
+| Endpoint | Transport |
+| --- | --- |
+| `tcp://host:port` | a socket; a name is resolved and its first address taken; a socket that connected to itself is refused |
+| `pipe://NAME`, `pipe:///path/to.sock`, `pipe://\\.\pipe\NAME` | a Windows named pipe, a Unix domain socket (`NAME` in `$XDG_RUNTIME_DIR` or `$TMPDIR`); an endpoint never names another host's pipe |
+| `ws://host:port[/path]` | a WebSocket, binary messages, no TLS (plain beyond loopback too: the proof seals what follows) |
+| `serial://PORT[?baud=N&data_bits=N&parity=P&stop_bits=N&flow_control=F]` | `PORT` is a device path or `COM3`; `parity` is `none`, `odd`, `even`; `flow_control` is `none` or `hardware` |
+| `stdio://PROGRAM ARG...` | the program is run directly with its standard streams as the channel |
+
+Every channel `dial` returns holds the peer to one message of `coqui_link::auth::MAX_PROOF_MESSAGE` until the proof raises the bound to
+`Settings::record_length` (`max_frame + 5` plus the seal), so a carrier's own message bound must allow that: a stream channel, a WebSocket and
+a COBS channel all follow the proof's `set_max_message`. A serial line has no end of stream: closing it sends nothing, so the host learns the
+link ended from the mux's close frames, and a first message sent to a host that is reopening its port is lost (try again).
+
 ## The link (`bohio_client::connect`, `link`, `relay`)
 
 ```rust
 pub struct Connection;                                            // Debug; Open; Drop ends the link and every stream
 impl Connection {
-    pub fn connect_tcp(address: SocketAddr, timeout: Duration, proof: &coqui_link::auth::Proof, settings: &Settings) -> Result<Self, Error>;
+    pub fn connect(endpoint: &Endpoint, timeout: Duration, proof: &coqui_link::auth::Proof, settings: &Settings) -> Result<Self, Error>;   // any transport
+    pub fn connect_tcp(address: SocketAddr, timeout: Duration, proof: &coqui_link::auth::Proof, settings: &Settings) -> Result<Self, Error>;   // connect() for tcp
     pub fn over<C: Channel + 'static>(channel: C, proof: &Proof, settings: &Settings) -> Result<Self, Error>;   // an unproven channel to the host
     pub const fn host(&self) -> coqui_peer::PeerId;                // the host's proven id
     pub fn is_up(&self) -> bool;                                   // false once the host or the network ended the link
@@ -140,7 +171,10 @@ impl Connection {
     pub max_message: usize /*1 MiB*/, pub queue_bytes: usize /*256 KiB*/, pub read_ahead: usize /*8*/, pub queued_bytes: usize /*1 MiB*/,
     pub send_limit: Duration /*10 s*/, pub send_wait: Duration /*250 ms*/, pub poll_interval: Duration /*50 ms*/ }   // Default; the host's `[link]` section
 impl Settings { pub fn limits(&self) -> coqui_link::mux::Limits; pub fn record_length(&self, method: coqui_link::auth::Method) -> usize; }
-pub fn socket(stream: TcpStream, settings: &Settings) -> io::Result<StreamChannel>;   // length-prefixed, an unproven peer held to one proof-sized message
+pub fn framed<S: Split, C: Codec>(stream: S, codec: C, settings: &Settings) -> io::Result<StreamChannel>;   // an unproven peer held to one proof-sized message
+pub fn stream<S: Split>(stream: S, settings: &Settings) -> io::Result<StreamChannel>;   // framed with a 4-byte big-endian length: a pipe, a child's streams
+pub fn socket(stream: TcpStream, settings: &Settings) -> io::Result<StreamChannel>;   // stream() with TCP_NODELAY
+pub fn stdio(settings: &Settings) -> io::Result<StreamChannel>;                       // stream() over this process's standard input and output
 
 pub struct Relay;                                                 // Debug; Channel: an owned, bounded channel over one stream of a link
 pub fn relay<'scope, 'env, P: Deref + Clone + Send + 'scope>(scope: &'scope thread::Scope<'scope, 'env>, stream: P, settings: &Settings) -> Arc<Relay>

@@ -3,6 +3,7 @@
 
 pub mod connect;
 pub mod control;
+pub mod dial;
 mod error;
 pub mod exec;
 pub mod fs;

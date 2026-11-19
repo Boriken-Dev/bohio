@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use coqui_link::auth::MAX_PROOF_MESSAGE;
 use coqui_link::mux::Limits;
-use coqui_transport::frame::LengthPrefix;
-use coqui_transport::{StreamChannel, StreamChannelBuilder};
+use coqui_transport::frame::{Codec, LengthPrefix};
+use coqui_transport::{Split, StreamChannel, StreamChannelBuilder};
 
 /// What a link holds and how long it waits, with a documented default for each.
 ///
@@ -85,16 +85,23 @@ impl Settings {
     }
 }
 
-/// A channel over `stream` that holds an unproven peer to one message of at most the proof's size,
-/// until [`Settings::read_ahead`] is raised after the proof.
+/// A channel over `stream`, framed by `codec`, that holds an unproven peer to one message of at
+/// most the proof's size, until [`Settings::read_ahead`] is raised after the proof.
+///
+/// The proof raises the channel's message bound to the proof's record length, which is
+/// [`Settings::record_length`]: `max_frame + 5` bytes of a link frame plus the seal. A carrier whose
+/// own message bound is lower than that cannot carry the link.
 ///
 /// # Errors
 ///
-/// The error of starting the channel's threads or setting the socket.
-pub fn socket(stream: TcpStream, settings: &Settings) -> io::Result<StreamChannel> {
-    stream.set_nodelay(true)?;
+/// The error of starting the channel's threads.
+pub fn framed<S: Split, C: Codec>(
+    stream: S,
+    codec: C,
+    settings: &Settings,
+) -> io::Result<StreamChannel> {
     StreamChannelBuilder::new()
-        .codec(LengthPrefix::u32_be())
+        .codec(codec)
         .stream(stream)
         .max_message(MAX_PROOF_MESSAGE)
         .pending(1)
@@ -102,4 +109,34 @@ pub fn socket(stream: TcpStream, settings: &Settings) -> io::Result<StreamChanne
         .send_limit(settings.send_limit)
         .build()
         .map_err(|error| io::Error::other(error.to_string()))
+}
+
+/// A length-prefixed channel over `stream`, a TCP socket, a pipe or a child's standard streams: see
+/// [`framed`].
+///
+/// # Errors
+///
+/// The error of starting the channel's threads.
+pub fn stream<S: Split>(stream: S, settings: &Settings) -> io::Result<StreamChannel> {
+    framed(stream, LengthPrefix::u32_be(), settings)
+}
+
+/// A channel over a TCP socket: see [`stream`].
+///
+/// # Errors
+///
+/// The error of setting the socket or starting the channel's threads.
+pub fn socket(stream: TcpStream, settings: &Settings) -> io::Result<StreamChannel> {
+    stream.set_nodelay(true)?;
+    self::stream(stream, settings)
+}
+
+/// A channel over this process's standard input and output, for `bohio serve --stdio`: see [`stream`].
+/// Nothing else in the process may write to standard output.
+///
+/// # Errors
+///
+/// The error of starting the channel's threads.
+pub fn stdio(settings: &Settings) -> io::Result<StreamChannel> {
+    stream(coqui_transport::stdio::current(), settings)
 }

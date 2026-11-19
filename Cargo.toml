@@ -25,11 +25,17 @@ clap = { version = "4", default-features = false, features = ["std", "derive", "
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "env-filter", "ansi"] }
 # The channel contract every operation is served over, and the in-process transport the tests use. Alpha, by revision, as the family pins it.
-coqui-transport = { git = "https://github.com/Boriken-Dev/coqui-transport", rev = "2601da58de9cac8f635060e4746864e9b238c6c5", default-features = false }
+coqui-transport = { git = "https://github.com/Boriken-Dev/coqui-transport", rev = "2601da58de9cac8f635060e4746864e9b238c6c5", default-features = false, features = ["process"] }
 # The proven link, its streams and pairing, by the revision it was published at.
 coqui-link = { git = "https://github.com/Boriken-Dev/coqui-link", rev = "40123baab01440c0522a27baa7321a31892b3735", features = ["sealed"] }
 # The trust store and peer ids, at the revision coqui-link names so one copy builds.
 coqui-peer = { git = "https://github.com/Boriken-Dev/coqui-peer", rev = "984db3d54b73de10c7892b06fe269a259de2d1c5" }
+# The transports a link runs over besides TCP, each at the revision that names the same coqui-transport.
+coqui-transport-pipe = { git = "https://github.com/Boriken-Dev/coqui-transport-pipe", rev = "76d97671d87372be5d29263a98198a08fea5eaed", features = ["channel"] }
+coqui-transport-web = { git = "https://github.com/Boriken-Dev/coqui-transport-web", rev = "baebbd9550a936c883927b261738b21c0678729d", features = ["websocket"] }
+coqui-transport-serial = { git = "https://github.com/Boriken-Dev/coqui-transport-serial", rev = "98b295f5580b9acbaefe43c1d0e3c83aff62afe1" }
+# A WebSocket endpoint is a URL.
+url = "2.5"
 # Signalling a process group and looking at a child without collecting it, which std does not offer.
 rustix = { version = "1", default-features = false, features = ["std", "process"] }
 # A job object that ends every process in it when its handle closes.
