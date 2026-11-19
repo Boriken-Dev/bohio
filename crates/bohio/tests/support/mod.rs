@@ -217,6 +217,7 @@ impl Open for Link {
                         let context = control::Context {
                             filesystem: context,
                             info: &info,
+                            current: None,
                         };
                         control::serve(&host, &context);
                         Ok(())

@@ -115,6 +115,18 @@ pub fn serve(
     Ok(finish(monitor, &session))
 }
 
+/// Whether `grant` still allows the request a `bohio-shell/1` stream opened with: an explicit
+/// program is one the program list holds (a shell kind needs only `shell`). A request that cannot be
+/// read is covered, so [`serve`] answers it.
+pub(crate) fn covers(grant: &Grant, metadata: &[u8]) -> bool {
+    Request::from_metadata(metadata).map_or(true, |request| match &request.program {
+        Program::Argv { argv } => argv
+            .first()
+            .is_none_or(|program| grant.permits_program(program)),
+        _ => true,
+    })
+}
+
 /// Ends a session whose threads could not be started.
 fn abandon(shared: &Shared, session: &Session) -> ErrorBody {
     let _ = session.kill();

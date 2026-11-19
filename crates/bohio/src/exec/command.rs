@@ -90,6 +90,18 @@ pub(super) fn spec(request: &Request, grant: &Grant, path: &OsStr) -> Result<Spe
     })
 }
 
+/// Whether `grant` allows the command of `request` by its program list: what a running process is held
+/// to when its grant changes. The `exec` permission itself is the admission's to check.
+pub(super) fn permitted(request: &Request, grant: &Grant) -> bool {
+    match &request.command {
+        Command::Argv { argv } => argv
+            .first()
+            .is_none_or(|program| grant.permits_program(program)),
+        Command::Shell { .. } => grant.permits_shell_script(),
+        _ => true,
+    }
+}
+
 type Line = (OsString, Vec<OsString>, Option<OsString>);
 
 /// The program and arguments that make `kind` run `script`.

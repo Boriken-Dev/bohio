@@ -18,7 +18,7 @@ use bohio_client::dial::{SerialOptions, serial};
 use bohio_client::link::Settings;
 use bohio_client::relay::relay;
 use bohio_proto::info::Info;
-use bohio_proto::protocol;
+use bohio_proto::{ErrorBody, ErrorCode, protocol};
 use coqui_link::auth::{Proof, Sealed, Trust, prove};
 use coqui_link::link::{Accepted as Open, Host, Options, Services, serve as serve_link};
 use coqui_link::mux::{CloseReason, LinkStream, Side};
@@ -152,14 +152,14 @@ impl Server {
             config: config.clone(),
         });
         let mut services = Services::default();
-        for (token, needs) in PROTOCOLS {
+        for (token, _) in PROTOCOLS {
             let shared = Arc::clone(&shared);
             services = services.with_admission(
                 token,
                 Box::new(move |stream: &dyn LinkStream, accepted: &Open| {
                     stream_served(&shared, stream, accepted);
                 }),
-                admission(data.policy_path(), needs),
+                admission(data.policy_path(), token),
             );
         }
         Ok(Self {
@@ -353,9 +353,16 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
                 }
             }
             protocol::CONTROL => {
+                // Each call is decided by the grant as it is then, not as it was when the stream opened.
+                let now = || {
+                    grant_of(&shared.policy, &accepted.peer).map_err(|_| {
+                        ErrorBody::new(ErrorCode::Internal, "the host cannot read its peer grants")
+                    })
+                };
                 let context = control::Context {
                     filesystem: files,
                     info: &shared.info,
+                    current: Some(control::Current(&now)),
                 };
                 let answered = control::serve(&channel, &context);
                 tracing::debug!(answered, "control ended");

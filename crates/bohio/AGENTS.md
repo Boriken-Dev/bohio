@@ -212,13 +212,16 @@ link's channel queues and reads ahead: a channel that queues `n` bytes can hold 
 ## Control stream (`bohio::control`)
 
 ```rust
-pub struct Context<'a> { pub filesystem: fs::Context<'a>, pub info: &'a Info }              // Copy
+pub struct Context<'a> { pub filesystem: fs::Context<'a>, pub info: &'a Info, pub current: Option<Current<'a>> }   // Copy
+pub struct Current<'a>(pub &'a dyn Fn() -> Result<Grant, ErrorBody>);                         // Copy; the grant as it is now
 pub fn serve(channel: &Arc<dyn Channel>, context: &Context<'_>) -> u64;                       // requests answered
 ```
 
 Serves one `bohio/1` stream until the peer closes it or it fails, answering each request in order. `hello` needs no permission
 (version 0 is `bad_request`; the answer is the lower of the two versions), `info` needs `info`, filesystem calls as above. A request
 that cannot be read is answered with id `0` and `bad_request`; a reply too large for the stream is replaced by an `internal` error.
+With `current`, each call is decided by the grant it returns at that call (its error answers the call), so a grant narrowed while the
+stream is open applies to the next call; without it `filesystem.grant` is used throughout. `serve::Server` always passes `current`.
 
 ## Capabilities (`bohio::info`)
 
@@ -246,7 +249,8 @@ impl Server {
 
 pub const PROTOCOLS: [(&str, &[Permission]); 5];                   // each protocol with the permissions of which a peer needs one to open it
 pub struct TrustPeers;                                             // coqui_link::peers::PeerStore over the trust store: an accepted key may open every protocol
-pub fn admission(policy: PathBuf, needs: &'static [Permission]) -> coqui_link::link::Admission;   // reads peers.cfg afresh each call
+pub fn admission(policy: PathBuf, protocol: &'static str) -> coqui_link::link::Admission;   // reads peers.cfg afresh each call
+pub fn covers(grant: &Grant, protocol: &str, metadata: &[u8]) -> bool;   // the grant still covers what the open asked for
 pub fn grant_of(policy: &Path, peer: &str) -> Result<Grant, String>;
 pub struct LogEvents;                                              // link events as log lines: a peer id and a protocol name, nothing else
 
@@ -263,9 +267,10 @@ store) and `peers.cfg` (what each accepted peer may do). A connection proves its
 one proof-sized message. A key that proves it holds the key it presents and is not accepted is recorded as waiting by the proof itself, under the
 connection's source address (bounded by coqui-peer's waiting limits), and the connection ends: the peer sees only that. An accepted peer's link is
 served by `coqui_link::link::serve`: each stream's open is decided by the trust store (`TrustPeers`, accepted keys only) and then by `admission`
-(`peers.cfg`: the peer must hold a permission the protocol needs, `bohio/1` needs one of `info`, `fs.read`, `fs.write`), and each running stream is
-decided again every `[link] recheck`, so removing a key or a grant closes the stream with a revoke whose reason reaches the peer (a `Permission`
-failure). A store or `peers.cfg` that cannot be read refuses. The link itself checks that the key is still accepted every `2 x recheck`. The
+(`peers.cfg`: the peer must hold a permission the protocol needs, `bohio/1` needs one of `info`, `fs.read`, `fs.write`, and `covers` must hold: an
+exec's or a shell's explicit program is one the program list holds, a transfer's file lies under a root), and each running stream is decided again
+every `[link] recheck`, so removing a key or a grant, or narrowing a program list or the roots under a running stream, closes the stream with a
+revoke whose reason reaches the peer (a `Permission` failure). A `bohio/1` stream reads the grant again at every call. A store or `peers.cfg` that cannot be read refuses. The link itself checks that the key is still accepted every `2 x recheck`. The
 stream's engine then runs behind a `Relay` with the grant `peers.cfg` gives the peer at that moment.
 
 `approve` never changes a grant unless one is given; `revoke` removes the `peers.cfg` entry before the key, so a running stream ends at the next

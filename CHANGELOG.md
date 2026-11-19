@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A grant narrowed while a stream runs now reaches it: a `bohio/1` stream reads the peer's grant again for every call, so
+  taking away `fs.write` or a root applies to its next call (it used to keep the grant it opened with for as long as it
+  stayed open), and the admission of an exec, a shell or a transfer checks that the program is still listed and the file
+  still under a root, so such a stream ends at the next `[link] recheck`. `link::admission` takes the protocol, `link::covers`
+  is the check, and `control::Context::current` is where the control stream reads the grant.
 - A program list (`exec.programs`) is now checked against what starts: each listed name is resolved on the host's own
   `PATH` to an absolute path and that path is spawned, and a request that sets or removes `PATH`, or clears the
   environment, is refused. A peer allowed `git` can no longer run its own `git` by pointing `PATH` at a directory it

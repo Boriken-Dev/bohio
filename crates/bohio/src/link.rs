@@ -14,7 +14,7 @@ use coqui_peer::{PeerId, TrustStore};
 
 use bohio_proto::protocol;
 
-use crate::policy::{Permission, Policies};
+use crate::policy::{Grant, Permission, Policies};
 
 /// The protocols a host serves, each with the permissions of which a peer needs at least one to open it.
 pub const PROTOCOLS: [(&str, &[Permission]); 5] = [
@@ -72,19 +72,41 @@ impl PeerStore for TrustPeers {
     }
 }
 
-/// The admission of one protocol: the peer's grant in the `peers.cfg` at `policy`, read now, must hold
-/// at least one of `needs`. A file that cannot be read refuses.
-pub fn admission(policy: PathBuf, needs: &'static [Permission]) -> Admission {
-    Box::new(move |record: &PeerRecord, _metadata: &[u8]| {
+/// The admission of `protocol`: the peer's grant in the `peers.cfg` at `policy`, read now, must hold at
+/// least one of the permissions [`PROTOCOLS`] names for it and must still cover what the stream's open
+/// asked for ([`covers`]). A file that cannot be read refuses.
+pub fn admission(policy: PathBuf, protocol: &'static str) -> Admission {
+    let needs = PROTOCOLS
+        .iter()
+        .find(|(token, _)| *token == protocol)
+        .map_or(&[][..], |(_, needs)| *needs);
+    Box::new(move |record: &PeerRecord, metadata: &[u8]| {
         let policies =
             Policies::load(&policy).map_err(|_| "the host cannot read its peer grants")?;
         let grant = policies.grant_for(&record.peer);
-        if needs.iter().any(|permission| grant.allows(*permission)) {
+        if !needs.iter().any(|permission| grant.allows(*permission)) {
+            return Err("this peer may not do that");
+        }
+        if covers(&grant, protocol, metadata) {
             Ok(())
         } else {
-            Err("this peer may not do that")
+            Err("this peer's grant does not cover what the stream asked for")
         }
     })
+}
+
+/// Whether `grant` still covers the request a stream of `protocol` opened with (`metadata`): the program
+/// of an exec or a shell is one a program list holds, and the file of a transfer lies under a root. A
+/// request that cannot be read is covered, so its engine answers it; a control stream decides each call
+/// as it comes ([`crate::control::Context::current`]).
+pub fn covers(grant: &Grant, protocol: &str, metadata: &[u8]) -> bool {
+    match protocol {
+        protocol::EXEC => crate::exec::covers(grant, metadata),
+        protocol::SHELL => crate::shell::covers(grant, metadata),
+        protocol::READ => crate::fs::covers_read(grant, metadata),
+        protocol::WRITE => crate::fs::covers_write(grant, metadata),
+        _ => true,
+    }
 }
 
 /// The grant of `peer` in the `peers.cfg` at `policy`.
@@ -92,7 +114,7 @@ pub fn admission(policy: PathBuf, needs: &'static [Permission]) -> Admission {
 /// # Errors
 ///
 /// The text of the error when the file cannot be read or is not valid.
-pub fn grant_of(policy: &Path, peer: &str) -> Result<crate::policy::Grant, String> {
+pub fn grant_of(policy: &Path, peer: &str) -> Result<Grant, String> {
     Policies::load(policy)
         .map(|policies| policies.grant_for(peer))
         .map_err(|error| error.to_string())

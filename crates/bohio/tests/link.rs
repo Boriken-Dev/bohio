@@ -613,6 +613,82 @@ fn narrowing_a_grant_ends_the_streams_it_no_longer_covers_while_the_peer_stays_a
 }
 
 #[test]
+fn a_control_stream_already_open_follows_a_narrowed_grant_on_its_next_call() {
+    // The stream keeps a permission its admission accepts (fs.read), so only a per-call decision can
+    // take away fs.write or a root while it stays open.
+    let world = World::new("");
+    let root = world.path("files");
+    let other = world.path("other");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&other).unwrap();
+    let root_text = root.to_string_lossy().into_owned();
+    let other_text = other.to_string_lossy().into_owned();
+    let host = world.serve("warn");
+    let client = approved(
+        &world,
+        "editor",
+        &["--allow", "info,fs.read,fs.write", "--fs-root", &root_text],
+    );
+    let link = connect(&client, &host).expect("the link is up");
+    let files = bohio_client::fs::Fs::connect(&link)
+        .expect("the control stream opens")
+        .with_timeout(Some(DEADLINE));
+    let before = format!("{root_text}/before");
+    files
+        .mkdir(&before, false)
+        .expect("fs.write makes a directory");
+
+    world.approve(
+        &client,
+        &["--allow", "info,fs.read", "--fs-root", &root_text],
+    );
+    let refused = files.mkdir(&format!("{root_text}/after"), false);
+    assert!(
+        matches!(&refused, Err(Error::Remote(body)) if body.code == bohio_proto::ErrorCode::Denied),
+        "a peer that lost fs.write still made a directory: {refused:?}"
+    );
+    assert!(!root.join("after").exists());
+    assert!(files.stat(&before, false).is_ok(), "fs.read still holds");
+
+    world.approve(
+        &client,
+        &["--allow", "info,fs.read", "--fs-root", &other_text],
+    );
+    let moved = files.stat(&before, false);
+    assert!(
+        matches!(&moved, Err(Error::Remote(body)) if body.code == bohio_proto::ErrorCode::OutsideRoot),
+        "a root taken away is still served: {moved:?}"
+    );
+}
+
+#[test]
+fn narrowing_a_program_list_ends_a_running_exec_of_a_program_it_no_longer_lists() {
+    let world = World::new("");
+    let host = world.serve("warn");
+    let program = helper();
+    let client = approved(
+        &world,
+        "runner",
+        &["--allow", "exec", "--program", &program],
+    );
+    let link = connect(&client, &host).expect("the link is up");
+    let exec = Exec::start(&link, &Request::argv([program.as_str(), "sleep", "120000"])).unwrap();
+    let Ok(Some(ExecEvent::Started { pid })) = exec.next(Some(Duration::from_secs(20))) else {
+        panic!("the process did not start");
+    };
+
+    world.approve(
+        &client,
+        &["--allow", "exec", "--program", "some-other-program"],
+    );
+    let (took, error) = ends_with_error(|| exec.next(Some(Duration::from_millis(100))), "the exec");
+    eprintln!("exec ended {took:?} after its program left the list (recheck {RECHECK:?})");
+    assert!(is_refusal(&error), "{error:?}");
+    assert!(took <= RECHECK + SLACK, "took {took:?}");
+    assert!(gone_within(pid, Duration::from_secs(15)));
+}
+
+#[test]
 fn a_revoke_ends_a_running_shell_within_recheck_and_its_process() {
     let world = World::new("");
     let host = world.serve("warn");

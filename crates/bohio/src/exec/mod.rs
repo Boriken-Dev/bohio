@@ -128,6 +128,13 @@ pub fn serve(
     Ok(finish(monitor, &control))
 }
 
+/// Whether `grant` still allows the request a `bohio-exec/1` stream opened with: its program is one
+/// the program list holds, or the list allows a script. A request that cannot be read is covered,
+/// so [`serve`] answers it.
+pub(crate) fn covers(grant: &Grant, metadata: &[u8]) -> bool {
+    Request::from_metadata(metadata).map_or(true, |request| command::permitted(&request, grant))
+}
+
 /// State the stream's threads share.
 struct Shared {
     channel: Arc<dyn Channel>,

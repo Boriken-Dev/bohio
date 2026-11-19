@@ -9,7 +9,7 @@ use bohio_proto::{ErrorBody, ErrorCode, PROTOCOL_VERSION, decode, encode};
 use coqui_transport::{Channel, Failure};
 
 use crate::fs;
-use crate::policy::Permission;
+use crate::policy::{Grant, Permission};
 use crate::stream::{message_limit, send_waiting};
 
 /// What [`serve`] needs besides the stream.
@@ -20,6 +20,19 @@ pub struct Context<'a> {
     pub filesystem: fs::Context<'a>,
     /// What `info` answers.
     pub info: &'a Info,
+    /// Where the peer's grant is read before each call, so a grant narrowed while the stream is open
+    /// applies to its next call; `filesystem.grant` is used when absent.
+    pub current: Option<Current<'a>>,
+}
+
+/// The peer's grant as it is now, or the error to answer a call with when it cannot be read.
+#[derive(Clone, Copy)]
+pub struct Current<'a>(pub &'a dyn Fn() -> Result<Grant, ErrorBody>);
+
+impl core::fmt::Debug for Current<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Current")
+    }
 }
 
 /// Serves one `bohio/1` stream until the peer closes it or it fails, answering each request in
@@ -66,6 +79,23 @@ pub fn serve(channel: &Arc<dyn Channel>, context: &Context<'_>) -> u64 {
 }
 
 fn answer(context: &Context<'_>, call: &Call, limit: usize) -> Result<Reply, ErrorBody> {
+    let Some(current) = context.current else {
+        return answer_with(context.filesystem, context.info, call, limit);
+    };
+    let grant = (current.0)()?;
+    let filesystem = fs::Context {
+        grant: &grant,
+        ..context.filesystem
+    };
+    answer_with(filesystem, context.info, call, limit)
+}
+
+fn answer_with(
+    filesystem: fs::Context<'_>,
+    info: &Info,
+    call: &Call,
+    limit: usize,
+) -> Result<Reply, ErrorBody> {
     match call {
         Call::Hello { version, .. } => {
             if *version == 0 {
@@ -79,14 +109,14 @@ fn answer(context: &Context<'_>, call: &Call, limit: usize) -> Result<Reply, Err
             })
         }
         Call::Info => {
-            if !context.filesystem.grant.allows(Permission::Info) {
+            if !filesystem.grant.allows(Permission::Info) {
                 return Err(ErrorBody::new(
                     ErrorCode::Denied,
                     "this peer does not hold info",
                 ));
             }
-            Ok(Reply::Info(Box::new(context.info.clone())))
+            Ok(Reply::Info(Box::new(info.clone())))
         }
-        other => fs::call(&context.filesystem, other, limit),
+        other => fs::call(&filesystem, other, limit),
     }
 }

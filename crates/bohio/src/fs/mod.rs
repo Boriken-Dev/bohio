@@ -170,6 +170,27 @@ pub fn call(context: &Context<'_>, call: &Call, budget: usize) -> Result<Reply, 
     })
 }
 
+/// Whether the file a `bohio-read/1` stream opened with still lies under one of `grant`'s roots. A
+/// request that cannot be read is covered, so [`serve_read`] answers it.
+pub(crate) fn covers_read(grant: &Grant, metadata: &[u8]) -> bool {
+    bohio_proto::fs::ReadRequest::from_metadata(metadata)
+        .map_or(true, |request| under_a_root(grant, &request.path))
+}
+
+/// As [`covers_read`], for a `bohio-write/1` stream.
+pub(crate) fn covers_write(grant: &Grant, metadata: &[u8]) -> bool {
+    bohio_proto::fs::WriteRequest::from_metadata(metadata)
+        .map_or(true, |request| under_a_root(grant, &request.path))
+}
+
+/// Whether `text` lies under a root of `grant` by its words: a path that does not parse is the
+/// engine's to refuse, and one that leaves every root, or a grant with no root, is not covered.
+fn under_a_root(grant: &Grant, text: &str) -> bool {
+    !grant.fs_roots().is_empty()
+        && path::locate(grant.fs_roots(), text)
+            .map_or_else(|error| error.code != ErrorCode::OutsideRoot, |_| true)
+}
+
 /// The checks every filesystem operation starts with.
 pub(crate) fn authorize(context: &Context<'_>, needs: &[Permission]) -> Result<(), ErrorBody> {
     if !context.config.enabled {
