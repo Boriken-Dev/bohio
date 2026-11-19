@@ -56,8 +56,8 @@ pub fn serve_write(
 
 fn check_request(request: &WriteRequest) -> Result<(), ErrorBody> {
     let bad = |message: &'static str| Err(ErrorBody::new(ErrorCode::BadRequest, message));
-    if request.file_mode.is_some_and(|bits| bits > 0o7777) {
-        return bad("a mode is at most 0o7777");
+    if let Some(bits) = request.file_mode {
+        super::check_mode(bits)?;
     }
     if let Some(expected) = &request.expect_sha256 {
         let text = expected.len() == 64

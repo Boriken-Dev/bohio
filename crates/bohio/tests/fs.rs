@@ -1106,6 +1106,74 @@ fn times_modes_and_attributes_follow_the_host() {
     }
 }
 
+/// A file a peer may change runs as the service's account for whoever starts it when it carries the
+/// set-user-ID bit, so a peer that may only write files must not be able to set it, or set-group-ID.
+#[cfg(unix)]
+#[test]
+fn a_peer_cannot_make_a_file_or_directory_set_user_or_group_id() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = fixture(&RW);
+    let fs = fixture.fs();
+    fixture.put("tool", b"#!/bin/sh\nid\n");
+    for mode in [0o4755, 0o2755, 0o6755] {
+        assert_eq!(
+            code(fs.set_mode("tool", mode)),
+            ErrorCode::Denied,
+            "{mode:o}"
+        );
+    }
+    let mode_of = |name: &str| {
+        std::fs::metadata(fixture.root.join(name))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777
+    };
+    assert_eq!(mode_of("tool") & 0o6000, 0);
+
+    let request = WriteRequest {
+        file_mode: Some(0o4755),
+        ..WriteRequest::replace("written")
+    };
+    let refused = Writer::start(&fixture.link, &request, WAIT)
+        .and_then(|writer| {
+            writer.write(b"x")?;
+            writer.finish(WAIT)
+        })
+        .map(|_| ());
+    assert_eq!(code(refused), ErrorCode::Denied);
+    assert!(!fixture.root.join("written").exists());
+
+    let made = fs.control().call(
+        bohio_proto::control::Call::Mkdir {
+            path: "shared".to_owned(),
+            parents: false,
+            mode: Some(0o2775),
+        },
+        WAIT,
+    );
+    assert_eq!(code(made), ErrorCode::Denied);
+    assert!(!fixture.root.join("shared").exists());
+
+    // A file the service account already holds with the bits keeps none of them in a copy or a
+    // replacement a peer makes.
+    std::fs::set_permissions(
+        fixture.root.join("tool"),
+        std::fs::Permissions::from_mode(0o4755),
+    )
+    .unwrap();
+    fs.copy("tool", "copied", false).unwrap();
+    assert_eq!(mode_of("copied") & 0o6000, 0, "the copy is set-user-ID");
+    fixture.put("tool", b"#!/bin/sh\necho replaced\n");
+    assert_eq!(
+        mode_of("tool") & 0o6000,
+        0,
+        "the replacement is set-user-ID"
+    );
+    fs.set_mode("tool", 0o750).unwrap();
+    assert_eq!(mode_of("tool"), 0o750);
+}
+
 #[test]
 fn a_listing_is_paged_sorted_and_bounded_by_the_host() {
     let config = FilesystemConfig {

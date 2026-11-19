@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   stayed open), and the admission of an exec, a shell or a transfer checks that the program is still listed and the file
   still under a root, so such a stream ends at the next `[link] recheck`. `link::admission` takes the protocol, `link::covers`
   is the check, and `control::Context::current` is where the control stream reads the grant.
+- A peer can no longer make a set-user-ID or set-group-ID file: a mode with `0o6000` in `set_mode`, `mkdir` or a write's
+  `file_mode` is `denied`, and a `copy` or a `replace` drops those bits from the mode it keeps. Such a file, written by a
+  peer that may only write under one root, ran as the service's account for any local user who started it.
 - A program list (`exec.programs`) is now checked against what starts: each listed name is resolved on the host's own
   `PATH` to an absolute path and that path is spawned, and a request that sets or removes `PATH`, or clears the
   environment, is refused. A peer allowed `git` can no longer run its own `git` by pointing `PATH` at a directory it

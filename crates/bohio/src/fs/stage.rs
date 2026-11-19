@@ -123,12 +123,14 @@ impl Staged {
         ));
         let file = open_with(&self.parent, Path::new(&temp), create_new(file_mode))?;
         self.temp = Some(temp);
-        // A replaced file keeps its mode unless the request names one.
+        // A replaced file keeps its mode unless the request names one, without the set-ID bits.
         #[cfg(unix)]
         if file_mode.is_none()
             && let Some(existing) = existing.filter(cap_std::fs::Metadata::is_file)
         {
-            let _ = file.set_permissions(existing.permissions());
+            use cap_std::fs::PermissionsExt;
+            let mode = existing.permissions().mode() & 0o7777 & !super::ID_BITS;
+            let _ = file.set_permissions(cap_std::fs::Permissions::from_mode(mode));
         }
         self.file = Some(file);
         Ok(())

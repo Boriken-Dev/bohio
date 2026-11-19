@@ -191,6 +191,27 @@ fn under_a_root(grant: &Grant, text: &str) -> bool {
             .map_or_else(|error| error.code != ErrorCode::OutsideRoot, |_| true)
 }
 
+/// The set-user-ID and set-group-ID bits: a file carrying one runs as its owner or group, the service's
+/// account, for whoever starts it, so no peer sets them and no copy or replacement keeps them.
+pub(crate) const ID_BITS: u32 = 0o6000;
+
+/// Checks a mode a peer asks for: at most `0o7777` (`bad_request`) and without [`ID_BITS`] (`denied`).
+pub(crate) fn check_mode(mode: u32) -> Result<(), ErrorBody> {
+    if mode > 0o7777 {
+        return Err(ErrorBody::new(
+            ErrorCode::BadRequest,
+            "a mode is at most 0o7777",
+        ));
+    }
+    if mode & ID_BITS != 0 {
+        return Err(ErrorBody::new(
+            ErrorCode::Denied,
+            "a peer may not set the set-user-ID or set-group-ID bit",
+        ));
+    }
+    Ok(())
+}
+
 /// The checks every filesystem operation starts with.
 pub(crate) fn authorize(context: &Context<'_>, needs: &[Permission]) -> Result<(), ErrorBody> {
     if !context.config.enabled {

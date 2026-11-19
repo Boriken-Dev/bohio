@@ -235,6 +235,9 @@ pub(crate) fn mkdir(
             "this host has no permission bits",
         ));
     }
+    if let Some(bits) = mode {
+        super::check_mode(bits)?;
+    }
     let mut builder = DirBuilder::new();
     builder.recursive(parents);
     #[cfg(unix)]
@@ -292,7 +295,7 @@ pub(crate) fn copy(
     #[cfg(unix)]
     let file_mode = {
         use cap_std::fs::PermissionsExt;
-        Some(meta.permissions().mode() & 0o7777)
+        Some(meta.permissions().mode() & 0o7777 & !super::ID_BITS)
     };
     #[cfg(not(unix))]
     let file_mode = {
@@ -381,9 +384,7 @@ pub(crate) fn set_times(
 #[cfg(unix)]
 pub(crate) fn set_mode(roots: &Roots<'_>, text: &str, mode: u32) -> Result<(), ErrorBody> {
     use cap_std::fs::{Permissions, PermissionsExt};
-    if mode > 0o7777 {
-        return Err(bad("a mode is at most 0o7777"));
-    }
+    super::check_mode(mode)?;
     let (dir, relative) = roots.resolve_entry(text)?;
     dir.set_permissions(&relative, Permissions::from_mode(mode))
         .map_err(|error| io_error(&error))

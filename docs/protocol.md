@@ -132,6 +132,7 @@ What each call needs: `info` needs `info`; `hello` needs nothing; `stat`, `list`
 - `checksum`: SHA-256 of `length` bytes from `offset` (to the end when `length` is `null`), computed on the host.
 - `mkdir` with `parents` creates what is missing; `remove` of a link removes the link; `rename` and `copy` without `overwrite` answer `exists` for an existing target.
 - Calls a platform lacks answer `unsupported`: `set_mode` and `mode` on Windows, `set_attributes` anywhere else.
+- A mode (`set_mode`, `mkdir`'s `mode`, a write's `file_mode`) above `0o7777` is `bad_request`, and one with the set-user-ID or set-group-ID bit (`0o6000`) is `denied`: such a file would run as the host's account for whoever starts it. A `copy`, and a `replace` write over an existing file, keep the source's or the target's mode without those two bits.
 
 ```text
 info = { ? protocol: uint, ? service: { ? name: text, ? version: text }, ? host_id: opt<text>,
