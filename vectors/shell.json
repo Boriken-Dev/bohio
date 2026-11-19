@@ -1,0 +1,139 @@
+{
+  "encoding": "hex is the stream message exactly as it travels: open metadata and control messages are bare CBOR, a frame is one tag byte then its body",
+  "protocol": "bohio-shell/1",
+  "vectors": [
+    {
+      "direction": "client_to_host",
+      "hex": "a56770726f6772616da26474797065646b696e64646b696e64646261736863637764f663656e76a365636c656172f463736574a06672656d6f76658064636f6c73185064726f77731818",
+      "kind": "open",
+      "name": "open_kind",
+      "type": "shell.Request",
+      "value": {
+        "cols": 80,
+        "cwd": null,
+        "env": {
+          "clear": false,
+          "remove": [],
+          "set": {}
+        },
+        "program": {
+          "kind": "bash",
+          "type": "kind"
+        },
+        "rows": 24
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a56770726f6772616da264747970656461726776646172677682682f62696e2f7a7368622d6c63637764642f73727663656e76a365636c656172f463736574a06672656d6f76658064636f6c73188464726f7773182b",
+      "kind": "open",
+      "name": "open_argv_sized",
+      "type": "shell.Request",
+      "value": {
+        "cols": 132,
+        "cwd": "/srv",
+        "env": {
+          "clear": false,
+          "remove": [],
+          "set": {}
+        },
+        "program": {
+          "argv": [
+            "/bin/zsh",
+            "-l"
+          ],
+          "type": "argv"
+        },
+        "rows": 43
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "01a163706964184d",
+      "kind": "frame",
+      "name": "started",
+      "type": "shell.Output",
+      "value": {
+        "message": {
+          "pid": 77
+        },
+        "tag": 1
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "021b5b33326d6f6b1b5b306d0d0a",
+      "kind": "frame",
+      "name": "data",
+      "type": "shell.Output",
+      "value": {
+        "data_hex": "1b5b33326d6f6b1b5b306d0d0a",
+        "tag": 2
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "04a364636f646500667369676e616cf6666b696c6c6564f4",
+      "kind": "frame",
+      "name": "exit",
+      "type": "shell.Output",
+      "value": {
+        "message": {
+          "code": 0,
+          "killed": false,
+          "signal": null
+        },
+        "tag": 4
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "05a264636f64656664656e696564676d6573736167656b6e6f7420616c6c6f776564",
+      "kind": "frame",
+      "name": "error_denied",
+      "type": "shell.Output",
+      "value": {
+        "message": {
+          "code": "denied",
+          "message": "not allowed"
+        },
+        "tag": 5
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "106c730d",
+      "kind": "frame",
+      "name": "data",
+      "type": "shell.Input",
+      "value": {
+        "data_hex": "6c730d",
+        "tag": 16
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "11a264636f6c73186464726f7773181e",
+      "kind": "frame",
+      "name": "resize",
+      "type": "shell.Input",
+      "value": {
+        "message": {
+          "cols": 100,
+          "rows": 30
+        },
+        "tag": 17
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "12",
+      "kind": "frame",
+      "name": "kill",
+      "type": "shell.Input",
+      "value": {
+        "tag": 18
+      }
+    }
+  ]
+}

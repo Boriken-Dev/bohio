@@ -1,0 +1,235 @@
+{
+  "encoding": "hex is the stream message exactly as it travels: open metadata and control messages are bare CBOR, a frame is one tag byte then its body",
+  "protocol": "bohio-exec/1",
+  "vectors": [
+    {
+      "direction": "client_to_host",
+      "hex": "a567636f6d6d616e64a264747970656461726776646172677682646563686f6568656c6c6f63637764f663656e76a365636c656172f463736574a06672656d6f76658065737464696e66636c6f7365646a74696d656f75745f6d73f6",
+      "kind": "open",
+      "name": "open_argv",
+      "type": "exec.Request",
+      "value": {
+        "command": {
+          "argv": [
+            "echo",
+            "hello"
+          ],
+          "type": "argv"
+        },
+        "cwd": null,
+        "env": {
+          "clear": false,
+          "remove": [],
+          "set": {}
+        },
+        "stdin": "closed",
+        "timeout_ms": null
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a567636f6d6d616e64a2647479706564617267766461726776836470726f676e61726720776974682073706163656063637764642f746d7063656e76a365636c656172f463736574a1614161316672656d6f766581614265737464696e646f70656e6a74696d656f75745f6d731905dc",
+      "kind": "open",
+      "name": "open_full",
+      "type": "exec.Request",
+      "value": {
+        "command": {
+          "argv": [
+            "prog",
+            "arg with space",
+            ""
+          ],
+          "type": "argv"
+        },
+        "cwd": "/tmp",
+        "env": {
+          "clear": false,
+          "remove": [
+            "B"
+          ],
+          "set": {
+            "A": "1"
+          }
+        },
+        "stdin": "open",
+        "timeout_ms": 1500
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a567636f6d6d616e64a36474797065657368656c6c646b696e64627368667363726970746a6563686f2024484f4d4563637764f663656e76a365636c656172f463736574a06672656d6f76658065737464696e66636c6f7365646a74696d656f75745f6d73f6",
+      "kind": "open",
+      "name": "open_shell_script",
+      "type": "exec.Request",
+      "value": {
+        "command": {
+          "kind": "sh",
+          "script": "echo $HOME",
+          "type": "shell"
+        },
+        "cwd": null,
+        "env": {
+          "clear": false,
+          "remove": [],
+          "set": {}
+        },
+        "stdin": "closed",
+        "timeout_ms": null
+      }
+    },
+    {
+      "decode_only": true,
+      "direction": "client_to_host",
+      "hex": "a167636f6d6d616e64a2647479706564617267766461726776816178",
+      "kind": "open",
+      "name": "open_minimal_takes_defaults",
+      "type": "exec.Request",
+      "value": {
+        "command": {
+          "argv": [
+            "x"
+          ],
+          "type": "argv"
+        },
+        "cwd": null,
+        "env": {
+          "clear": false,
+          "remove": [],
+          "set": {}
+        },
+        "stdin": "closed",
+        "timeout_ms": null
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "01a163706964191092",
+      "kind": "frame",
+      "name": "started",
+      "type": "exec.Output",
+      "value": {
+        "message": {
+          "pid": 4242
+        },
+        "tag": 1
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "0268656c6c6f0a",
+      "kind": "frame",
+      "name": "stdout",
+      "type": "exec.Output",
+      "value": {
+        "data_hex": "68656c6c6f0a",
+        "tag": 2
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "0300ff0a",
+      "kind": "frame",
+      "name": "stderr",
+      "type": "exec.Output",
+      "value": {
+        "data_hex": "00ff0a",
+        "tag": 3
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "04a464636f646503667369676e616cf66974696d65645f6f7574f4666b696c6c6564f4",
+      "kind": "frame",
+      "name": "exit_code",
+      "type": "exec.Output",
+      "value": {
+        "message": {
+          "code": 3,
+          "killed": false,
+          "signal": null,
+          "timed_out": false
+        },
+        "tag": 4
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "04a464636f6465f6667369676e616c096974696d65645f6f7574f5666b696c6c6564f5",
+      "kind": "frame",
+      "name": "exit_signalled_at_the_deadline",
+      "type": "exec.Output",
+      "value": {
+        "message": {
+          "code": null,
+          "killed": true,
+          "signal": 9,
+          "timed_out": true
+        },
+        "tag": 4
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "05a264636f6465696e6f745f666f756e64676d6573736167656f6e6f20737563682070726f6772616d",
+      "kind": "frame",
+      "name": "error_not_found",
+      "type": "exec.Output",
+      "value": {
+        "message": {
+          "code": "not_found",
+          "message": "no such program"
+        },
+        "tag": 5
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "1064617461",
+      "kind": "frame",
+      "name": "stdin",
+      "type": "exec.Input",
+      "value": {
+        "data_hex": "64617461",
+        "tag": 16
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "11",
+      "kind": "frame",
+      "name": "stdin_end",
+      "type": "exec.Input",
+      "value": {
+        "tag": 17
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "12",
+      "kind": "frame",
+      "name": "kill",
+      "type": "exec.Input",
+      "value": {
+        "tag": 18
+      }
+    },
+    {
+      "decode_only": true,
+      "direction": "host_to_client",
+      "error": "tag",
+      "hex": "7f0102",
+      "kind": "frame",
+      "name": "unknown_tag_from_the_host",
+      "type": "exec.Output"
+    },
+    {
+      "decode_only": true,
+      "direction": "host_to_client",
+      "error": "short",
+      "hex": "",
+      "kind": "frame",
+      "name": "empty_frame",
+      "type": "exec.Output"
+    }
+  ]
+}

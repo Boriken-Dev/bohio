@@ -1,0 +1,79 @@
+{
+  "encoding": "hex is the stream message exactly as it travels: open metadata and control messages are bare CBOR, a frame is one tag byte then its body",
+  "protocol": "bohio-read/1",
+  "vectors": [
+    {
+      "direction": "client_to_host",
+      "hex": "a364706174686d2f6574632f686f73746e616d65666f666673657400666c656e677468f6",
+      "kind": "open",
+      "name": "open_whole",
+      "type": "fs.ReadRequest",
+      "value": {
+        "length": null,
+        "offset": 0,
+        "path": "/etc/hostname"
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a364706174686c2f7372762f6269672e62696e666f66667365741a00100000666c656e6774681a00010000",
+      "kind": "open",
+      "name": "open_range",
+      "type": "fs.ReadRequest",
+      "value": {
+        "length": 65536,
+        "offset": 1048576,
+        "path": "/srv/big.bin"
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "01a26473697a6509666c656e67746805",
+      "kind": "frame",
+      "name": "header",
+      "type": "fs.ReadOutput",
+      "value": {
+        "message": {
+          "length": 5,
+          "size": 9
+        },
+        "tag": 1
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "0268656c6c6f",
+      "kind": "frame",
+      "name": "data",
+      "type": "fs.ReadOutput",
+      "value": {
+        "data_hex": "68656c6c6f",
+        "tag": 2
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "04",
+      "kind": "frame",
+      "name": "done",
+      "type": "fs.ReadOutput",
+      "value": {
+        "tag": 4
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "05a264636f64656c6f7574736964655f726f6f74676d65737361676572612070617468206c6564206f757473696465",
+      "kind": "frame",
+      "name": "error_outside_root",
+      "type": "fs.ReadOutput",
+      "value": {
+        "message": {
+          "code": "outside_root",
+          "message": "a path led outside"
+        },
+        "tag": 5
+      }
+    }
+  ]
+}

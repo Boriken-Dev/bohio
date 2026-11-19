@@ -1,0 +1,615 @@
+{
+  "encoding": "hex is the stream message exactly as it travels: open metadata and control messages are bare CBOR, a frame is one tag byte then its body",
+  "protocol": "bohio/1",
+  "vectors": [
+    {
+      "direction": "client_to_host",
+      "hex": "a2626964016463616c6ca364747970656568656c6c6f6776657273696f6e0166636c69656e74676578616d706c65",
+      "kind": "message",
+      "name": "hello",
+      "type": "control.Request",
+      "value": {
+        "call": {
+          "client": "example",
+          "type": "hello",
+          "version": 1
+        },
+        "id": 1
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a2626964026463616c6ca1647479706564696e666f",
+      "kind": "message",
+      "name": "info",
+      "type": "control.Request",
+      "value": {
+        "call": {
+          "type": "info"
+        },
+        "id": 2
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a2626964036463616c6ca36474797065647374617464706174686d2f6574632f686f73746e616d6566666f6c6c6f77f5",
+      "kind": "message",
+      "name": "stat",
+      "type": "control.Request",
+      "value": {
+        "call": {
+          "follow": true,
+          "path": "/etc/hostname",
+          "type": "stat"
+        },
+        "id": 3
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a2626964046463616c6ca46474797065646c6973746470617468682f7661722f6c6f67656166746572667379736c6f67656c696d69741864",
+      "kind": "message",
+      "name": "list_page",
+      "type": "control.Request",
+      "value": {
+        "call": {
+          "after": "syslog",
+          "limit": 100,
+          "path": "/var/log",
+          "type": "list"
+        },
+        "id": 4
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a2626964056463616c6ca46474797065656d6b64697264706174686d2f7372762f776f726b2f612f6267706172656e7473f5646d6f64651901ed",
+      "kind": "message",
+      "name": "mkdir",
+      "type": "control.Request",
+      "value": {
+        "call": {
+          "mode": 493,
+          "parents": true,
+          "path": "/srv/work/a/b",
+          "type": "mkdir"
+        },
+        "id": 5
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a2626964066463616c6ca364747970656672656d6f766564706174686b2f7372762f776f726b2f6169726563757273697665f5",
+      "kind": "message",
+      "name": "remove",
+      "type": "control.Request",
+      "value": {
+        "call": {
+          "path": "/srv/work/a",
+          "recursive": true,
+          "type": "remove"
+        },
+        "id": 6
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a2626964076463616c6ca464747970656672656e616d656466726f6d662f7372762f6162746f662f7372762f62696f7665727772697465f4",
+      "kind": "message",
+      "name": "rename",
+      "type": "control.Request",
+      "value": {
+        "call": {
+          "from": "/srv/a",
+          "overwrite": false,
+          "to": "/srv/b",
+          "type": "rename"
+        },
+        "id": 7
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a2626964086463616c6ca4647479706564636f70796466726f6d662f7372762f6162746f662f7372762f63696f7665727772697465f5",
+      "kind": "message",
+      "name": "copy",
+      "type": "control.Request",
+      "value": {
+        "call": {
+          "from": "/srv/a",
+          "overwrite": true,
+          "to": "/srv/c",
+          "type": "copy"
+        },
+        "id": 8
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a2626964096463616c6ca364747970656773796d6c696e6b667461726765746161646c696e6b662f7372762f6c",
+      "kind": "message",
+      "name": "symlink",
+      "type": "control.Request",
+      "value": {
+        "call": {
+          "link": "/srv/l",
+          "target": "a",
+          "type": "symlink"
+        },
+        "id": 9
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a26269640a6463616c6ca2647479706568726561646c696e6b6470617468662f7372762f6c",
+      "kind": "message",
+      "name": "readlink",
+      "type": "control.Request",
+      "value": {
+        "call": {
+          "path": "/srv/l",
+          "type": "readlink"
+        },
+        "id": 10
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a26269640b6463616c6ca46474797065697365745f74696d65736470617468662f7372762f61686163636573736564f6686d6f646966696564a2647365637322656e616e6f731a3b9ac9ff",
+      "kind": "message",
+      "name": "set_times",
+      "type": "control.Request",
+      "value": {
+        "call": {
+          "accessed": null,
+          "modified": {
+            "nanos": 999999999,
+            "secs": -3
+          },
+          "path": "/srv/a",
+          "type": "set_times"
+        },
+        "id": 11
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a26269640c6463616c6ca36474797065687365745f6d6f64656470617468662f7372762f61646d6f6465190180",
+      "kind": "message",
+      "name": "set_mode",
+      "type": "control.Request",
+      "value": {
+        "call": {
+          "mode": 384,
+          "path": "/srv/a",
+          "type": "set_mode"
+        },
+        "id": 12
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a26269640d6463616c6ca364747970656e7365745f6174747269627574657364706174686d433a5c776f726b5c612e74787468726561646f6e6c79f5",
+      "kind": "message",
+      "name": "set_attributes",
+      "type": "control.Request",
+      "value": {
+        "call": {
+          "path": "C:\\work\\a.txt",
+          "readonly": true,
+          "type": "set_attributes"
+        },
+        "id": 13
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a26269640e6463616c6ca4647479706568636865636b73756d6470617468662f7372762f61666f6666736574190400666c656e677468191000",
+      "kind": "message",
+      "name": "checksum_range",
+      "type": "control.Request",
+      "value": {
+        "call": {
+          "length": 4096,
+          "offset": 1024,
+          "path": "/srv/a",
+          "type": "checksum"
+        },
+        "id": 14
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a26269641bffffffffffffffff6463616c6ca1647479706564696e666f",
+      "kind": "message",
+      "name": "largest_id",
+      "type": "control.Request",
+      "value": {
+        "call": {
+          "type": "info"
+        },
+        "id": 18446744073709551615
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "a362696401657265706c79a264747970656568656c6c6f6776657273696f6e01656572726f72f6",
+      "kind": "message",
+      "name": "hello_reply",
+      "type": "control.Response",
+      "value": {
+        "error": null,
+        "id": 1,
+        "reply": {
+          "type": "hello",
+          "version": 1
+        }
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "a362696402657265706c79ab647479706564696e666f6870726f746f636f6c016773657276696365a2646e616d6565626f68696f6776657273696f6e65302e302e3067686f73745f69646c6578616d706c652d686f7374626f73656c696e75786461726368667838365f3634667368656c6c7382a2646b696e646273686470617468672f62696e2f7368a2646b696e64646261736864706174686d2f7573722f62696e2f626173686a66696c6573797374656da667656e61626c6564f56873796d6c696e6b73f56a756e69785f6d6f646573f57277696e646f77735f61747472696275746573f46e636173655f73656e736974697665f569736570617261746f72612f6465786563a167656e61626c6564f5657368656c6ca167656e61626c6564f5666c696d697473a36b6d61785f73747265616d7318406d6d61785f70726f636573736573106c6d61785f73657373696f6e73f6656572726f72f6",
+      "kind": "message",
+      "name": "info_reply",
+      "type": "control.Response",
+      "value": {
+        "error": null,
+        "id": 2,
+        "reply": {
+          "arch": "x86_64",
+          "exec": {
+            "enabled": true
+          },
+          "filesystem": {
+            "case_sensitive": true,
+            "enabled": true,
+            "separator": "/",
+            "symlinks": true,
+            "unix_modes": true,
+            "windows_attributes": false
+          },
+          "host_id": "example-host",
+          "limits": {
+            "max_processes": 16,
+            "max_sessions": null,
+            "max_streams": 64
+          },
+          "os": "linux",
+          "protocol": 1,
+          "service": {
+            "name": "bohio",
+            "version": "0.0.0"
+          },
+          "shell": {
+            "enabled": true
+          },
+          "shells": [
+            {
+              "kind": "sh",
+              "path": "/bin/sh"
+            },
+            {
+              "kind": "bash",
+              "path": "/usr/bin/bash"
+            }
+          ],
+          "type": "info"
+        }
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "a362696403657265706c79a964747970656473746174646b696e646466696c656473697a65182a686d6f646966696564a264736563731a6553f100656e616e6f7305686163636573736564f66763726561746564f6646d6f64651901a068726561646f6e6c79f46a61747472696275746573f6656572726f72f6",
+      "kind": "message",
+      "name": "stat_reply",
+      "type": "control.Response",
+      "value": {
+        "error": null,
+        "id": 3,
+        "reply": {
+          "accessed": null,
+          "attributes": null,
+          "created": null,
+          "kind": "file",
+          "mode": 416,
+          "modified": {
+            "nanos": 5,
+            "secs": 1700000000
+          },
+          "readonly": false,
+          "size": 42,
+          "type": "stat"
+        }
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "a362696404657265706c79a46474797065646c69737467656e747269657382a2646e616d6565612e747874686d65746164617461a8646b696e646466696c656473697a65182a686d6f646966696564a264736563731a6553f100656e616e6f7305686163636573736564f66763726561746564f6646d6f64651901a068726561646f6e6c79f46a61747472696275746573f6a2646e616d6563646972686d65746164617461a8646b696e64696469726563746f72796473697a6500686d6f646966696564a264736563731a6553f100656e616e6f7305686163636573736564f66763726561746564f6646d6f64651901ed68726561646f6e6c79f46a61747472696275746573f6646e6578746364697267736b697070656401656572726f72f6",
+      "kind": "message",
+      "name": "list_reply",
+      "type": "control.Response",
+      "value": {
+        "error": null,
+        "id": 4,
+        "reply": {
+          "entries": [
+            {
+              "metadata": {
+                "accessed": null,
+                "attributes": null,
+                "created": null,
+                "kind": "file",
+                "mode": 416,
+                "modified": {
+                  "nanos": 5,
+                  "secs": 1700000000
+                },
+                "readonly": false,
+                "size": 42
+              },
+              "name": "a.txt"
+            },
+            {
+              "metadata": {
+                "accessed": null,
+                "attributes": null,
+                "created": null,
+                "kind": "directory",
+                "mode": 493,
+                "modified": {
+                  "nanos": 5,
+                  "secs": 1700000000
+                },
+                "readonly": false,
+                "size": 0
+              },
+              "name": "dir"
+            }
+          ],
+          "next": "dir",
+          "skipped": 1,
+          "type": "list"
+        }
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "a362696405657265706c79a1647479706564646f6e65656572726f72f6",
+      "kind": "message",
+      "name": "done_reply",
+      "type": "control.Response",
+      "value": {
+        "error": null,
+        "id": 5,
+        "reply": {
+          "type": "done"
+        }
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "a36269640a657265706c79a26474797065646c696e6b667461726765746161656572726f72f6",
+      "kind": "message",
+      "name": "link_reply",
+      "type": "control.Response",
+      "value": {
+        "error": null,
+        "id": 10,
+        "reply": {
+          "target": "a",
+          "type": "link"
+        }
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "a36269640e657265706c79a3647479706568636865636b73756d66736861323536784065336230633434323938666331633134396166626634633839393666623932343237616534316534363439623933346361343935393931623738353262383535666c656e67746800656572726f72f6",
+      "kind": "message",
+      "name": "checksum_reply",
+      "type": "control.Response",
+      "value": {
+        "error": null,
+        "id": 14,
+        "reply": {
+          "length": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "type": "checksum"
+        }
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "a362696414657265706c79f6656572726f72a264636f64656b6261645f72657175657374676d6573736167656c6d6573736167652074657874",
+      "kind": "message",
+      "name": "error_bad_request",
+      "type": "control.Response",
+      "value": {
+        "error": {
+          "code": "bad_request",
+          "message": "message text"
+        },
+        "id": 20,
+        "reply": null
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "a362696414657265706c79f6656572726f72a264636f64656664656e696564676d6573736167656c6d6573736167652074657874",
+      "kind": "message",
+      "name": "error_denied",
+      "type": "control.Response",
+      "value": {
+        "error": {
+          "code": "denied",
+          "message": "message text"
+        },
+        "id": 20,
+        "reply": null
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "a362696414657265706c79f6656572726f72a264636f6465696e6f745f666f756e64676d6573736167656c6d6573736167652074657874",
+      "kind": "message",
+      "name": "error_not_found",
+      "type": "control.Response",
+      "value": {
+        "error": {
+          "code": "not_found",
+          "message": "message text"
+        },
+        "id": 20,
+        "reply": null
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "a362696414657265706c79f6656572726f72a264636f646566657869737473676d6573736167656c6d6573736167652074657874",
+      "kind": "message",
+      "name": "error_exists",
+      "type": "control.Response",
+      "value": {
+        "error": {
+          "code": "exists",
+          "message": "message text"
+        },
+        "id": 20,
+        "reply": null
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "a362696414657265706c79f6656572726f72a264636f64656b756e737570706f72746564676d6573736167656c6d6573736167652074657874",
+      "kind": "message",
+      "name": "error_unsupported",
+      "type": "control.Response",
+      "value": {
+        "error": {
+          "code": "unsupported",
+          "message": "message text"
+        },
+        "id": 20,
+        "reply": null
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "a362696414657265706c79f6656572726f72a264636f64656462757379676d6573736167656c6d6573736167652074657874",
+      "kind": "message",
+      "name": "error_busy",
+      "type": "control.Response",
+      "value": {
+        "error": {
+          "code": "busy",
+          "message": "message text"
+        },
+        "id": 20,
+        "reply": null
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "a362696414657265706c79f6656572726f72a264636f64656c6f7574736964655f726f6f74676d6573736167656c6d6573736167652074657874",
+      "kind": "message",
+      "name": "error_outside_root",
+      "type": "control.Response",
+      "value": {
+        "error": {
+          "code": "outside_root",
+          "message": "message text"
+        },
+        "id": 20,
+        "reply": null
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "a362696414657265706c79f6656572726f72a264636f646562696f676d6573736167656c6d6573736167652074657874",
+      "kind": "message",
+      "name": "error_io",
+      "type": "control.Response",
+      "value": {
+        "error": {
+          "code": "io",
+          "message": "message text"
+        },
+        "id": 20,
+        "reply": null
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "a362696414657265706c79f6656572726f72a264636f646568696e7465726e616c676d6573736167656c6d6573736167652074657874",
+      "kind": "message",
+      "name": "error_internal",
+      "type": "control.Response",
+      "value": {
+        "error": {
+          "code": "internal",
+          "message": "message text"
+        },
+        "id": 20,
+        "reply": null
+      }
+    },
+    {
+      "decode_only": true,
+      "direction": "host_to_client",
+      "hex": "a262696415656572726f72a364636f64656e71756f74615f6578636565646564676d6573736167656466756c6c6b72657472795f6166746572181e",
+      "kind": "message",
+      "name": "error_code_from_a_newer_peer",
+      "type": "control.Response",
+      "value": {
+        "error": {
+          "code": "other",
+          "message": "full"
+        },
+        "id": 21,
+        "reply": null
+      }
+    },
+    {
+      "decode_only": true,
+      "direction": "host_to_client",
+      "hex": "a262696416657265706c79a3647479706564696e666f626f73656c696e7578696770755f636f756e7402",
+      "kind": "message",
+      "name": "info_with_unknown_and_missing_fields",
+      "type": "control.Response",
+      "value": {
+        "error": null,
+        "id": 22,
+        "reply": {
+          "arch": "",
+          "exec": {
+            "enabled": false
+          },
+          "filesystem": {
+            "case_sensitive": false,
+            "enabled": false,
+            "separator": "",
+            "symlinks": false,
+            "unix_modes": false,
+            "windows_attributes": false
+          },
+          "host_id": null,
+          "limits": {
+            "max_processes": null,
+            "max_sessions": null,
+            "max_streams": null
+          },
+          "os": "linux",
+          "protocol": 0,
+          "service": {
+            "name": "",
+            "version": ""
+          },
+          "shell": {
+            "enabled": false
+          },
+          "shells": [],
+          "type": "info"
+        }
+      }
+    }
+  ]
+}

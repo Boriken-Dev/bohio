@@ -1,0 +1,146 @@
+{
+  "encoding": "hex is the stream message exactly as it travels: open metadata and control messages are bare CBOR, a frame is one tag byte then its body",
+  "protocol": "bohio-write/1",
+  "vectors": [
+    {
+      "direction": "client_to_host",
+      "hex": "a564706174686c2f7372762f6f75742e747874646d6f6465a16474797065677265706c61636567706172656e7473f46966696c655f6d6f6465f66d6578706563745f736861323536f6",
+      "kind": "open",
+      "name": "open_replace",
+      "type": "fs.WriteRequest",
+      "value": {
+        "expect_sha256": null,
+        "file_mode": null,
+        "mode": {
+          "type": "replace"
+        },
+        "parents": false,
+        "path": "/srv/out.txt"
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a564706174686c2f7372762f6f75742e747874646d6f6465a16474797065677265706c61636567706172656e7473f56966696c655f6d6f64651901806d6578706563745f736861323536784032636632346462613566623061333065323665383362326163356239653239653162313631653563316661373432356537333034333336323933386239383234",
+      "kind": "open",
+      "name": "open_checked",
+      "type": "fs.WriteRequest",
+      "value": {
+        "expect_sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+        "file_mode": 384,
+        "mode": {
+          "type": "replace"
+        },
+        "parents": true,
+        "path": "/srv/out.txt"
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a564706174686c2f7372762f6c6f672e747874646d6f6465a1647479706566617070656e6467706172656e7473f46966696c655f6d6f6465f66d6578706563745f736861323536f6",
+      "kind": "open",
+      "name": "open_append",
+      "type": "fs.WriteRequest",
+      "value": {
+        "expect_sha256": null,
+        "file_mode": null,
+        "mode": {
+          "type": "append"
+        },
+        "parents": false,
+        "path": "/srv/log.txt"
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a564706174686c2f7372762f696d672e62696e646d6f6465a26474797065626174666f666673657419020067706172656e7473f46966696c655f6d6f6465f66d6578706563745f736861323536f6",
+      "kind": "open",
+      "name": "open_at_offset",
+      "type": "fs.WriteRequest",
+      "value": {
+        "expect_sha256": null,
+        "file_mode": null,
+        "mode": {
+          "offset": 512,
+          "type": "at"
+        },
+        "parents": false,
+        "path": "/srv/img.bin"
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a564706174686c2f7372762f6e65772e747874646d6f6465a164747970656663726561746567706172656e7473f46966696c655f6d6f6465f66d6578706563745f736861323536f6",
+      "kind": "open",
+      "name": "open_create",
+      "type": "fs.WriteRequest",
+      "value": {
+        "expect_sha256": null,
+        "file_mode": null,
+        "mode": {
+          "type": "create"
+        },
+        "parents": false,
+        "path": "/srv/new.txt"
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "01",
+      "kind": "frame",
+      "name": "ready",
+      "type": "fs.WriteOutput",
+      "value": {
+        "tag": 1
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "04a2677772697474656e0566736861323536784032636632346462613566623061333065323665383362326163356239653239653162313631653563316661373432356537333034333336323933386239383234",
+      "kind": "frame",
+      "name": "done",
+      "type": "fs.WriteOutput",
+      "value": {
+        "message": {
+          "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+          "written": 5
+        },
+        "tag": 4
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "05a264636f646566657869737473676d65737361676566657869737473",
+      "kind": "frame",
+      "name": "error_exists",
+      "type": "fs.WriteOutput",
+      "value": {
+        "message": {
+          "code": "exists",
+          "message": "exists"
+        },
+        "tag": 5
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "1068656c6c6f",
+      "kind": "frame",
+      "name": "data",
+      "type": "fs.WriteInput",
+      "value": {
+        "data_hex": "68656c6c6f",
+        "tag": 16
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "11",
+      "kind": "frame",
+      "name": "end",
+      "type": "fs.WriteInput",
+      "value": {
+        "tag": 17
+      }
+    }
+  ]
+}
