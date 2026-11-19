@@ -1,0 +1,57 @@
+[package]
+name = "bohio"
+description = "Bohío: a remote host runtime serving filesystem, process and shell operations to proven peers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["remote", "host", "exec", "shell", "filesystem"]
+categories = ["command-line-utilities", "network-programming"]
+exclude = [".*", "*.local.*"]
+# Its git dependencies are unpublished: released once they are.
+publish = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[[bin]]
+name = "bohio"
+path = "src/main.rs"
+required-features = ["cli"]
+# The library crate documents itself under the same name: both would write target/doc/bohio.
+doc = false
+
+[features]
+default = ["cli"]
+# The `bohio` command: arguments, output and the diagnostics subscriber. An embedding host takes the library alone.
+cli = ["dep:clap", "dep:tracing-subscriber", "dep:serde_json"]
+
+[dependencies]
+bohio-proto.workspace = true
+coqui-transport.workspace = true
+serde.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+clap = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+win32job.workspace = true
+
+[dev-dependencies]
+sysinfo.workspace = true
+
+[[test]]
+name = "cli"
+required-features = ["cli"]
+
+[lints]
+workspace = true

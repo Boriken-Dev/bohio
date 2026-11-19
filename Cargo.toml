@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/bohio-proto"]
+members = ["crates/bohio-proto", "crates/bohio"]
 
 [workspace.package]
 version = "0.0.0-alpha.0"
