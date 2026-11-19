@@ -7,13 +7,15 @@
 //! engine behind a bounded [`Relay`](bohio_client::relay::Relay).
 
 use std::ffi::OsString;
-use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use bohio_client::link::{Settings, socket};
+pub use bohio_client::dial::Endpoint;
+use bohio_client::dial::{SerialOptions, serial};
+use bohio_client::link::Settings;
 use bohio_client::relay::relay;
 use bohio_proto::info::Info;
 use bohio_proto::protocol;
@@ -26,47 +28,16 @@ use coqui_transport::Channel;
 use crate::config::{Config, Environment};
 use crate::limit::Slots;
 use crate::link::{LogEvents, PROTOCOLS, TrustPeers, admission, grant_of};
+use crate::listen::Listening;
 use crate::peer::{Data, PeerError};
 use crate::policy::Grant;
 use crate::{control, exec, fs, info, shell};
 
-/// A place to listen or connect to: `tcp://host:port`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum Endpoint {
-    /// A TCP socket.
-    Tcp(SocketAddr),
-}
+/// How long a listener waits for a connection before it looks at whether it was stopped.
+const ACCEPT_WAIT: Duration = Duration::from_millis(200);
 
-impl Endpoint {
-    /// Reads `scheme://address`; a name is resolved and its first address taken.
-    ///
-    /// # Errors
-    ///
-    /// The reason, for a scheme this build does not serve or an address that does not resolve.
-    pub fn parse(text: &str) -> Result<Self, String> {
-        let (scheme, address) = text
-            .split_once("://")
-            .ok_or_else(|| "an endpoint looks like `tcp://host:port`".to_owned())?;
-        match scheme {
-            "tcp" => address
-                .to_socket_addrs()
-                .map_err(|error| format!("`{address}` cannot be resolved: {error}"))?
-                .next()
-                .map(Self::Tcp)
-                .ok_or_else(|| format!("`{address}` has no address")),
-            other => Err(format!("the scheme `{other}` is not served; use `tcp`")),
-        }
-    }
-}
-
-impl core::fmt::Display for Endpoint {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Tcp(address) => write!(f, "tcp://{address}"),
-        }
-    }
-}
+/// How long a serial host leaves the port closed between links.
+const SERIAL_REOPEN: Duration = Duration::from_millis(250);
 
 /// Why a host could not start.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -207,47 +178,74 @@ impl Server {
         self.host
     }
 
-    /// Accepts connections on `listener` until `stop` is set, serving each on a thread of its own; at
-    /// most `[link] max_connections` at once, a connection past that is closed unread.
+    /// Accepts connections on `listening` until `stop` is set, serving each on a thread of its own; at
+    /// most `[link] max_connections` at once, a connection past that is closed unread. A serial line
+    /// has one peer, so it is served one link at a time, the port opened again after each.
     ///
     /// # Errors
     ///
     /// The listener's error.
-    pub fn serve_listener(&self, listener: &TcpListener, stop: &AtomicBool) -> std::io::Result<()> {
-        listener.set_nonblocking(true)?;
+    pub fn serve_listening(&self, listening: &Listening, stop: &AtomicBool) -> std::io::Result<()> {
+        if let Listening::Serial { path, options } = listening {
+            self.serve_serial(path, options, stop);
+            return Ok(());
+        }
+        let settings = &self.shared.settings;
         let limit = self.shared.config.link.max_connections;
         thread::scope(|scope| {
             while !stop.load(Ordering::SeqCst) {
-                match listener.accept() {
-                    Ok((stream, source)) => {
-                        if self.connections.fetch_add(1, Ordering::SeqCst) >= limit {
-                            self.connections.fetch_sub(1, Ordering::SeqCst);
-                            tracing::info!("a connection was closed: max_connections are open");
-                            continue;
-                        }
-                        scope.spawn(move || {
-                            self.connection(stream, source);
-                            self.connections.fetch_sub(1, Ordering::SeqCst);
-                        });
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(20));
-                    }
-                    Err(error) => return Err(error),
+                let Some(arrival) = listening.accept(ACCEPT_WAIT, settings)? else {
+                    continue;
+                };
+                if self.connections.fetch_add(1, Ordering::SeqCst) >= limit {
+                    self.connections.fetch_sub(1, Ordering::SeqCst);
+                    tracing::info!("a connection was closed: max_connections are open");
+                    continue;
                 }
+                scope.spawn(move || {
+                    match arrival.open() {
+                        Ok((channel, source)) => {
+                            self.serve_channel(&channel, source);
+                            channel.close();
+                        }
+                        Err(error) => tracing::info!("a connection could not be set up: {error}"),
+                    }
+                    self.connections.fetch_sub(1, Ordering::SeqCst);
+                });
             }
             Ok(())
         })
     }
 
-    fn connection(&self, stream: TcpStream, source: SocketAddr) {
-        let stream = stream.set_nonblocking(false).map(|()| stream);
-        let channel = match stream.and_then(|stream| socket(stream, &self.shared.settings)) {
-            Ok(channel) => channel,
-            Err(error) => return tracing::info!("a connection could not be set up: {error}"),
-        };
-        self.serve_channel(&channel, Some(source));
+    /// Serves links on the serial port `path` one after another until `stop` is set: the port is
+    /// opened, a peer proves itself and its link is served, and when that ends (or no peer proves
+    /// itself within `[link] proof_timeout`) the port is opened again.
+    fn serve_serial(&self, path: &str, options: &SerialOptions, stop: &AtomicBool) {
+        let settings = &self.shared.settings;
+        while !stop.load(Ordering::SeqCst) {
+            match serial(path, options, settings) {
+                Ok(channel) => {
+                    self.serve_channel(&channel, None);
+                    channel.close();
+                }
+                Err(error) => tracing::info!("the serial port {path} cannot be opened: {error}"),
+            }
+            thread::sleep(SERIAL_REOPEN);
+        }
+    }
+
+    /// Serves the one link on this process's standard input and output until it ends: for a program
+    /// started by `docker exec -i`, a jump host or a provider that owns the pipes. Nothing else may
+    /// write to standard output; diagnostics go to standard error.
+    ///
+    /// # Errors
+    ///
+    /// The error of starting the channel.
+    pub fn serve_stdio(&self) -> std::io::Result<()> {
+        let channel = bohio_client::link::stdio(&self.shared.settings)?;
+        self.serve_channel(&channel, None);
         channel.close();
+        Ok(())
     }
 
     /// Proves the peer on `channel` and serves its link until it ends. The caller closes `channel`.

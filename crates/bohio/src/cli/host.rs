@@ -17,7 +17,8 @@ use super::commands::{load, source};
 use super::{
     ApproveArgs, JoinArgs, PairArgs, PeerAction, PeerArgs, RevokeArgs, ServeArgs, StatusArgs,
 };
-use crate::config::{Environment, Span};
+use crate::config::{Environment, ListenConfig, Span};
+use crate::listen::Listening;
 use crate::peer;
 use crate::policy::{Grant, Permission};
 use crate::serve::{Endpoint, Server};
@@ -31,6 +32,10 @@ macro_rules! say {
     }};
 }
 
+/// Pairing by PIN meets a stranger over TCP; any other transport is for peers already paired.
+const PAIRING_ON_TCP: &str =
+    "pairing runs over tcp:// only; other transports serve peers that are already paired";
+
 fn parse_id(text: &str) -> Result<PeerId, String> {
     text.parse::<PeerId>()
         .map_err(|_| "that is not a peer id: use the form `bohio peer list` prints".to_owned())
@@ -39,24 +44,33 @@ fn parse_id(text: &str) -> Result<PeerId, String> {
 /// `bohio serve`.
 pub(super) fn serve(args: &ServeArgs, environment: &Environment) -> Result<(), String> {
     let (config, _) = load(args.config.config.as_deref(), environment)?;
-    let mut endpoints: Vec<String> = config.listen.iter().map(|l| l.endpoint.clone()).collect();
-    endpoints.extend(args.listen.iter().cloned());
-    if endpoints.is_empty() {
+    if args.stdio {
+        if !args.listen.is_empty() {
+            return Err("--stdio serves standard input and output alone: drop --listen".to_owned());
+        }
+        // Standard output is the link: nothing else is written to it, and [[listen]] entries are not bound.
+        let server = Server::new(&config, environment).map_err(|error| error.to_string())?;
+        tracing::info!(host = %server.host(), "serving standard input and output");
+        return server.serve_stdio().map_err(|error| error.to_string());
+    }
+    let mut entries = config.listen.clone();
+    entries.extend(args.listen.iter().map(|endpoint| ListenConfig {
+        endpoint: endpoint.clone(),
+        ..ListenConfig::default()
+    }));
+    if entries.is_empty() {
         return Err(
             "nothing to listen on: add a [[listen]] entry to bohio.cfg or pass --listen".to_owned(),
         );
     }
     let server = Server::new(&config, environment).map_err(|error| error.to_string())?;
+    let settings = config.link.settings();
     let mut listeners = Vec::new();
-    for text in &endpoints {
-        let Endpoint::Tcp(address) = Endpoint::parse(text)?;
-        let listener = TcpListener::bind(address)
-            .map_err(|error| format!("cannot listen on {text}: {error}"))?;
-        let bound = listener
-            .local_addr()
-            .map_err(|error| format!("cannot listen on {text}: {error}"))?;
-        say!("listening {}", Endpoint::Tcp(bound));
-        listeners.push(listener);
+    for entry in &entries {
+        let (listening, bound) =
+            Listening::bind(entry, &settings).map_err(|error| error.to_string())?;
+        say!("listening {bound}");
+        listeners.push(listening);
     }
     say!("host {}", server.host());
     tracing::info!(host = %server.host(), "serving");
@@ -64,7 +78,7 @@ pub(super) fn serve(args: &ServeArgs, environment: &Environment) -> Result<(), S
     thread::scope(|scope| {
         let handles: Vec<_> = listeners
             .iter()
-            .map(|listener| scope.spawn(|| server.serve_listener(listener, &stop)))
+            .map(|listening| scope.spawn(|| server.serve_listening(listening, &stop)))
             .collect();
         for handle in handles {
             if let Ok(Err(error)) = handle.join() {
@@ -96,18 +110,48 @@ pub(super) fn status(args: &StatusArgs, environment: &Environment) -> Result<(),
     say!("waiting: {}", listing.waiting.len());
     for listen in &config.listen {
         let state = match Endpoint::parse(&listen.endpoint) {
-            Ok(Endpoint::Tcp(address)) => {
-                if TcpStream::connect_timeout(&address, Duration::from_secs(1)).is_ok() {
-                    "reachable"
-                } else {
-                    "not reachable"
-                }
-            }
+            Ok(endpoint) => answers(&endpoint),
             Err(_) => "not served by this build",
         };
         say!("listen: {} {state}", listen.endpoint);
     }
     Ok(())
+}
+
+/// Whether something answers at `endpoint`, by connecting where that is safe to do and, for a
+/// serial line, whether the device is there.
+fn answers(endpoint: &Endpoint) -> &'static str {
+    let connects = |address: &std::net::SocketAddr| {
+        TcpStream::connect_timeout(address, Duration::from_secs(1)).is_ok()
+    };
+    let reachable = |yes: bool| if yes { "reachable" } else { "not reachable" };
+    match endpoint {
+        Endpoint::Tcp(address) => reachable(connects(address)),
+        Endpoint::WebSocket(url) => reachable(
+            url.socket_addrs(|| None)
+                .is_ok_and(|addresses| addresses.iter().any(connects)),
+        ),
+        Endpoint::Pipe(name) => reachable(
+            coqui_transport_pipe::Stream::builder()
+                .name(name)
+                .timeout(Duration::from_secs(1))
+                .build()
+                .is_ok(),
+        ),
+        Endpoint::Serial { path, .. } => {
+            if cfg!(unix) {
+                if std::path::Path::new(path).exists() {
+                    "device present"
+                } else {
+                    "device missing"
+                }
+            } else {
+                "device not checked"
+            }
+        }
+        Endpoint::Command(_) => "not a listening endpoint",
+        _ => "not served by this build",
+    }
 }
 
 /// `bohio peer`.
@@ -214,7 +258,10 @@ pub(super) fn pair(args: &PairArgs, environment: &Environment) -> Result<(), Str
         None => Duration::from_secs(300),
     };
     let Endpoint::Tcp(address) =
-        Endpoint::parse(args.listen.as_deref().unwrap_or("tcp://127.0.0.1:0"))?;
+        Endpoint::parse(args.listen.as_deref().unwrap_or("tcp://127.0.0.1:0"))?
+    else {
+        return Err(PAIRING_ON_TCP.to_owned());
+    };
     let listener = TcpListener::bind(address)
         .map_err(|error| format!("cannot listen on {address}: {error}"))?;
     let bound = listener.local_addr().map_err(|error| error.to_string())?;
@@ -234,7 +281,9 @@ pub(super) fn pair(args: &PairArgs, environment: &Environment) -> Result<(), Str
 /// `bohio join`.
 pub(super) fn join(args: &JoinArgs, environment: &Environment) -> Result<(), String> {
     let (config, data) = source(&args.config, environment)?;
-    let Endpoint::Tcp(address) = Endpoint::parse(&args.endpoint)?;
+    let Endpoint::Tcp(address) = Endpoint::parse(&args.endpoint)? else {
+        return Err(PAIRING_ON_TCP.to_owned());
+    };
     let text = match &args.pin {
         Some(pin) => pin.clone(),
         None => {

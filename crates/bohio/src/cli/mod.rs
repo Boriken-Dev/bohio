@@ -120,10 +120,16 @@ pub struct ServeArgs {
     /// The configuration.
     #[command(flatten)]
     pub config: ConfigOption,
-    /// An endpoint to listen on besides the configured ones, `tcp://host:port`; port 0 picks a free
-    /// one. Standard output says `listening <endpoint>` for each once it is bound.
+    /// An endpoint to listen on besides the configured ones: `tcp://host:port` (port 0 picks a free
+    /// one), `pipe://name`, `ws://host:port` or `serial://port?baud=N`. Standard output says
+    /// `listening <endpoint>` for each once it is bound.
     #[arg(long, value_name = "ENDPOINT")]
     pub listen: Vec<String>,
+    /// Serve one link on standard input and output instead, for `docker exec -i`, a jump host or a
+    /// provider that owns the pipes: nothing else is written to standard output, diagnostics go to
+    /// standard error, and no `[[listen]]` entry is bound.
+    #[arg(long, conflicts_with = "listen")]
+    pub stdio: bool,
 }
 
 /// `bohio status`, `bohio id` and `bohio peer list`.
@@ -218,8 +224,16 @@ pub struct RemoteArgs {
     /// The configuration.
     #[command(flatten)]
     pub config: ConfigOption,
-    /// The host, `tcp://host:port`.
-    pub endpoint: String,
+    /// The host: `tcp://host:port`, `pipe://name`, `ws://host:port`, `serial://port?baud=N` or
+    /// `stdio://program args` (the program is started and its standard streams are the link). With
+    /// `--command` there is none.
+    #[arg(required_unless_present = "command")]
+    pub endpoint: Option<String>,
+    /// Start this program (a command line, run directly, never through a shell) and use its standard
+    /// input and output as the link, for example `docker exec -i NAME bohio serve --stdio`. The same
+    /// as the endpoint `stdio://COMMAND`; the program is ended when the command does.
+    #[arg(long, value_name = "COMMAND", conflicts_with = "endpoint")]
+    pub command: Option<String>,
     /// The host's id to trust instead of the keys `bohio join` stored.
     #[arg(long, value_name = "ID")]
     pub server: Option<String>,

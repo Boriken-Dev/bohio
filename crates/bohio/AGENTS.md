@@ -9,12 +9,12 @@ with the source at <https://github.com/Boriken-Dev/bohio>.
 | `cli` | module `cli`, the `bohio` binary; `clap`, `tracing-subscriber`, `serde_json`, `crossterm` | the command | on |
 
 MSRV Rust 1.89. A library-only build (`default-features = false`) depends on `bohio-proto`, `bohio-client` (the link and its relay),
-`coqui-transport`, `coqui-link` (with `sealed`) and `coqui-peer` (each a git revision; one copy of each builds), `serde`, `toml`,
+`coqui-transport`, `coqui-link` (with `sealed`), `coqui-peer`, `coqui-transport-pipe` and `coqui-transport-web` (each a git revision; one copy of each builds), `serde`, `toml`,
 `thiserror`, `tracing`, `portable-pty` (terminals), `cap-std` and `cap-fs-ext` (confined file access), `sha2`, and `rustix` (Unix) or
 `win32job` (Windows). Version `0.0.0-alpha.0`, not published.
 
 Imports: the root holds `Config`, `ConfigError`, `Environment`, `Grant`, `Permission`, `Policies`, `PolicyError`. Public modules:
-`config`, `control`, `exec`, `fs`, `info`, `limit`, `link`, `peer`, `policy`, `serve`, `shell`, `cli` (feature `cli`). No `unsafe` code
+`config`, `control`, `exec`, `fs`, `info`, `limit`, `link`, `listen`, `peer`, `policy`, `serve`, `shell`, `cli` (feature `cli`). No `unsafe` code
 (`#![forbid(unsafe_code)]`). The library prints nothing, reads no environment variable and installs no logger; it starts threads only inside
 `exec::serve`, `shell::serve`, the transfer and control engines, `serve::Server` (a thread per connection, per stream and per relay) and
 `peer::pair`.
@@ -46,7 +46,11 @@ pub struct Span(pub Duration);                                    // a number of
 | --- | --- | --- |
 | `[service] name` | `"bohio"` | name shown in `info` |
 | `[service] data_dir` | `bohio` under `%LOCALAPPDATA%` / `$XDG_DATA_HOME` (else `~/.local/share`) | identity, trust store, `peers.cfg` |
-| `[[listen]] endpoint` | none | `scheme://address`; required in each entry |
+| `[[listen]] endpoint` | none | `tcp://host:port`, `pipe://name` or `pipe:///path.sock`, `ws://host:port`, `serial://port?baud=N`; required in each entry |
+| `[[listen]] socket_mode` | `"0o600"` | `pipe`, Unix: the socket's mode, octal text with the `0o` prefix |
+| `[[listen]] remote_clients` | `false` | `pipe`, Windows: clients on other hosts through file sharing |
+| `[[listen]] origins` | none | `ws`: the origins a browser may connect from; none allows any |
+| `[[listen]] baud`, `data_bits`, `parity`, `stop_bits`, `flow_control` | `115200`, `8`, `none`, `1`, `none` | `serial`: the line; the endpoint's query (`?baud=9600`) wins; `flow_control` is `none` or `hardware`; a key for another scheme is refused naming it |
 | `[link] recheck` | `5s` | how often a running stream's permission is decided again; not zero |
 | `[link] max_streams` | `64` | streams per peer; at least 1 |
 | `[link] max_connections` | `128` | links open at once across peers, those still proving included; one past it is closed unread; at least 1 |
@@ -229,12 +233,13 @@ macOS, the native separator), whether execution and shells are enabled, and the 
 ## The link (`bohio::serve`, `bohio::link`, `bohio::peer`)
 
 ```rust
-pub enum Endpoint { Tcp(SocketAddr) }                              // non_exhaustive, Display "tcp://addr"; Endpoint::parse("tcp://host:port") -> Result<_, String>
+pub use bohio_client::dial::Endpoint;                              // the endpoint text of every transport: see bohio-client's header
 pub struct Server;                                                 // Debug
 impl Server {
     pub fn new(config: &Config, environment: &Environment) -> Result<Self, ServeError>;   // opens or makes the identity and trust store in the data directory
     pub const fn host(&self) -> coqui_peer::PeerId;
-    pub fn serve_listener(&self, listener: &TcpListener, stop: &AtomicBool) -> io::Result<()>;   // accepts until `stop`; a thread per connection
+    pub fn serve_listening(&self, listening: &Listening, stop: &AtomicBool) -> io::Result<()>;   // accepts until `stop`; a thread per connection (a serial line: one link at a time, the port reopened after each)
+    pub fn serve_stdio(&self) -> io::Result<()>;                   // the one link on standard input and output; nothing else may write to standard output
     pub fn serve_channel<C: Channel>(&self, channel: &C, source: Option<SocketAddr>);   // proves the peer on any unproven channel, serves its link to the end; the caller closes it
 }
 #[non_exhaustive] pub enum ServeError { Peer(PeerError), Proof(String), Listen { endpoint, reason } }
@@ -268,6 +273,25 @@ re-check even if the link still holds. `peers.cfg` is rewritten whole (comments 
 at the same instant can lose one change. `pair` shows one PIN, once (`shown` is called with it; it is never logged), accepts the one peer that joins
 with it, and gives it no grant; the joiner stores the host's key, so it then trusts the host with `Trust::Store`. A wrong PIN uses the PIN up.
 
+## Listeners (`bohio::listen`)
+
+```rust
+#[non_exhaustive] pub enum Listening { Tcp(TcpListener), Pipe(coqui_transport_pipe::Listener), WebSocket(coqui_transport_web::websocket::Listener), Serial { path: String, options: SerialOptions } }
+impl Listening {
+    pub fn bind(config: &ListenConfig, settings: &Settings) -> Result<(Listening, Endpoint), ServeError>;   // the endpoint as bound: port 0 becomes the port chosen
+    pub fn accept(&self, wait: Duration, settings: &Settings) -> io::Result<Option<Arrival>>;               // None when none came; not for Serial
+}
+pub enum Arrival { Ready(Box<dyn Channel>, Option<SocketAddr>), Handshake(Box<Pending>) }
+impl Arrival { pub fn open(self) -> io::Result<(Box<dyn Channel>, Option<SocketAddr>)>; }   // a WebSocket handshake runs here, on the connection's own thread
+```
+
+Each scheme yields an unproven channel that holds a peer to one proof-sized message until the proof raises it (`bohio_client::link::framed`);
+`max_frame + 5` (plus the seal) is the bound the proof sets, which every carrier takes (a stream channel and a WebSocket's `Limits::max_message` both
+follow `set_max_message`). `ws://` is served without TLS beyond loopback too: the proof seals everything after it. `wss://` is refused with that
+reason (a rustls configuration and a certificate are not set up). A serial host opens its port, proves the peer, serves the link and opens the
+port again; a client whose first message arrives before the host reopened it (a second `remote` right behind the first) is dropped and must try
+again. `serve --stdio` binds none of the `[[listen]]` entries.
+
 ## Command line (`bohio::cli`, feature `cli`)
 
 ```rust
@@ -284,15 +308,17 @@ a person or a script reads is printed to standard output and flushed; diagnostic
 | --- | --- |
 | `config check [--format text\|json]` | reads the configuration and prints `ok` with a summary |
 | `info [--format text\|json]` | prints this host's capabilities (`json` is `bohio_proto::info::Info`) |
-| `serve [--listen ENDPOINT]...` | serves each `[[listen]]` endpoint and `--listen` (`tcp://host:port`, port 0 picks one) until killed; prints `listening <endpoint>` for each, then `host <id>` |
-| `status` | the host's id, key method, data directory, counts of accepted and waiting peers, and whether each configured endpoint answers |
+| `serve [--listen ENDPOINT]...` | serves each `[[listen]]` endpoint and `--listen` (`tcp://host:port`, port 0 picks one; `pipe://name`, `ws://host:port`, `serial://port?baud=N`) until killed; prints `listening <endpoint>` for each, then `host <id>` |
+| `serve --stdio` | serves one link on standard input and output until it ends; prints nothing to standard output, logs to standard error; excludes `--listen` and binds no `[[listen]]` |
+| `status` | the host's id, key method, data directory, counts of accepted and waiting peers, and one `listen: <endpoint> <state>` line per configured endpoint: `reachable` / `not reachable` (a connect is made; a TCP, WebSocket or pipe host sees it), `device present` / `device missing` (serial, Unix) or `device not checked` (Windows), `not served by this build` |
 | `id` | the id of this machine's key, made on first use |
 | `peer list` | `accepted <id> allow: ...`, `waiting <id> from <ip>` and `grant-only <id>` lines |
 | `peer approve <id> [--allow P,P] [--fs-root DIR]... [--program NAME]...` | accepts a waiting or paired peer; any of the three flags replaces its whole grant, none leaves it |
 | `peer revoke <id>` | removes the grant and the key; running streams end within `[link] recheck` |
 | `pair [--listen ENDPOINT] [--timeout TIME]` | prints `pairing on <endpoint>`, `host <id>`, `pin <PIN>` (default `tcp://127.0.0.1:0`, `5m`), waits for one peer, prints `paired <id>` |
 | `join <endpoint> [--pin PIN]` | pairs with a host that shows a PIN (the PIN is read from standard input when absent); both sides keep the other's key; the joiner holds nothing until approved |
-| `remote <endpoint> [--server ID] info [--format text\|json]` | the host's capabilities over the link |
+| `remote <endpoint> [--server ID] info [--format text\|json]` | the host's capabilities over the link; the endpoint is any scheme above, or `stdio://program args` |
+| `remote --command "program args" [--server ID] info` | the same over a program the command starts, its standard streams the link (for example `docker exec -i NAME bohio serve --stdio`); the program is run directly, never through a shell, and its tree ends when the command does |
 | `remote <endpoint> exec [--cwd D] [--timeout-ms N] [--env K=V]... [--stdin] -- <argv>` | runs the program, streams its output, and exits with its status (124 on a deadline, `128+signal` when signalled) |
 | `remote <endpoint> read <path>` | writes the host's file to standard output |
 | `remote <endpoint> shell [--kind sh\|bash\|zsh\|cmd\|powershell\|pwsh] [--cwd D]` | an interactive shell; the local terminal is put in raw mode when standard input is one, and its size is followed |

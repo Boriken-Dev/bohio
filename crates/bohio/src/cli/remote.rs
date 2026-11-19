@@ -9,6 +9,7 @@ use std::time::Duration;
 use bohio_client::Error;
 use bohio_client::connect::Connection;
 use bohio_client::control::Control;
+use bohio_client::dial::split_command;
 use bohio_client::exec::{Event, Exec};
 use bohio_client::fs::Reader;
 use bohio_client::shell::{Event as ShellEvent, Shell};
@@ -35,7 +36,11 @@ fn explain(error: &Error) -> String {
 
 fn connect(args: &RemoteArgs, environment: &Environment) -> Result<Connection, String> {
     let (config, data) = source(&args.config, environment)?;
-    let Endpoint::Tcp(address) = Endpoint::parse(&args.endpoint)?;
+    let endpoint = match (&args.endpoint, &args.command) {
+        (Some(text), None) => Endpoint::parse(text)?,
+        (None, Some(command)) => Endpoint::Command(split_command(command)?),
+        _ => return Err("name the host as an endpoint or with --command, not both".to_owned()),
+    };
     let identity = data.identity().map_err(|error| error.to_string())?;
     let trust = match &args.server {
         Some(id) => Trust::pinned([id
@@ -48,10 +53,10 @@ fn connect(args: &RemoteArgs, environment: &Environment) -> Result<Connection, S
         .build()
         .map_err(|error| error.to_string())?;
     let settings = config.link.settings();
-    Connection::connect_tcp(address, settings.proof_timeout, &proof, &settings).map_err(|error| {
+    Connection::connect(&endpoint, settings.proof_timeout, &proof, &settings).map_err(|error| {
         match error {
             Error::Transport(_) | Error::Closed => format!(
-                "the link to {address} ended before it was proven: the host may not be listening, \
+                "the link to {endpoint} ended before it was proven: the host may not be listening, \
                  may not trust this key yet (it waits for `bohio peer approve`), or this side does \
                  not trust the host (`bohio join`, or --server ID)"
             ),

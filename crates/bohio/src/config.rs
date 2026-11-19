@@ -153,12 +153,91 @@ impl Default for ServiceConfig {
     }
 }
 
-/// One `[[listen]]` entry.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// One `[[listen]]` entry: an endpoint and, for its scheme, the settings of that transport. A key for
+/// another scheme is refused. A serial setting the endpoint's own query (`?baud=9600`) gives wins over
+/// the key.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ListenConfig {
-    /// `scheme://address`, for example `tcp://127.0.0.1:7620`. Required.
+    /// `scheme://address`: `tcp://127.0.0.1:7620`, `pipe://bohio`, `pipe:///run/bohio.sock`,
+    /// `ws://127.0.0.1:7621`, `serial:///dev/ttyUSB0`. Required.
     pub endpoint: String,
+    /// `pipe`, Unix: the socket's mode as octal text with the `0o` prefix. Default `"0o600"`: the
+    /// owner alone.
+    #[serde(default)]
+    pub socket_mode: Option<String>,
+    /// `pipe`, Windows: whether clients on other hosts may connect through file sharing. Default
+    /// `false`.
+    #[serde(default)]
+    pub remote_clients: Option<bool>,
+    /// `ws`: the origins a browser may connect from; a connection that names another origin is
+    /// refused. Default none: any origin, and a client that names none.
+    #[serde(default)]
+    pub origins: Option<Vec<String>>,
+    /// `serial`: bits per second. Not zero. Default `115200`.
+    #[serde(default)]
+    pub baud: Option<u32>,
+    /// `serial`: data bits per character, 5 to 8. Default `8`; the link's framing needs 8.
+    #[serde(default)]
+    pub data_bits: Option<u8>,
+    /// `serial`: `none`, `odd` or `even`. Default `none`.
+    #[serde(default)]
+    pub parity: Option<String>,
+    /// `serial`: `1` or `2`. Default `1`.
+    #[serde(default)]
+    pub stop_bits: Option<u8>,
+    /// `serial`: `none` or `hardware`. Default `none`.
+    #[serde(default)]
+    pub flow_control: Option<String>,
+}
+
+impl ListenConfig {
+    /// The scheme of the endpoint, the text before `://`.
+    pub fn scheme(&self) -> &str {
+        self.endpoint
+            .split_once("://")
+            .map_or("", |(scheme, _)| scheme)
+    }
+
+    /// The serial settings the keys give, each read as the endpoint's query would be.
+    ///
+    /// # Errors
+    ///
+    /// The key and why its value is refused.
+    pub fn serial_options(
+        &self,
+    ) -> Result<bohio_client::dial::SerialOptions, (&'static str, String)> {
+        let mut options = bohio_client::dial::SerialOptions::default();
+        let texts = [
+            ("baud", self.baud.map(|v| v.to_string())),
+            ("data_bits", self.data_bits.map(|v| v.to_string())),
+            ("parity", self.parity.clone()),
+            ("stop_bits", self.stop_bits.map(|v| v.to_string())),
+            ("flow_control", self.flow_control.clone()),
+        ];
+        for (key, text) in texts {
+            if let Some(text) = text {
+                options.set(key, &text).map_err(|reason| (key, reason))?;
+            }
+        }
+        Ok(options)
+    }
+
+    /// The pipe socket mode the key gives.
+    ///
+    /// # Errors
+    ///
+    /// Why the text is not octal with the `0o` prefix, at most `0o7777`.
+    pub fn socket_mode_bits(&self) -> Result<Option<u32>, String> {
+        let Some(text) = &self.socket_mode else {
+            return Ok(None);
+        };
+        text.strip_prefix("0o")
+            .and_then(|digits| u32::from_str_radix(digits, 8).ok())
+            .filter(|bits| *bits <= 0o7777)
+            .map(Some)
+            .ok_or_else(|| format!("`{text}` is not an octal mode such as `0o660`"))
+    }
 }
 
 /// `[link]`: bounds on a peer's link.
@@ -566,6 +645,31 @@ impl Config {
                     "listen.endpoint",
                     "must look like `scheme://address`",
                 ));
+            }
+            // A key belongs to one scheme: one set for another is a mistake worth naming.
+            let given = [
+                ("socket_mode", "pipe", listen.socket_mode.is_some()),
+                ("remote_clients", "pipe", listen.remote_clients.is_some()),
+                ("origins", "ws", listen.origins.is_some()),
+                ("baud", "serial", listen.baud.is_some()),
+                ("data_bits", "serial", listen.data_bits.is_some()),
+                ("parity", "serial", listen.parity.is_some()),
+                ("stop_bits", "serial", listen.stop_bits.is_some()),
+                ("flow_control", "serial", listen.flow_control.is_some()),
+            ];
+            for (key, scheme, set) in given {
+                if set && listen.scheme() != scheme {
+                    return Err(invalid(
+                        &format!("listen.{key}"),
+                        &format!("is for `{scheme}://` endpoints, not `{}`", listen.endpoint),
+                    ));
+                }
+            }
+            if let Err((key, reason)) = listen.serial_options() {
+                return Err(invalid(&format!("listen.{key}"), &reason));
+            }
+            if let Err(reason) = listen.socket_mode_bits() {
+                return Err(invalid("listen.socket_mode", &reason));
             }
         }
         Ok(())
