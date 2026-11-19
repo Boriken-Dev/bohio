@@ -447,3 +447,23 @@ fn an_unreadable_open_is_a_bad_request_and_the_stream_is_left_to_the_caller() {
     assert_eq!(body.code, ErrorCode::BadRequest);
     channel.close();
 }
+
+#[test]
+fn under_a_program_list_a_shell_request_may_not_change_where_programs_are_found() {
+    #[cfg(unix)]
+    let listed = "sh";
+    #[cfg(windows)]
+    let listed = "cmd";
+    let link = Link::shells(
+        Grant::allowing([Permission::Shell]).with_programs([listed]),
+        ShellConfig::default(),
+    );
+    let mut env = bohio_proto::exec::Env::default();
+    env.set.insert("PATH".to_owned(), "elsewhere".to_owned());
+    let mut request = Request::argv([listed]);
+    request.env = env;
+    assert_eq!(refused(&link, &request), ErrorCode::Denied);
+    let mut request = Request::argv([listed]);
+    request.env.clear = true;
+    assert_eq!(refused(&link, &request), ErrorCode::Denied);
+}

@@ -2,7 +2,7 @@
 //!
 //! `echo TEXT...`, `exit CODE`, `both` (writes both streams, exits 3), `cat`, `sleep MS`,
 //! `tree MS` (starts a sleeping child and prints its id), `orphan MS` (starts a sleeping child
-//! that keeps standard output open, then exits at once), `env NAME`, `cwd`, `flood BYTES`.
+//! that keeps standard output open, then exits at once), `env NAME`, `cwd`, `whoami` (prints its own path), `flood BYTES`.
 
 #![expect(
     clippy::zombie_processes,
@@ -69,6 +69,15 @@ fn main() {
                 out,
                 "{}",
                 std::env::var(name).unwrap_or_else(|_| "<unset>".to_owned())
+            );
+        }
+        ["whoami"] => {
+            let _ = writeln!(
+                out,
+                "{}",
+                std::env::current_exe()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default()
             );
         }
         ["cwd"] => {

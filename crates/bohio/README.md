@@ -16,6 +16,10 @@ Documentation: <https://docs.rs/bohio>.
 - Process execution: a program and its arguments run directly, never through a shell unless the
   caller names one; output streams as it is written; a deadline, a kill request or a closed
   stream ends the whole process tree.
+- A program list (`exec.programs`) limits which program starts, not what that program does: each listed name is
+  resolved on the host's own `PATH` to an absolute path and that path is started, and a request may not set or
+  remove `PATH` or clear the environment. `git`, `make`, `find` and interpreters still run whatever they are given,
+  so list only programs that are safe with every argument.
 - Interactive shells on a pseudo-terminal (ConPTY on Windows): output streams as it is produced, the
   terminal can be resized, and a closed stream ends the shell and everything it started.
 - Filesystem access confined to the peer's granted roots: a `..` or a symbolic link that leaves a root is refused,
@@ -58,7 +62,8 @@ let channel = Arc::new(StreamChannel::start(host_end, LengthPrefix::u32_be())?);
 let grant = Grant::allowing([Permission::Info]);
 let config = ExecutionConfig::default();
 let slots = Slots::new(config.max_processes);
-let context = Context { grant: &grant, config: &config, slots: &slots };
+let path = std::env::var_os("PATH").unwrap_or_default();
+let context = Context { grant: &grant, config: &config, slots: &slots, path: &path };
 
 // This peer lacks `exec`, so the request is refused.
 let metadata = Request::argv(["echo", "hi"]).to_metadata()?;

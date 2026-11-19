@@ -1,13 +1,13 @@
 //! Turning a request into the program and arguments to start.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
 use bohio_proto::exec::{Command, Request};
 use bohio_proto::shell::ShellKind;
 use bohio_proto::{ErrorBody, ErrorCode};
 
-use crate::platform::Spec;
+use crate::platform::{Spec, resolve_listed, touches_search};
 use crate::policy::Grant;
 
 /// The process to start for `request`, once `grant` allows it.
@@ -15,8 +15,11 @@ use crate::policy::Grant;
 /// # Errors
 ///
 /// `bad_request` for an empty argument vector or an unknown shell, `denied` for a program the
-/// grant does not list, or for a shell script when it lists any.
-pub(super) fn spec(request: &Request, grant: &Grant) -> Result<Spec, ErrorBody> {
+/// grant does not list, for a request that changes `PATH` or clears the environment under a
+/// program list, or for a shell script when the grant lists any. Under a list the program that
+/// starts is the one the host finds at the listed name on its own `path`, never one the request
+/// can point elsewhere.
+pub(super) fn spec(request: &Request, grant: &Grant, path: &OsStr) -> Result<Spec, ErrorBody> {
     let (program, args, raw_args) = match &request.command {
         Command::Argv { argv } => {
             let Some((program, args)) = argv.split_first() else {
@@ -38,11 +41,22 @@ pub(super) fn spec(request: &Request, grant: &Grant) -> Result<Spec, ErrorBody> 
                     "this peer may not run that program",
                 ));
             }
-            (
-                OsString::from(program),
-                args.iter().map(OsString::from).collect(),
-                None,
-            )
+            let program = if grant.restricts_programs() {
+                if touches_search(&request.env) {
+                    return Err(ErrorBody::new(
+                        ErrorCode::Denied,
+                        "this peer may not change PATH or clear the environment",
+                    ));
+                }
+                resolve_listed(program, path)
+                    .ok_or_else(|| {
+                        ErrorBody::new(ErrorCode::NotFound, "the program was not found")
+                    })?
+                    .into_os_string()
+            } else {
+                OsString::from(program)
+            };
+            (program, args.iter().map(OsString::from).collect(), None)
         }
         Command::Shell { kind, script } => {
             if !grant.permits_shell_script() {

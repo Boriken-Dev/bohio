@@ -226,3 +226,32 @@ pub fn find_program(program: &str, path: &OsStr) -> Option<PathBuf> {
         .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
         .find(|candidate| candidate.is_file())
 }
+
+/// The absolute path a program a grant lists names, looked up in the directories of `path`
+/// (the service's own search path): an absolute name is taken as it is, a bare name is searched
+/// for, and any other name is refused, since a relative path would resolve against a directory
+/// the peer can choose. `None` when there is no such file.
+pub fn resolve_listed(program: &str, path: &OsStr) -> Option<PathBuf> {
+    let named = Path::new(program);
+    let found = if named.is_absolute() {
+        named.is_file().then(|| named.to_owned())
+    } else if named.components().count() == 1 {
+        find_program(program, path)
+    } else {
+        None
+    }?;
+    std::path::absolute(found).ok()
+}
+
+/// Whether `env` changes how a program is found or what the child starts with: it sets or
+/// removes `PATH` (any case on Windows) or starts from an empty environment.
+pub fn touches_search(env: &Env) -> bool {
+    let is_path = |name: &String| {
+        if cfg!(windows) {
+            name.eq_ignore_ascii_case("PATH")
+        } else {
+            name == "PATH"
+        }
+    };
+    env.clear || env.set.keys().any(is_path) || env.remove.iter().any(is_path)
+}

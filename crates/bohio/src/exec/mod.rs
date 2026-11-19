@@ -7,6 +7,7 @@
 
 mod command;
 
+use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,6 +33,9 @@ pub struct Context<'a> {
     pub config: &'a ExecutionConfig,
     /// The bound on concurrent processes, shared by every stream.
     pub slots: &'a Slots,
+    /// The host's own `PATH`: where a program a grant lists is looked for. The library reads no
+    /// environment variable, so the caller says.
+    pub path: &'a OsStr,
 }
 
 /// Serves one `bohio-exec/1` stream whose open carried `metadata`, until the process has ended
@@ -193,7 +197,7 @@ fn start<'a>(
             "this peer may not run processes",
         ));
     }
-    let spec = command::spec(&request, context.grant)?;
+    let spec = command::spec(&request, context.grant, context.path)?;
     if let Some(cwd) = &spec.cwd
         && !cwd.is_dir()
     {

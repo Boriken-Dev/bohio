@@ -43,6 +43,8 @@ pub struct Link {
     pub sessions: Arc<Slots>,
     /// The bytes each direction of a stream holds before its writer waits.
     pub capacity: usize,
+    /// The host's own `PATH`, where listed programs are found. Starts as this process's.
+    pub path: Arc<std::ffi::OsString>,
     served: Mutex<Vec<JoinHandle<Served>>>,
     served_fs: Mutex<Vec<JoinHandle<ServedFs>>>,
     served_shell: Mutex<Vec<JoinHandle<ServedShell>>>,
@@ -100,6 +102,7 @@ impl Link {
             shells: Arc::new(shells),
             sessions: Arc::new(sessions),
             capacity: 64 * 1024,
+            path: Arc::new(std::env::var_os("PATH").unwrap_or_default()),
             served: Mutex::new(Vec::new()),
             served_fs: Mutex::new(Vec::new()),
             served_shell: Mutex::new(Vec::new()),
@@ -175,13 +178,13 @@ impl Open for Link {
         let host: Arc<dyn Channel> = Arc::new(channel(host_end));
         let metadata = metadata.to_vec();
         if protocol_name == protocol::SHELL {
-            let (grant, shells, sessions) = (
+            let (grant, shells, sessions, path) = (
                 Arc::clone(&self.grant),
                 Arc::clone(&self.shells),
                 Arc::clone(&self.sessions),
+                Arc::clone(&self.path),
             );
             let handle = std::thread::spawn(move || {
-                let path = std::env::var_os("PATH").unwrap_or_default();
                 let context = shell::Context {
                     grant: &grant,
                     config: &shells,
@@ -232,16 +235,18 @@ impl Open for Link {
             self.served_fs.lock().unwrap().push(handle);
             return Ok(Box::new(channel(client_end)));
         }
-        let (grant, config, slots) = (
+        let (grant, config, slots, path) = (
             Arc::clone(&self.grant),
             Arc::clone(&self.config),
             Arc::clone(&self.slots),
+            Arc::clone(&self.path),
         );
         let handle = std::thread::spawn(move || {
             let context = Context {
                 grant: &grant,
                 config: &config,
                 slots: &slots,
+                path: &path,
             };
             let result = exec::serve(Arc::clone(&host), &metadata, &context);
             host.close();

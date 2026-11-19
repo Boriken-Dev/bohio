@@ -23,7 +23,9 @@ use coqui_transport::{Channel, Failure};
 
 use crate::config::ShellConfig;
 use crate::limit::{Permit, Slots};
-use crate::platform::{self, ProcessExit, PtySpec, Session, Terminal, find_program};
+use crate::platform::{
+    self, ProcessExit, PtySpec, Session, Terminal, find_program, resolve_listed, touches_search,
+};
 use crate::policy::{Grant, Permission};
 
 /// What [`serve`] needs besides the stream.
@@ -225,7 +227,7 @@ fn start<'a>(metadata: &[u8], context: &Context<'a>) -> Result<(Terminal, Permit
     if !context.grant.allows(Permission::Shell) {
         return Err(refuse(ErrorCode::Denied, "this peer may not open shells"));
     }
-    let (program, args) = resolve(&request.program, context)?;
+    let (program, args) = resolve(&request.program, &request.env, context)?;
     let sized = |n: u16| (1..=MAX_DIMENSION).contains(&n);
     if !sized(request.cols) || !sized(request.rows) {
         return Err(refuse(
@@ -271,6 +273,7 @@ fn start<'a>(metadata: &[u8], context: &Context<'a>) -> Result<(Terminal, Permit
 /// The program and arguments a request names, checked against the grant.
 fn resolve(
     program: &Program,
+    env: &Env,
     context: &Context<'_>,
 ) -> Result<(std::ffi::OsString, Vec<std::ffi::OsString>), ErrorBody> {
     match program {
@@ -303,9 +306,18 @@ fn resolve(
                     "this peer may not run that program",
                 ));
             }
-            // A name with a directory is taken as it is; any other is looked for on `PATH`.
+            // Under a list the program is the one the host finds at the listed name on its own
+            // `PATH`, and the request may not change where programs are found.
             let named = std::path::Path::new(first);
-            let located = if named.components().count() > 1 {
+            let located = if context.grant.restricts_programs() {
+                if touches_search(env) {
+                    return Err(refuse(
+                        ErrorCode::Denied,
+                        "this peer may not change PATH or clear the environment",
+                    ));
+                }
+                resolve_listed(first, context.path)
+            } else if named.components().count() > 1 {
                 named.is_file().then(|| named.to_owned())
             } else {
                 find_program(first, context.path)

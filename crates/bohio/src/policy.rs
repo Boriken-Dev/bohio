@@ -72,7 +72,10 @@ pub struct Grant {
 #[serde(deny_unknown_fields, default)]
 pub struct ExecGrant {
     /// The programs the peer may run, each named exactly as the peer asks for it. Empty: any
-    /// program, and explicit shell scripts. Non-empty: only these, and no shell script.
+    /// program, and explicit shell scripts. Non-empty: only these, found on the host's own
+    /// `PATH` (a name with a directory must be absolute), with no shell script, and the request
+    /// may not set or remove `PATH` or clear the environment. The list limits which program
+    /// starts, not what it does.
     programs: Vec<String>,
 }
 
@@ -97,7 +100,8 @@ impl Grant {
         self
     }
 
-    /// Limits `exec` to `programs`, each named exactly as the peer asks for it.
+    /// Limits `exec` to `programs`, each named exactly as the peer asks for it and started from
+    /// the path the host finds it at.
     #[must_use]
     pub fn with_programs(mut self, programs: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.exec.programs = programs.into_iter().map(Into::into).collect();
@@ -122,6 +126,12 @@ impl Grant {
     /// Whether the peer may run `program`, named exactly as it asked.
     pub fn permits_program(&self, program: &str) -> bool {
         self.exec.programs.is_empty() || self.exec.programs.iter().any(|p| p == program)
+    }
+
+    /// Whether the grant lists programs: the peer may then start only those, from the host's own
+    /// search path.
+    pub fn restricts_programs(&self) -> bool {
+        !self.exec.programs.is_empty()
     }
 
     /// Whether the peer may hand an explicit script to a shell: only without a program list, since

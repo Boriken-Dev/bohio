@@ -430,3 +430,132 @@ fn a_killed_process_reports_the_signal_on_unix_and_no_code() {
         assert_eq!(done.exit.code, None);
     }
 }
+
+/// A copy of the helper named `git` in a new directory: what a program list's `git` can resolve to.
+fn git_in(dir: &std::path::Path) -> std::path::PathBuf {
+    std::fs::create_dir_all(dir).expect("a directory");
+    let target = dir.join(format!("git{}", std::env::consts::EXE_SUFFIX));
+    std::fs::copy(helper(), &target).expect("a copy of the helper");
+    target
+}
+
+/// A link whose host finds `git` in `good`, for a peer allowed `git` alone.
+fn git_only(good: &std::path::Path) -> Link {
+    let mut link = Link::new(
+        Grant::allowing([Permission::Exec]).with_programs(["git"]),
+        ExecutionConfig::default(),
+    );
+    link.path = std::sync::Arc::new(good.as_os_str().to_owned());
+    link
+}
+
+fn whoami(link: &Link, env: Env, cwd: Option<&std::path::Path>) -> Result<String, ErrorCode> {
+    let mut request = Request::argv(["git", "whoami"]);
+    request.env = env;
+    request.cwd = cwd.map(|dir| dir.to_string_lossy().into_owned());
+    match Exec::start(link, &request)
+        .expect("the stream opens")
+        .wait(WAIT)
+    {
+        Ok(done) => Ok(text(&done.stdout)),
+        Err(Error::Remote(body)) => Err(body.code),
+        Err(other) => panic!("{other:?}"),
+    }
+}
+
+fn setting_path(dir: &std::path::Path) -> Env {
+    let mut env = Env::default();
+    env.set
+        .insert("PATH".to_owned(), dir.to_string_lossy().into_owned());
+    env
+}
+
+#[test]
+fn a_peer_allowed_git_cannot_run_another_program_by_pointing_path_at_its_own_directory() {
+    let scratch = tempfile::tempdir().expect("a directory");
+    let (good, evil) = (scratch.path().join("good"), scratch.path().join("evil"));
+    let real = git_in(&good);
+    let planted = git_in(&evil);
+    let link = git_only(&good);
+
+    // The host's own `git` is the one that starts, found on the host's path.
+    let started = whoami(&link, Env::default(), None).expect("git runs");
+    assert_eq!(
+        std::path::Path::new(&started).canonicalize().ok(),
+        real.canonicalize().ok()
+    );
+
+    // Setting, removing or clearing what finds programs is refused before anything starts.
+    assert_eq!(
+        whoami(&link, setting_path(&evil), None),
+        Err(ErrorCode::Denied)
+    );
+    if cfg!(windows) {
+        let mut env = Env::default();
+        env.set
+            .insert("Path".to_owned(), evil.to_string_lossy().into_owned());
+        assert_eq!(whoami(&link, env, None), Err(ErrorCode::Denied));
+    }
+    let mut removed = Env::default();
+    removed.remove.push("PATH".to_owned());
+    assert_eq!(whoami(&link, removed, None), Err(ErrorCode::Denied));
+    let cleared = Env {
+        clear: true,
+        ..Env::default()
+    };
+    assert_eq!(whoami(&link, cleared, None), Err(ErrorCode::Denied));
+    assert_eq!(link.slots.in_use(), 0);
+
+    // A working directory the peer controls is no more a place to find `git` than a PATH is.
+    let from_evil = whoami(&link, Env::default(), Some(&evil)).expect("git runs");
+    assert_eq!(
+        std::path::Path::new(&from_evil).canonicalize().ok(),
+        real.canonicalize().ok()
+    );
+    assert_ne!(
+        std::path::Path::new(&from_evil).canonicalize().ok(),
+        planted.canonicalize().ok()
+    );
+}
+
+#[test]
+fn without_a_program_list_a_peer_may_point_path_anywhere_since_it_may_run_anything() {
+    // The control for the refusal above: the attack works when no list limits it, so the refusal
+    // above is what stops it and not an accident of the test's setup.
+    let scratch = tempfile::tempdir().expect("a directory");
+    let (good, evil) = (scratch.path().join("good"), scratch.path().join("evil"));
+    git_in(&good);
+    let planted = git_in(&evil);
+    let mut link = Link::new(
+        Grant::allowing([Permission::Exec]),
+        ExecutionConfig::default(),
+    );
+    link.path = std::sync::Arc::new(good.as_os_str().to_owned());
+    let started = whoami(&link, setting_path(&evil), None).expect("git runs");
+    assert_eq!(
+        std::path::Path::new(&started).canonicalize().ok(),
+        planted.canonicalize().ok()
+    );
+}
+
+#[test]
+fn a_listed_name_that_the_host_cannot_find_is_not_found_and_a_relative_directory_is_never_searched()
+{
+    let scratch = tempfile::tempdir().expect("a directory");
+    let good = scratch.path().join("good");
+    git_in(&good);
+    let link = Link::new(
+        Grant::allowing([Permission::Exec]).with_programs(["missing", "./git"]),
+        ExecutionConfig::default(),
+    );
+    let mut link = link;
+    link.path = std::sync::Arc::new(good.as_os_str().to_owned());
+    assert_eq!(
+        refused(&link, &Request::argv(["missing"])),
+        ErrorCode::NotFound
+    );
+    assert_eq!(
+        refused(&link, &Request::argv(["./git", "whoami"])),
+        ErrorCode::NotFound
+    );
+}
