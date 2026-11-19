@@ -325,7 +325,7 @@ a person or a script reads is printed to standard output and flushed; diagnostic
 | `status` | the host's id, key method, data directory, counts of accepted and waiting peers, and one `listen: <endpoint> <state>` line per configured endpoint: `reachable` / `not reachable` (a connect is made; a TCP, WebSocket or pipe host sees it), `device present` / `device missing` (serial, Unix) or `device not checked` (Windows), `not served by this build` |
 | `id` | the id of this machine's key, made on first use |
 | `peer list` | `accepted <id> allow: ...`, `waiting <id> from <ip>` and `grant-only <id>` lines |
-| `peer approve <id> [--allow P,P] [--fs-root DIR]... [--program NAME]...` | accepts a waiting or paired peer; any of the three flags replaces its whole grant, none leaves it |
+| `peer approve <id> [--allow P,P] [--fs-root DIR]... [--program NAME]... [--env VAR]...` | accepts a waiting or paired peer; any of `--allow`, `--fs-root` and `--program` replaces its whole grant, none leaves it; `--env` (with `--program`) names the variables its requests may change |
 | `peer revoke <id>` | removes the grant and the key; running streams end within `[link] recheck` |
 | `pair [--listen ENDPOINT] [--timeout TIME]` | prints `pairing on <endpoint>`, `host <id>`, `pin <PIN>` (default `tcp://127.0.0.1:0`, `5m`), waits for one peer, prints `paired <id>` |
 | `join <endpoint> [--pin PIN]` | pairs with a host that shows a PIN (the PIN is read from standard input when absent); both sides keep the other's key; the joiner holds nothing until approved |
@@ -337,6 +337,13 @@ a person or a script reads is printed to standard output and flushed; diagnostic
 | `remote <endpoint> exec [--cwd D] [--timeout-ms N] [--env K=V]... [--stdin] -- <argv>` | runs the program, streams its output, and exits with its status (124 on a deadline, `128+signal` when signalled) |
 | `remote <endpoint> read <path>` | writes the host's file to standard output |
 | `remote <endpoint> shell [--kind sh\|bash\|zsh\|cmd\|powershell\|pwsh] [--cwd D]` | an interactive shell; the local terminal is put in raw mode when standard input is one, and its size is followed |
+
+On Windows `serve`, `serve --stdio` and the service refuse to start (exit 1, one line naming the path and the security id) when the
+configuration file they read is owned by another account than the one running `bohio`, SYSTEM or the administrators, or when Everyone,
+Authenticated Users, Users, INTERACTIVE, Guests, ANONYMOUS LOGON or Domain Users may change it; and when the data directory is so owned or
+any of those may change it or read what is made in it. A folder made under `%ProgramData%` is open to Users that way unless its access list
+is narrowed. The check reads the access list through Windows PowerShell (`%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`); a
+host that cannot run it does not start. Elsewhere nothing is checked: the system locations are the administrator's and the user ones private.
 
 `remote` trusts the keys `join` stored, or only `--server ID`. A host that ends the link before the proof is reported as "may not be listening, may not
 trust this key yet, or this side does not trust the host"; a stream the host refuses or ends for lost access is "the host refused or ended the stream".

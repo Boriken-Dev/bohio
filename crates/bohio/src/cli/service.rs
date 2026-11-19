@@ -340,12 +340,12 @@ mod platform {
         };
         report(ServiceState::StartPending, 0, STOP_HINT);
         let started = (|| {
-            let (config, _) = Config::locate(launch.config.as_deref(), &launch.environment)
+            let (config, from) = Config::locate(launch.config.as_deref(), &launch.environment)
                 .map_err(|error| error.to_string())?;
             let entries = config.listen.clone();
-            Ok::<_, String>((config, entries))
+            Ok::<_, String>((config, from, entries))
         })();
-        let (config, entries) = match started {
+        let (config, from, entries) = match started {
             Ok(parts) => parts,
             Err(reason) => {
                 report(ServiceState::Stopped, 1, Duration::ZERO);
@@ -357,7 +357,9 @@ mod platform {
         let host_stop = Arc::clone(&stop);
         let host = std::thread::spawn({
             let environment = launch.environment.clone();
-            move || host::serve_endpoints(&config, &environment, &entries, &host_stop)
+            move || {
+                host::serve_endpoints(&config, from.as_deref(), &environment, &entries, &host_stop)
+            }
         });
         report(ServiceState::Running, 0, Duration::ZERO);
         while !stop.load(Ordering::SeqCst) && !host.is_finished() {

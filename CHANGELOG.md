@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   stayed open), and the admission of an exec, a shell or a transfer checks that the program is still listed and the file
   still under a root, so such a stream ends at the next `[link] recheck`. `link::admission` takes the protocol, `link::covers`
   is the check, and `control::Context::current` is where the control stream reads the grant.
+- On Windows `bohio serve` and the service refuse to start from a configuration file another account owns or every local
+  user may change, and from a data directory every local user may change or read. Every user may create files and folders
+  under `%ProgramData%`, where the service looks for `bohio\bohio.cfg`, so a local user could plant a configuration that
+  chose the data directory, and with it the trusted keys and grants (running code as `LocalService`), or read the host's
+  key from a data directory made there.
 - One source, or one peer, can no longer hold every connection: `[link] max_unproven_per_source` (default 16) closes a
   connection unread when its source (an IPv4 address or an IPv6 /64) already has that many proving themselves, and
   `[link] max_links_per_peer` (default 16) closes a proven peer's link past that many. Before, anyone who could reach a

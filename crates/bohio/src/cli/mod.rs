@@ -3,6 +3,7 @@
 //! Only this module prints, reads the process environment and installs the diagnostics
 //! subscriber; the library below it does none of those.
 
+mod access;
 mod commands;
 mod host;
 mod remote;

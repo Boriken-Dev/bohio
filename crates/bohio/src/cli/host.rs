@@ -2,6 +2,7 @@
 
 use std::io::{BufRead, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::thread;
 use std::time::Duration;
@@ -13,6 +14,7 @@ use coqui_peer::PeerId;
 use coqui_peer::pair::{CodeAlphabet, Pin};
 use coqui_transport::Channel;
 
+use super::access::{self, Guarded};
 use super::commands::{load, source};
 use super::{
     ApproveArgs, JoinArgs, PairArgs, PeerAction, PeerArgs, RevokeArgs, ServeArgs, StatusArgs,
@@ -43,13 +45,14 @@ fn parse_id(text: &str) -> Result<PeerId, String> {
 
 /// `bohio serve`.
 pub(super) fn serve(args: &ServeArgs, environment: &Environment) -> Result<(), String> {
-    let (config, _) = load(args.config.config.as_deref(), environment)?;
+    let (config, from) = load(args.config.config.as_deref(), environment)?;
     if args.stdio {
         if !args.listen.is_empty() {
             return Err("--stdio serves standard input and output alone: drop --listen".to_owned());
         }
         // Standard output is the link: nothing else is written to it, and [[listen]] entries are not bound.
         let server = Server::new(&config, environment).map_err(|error| error.to_string())?;
+        guard(from.as_deref(), &config, environment)?;
         tracing::info!(host = %server.host(), "serving standard input and output");
         return server.serve_stdio().map_err(|error| error.to_string());
     }
@@ -58,13 +61,29 @@ pub(super) fn serve(args: &ServeArgs, environment: &Environment) -> Result<(), S
         endpoint: endpoint.clone(),
         ..ListenConfig::default()
     }));
-    serve_endpoints(&config, environment, &entries, &AtomicBool::new(false))
+    serve_endpoints(
+        &config,
+        from.as_deref(),
+        environment,
+        &entries,
+        &AtomicBool::new(false),
+    )
+}
+
+/// Refuses to serve from a configuration file (`from`) or a data directory another user may change.
+fn guard(from: Option<&Path>, config: &Config, environment: &Environment) -> Result<(), String> {
+    if let Some(path) = from {
+        access::check(path, Guarded::Config)?;
+    }
+    access::check(&config.data_dir(environment), Guarded::DataDir)
 }
 
 /// Binds every entry, prints what is listening, and serves them until `stop` is set. A host started
 /// by the Windows service manager stops through the flag; `bohio serve` runs until it is killed.
+/// `from` is the configuration file `config` was read from.
 pub(super) fn serve_endpoints(
     config: &Config,
+    from: Option<&Path>,
     environment: &Environment,
     entries: &[ListenConfig],
     stop: &AtomicBool,
@@ -75,6 +94,7 @@ pub(super) fn serve_endpoints(
         );
     }
     let server = Server::new(config, environment).map_err(|error| error.to_string())?;
+    guard(from, config, environment)?;
     let settings = config.link.settings();
     let mut listeners = Vec::new();
     for entry in entries {

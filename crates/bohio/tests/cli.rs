@@ -191,3 +191,110 @@ fn service_install_refuses_a_bad_name_before_it_touches_the_service_manager() {
     );
     assert!(output.stdout.is_empty());
 }
+
+/// Whether `bohio serve --config CONFIG` starts serving (it is then stopped), or else what it said
+/// on standard error when it gave up.
+#[cfg(windows)]
+fn serves(config: &Path) -> Result<(), String> {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+    /// Killed and waited for however the function ends.
+    struct Reaped(std::process::Child);
+    impl Drop for Reaped {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let mut child = Reaped(
+        Command::new(env!("CARGO_BIN_EXE_bohio"))
+            .args(["serve", "--config", &config.to_string_lossy()])
+            .args(["--listen", "tcp://127.0.0.1:0"])
+            .env_remove("BOHIO_CONFIG")
+            .env_remove("BOHIO_LOG")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("the binary runs"),
+    );
+    let mut stdout = child.0.stdout.take().unwrap();
+    let reader = std::thread::spawn(move || {
+        let mut first = [0_u8; 9];
+        stdout.read_exact(&mut first).map(|()| first.to_vec())
+    });
+    let until = Instant::now() + Duration::from_secs(60);
+    loop {
+        if reader.is_finished() {
+            let first = reader.join().unwrap();
+            let _ = child.0.kill();
+            let status = child.0.wait().unwrap();
+            if first.as_deref().is_ok_and(|bytes| bytes == b"listening") {
+                return Ok(());
+            }
+            let mut err = String::new();
+            child
+                .0
+                .stderr
+                .take()
+                .unwrap()
+                .read_to_string(&mut err)
+                .unwrap();
+            return Err(format!("{status}: {err}"));
+        }
+        if Instant::now() >= until {
+            panic!("bohio serve neither served nor gave up");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[cfg(windows)]
+fn icacls(path: &Path, args: &[&str]) {
+    let done = Command::new("icacls")
+        .arg(path)
+        .args(args)
+        .output()
+        .expect("icacls runs");
+    assert!(
+        done.status.success(),
+        "icacls {args:?}: {}",
+        text(&done.stdout)
+    );
+}
+
+/// A folder made under `%ProgramData%` lets every local user add files to it and read it, so a
+/// configuration or a data directory there would let any of them choose who the host trusts, or read
+/// its key. `serve` refuses either when every user may change it, or read the data directory.
+#[cfg(windows)]
+#[test]
+fn serve_refuses_a_configuration_or_data_directory_every_user_may_reach() {
+    let directory = scratch("access");
+    let data = directory.join("data");
+    let config = directory.join("host.cfg");
+    std::fs::write(
+        &config,
+        format!("[service]\ndata_dir = '{}'\n", data.display()),
+    )
+    .unwrap();
+    serves(&config).expect("a private configuration and data directory are served");
+
+    icacls(&config, &["/grant", "*S-1-5-32-545:(M)"]);
+    let refused = serves(&config).expect_err("a configuration every user may change is served");
+    assert!(
+        refused.contains("configuration file") && refused.contains("S-1-5-32-545"),
+        "{refused}"
+    );
+    icacls(&config, &["/reset"]);
+    serves(&config).expect("the configuration is private again");
+
+    icacls(&data, &["/grant", "*S-1-5-32-545:(OI)(CI)(RX)"]);
+    let refused = serves(&config).expect_err("a data directory every user may read is served");
+    assert!(
+        refused.contains("data directory") && refused.contains("S-1-5-32-545"),
+        "{refused}"
+    );
+    icacls(&data, &["/reset", "/T"]);
+    std::fs::remove_dir_all(directory).unwrap();
+}
