@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Interactive shells (`bohio::shell`, `bohio-shell/1`): a shell kind from `info` or an explicit program on a
+  pseudo-terminal (`portable-pty`: `openpty`, ConPTY), terminal output streamed raw, input, resize and kill frames, a
+  bound on concurrent sessions (`[shell] max_sessions`), and the program's whole tree ended when the stream closes.
+  `bohio-proto` has the shell request and frames; `bohio-client` has `shell::Shell`.
+
 - `bohio-proto`: the wire types of protocol version 1 and their CBOR codec: control calls
   (`hello`, `info`), structured errors with a closed code list, the host's capabilities, shell kinds
   and the `bohio-exec/1` request and frames.
