@@ -626,6 +626,49 @@ fn a_relative_symlink_that_stays_inside_the_root_is_followed() {
     assert_eq!(fs.stat("sub/link", true).unwrap().kind, FileKind::File);
 }
 
+/// Each link a peer makes names a place inside the root by its words, yet on Unix a chain of them
+/// leads out: `sub/d` names the root (`..`) and `esc` names `sub/d/..`, which the kernel resolves
+/// through `sub/d` to the root's parent. That reaches only programs that follow links without a
+/// handle; the host's own calls refuse it. Windows takes the `..` of a link's target by its words
+/// (`sub\d\..` is `sub`), so there the chain stays inside.
+#[test]
+fn a_chain_of_links_a_peer_makes_never_leads_the_hosts_calls_out_of_the_root() {
+    let fixture = fixture(&RW);
+    let fs = fixture.fs();
+    fs.mkdir("sub", false).unwrap();
+    match fs.symlink("..", "sub/d") {
+        Ok(()) => {}
+        Err(Error::Remote(body))
+            if body.code == ErrorCode::Denied || body.code == ErrorCode::Io =>
+        {
+            eprintln!("SKIPPED: the operating system refuses to create a symbolic link: {body}");
+            return;
+        }
+        Err(other) => panic!("{other:?}"),
+    }
+    fs.symlink("sub/d/..", "esc")
+        .expect("each link names a place inside by its words");
+    let root = std::fs::canonicalize(&fixture.root).unwrap();
+    let resolved = std::fs::canonicalize(fixture.root.join("esc")).unwrap();
+    assert_eq!(
+        resolved.starts_with(&root),
+        cfg!(windows),
+        "{} against {}",
+        resolved.display(),
+        root.display()
+    );
+    // The handle walk resolves the chain one link at a time, so on Unix it climbs and is refused; on
+    // Windows the path is refused too (the link was made as a file link, since its target could not
+    // be looked at, so it is not a directory on the way).
+    let through = code(fs.stat("esc/outside/secret.txt", true));
+    assert!(
+        through == ErrorCode::OutsideRoot || cfg!(windows),
+        "{through:?}"
+    );
+    assert!(fixture.get("esc/outside/secret.txt").is_err());
+    fixture.outside_is_untouched();
+}
+
 #[test]
 fn a_symlink_call_refuses_an_absolute_target_and_one_that_climbs_out() {
     let fixture = fixture(&RW);
