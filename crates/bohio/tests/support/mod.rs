@@ -6,11 +6,11 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use bohio::config::{ExecutionConfig, FilesystemConfig};
+use bohio::config::{ExecutionConfig, FilesystemConfig, ShellConfig};
 use bohio::exec::{self, Context};
 use bohio::limit::Slots;
 use bohio::policy::Grant;
-use bohio::{control, fs};
+use bohio::{control, fs, shell};
 use bohio_client::{Error, Open};
 use bohio_proto::exec::Exit;
 use bohio_proto::info::Info;
@@ -27,6 +27,9 @@ pub type Served = Result<Exit, ErrorBody>;
 /// What a served filesystem or control stream returned.
 pub type ServedFs = Result<(), ErrorBody>;
 
+/// What a served shell session returned.
+pub type ServedShell = Result<bohio_proto::shell::Exit, ErrorBody>;
+
 /// A client link to a host engine in the same process: each opened stream is a pair of memory
 /// channels, with the engine served on a thread of its own.
 pub struct Link {
@@ -36,25 +39,54 @@ pub struct Link {
     pub files: Arc<FilesystemConfig>,
     pub transfers: Arc<Slots>,
     pub info: Arc<Info>,
+    pub shells: Arc<ShellConfig>,
+    pub sessions: Arc<Slots>,
     /// The bytes each direction of a stream holds before its writer waits.
     pub capacity: usize,
     served: Mutex<Vec<JoinHandle<Served>>>,
     served_fs: Mutex<Vec<JoinHandle<ServedFs>>>,
+    served_shell: Mutex<Vec<JoinHandle<ServedShell>>>,
 }
 
 impl Link {
     pub fn new(grant: Grant, config: ExecutionConfig) -> Self {
-        Self::build(grant, config, FilesystemConfig::default())
+        Self::build(
+            grant,
+            config,
+            FilesystemConfig::default(),
+            ShellConfig::default(),
+        )
+    }
+
+    /// A link to the shell engine of a host that grants `grant`.
+    pub fn shells(grant: Grant, shells: ShellConfig) -> Self {
+        Self::build(
+            grant,
+            ExecutionConfig::default(),
+            FilesystemConfig::default(),
+            shells,
+        )
     }
 
     /// A link to the filesystem engines of a host that grants `grant`.
     pub fn files(grant: Grant, files: FilesystemConfig) -> Self {
-        Self::build(grant, ExecutionConfig::default(), files)
+        Self::build(
+            grant,
+            ExecutionConfig::default(),
+            files,
+            ShellConfig::default(),
+        )
     }
 
-    fn build(grant: Grant, config: ExecutionConfig, files: FilesystemConfig) -> Self {
+    fn build(
+        grant: Grant,
+        config: ExecutionConfig,
+        files: FilesystemConfig,
+        shells: ShellConfig,
+    ) -> Self {
         let slots = Slots::new(config.max_processes);
         let transfers = Slots::new(files.max_transfers);
+        let sessions = Slots::new(shells.max_sessions);
         Self {
             grant: Arc::new(grant),
             config: Arc::new(config),
@@ -65,10 +97,33 @@ impl Link {
                 protocol: 1,
                 ..Info::default()
             }),
+            shells: Arc::new(shells),
+            sessions: Arc::new(sessions),
             capacity: 64 * 1024,
             served: Mutex::new(Vec::new()),
             served_fs: Mutex::new(Vec::new()),
+            served_shell: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Waits for every shell session served so far to finish (it fails, not hangs, when one does
+    /// not) and returns what each returned.
+    pub fn finished_shell(&self) -> Vec<ServedShell> {
+        let handles = std::mem::take(&mut *self.served_shell.lock().unwrap());
+        let deadline = Instant::now() + Duration::from_secs(30);
+        handles
+            .into_iter()
+            .map(|handle| {
+                while !handle.is_finished() {
+                    assert!(
+                        Instant::now() < deadline,
+                        "a shell session did not finish: it hangs instead of ending"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                handle.join().expect("the engine thread did not panic")
+            })
+            .collect()
     }
 
     /// Waits for every filesystem and control stream served so far to finish.
@@ -119,6 +174,27 @@ impl Open for Link {
         let (host_end, client_end) = memory::pipe(self.capacity);
         let host: Arc<dyn Channel> = Arc::new(channel(host_end));
         let metadata = metadata.to_vec();
+        if protocol_name == protocol::SHELL {
+            let (grant, shells, sessions) = (
+                Arc::clone(&self.grant),
+                Arc::clone(&self.shells),
+                Arc::clone(&self.sessions),
+            );
+            let handle = std::thread::spawn(move || {
+                let path = std::env::var_os("PATH").unwrap_or_default();
+                let context = shell::Context {
+                    grant: &grant,
+                    config: &shells,
+                    slots: &sessions,
+                    path: &path,
+                };
+                let result = shell::serve(Arc::clone(&host), &metadata, &context);
+                host.close();
+                result
+            });
+            self.served_shell.lock().unwrap().push(handle);
+            return Ok(Box::new(channel(client_end)));
+        }
         if protocol_name != protocol::EXEC {
             let name = protocol_name.to_owned();
             let (grant, files, transfers, info) = (

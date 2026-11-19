@@ -260,6 +260,18 @@ pub struct ShellConfig {
     pub enabled: bool,
     /// The most sessions open at once, across peers. At least 1. Default `8`.
     pub max_sessions: usize,
+    /// The most terminal bytes in one frame. At least 1; a smaller message bound of the stream
+    /// wins. Default `16384`.
+    pub chunk_size: usize,
+    /// How often a session looks at its program and its stream while it waits. Same units as
+    /// `link.recheck`; not zero. Default `20ms`.
+    pub poll_interval: Span,
+    /// How long the terminal must stay quiet after the program has exited before the session
+    /// ends: the terminal can deliver the last of the output after the exit. Default `200ms`.
+    pub drain_quiet: Span,
+    /// How long the host waits for a session's output reader to finish after the program's tree
+    /// has been ended, before it reports the exit regardless. Default `2s`.
+    pub kill_wait: Span,
 }
 
 impl Default for ShellConfig {
@@ -267,6 +279,10 @@ impl Default for ShellConfig {
         Self {
             enabled: true,
             max_sessions: 8,
+            chunk_size: 16 * 1024,
+            poll_interval: Span(Duration::from_millis(20)),
+            drain_quiet: Span(Duration::from_millis(200)),
+            kill_wait: Span(Duration::from_secs(2)),
         }
     }
 }
@@ -435,6 +451,12 @@ impl Config {
         }
         if self.shell.max_sessions == 0 {
             return Err(invalid("shell.max_sessions", "must be at least 1"));
+        }
+        if self.shell.chunk_size == 0 {
+            return Err(invalid("shell.chunk_size", "must be at least 1"));
+        }
+        if self.shell.poll_interval.0.is_zero() {
+            return Err(invalid("shell.poll_interval", "must not be zero"));
         }
         for listen in &self.listen {
             let shaped = listen

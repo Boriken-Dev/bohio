@@ -27,9 +27,9 @@ pub(super) fn exit_of(status: std::process::ExitStatus) -> super::ProcessExit {
 }
 
 #[cfg(unix)]
-pub(super) use self::unix::{Tree, contain, end, poll, prepare};
+pub(super) use self::unix::{Tree, contain, end, end_group, poll, poll_id, prepare};
 #[cfg(windows)]
-pub(super) use self::windows::{Tree, contain, end, poll, prepare};
+pub(super) use self::windows::{Tree, contain, contain_handle, end, end_tree, poll, prepare};
 
 #[cfg(unix)]
 mod unix {
@@ -53,8 +53,14 @@ mod unix {
     /// child is not yet collected: a collected child's id, and its group's, may belong to another
     /// process.
     pub(in crate::platform) fn end(_tree: &Tree, child: &Child) {
+        end_group(child.id());
+    }
+
+    /// As [`end`], for a process this module did not start (it only needs the id of the leader
+    /// of a group of its own, which must not have been collected yet).
+    pub(in crate::platform) fn end_group(leader: u32) {
         use rustix::process::{Pid, Signal, kill_process, kill_process_group};
-        let Some(group) = i32::try_from(child.id())
+        let Some(group) = i32::try_from(leader)
             .ok()
             .filter(|pid| *pid > 1)
             .and_then(Pid::from_raw)
@@ -70,8 +76,14 @@ mod unix {
 
     /// Looks at the child without collecting it, so its group can still be signalled.
     pub(in crate::platform) fn poll(child: &mut Child) -> io::Result<Poll> {
+        Ok(poll_id(child.id())?.map_or(Poll::Running, Poll::Exited))
+    }
+
+    /// As [`poll`], for a process this module did not start: how it ended, without collecting
+    /// it, or `None` while it runs.
+    pub(in crate::platform) fn poll_id(id: u32) -> io::Result<Option<ProcessExit>> {
         use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
-        let pid = i32::try_from(child.id())
+        let pid = i32::try_from(id)
             .ok()
             .and_then(Pid::from_raw)
             .ok_or_else(|| io::Error::other("not a process id"))?;
@@ -79,11 +91,9 @@ mod unix {
             WaitId::Pid(pid),
             WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
         )?;
-        Ok(status.map_or(Poll::Running, |status| {
-            Poll::Exited(ProcessExit {
-                code: status.exit_status(),
-                signal: status.terminating_signal(),
-            })
+        Ok(status.map(|status| ProcessExit {
+            code: status.exit_status(),
+            signal: status.terminating_signal(),
         }))
     }
 
@@ -179,16 +189,25 @@ mod windows {
     /// outside the job.
     pub(in crate::platform) fn contain(child: &Child) -> io::Result<Tree> {
         use std::os::windows::io::AsRawHandle;
+        contain_handle(child.as_raw_handle() as isize)
+    }
+
+    /// As [`contain`], for a process this module did not start, named by its handle.
+    pub(in crate::platform) fn contain_handle(process: isize) -> io::Result<Tree> {
         let mut limits = win32job::ExtendedLimitInfo::new();
         limits.limit_kill_on_job_close();
         let job = win32job::Job::create_with_limit_info(&limits).map_err(io::Error::other)?;
-        job.assign_process(child.as_raw_handle() as isize)
-            .map_err(io::Error::other)?;
+        job.assign_process(process).map_err(io::Error::other)?;
         Ok(Tree(Mutex::new(Some(job))))
     }
 
     /// Closing the job ends everything in it.
     pub(in crate::platform) fn end(tree: &Tree, _child: &Child) {
+        end_tree(tree);
+    }
+
+    /// Closing the job ends everything in it; repeatable.
+    pub(in crate::platform) fn end_tree(tree: &Tree) {
         let mut job = tree
             .0
             .lock()

@@ -8,6 +8,7 @@ pub mod fs;
 pub mod info;
 pub mod limit;
 pub mod policy;
+pub mod shell;
 
 #[cfg(feature = "cli")]
 #[cfg_attr(docsrs, doc(cfg(feature = "cli")))]

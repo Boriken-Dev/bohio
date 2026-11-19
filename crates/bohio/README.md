@@ -16,6 +16,8 @@ Documentation: <https://docs.rs/bohio>.
 - Process execution: a program and its arguments run directly, never through a shell unless the
   caller names one; output streams as it is written; a deadline, a kill request or a closed
   stream ends the whole process tree.
+- Interactive shells on a pseudo-terminal (ConPTY on Windows): output streams as it is produced, the
+  terminal can be resized, and a closed stream ends the shell and everything it started.
 - Filesystem access confined to the peer's granted roots: a `..` or a symbolic link that leaves a root is refused,
   every path component is resolved against a directory handle, and files stream in chunks with atomic replace.
 - Per-peer grants (`peers.cfg`): an approved peer with no `allow` gets nothing.

@@ -5,6 +5,7 @@
 //! process group (and on Linux a walk of `/proc` for processes that left it) on Unix. That module
 //! cannot stream a child's standard error, so this one starts the child itself.
 
+mod pty;
 mod tree;
 
 use std::ffi::{OsStr, OsString};
@@ -16,6 +17,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 use bohio_proto::exec::Env;
 
 use self::tree::{Poll, Tree};
+
+#[cfg(windows)]
+pub use self::pty::{CURSOR_REPORT, CursorQueries};
+pub use self::pty::{PtySpec, Session, Terminal, spawn as spawn_terminal};
 
 /// How a process ended, as the operating system reports it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -103,6 +103,8 @@ fn values_out_of_range_name_their_key() {
             "filesystem.poll_interval",
         ),
         ("[shell]\nmax_sessions = 0\n", "shell.max_sessions"),
+        ("[shell]\nchunk_size = 0\n", "shell.chunk_size"),
+        ("[shell]\npoll_interval = 0\n", "shell.poll_interval"),
         ("[[listen]]\nendpoint = \"nowhere\"\n", "listen.endpoint"),
     ] {
         match parse(text) {

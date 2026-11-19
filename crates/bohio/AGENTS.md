@@ -9,12 +9,13 @@ with the source at <https://github.com/Boriken-Dev/bohio>.
 | `cli` | module `cli`, the `bohio` binary; `clap`, `tracing-subscriber`, `serde_json` | the command | on |
 
 MSRV Rust 1.89. A library-only build (`default-features = false`) depends on `bohio-proto`, `coqui-transport` (git revision),
-`serde`, `toml`, `thiserror`, `tracing`, `cap-std` and `cap-fs-ext` (confined file access), `sha2`, and `rustix` (Unix) or
+`serde`, `toml`, `thiserror`, `tracing`, `portable-pty` (terminals), `cap-std` and `cap-fs-ext` (confined file access), `sha2`, and
+`rustix` (Unix) or
 `win32job` (Windows). Version `0.0.0-alpha.0`, not published.
 
 Imports: the root holds `Config`, `ConfigError`, `Environment`, `Grant`, `Permission`, `Policies`, `PolicyError`. Public modules:
-`config`, `control`, `exec`, `fs`, `info`, `limit`, `policy`, `cli` (feature `cli`). No `unsafe` code (`#![forbid(unsafe_code)]`). The library
-prints nothing, reads no environment variable and installs no logger; it starts threads only inside `exec::serve`.
+`config`, `control`, `exec`, `fs`, `info`, `limit`, `policy`, `shell`, `cli` (feature `cli`). No `unsafe` code (`#![forbid(unsafe_code)]`). The library
+prints nothing, reads no environment variable and installs no logger; it starts threads only inside `exec::serve`, `shell::serve` and the transfer and control engines.
 
 ## Configuration (`bohio::config`)
 
@@ -60,6 +61,10 @@ pub struct Span(pub Duration);                                    // a number of
 | `[execution] drain_timeout` | `500ms` | wait for a process's remaining output after it exits, before the rest of its tree is ended |
 | `[shell] enabled` | `true` | whether shell sessions are opened |
 | `[shell] max_sessions` | `8` | concurrent sessions across peers; at least 1 |
+| `[shell] chunk_size` | `16384` | most terminal bytes in one frame; at least 1; a smaller message bound of the stream wins |
+| `[shell] poll_interval` | `20ms` | how often a session looks at its program and its stream; not zero |
+| `[shell] drain_quiet` | `200ms` | how long the terminal must stay quiet after the program exited before the session ends |
+| `[shell] kill_wait` | `2s` | how long the host waits for the output reader after the tree was ended before it reports the exit regardless |
 
 `locate`: `explicit` alone when given (must exist); else the first existing of `BOHIO_CONFIG` (must exist when set), the user's file
 (`%APPDATA%\bohio\bohio.cfg`, `$XDG_CONFIG_HOME/bohio/bohio.cfg`, else `~/.config/bohio/bohio.cfg`), the system's
@@ -108,6 +113,31 @@ slows the process instead of growing a buffer. `serve` does not close the channe
 
 `bohio::limit`: `Slots::new(limit)`, `Slots::acquire() -> Option<Permit<'_>>`, `in_use()`, `limit()`; a `Permit` frees its slot
 when dropped. One `Slots` is shared by every stream that counts against a bound.
+
+## Shells (`bohio::shell`)
+
+```rust
+pub struct Context<'a> { pub grant: &'a Grant, pub config: &'a ShellConfig, pub slots: &'a Slots, pub path: &'a OsStr }   // Copy
+pub fn serve(channel: Arc<dyn Channel>, metadata: &[u8], context: &Context<'_>) -> Result<bohio_proto::shell::Exit, ErrorBody>;
+```
+
+Serves one `bohio-shell/1` stream: `metadata` is the open's CBOR request, `path` the host's `PATH` (where a shell kind or a program
+without a directory is looked for; the library reads no environment variable). One stream is one session, bounded by
+`[shell] max_sessions` across peers. Order of checks: decode (`bad_request`), shells enabled (`unsupported`), the grant holds `shell`
+(`denied`), the program (`Program::Kind`: `Other` is `bad_request`, a shell not found on `path` is `not_found`; `Program::Argv`: empty
+or a NUL is `bad_request`, a name not on `path` is `not_found`, and under a non-empty `exec.programs` list a name not on it is `denied`,
+while a kind is always allowed: `shell` already means a shell), the size (`bad_request` outside `1..=32767`), the working
+directory (`not_found`), a free slot (`busy`), the start (`not_found`, `denied`, else `io`). A refused request gets one `error` frame,
+the same error is returned, and the stream stays open for the caller to close.
+
+The program runs on a terminal (`portable-pty`: `openpty` on Unix, ConPTY on Windows) in a tree of its own (a job object on Windows; on
+Unix `portable-pty` makes it a session and group leader, and on Linux the host also walks `/proc` for what left the group, such as a
+job-control shell's background jobs). Frames out: `started {pid}`, `data` as the terminal produces output, then `exit` after every
+output byte (the terminal must be quiet for `drain_quiet` after the program exited, since a pseudo-console can deliver the last of
+the output after the exit). The tree is ended by a `kill` frame, the stream closing or failing, and always after the program exits:
+nothing outlives a session. `TERM` is `xterm-256color` unless the request's environment sets it. A resize outside `1..=32767` is
+ignored. Typed bytes go to the terminal as they are (Enter is `\r`). Sending waits while the stream has no room, so a client that
+reads slowly slows the shell.
 
 ## Filesystem (`bohio::fs`)
 
@@ -211,4 +241,8 @@ status: 0 success, 1 the operation failed (one line on standard error), 2 the in
 - Standard input sent to a request that asked for `Stdin::Closed` is ignored.
 - The program name is looked up as the host's `PATH` finds it (on Windows also the application's directory and the current one);
   `programs` compares the name exactly as requested, so `git` and `/usr/bin/git` are different entries.
-- Windows: a process starts a moment before it joins its job object; a process it starts in that instant is outside the tree.
+- Windows: a process starts a moment before it joins its job object; a process it starts in that instant is outside the tree. A
+  shell's terminal (ConPTY) starts the child itself, so the same moment applies to a shell session.
+- Windows ConPTY asks the terminal for its cursor position before the program's first output and holds that output until it is
+  answered: the host removes the query (`ESC[6n`) from the output and answers it with `ESC[1;1R`.
+- A `kill` frame queued behind typed input the shell is not reading is seen only when it reads, or when the stream closes.
