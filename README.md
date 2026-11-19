@@ -100,6 +100,17 @@ bohio remote <endpoint> info | exec -- <argv> | read <path> | shell
 See the [`bohio` crate](https://github.com/Boriken-Dev/bohio/tree/main/crates/bohio) for the
 configuration search order, the exit statuses and the environment variables.
 
+## Documentation
+
+The site at <https://boriken-dev.github.io/bohio/> has the [protocol](https://boriken-dev.github.io/bohio/protocol/) (the wire for an
+implementer in another language; `vectors/` holds its messages as hex), [security](https://boriken-dev.github.io/bohio/security/) and
+[hostctl](https://boriken-dev.github.io/bohio/hostctl/), plus the Rust API reference.
+
+## Deployment
+
+`packaging/systemd/bohio.service` runs `bohio serve` as the unprivileged user `bohio` under systemd, `bohio service install` registers a
+Windows service, and `packaging/container/Containerfile` builds an image whose example entrypoint is `bohio serve --stdio`.
+
 ## API overview
 
 | Crate | Where to look |

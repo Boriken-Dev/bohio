@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `docs/protocol.md` is the wire for an implementer in another language: the carriers, the open metadata and CBOR messages of
+  each protocol in CDDL, the one-byte frame tags, the error codes and the capability negotiation. `vectors/*.json` holds every
+  message as hex, and `crates/bohio-proto/tests/vectors.rs` writes and checks them. `docs/security.md` covers the service's privileges
+  against a peer's grants, container isolation, privileged deployments and the known limits; `docs/hostctl.md` maps a hostctl
+  provider onto Bohío's calls.
+- `packaging/systemd/bohio.service` runs the host as the unprivileged user `bohio` (`NoNewPrivileges`, `ProtectSystem=strict`, a
+  writable data directory only, `KillMode=control-group`), and `packaging/container/Containerfile` builds a non-root image whose
+  default command is `bohio serve --stdio`.
 - `bohio service install|uninstall|run` runs the host as a Windows service (`windows-service`): `install` registers it to start
   automatically as `NT AUTHORITY\LocalService` (or `--account`), `uninstall` stops and removes it, and the service serves the configured
   `[[listen]]` endpoints until the manager stops it. The account must be able to write `[service] data_dir`.

@@ -1,0 +1,20 @@
+site_name: Bohío
+site_description: A remote host runtime that serves commands, files and shells to proven peers over any coqui transport
+site_url: https://boriken-dev.github.io/bohio/
+repo_url: https://github.com/Boriken-Dev/bohio
+repo_name: Boriken-Dev/bohio
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - content.code.copy
+
+nav:
+  - Home: index.md
+  - The protocol: protocol.md
+  - Security: security.md
+  - Using it from hostctl: hostctl.md

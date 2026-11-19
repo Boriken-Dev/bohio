@@ -18,6 +18,9 @@ One Cargo workspace (`Cargo.toml`, one committed `Cargo.lock`: the repository bu
 | `crates/bohio-client/` | Rust client over a `coqui_transport::Channel`; the link is an `Open`, a caller's or `connect::Connection` |
 | `crates/bohio/` | host library (engines, `platform`, configuration, grants, `link`, `peer`, `serve`) and the `bohio` binary behind feature `cli` |
 | `examples/bohio.cfg` | every setting with its default |
+| `docs/`, `mkdocs.yml` | the narrative site: the protocol (the wire, in CDDL), security and the hostctl mapping; the Rust API reference is published under `/rust/` |
+| `vectors/` | the wire's messages as hex, written and checked by `crates/bohio-proto/tests/vectors.rs`; a clean tree after `cargo test` means they are current |
+| `packaging/` | the systemd unit (`systemd/bohio.service`) and the container image (`container/Containerfile`); the Windows service is `bohio service` |
 
 ## Commands
 
@@ -55,4 +58,8 @@ built `bohio` binary (cargo builds it for the test): `bohio serve` runs as a chi
 
 ## CI and release
 
-Nothing is published yet. The workspace depends on git revisions of the Coqui crates; a tag needs the maintainer's go-ahead.
+- `.github/workflows/test.yml` runs fmt, clippy, the workspace tests, a check that `vectors/` is unchanged and strict rustdoc on Linux,
+  Windows and macOS, on stable and 1.89, on demand and on `ci-*` tags. Linux installs `socat` so the serial test runs.
+- `.github/workflows/docs.yml` builds the narrative site strictly with the Rust API reference and deploys Pages.
+
+Nothing is published to a registry. The workspace depends on git revisions of the Coqui crates; a `v*` tag needs the maintainer's go-ahead.
