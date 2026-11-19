@@ -1,0 +1,31 @@
+# Bohio in a container, serving one link on standard input and output.
+#
+#   podman build -f packaging/container/Containerfile -t bohio .
+#   podman volume create bohio-data
+#   podman run --rm -v bohio-data:/var/lib/bohio bohio id                      # the host's id
+#   podman run --rm -v bohio-data:/var/lib/bohio bohio peer approve PEER_ID --allow info,exec
+#   bohio remote --command "podman run -i --rm -v bohio-data:/var/lib/bohio bohio serve --stdio" \
+#       --server HOST_ID info
+#
+# `docker` works the same. The link is the container's standard input and output, so nothing listens
+# and nothing is published. The container's filesystem and processes are what a peer with `exec`,
+# `shell` or `fs.*` reaches: see docs/security.md before adding capabilities, mounts or a socket.
+
+FROM docker.io/library/rust:1.89-bookworm AS build
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates crates
+RUN cargo build --release --locked -p bohio \
+    && strip target/release/bohio
+
+FROM docker.io/library/debian:bookworm-slim
+# A fixed non-root account that owns the data directory, so a named volume starts writable.
+RUN groupadd --system --gid 10001 bohio \
+    && useradd --system --uid 10001 --gid bohio --home-dir /var/lib/bohio --shell /usr/sbin/nologin bohio \
+    && install -d -o bohio -g bohio -m 0700 /var/lib/bohio
+COPY --from=build /src/target/release/bohio /usr/local/bin/bohio
+USER bohio
+ENV XDG_DATA_HOME=/var/lib
+VOLUME /var/lib/bohio
+ENTRYPOINT ["bohio"]
+CMD ["serve", "--stdio"]

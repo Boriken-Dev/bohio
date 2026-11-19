@@ -1,0 +1,63 @@
+# Bohio as a systemd service, running as an unprivileged user.
+#
+#   useradd --system --home-dir /var/lib/bohio --shell /usr/sbin/nologin bohio
+#   install -m 0755 bohio /usr/local/bin/bohio
+#   install -d /etc/bohio && install -m 0644 examples/bohio.cfg /etc/bohio/bohio.cfg   # then edit [[listen]]
+#   install -m 0644 packaging/systemd/bohio.service /etc/systemd/system/bohio.service
+#   systemctl daemon-reload && systemctl enable --now bohio
+#   sudo -u bohio bohio peer list        # waiting keys; approve one with `bohio peer approve`
+#
+# The service writes only /var/lib/bohio (its identity, trust store and peers.cfg). A peer that may
+# write files outside it needs that directory added to ReadWritePaths, and a peer whose root is under
+# /home needs ProtectHome=read-only (or false). A serial listener needs PrivateDevices=false, which
+# is the default here, and the user in the group that owns the device (for example dialout).
+
+[Unit]
+Description=Bohio remote host runtime
+Documentation=https://boriken-dev.github.io/bohio/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=bohio
+Group=bohio
+Environment=XDG_DATA_HOME=/var/lib
+ExecStart=/usr/local/bin/bohio serve --config /etc/bohio/bohio.cfg
+Restart=on-failure
+RestartSec=2
+
+# Graceful stop: SIGTERM ends the host, and the control group is what ends every process a peer
+# started, so a stopped or restarted unit leaves none behind. A process that ignores SIGTERM is
+# killed after TimeoutStopSec.
+KillMode=control-group
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+# /var/lib/bohio, created and owned by User, is the one place the service writes.
+StateDirectory=bohio
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/bohio
+
+# No privilege to gain, nothing to write but the data directory, and no view of home directories.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
