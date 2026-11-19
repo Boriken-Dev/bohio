@@ -1,7 +1,5 @@
 target
-.git
-.agents
-.github
+.*
 docs
 vectors
 packaging
