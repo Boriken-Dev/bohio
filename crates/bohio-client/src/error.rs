@@ -19,6 +19,9 @@ pub enum Error {
     /// Nothing arrived in time; the exchange goes on.
     #[error("nothing arrived in time")]
     Timeout,
+    /// The host could not be proven or would not prove this side; the text says why, never a key.
+    #[error("the link could not be established: {0}")]
+    Link(String),
     /// The stream ended before the operation's last frame.
     #[error("the stream ended before the operation finished")]
     Closed,

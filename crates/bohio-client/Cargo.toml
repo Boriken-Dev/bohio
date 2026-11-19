@@ -20,6 +20,8 @@ rustdoc-args = ["--cfg", "docsrs"]
 [dependencies]
 bohio-proto.workspace = true
 coqui-transport.workspace = true
+coqui-link.workspace = true
+coqui-peer.workspace = true
 thiserror.workspace = true
 
 [lints]

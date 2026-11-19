@@ -6,7 +6,7 @@
 [![Docs](https://img.shields.io/docsrs/bohio-client)](https://docs.rs/bohio-client)
 [![CI](https://img.shields.io/github/actions/workflow/status/Boriken-Dev/bohio/test.yml)](https://github.com/Boriken-Dev/bohio/actions/workflows/test.yml)
 
-A Rust client for Bohío hosts, over any coqui channel. **It owns no link**: a caller implements
+A Rust client for Bohío hosts, over any coqui channel. **The operations own no link**: a caller implements
 `Open` (one stream per operation, whose open carries the request) and gets typed operations back,
 so a theater provider, a command line and the host's own tests share one client. Documentation:
 <https://docs.rs/bohio-client>.
@@ -18,6 +18,8 @@ so a theater provider, a command line and the host's own tests share one client.
   stream a file in either direction in chunks.
 - `shell::Shell`: an interactive shell on a terminal: type, read output, resize, kill.
 - `control::Control`: the control stream the small calls share.
+- `connect::Connection`: a proven connection over TCP (or any coqui channel) that is itself an `Open`: the host and this side
+  prove keys to each other with `coqui-link`, and every operation above then runs on a stream of that link.
 - Blocking calls with explicit timeouts; every method takes `&self`, so reading and writing can
   run on different threads.
 - Errors keep the host's structured `{code, message}` apart from channel failures.
