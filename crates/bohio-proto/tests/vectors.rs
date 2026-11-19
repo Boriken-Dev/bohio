@@ -32,6 +32,8 @@ fn hex(bytes: &[u8]) -> String {
     })
 }
 
+// `is_multiple_of` is newer than the minimum supported Rust version.
+#[allow(clippy::manual_is_multiple_of)]
 fn unhex(text: &str) -> Vec<u8> {
     assert!(text.len() % 2 == 0, "odd hex length");
     (0..text.len())
