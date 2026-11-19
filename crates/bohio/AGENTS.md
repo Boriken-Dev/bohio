@@ -194,7 +194,8 @@ forms and a drive-relative `C:x` (`bad_request`); both separators are accepted t
 while it stays under that handle: a link out of a root, at the end or in the middle of a path, is `outside_root`, and so is an
 absolute link even when it points back inside. `remove` removes a link, never what it points at; `stat` without `follow` describes
 the link. `symlink` refuses an absolute target or one that climbs above the roots (`outside_root`); `readlink` returns the text
-as stored.
+as stored. The target is judged by its words, so on Unix a chain of links can still name a place outside (`sub/d` -> `..`, `esc` ->
+`sub/d/..`): the host's calls refuse it, a program following links without a handle does not (Windows reads a target's `..` by its words).
 
 **What is race-free** (no gap between checking a component and using it, so a link swapped in meanwhile cannot lead out):
 
