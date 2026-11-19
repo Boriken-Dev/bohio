@@ -18,6 +18,7 @@ pub(super) enum Guarded {
     DataDir,
 }
 
+#[cfg(windows)]
 impl Guarded {
     const fn name(self) -> &'static str {
         match self {
