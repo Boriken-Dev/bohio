@@ -745,6 +745,10 @@ fn peak_growth(pid: u32, baseline: u64, work: impl FnOnce()) -> u64 {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "macOS CI: the resident set did not grow when the host held the whole file (the control test failed), so it cannot show a bound there"
+)]
 fn a_64_mib_file_crosses_the_real_link_both_ways_with_bounded_host_memory() {
     const SIZE: u64 = 64 * 1024 * 1024;
     const BOUND: u64 = 16 * 1024 * 1024;
@@ -821,6 +825,10 @@ fn a_64_mib_file_crosses_the_real_link_both_ways_with_bounded_host_memory() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "macOS CI: the resident set did not grow when the host held the whole file (the control test failed), so it cannot show a bound there"
+)]
 fn the_link_settings_are_what_bound_the_hosts_memory() {
     // The control for the bound above: with a stream's queue made as large as the file, a reader
     // that takes nothing makes the host hold the file, so the bound is the settings and not luck.
