@@ -469,3 +469,63 @@ fn a_file_kind_a_newer_host_adds_decodes_as_other_and_a_write_mode_defaults_to_r
     assert_eq!(bare.mode, WriteMode::Replace);
     assert!(!bare.parents && bare.file_mode.is_none() && bare.expect_sha256.is_none());
 }
+
+#[test]
+fn every_shell_message_round_trips() {
+    use bohio_proto::shell::{
+        DEFAULT_COLS, DEFAULT_ROWS, Exit, Input, Output, Program, Request, Size, Started,
+    };
+    let mut request = Request::argv(["pwsh", "-NoLogo"]);
+    request.cwd = Some("/srv".into());
+    request.env.set.insert("A".into(), "b".into());
+    request.cols = 132;
+    request.rows = 43;
+    for request in [request, Request::kind(ShellKind::Bash)] {
+        assert_eq!(
+            Request::from_metadata(&request.to_metadata().unwrap()).unwrap(),
+            request
+        );
+    }
+    let outputs = [
+        Output::Started(Started { pid: 4242 }),
+        Output::Data(vec![0x1b, b'[', b'6', b'n', 0, 255]),
+        Output::Exit(Exit {
+            code: Some(-1),
+            signal: Some(9),
+            killed: true,
+        }),
+        Output::Error(ErrorBody::new(ErrorCode::Busy, "full")),
+    ];
+    for output in outputs {
+        assert_eq!(Output::decode(&output.encode().unwrap()).unwrap(), output);
+    }
+    let inputs = [
+        Input::Data(b"ls\r".to_vec()),
+        Input::Resize(Size {
+            cols: 1,
+            rows: 32_767,
+        }),
+        Input::Kill,
+    ];
+    for input in inputs {
+        assert_eq!(Input::decode(&input.encode().unwrap()).unwrap(), input);
+    }
+    assert_eq!(Output::decode(&[]), Err(Error::Short));
+    assert_eq!(Output::decode(&[0x7f]), Err(Error::Tag(0x7f)));
+    assert_eq!(Input::decode(&[0x7f]), Err(Error::Tag(0x7f)));
+
+    // A request that names no size gets the default one, and a program kind is tagged by type.
+    #[derive(Serialize)]
+    struct Bare {
+        program: Program,
+    }
+    let bytes = encode(&Bare {
+        program: Program::Kind {
+            kind: ShellKind::Sh,
+        },
+    })
+    .unwrap();
+    let bare = Request::from_metadata(&bytes).unwrap();
+    assert_eq!((bare.cols, bare.rows), (DEFAULT_COLS, DEFAULT_ROWS));
+    assert!(bare.cwd.is_none() && !bare.env.clear);
+}

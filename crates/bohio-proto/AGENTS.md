@@ -102,7 +102,26 @@ Every field has a default and unknown keys are ignored: a client works with a ho
 ```rust
 #[non_exhaustive] pub enum ShellKind { Sh, Bash, Zsh, Cmd, Powershell, Pwsh, Other }   // snake_case on the wire
 impl ShellKind { pub const KNOWN: [Self; 6]; pub const fn program(self) -> &'static str; }  // the PATH name; "" for Other
+pub const DEFAULT_COLS: u16 = 80;  pub const DEFAULT_ROWS: u16 = 24;  pub const MAX_DIMENSION: u16 = 32_767;   // ConPTY holds sizes as i16
+
+pub struct Request { pub program: Program, pub cwd: Option<String>, pub env: exec::Env, pub cols: u16 /* 80 */, pub rows: u16 /* 24 */ }
+impl Request { pub fn kind(ShellKind) -> Self; pub fn argv(argv) -> Self;
+               pub fn to_metadata(&self) -> Result<Vec<u8>, Error>; pub fn from_metadata(&[u8]) -> Result<Self, Error>; }
+#[non_exhaustive] pub enum Program { Kind { kind: ShellKind }, Argv { argv: Vec<String> } }       // tagged by "type"
+pub struct Started { pub pid: u32 }
+pub struct Exit { pub code: Option<i32>, pub signal: Option<i32>, pub killed: bool }              // Default
+pub struct Size { pub cols: u16, pub rows: u16 }
+#[non_exhaustive] pub enum Output { Started(Started), Data(Vec<u8>), Exit(Exit), Error(ErrorBody) }   // host to client
+#[non_exhaustive] pub enum Input { Data(Vec<u8>), Resize(Size), Kill }                                  // client to host
+impl Output { pub fn encode(&self) -> Result<Vec<u8>, Error>; pub fn decode(&[u8]) -> Result<Self, Error>; }
+impl Input  { pub fn encode(&self) -> Result<Vec<u8>, Error>; pub fn decode(&[u8]) -> Result<Self, Error>; }
 ```
+
+`bohio-shell/1`: one stream is one session; the open's metadata is the `Request`. Tags: host to client `0x01` started (CBOR),
+`0x02` data (raw terminal bytes, escape sequences included), `0x04` exit (CBOR), `0x05` error (CBOR); client to host `0x10` data
+(raw; Enter is `\r`), `0x11` resize (CBOR `Size`), `0x12` kill. `Started` is the first frame; `Exit` and `Error` are the last
+the host sends, and `Exit` follows every output byte. `Output::decode` and `Input::decode` return `Error::Tag` for a tag this
+version does not know, which a reader may skip.
 
 ## Exec (`bohio_proto::exec`)
 
