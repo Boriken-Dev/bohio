@@ -3,7 +3,8 @@
 //!
 //! [`VIA`] carries one stream of another protocol to a peer the node has a link to, whichever side made the link:
 //! the local client opens `bohio-via/1` with a [`ViaRequest`] and then speaks the named protocol through it
-//! unchanged. [`LINKS`] lists the node's links in one [`LinksReply`].
+//! unchanged. [`LINKS`] lists the node's links in one [`LinksReply`]. [`PAIR`] arms the node's pairing: the node
+//! sends a PIN, and then who paired with it or why nobody did.
 
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +16,9 @@ pub const VIA: &str = "bohio-via/1";
 
 /// Lists the node's links.
 pub const LINKS: &str = "bohio-links/1";
+
+/// Arms the node's one PIN for a peer to pair on any of the node's listeners.
+pub const PAIR: &str = "bohio-pair/1";
 
 /// The metadata of a [`VIA`] open.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +82,81 @@ impl LinksRequest {
         } else {
             decode(metadata)
         }
+    }
+}
+
+/// The metadata of a [`PAIR`] open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PairRequest {
+    /// How long, in milliseconds, the PIN lasts; the node's `[link] pair_timeout` when absent.
+    #[serde(default)]
+    pub lifetime_ms: Option<u64>,
+}
+
+impl PairRequest {
+    /// Writes the request as an open's metadata.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Encode`] when the request cannot be written.
+    pub fn to_metadata(&self) -> Result<Vec<u8>, Error> {
+        encode(self)
+    }
+
+    /// Reads a request from an open's metadata; empty metadata is the defaults.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Decode`] when the bytes are not a request.
+    pub fn from_metadata(metadata: &[u8]) -> Result<Self, Error> {
+        if metadata.is_empty() {
+            Ok(Self::default())
+        } else {
+            decode(metadata)
+        }
+    }
+}
+
+/// What a [`PAIR`] stream says: first [`PairReply::Armed`], then one of the others, then the end.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PairReply {
+    /// The PIN is armed: it is for the person who reads it out, and is in no log or event.
+    Armed {
+        /// The PIN.
+        pin: String,
+        /// How long it lasts, in milliseconds.
+        lifetime_ms: u64,
+    },
+    /// A peer paired with it; its `[peer.<id>]` table was written and holds nothing.
+    Paired {
+        /// The peer's id.
+        peer: String,
+    },
+    /// Nobody paired: the PIN is used up, expired, replaced by another request or withdrawn.
+    Ended {
+        /// Why, with no key or PIN in it.
+        reason: String,
+    },
+}
+
+impl PairReply {
+    /// Writes the reply as one message.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Encode`] when the reply cannot be written.
+    pub fn encode(&self) -> Result<Vec<u8>, Error> {
+        encode(self)
+    }
+
+    /// Reads a reply from one message.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Decode`] when the bytes are not a reply.
+    pub fn decode(message: &[u8]) -> Result<Self, Error> {
+        decode(message)
     }
 }
 

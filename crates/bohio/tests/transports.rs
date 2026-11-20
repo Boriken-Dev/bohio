@@ -1207,3 +1207,101 @@ fn a_made_webtransport_certificate_takes_the_backdate_the_entry_gives() {
     let reached = world.remote(&["--cert-hash", &hash, &bound], &["info"]);
     assert!(tls_accepted(&reached), "{}", reached.stderr);
 }
+
+impl World {
+    /// `bohio pair` for the host, then `bohio join` from the client at `endpoint` (or, with none given, where `pair` says it
+    /// listens), with `extra` arguments for the join. Answers whether the pairing was done by a running node.
+    fn pair_and_join(&self, endpoint: Option<&str>, extra: &[&str]) {
+        let mut door = Proc::start(
+            env!("CARGO_BIN_EXE_bohio"),
+            &["pair", "--config", &self.host, "--timeout", "60s"],
+            false,
+            "warn",
+        );
+        let endpoint = match endpoint {
+            Some(endpoint) => endpoint.to_owned(),
+            None => door.expect_line("pairing on "),
+        };
+        let pin = door.expect_line("pin ");
+        let mut args = vec![
+            "join",
+            endpoint.as_str(),
+            "--pin",
+            pin.as_str(),
+            "--config",
+            self.client.as_str(),
+        ];
+        args.extend_from_slice(extra);
+        run_ok(&args);
+        let done = door.finish();
+        assert_eq!(done.code, Some(0), "{}", done.stderr);
+        assert!(
+            done.stdout.contains(&format!("paired {}", self.client_id)),
+            "{}",
+            done.stdout
+        );
+        assert!(
+            self.peers()
+                .contains(&format!("accepted {}", self.client_id)),
+            "{}",
+            self.peers()
+        );
+    }
+}
+
+#[test]
+fn pair_arms_a_running_node_and_a_joiner_pairs_on_its_wss_listener() {
+    let certificates = Certificates::new();
+    let world = World::new(&certificates.listen("wss://127.0.0.1:0"));
+    let (_host, bound) = world.serve_listed("warn");
+    world.pair_and_join(Some(&bound), &["--ca", &certificates.ca]);
+    run_ok(&[
+        "peer",
+        "approve",
+        &world.client_id,
+        "--config",
+        &world.host,
+        "--allow",
+        "info",
+    ]);
+    let info = world.remote(&["--ca", &certificates.ca, &bound], &["info"]);
+    assert_eq!(info.code, Some(0), "{}", info.stderr);
+}
+
+#[test]
+fn pair_arms_a_running_node_and_a_joiner_pairs_on_its_tcp_listener() {
+    let world = World::new("[[listen]]\nendpoint = \"tcp://127.0.0.1:0\"\n");
+    let (_host, bound) = world.serve_listed("warn");
+    world.pair_and_join(Some(&bound), &[]);
+}
+
+#[test]
+fn pair_with_no_node_running_serves_pairing_alone_on_the_configured_wss_listener() {
+    let certificates = Certificates::new();
+    let world = World::new(&certificates.listen("wss://127.0.0.1:0"));
+    world.pair_and_join(None, &["--ca", &certificates.ca]);
+}
+
+#[test]
+fn pair_with_no_node_running_serves_pairing_alone_on_the_configured_tcp_listener() {
+    let world = World::new("[[listen]]\nendpoint = \"tcp://127.0.0.1:0\"\n");
+    world.pair_and_join(None, &[]);
+}
+
+#[test]
+fn pair_with_no_node_and_no_listener_says_what_to_add_and_listen_is_only_for_that() {
+    let world = World::new("");
+    let refused = run(&["pair", "--config", &world.host, "--timeout", "5s"]);
+    assert_eq!(refused.code, Some(1));
+    assert!(refused.stderr.contains("[[listen]]"), "{}", refused.stderr);
+    let with_entry = World::new("[[listen]]\nendpoint = \"tcp://127.0.0.1:0\"\n");
+    let refused = run(&[
+        "pair",
+        "--config",
+        &with_entry.host,
+        "--listen",
+        "tcp://127.0.0.1:0",
+    ]);
+    assert_eq!(refused.code, Some(1));
+    assert!(refused.stderr.contains("--listen"), "{}", refused.stderr);
+}

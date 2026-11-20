@@ -113,6 +113,12 @@ fn values_out_of_range_name_their_key() {
             "link.max_links_per_peer",
         ),
         ("[link]\nproof_timeout = 0\n", "link.proof_timeout"),
+        ("[pairing]\ntimeout = 0\n", "pairing.timeout"),
+        ("[pairing]\npin_length = 0\n", "pairing.pin_length"),
+        (
+            "[pairing]\nattempt_delay = \"5s\"\nattempt_delay_max = \"1s\"\n",
+            "pairing.attempt_delay_max",
+        ),
         ("[link]\nmax_message = 4096\n", "link.max_message"),
         (
             "[execution]\nmax_processes = 0\n",

@@ -209,6 +209,8 @@ struct Client {
 struct World {
     dir: TempDir,
     config: String,
+    /// Where the host started last listens: pairing is armed on it, with no port of its own.
+    serving: Mutex<Option<String>>,
 }
 
 /// A running `bohio serve`.
@@ -240,6 +242,7 @@ impl World {
         Self {
             config: config.to_string_lossy().into_owned(),
             dir,
+            serving: Mutex::new(None),
         }
     }
 
@@ -266,6 +269,7 @@ impl World {
             .parse()
             .expect("an address");
         assert!(reachable(address), "the host does not answer on {address}");
+        *self.serving.lock().unwrap() = Some(endpoint.clone());
         Host {
             process,
             address,
@@ -298,14 +302,20 @@ impl World {
         }
     }
 
-    /// Pairs `client` with the host by a PIN: the host shows it, the client joins with it.
+    /// Pairs `client` with the running host by a PIN: `bohio pair` arms it on the host, and the client joins on the
+    /// host's own listener with it.
     fn pair(&self, client: &Client) {
+        let endpoint = self
+            .serving
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("a host is serving");
         let mut door = Proc::start(
             &["pair", "--config", &self.config, "--timeout", "60s"],
             None,
             "warn",
         );
-        let endpoint = door.expect_line("pairing on ");
         let pin = door.expect_line("pin ");
         run_ok(&["join", &endpoint, "--pin", &pin, "--config", &client.config]);
         let done = door.finish();
@@ -610,7 +620,7 @@ fn a_hand_edit_narrowing_the_user_layer_ends_a_running_exec_within_recheck() {
         None,
         "warn",
     );
-    let endpoint = door.expect_line("pairing on ");
+    let endpoint = host.endpoint.clone();
     let pin = door.expect_line("pin ");
     run_ok(&["join", &endpoint, "--pin", &pin, "--config", &client.config]);
     assert_eq!(door.finish().code, Some(0));
@@ -1146,7 +1156,7 @@ fn the_log_of_a_pairing_and_a_session_holds_no_key_pin_or_secret() {
         None,
         "trace",
     );
-    let endpoint = door.expect_line("pairing on ");
+    let endpoint = host.endpoint.clone();
     let pin = door.expect_line("pin ");
     let mut logs = Vec::new();
     let join = Proc::start(

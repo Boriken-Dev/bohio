@@ -48,6 +48,29 @@ pub trait Keys: Send + Sync {
     /// connection came from, when the node knows. The key is proven, so it is safe to queue for an
     /// operator; the default ignores it.
     fn stranger(&self, _peer: &PeerId, _key: &KeyMaterial, _source: Option<SocketAddr>) {}
+
+    /// Records `peer`, whose key just paired by the node's armed PIN, as accepted, holding nothing: it is accepted
+    /// from the next question on. Where that goes (a table in a file, a database row) is the implementation's.
+    ///
+    /// # Errors
+    ///
+    /// [`KeysError`] when it cannot be recorded; the default cannot record anything, so a node whose keys do not
+    /// override it pairs nobody.
+    fn paired(&self, _peer: &PeerId, _key: &KeyMaterial) -> Result<(), KeysError> {
+        Err(KeysError::new("these keys cannot record a pairing"))
+    }
+}
+
+/// Why a paired key could not be recorded.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
+pub struct KeysError(String);
+
+impl KeysError {
+    /// An error with `reason`, which holds no key, PIN or request.
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self(reason.into())
+    }
 }
 
 /// Why a peer's grant could not be read.
@@ -119,6 +142,11 @@ impl Keys for MemoryKeys {
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .contains(peer)
+    }
+
+    fn paired(&self, peer: &PeerId, _key: &KeyMaterial) -> Result<(), KeysError> {
+        self.accept(*peer);
+        Ok(())
     }
 }
 
@@ -230,6 +258,22 @@ pub enum NodeEvent {
         /// How long until the next attempt.
         retry_in: Duration,
     },
+    /// A peer paired by the armed PIN and [`Keys::paired`] recorded it; it holds nothing until granted.
+    Paired {
+        /// The peer.
+        peer: PeerId,
+    },
+    /// A joiner was refused or failed: no PIN was armed, it was wrong or expired, or the pairing broke. The reason holds
+    /// no key or PIN.
+    PairingRefused {
+        /// Where it connected from, when known.
+        source: Option<SocketAddr>,
+        /// Wrong or failed attempts against the armed PIN so far, this one included; `0` when none is armed or the source
+        /// was refused for trying too soon.
+        attempts: u32,
+        /// Why.
+        reason: String,
+    },
     /// A key proved itself and [`Keys`] did not accept it.
     Stranger {
         /// The key's id.
@@ -270,6 +314,14 @@ impl NodeEvents for LogEvents {
                 reason,
                 retry_in,
             } => tracing::info!(%peer, %endpoint, %reason, ?retry_in, "dial failed"),
+            NodeEvent::Paired { peer } => tracing::info!(%peer, "paired"),
+            NodeEvent::PairingRefused {
+                source,
+                attempts,
+                reason,
+            } => {
+                tracing::info!(?source, attempts, %reason, "a pairing was refused");
+            }
             NodeEvent::Stranger { peer, source } => {
                 tracing::info!(%peer, ?source, "a key proved itself and is not accepted");
             }

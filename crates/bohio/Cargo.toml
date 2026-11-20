@@ -87,3 +87,7 @@ required-features = ["cli"]
 
 [lints]
 workspace = true
+
+[[test]]
+name = "pairing"
+required-features = ["cli"]

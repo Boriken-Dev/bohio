@@ -54,9 +54,9 @@ pub enum Command {
     Id(StatusArgs),
     /// List, approve and revoke peers.
     Peer(PeerArgs),
-    /// Show a PIN and accept the key of the one peer that joins with it.
+    /// Show a PIN, armed on the running node's listeners (or the configured ones when none runs), and accept the one peer that joins with it.
     Pair(PairArgs),
-    /// Join a host that shows a PIN: each side then keeps the other's key.
+    /// Join a host that shows a PIN, over any endpoint `remote` takes: each side then keeps the other's key.
     Join(JoinArgs),
     /// Install, remove or run the host as a Windows service.
     Service(service::ServiceArgs),
@@ -216,13 +216,13 @@ pub struct PairArgs {
     /// The configuration.
     #[command(flatten)]
     pub config: ConfigOption,
-    /// Where to wait for the joiner, `tcp://host:port`; default `tcp://127.0.0.1:0`. Anyone who can
-    /// reach it may try the PIN, once.
+    /// Where to serve the pairing when no node runs and the configuration has no `[[listen]]` entry, as an entry
+    /// would name it. Anyone who can reach it may try the PIN, once. Refused when the configuration has entries.
     #[arg(long, value_name = "ENDPOINT")]
     pub listen: Option<String>,
-    /// How long to wait for the joiner: a number of seconds or a unit (`30s`, `5m`). Default `5m`.
-    #[arg(long, value_name = "TIME")]
-    pub timeout: Option<String>,
+    /// How long the PIN lasts: a number of seconds or a unit (`30s`, `5m`). Default `[pairing] timeout`, `5m`.
+    #[arg(long, value_name = "TIME", value_parser = parse_span)]
+    pub timeout: Option<std::time::Duration>,
 }
 
 /// `bohio join`.
@@ -231,11 +231,27 @@ pub struct JoinArgs {
     /// The configuration.
     #[command(flatten)]
     pub config: ConfigOption,
-    /// The host that shows the PIN, `tcp://host:port`.
+    /// The host that shows the PIN: any endpoint `bohio remote` takes (`tcp://`, `pipe://`, `ws://`, `wss://`,
+    /// `webtransport://`, `serial://`, `stdio://`).
     pub endpoint: String,
     /// The PIN the host shows; read from standard input when absent, so it stays out of process lists.
     #[arg(long, value_name = "PIN")]
     pub pin: Option<String>,
+    /// For `wss://` and `webtransport://`: trust the certificates in this PEM file instead of the system's roots.
+    /// May be repeated. The pairing's PIN, not TLS, says who the host is.
+    #[arg(long, value_name = "FILE")]
+    pub ca: Vec<PathBuf>,
+    /// For `wss://` and `webtransport://`: trust the certificate with this SHA-256 hash (`sha256:` and 64 hex
+    /// digits) whatever its name and issuer. May be repeated.
+    #[arg(long, value_name = "HASH")]
+    pub cert_hash: Vec<String>,
+    /// For `wss://` and `webtransport://`: accept a certificate whose validity starts or ends within this long of
+    /// this machine's clock, as for `bohio remote`.
+    #[arg(long, value_name = "SPAN", value_parser = parse_span)]
+    pub clock_skew: Option<std::time::Duration>,
+    /// For a `webtransport://` host: a `ws://` or `wss://` endpoint to dial when the UDP path is blocked.
+    #[arg(long, value_name = "ENDPOINT")]
+    pub fallback: Option<String>,
 }
 
 /// A time as the configuration writes it: seconds, or a number with `ms`, `s`, `m` or `h`.

@@ -1,28 +1,30 @@
 //! The commands that run or manage this host: `serve`, `status`, `id`, `peer`, `pair`, `join`.
 
 use std::io::{BufRead, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use bohio_client::link::socket;
+use bohio_proto::local::PairReply;
 use coqui_link::auth::Identity;
 use coqui_link::pairing;
-use coqui_peer::PeerId;
 use coqui_peer::pair::{CodeAlphabet, Pin};
+use coqui_peer::{KeyMaterial, PeerId};
 use coqui_transport::Channel;
 
 use super::access::{self, Guarded};
 use super::commands::{Found, found, source};
+use super::remote::{certificate_refused, tls_trust};
 use super::{
     ApproveArgs, JoinArgs, PairArgs, PeerAction, PeerArgs, RevokeArgs, ServeArgs, StatusArgs,
 };
-use crate::config::{Config, DialConfig, Environment, ListenConfig, Span};
+use crate::config::{Config, DialConfig, Environment, ListenConfig};
+use crate::link::{Grants, Keys, KeysError, MemoryGrants};
 use crate::listen::Listening;
-use crate::local::Local;
+use crate::local::{Local, LocalLink};
 use crate::node::{Endpoint, Node};
 use crate::peer::{self, Data, LayeredPeers};
 use crate::policy::{Grant, Permission};
@@ -36,22 +38,24 @@ macro_rules! say {
     }};
 }
 
-/// Pairing by PIN meets a stranger over TCP; any other transport is for peers already paired.
-const PAIRING_ON_TCP: &str =
-    "pairing runs over tcp:// only; other transports serve peers that are already paired";
-
 fn parse_id(text: &str) -> Result<PeerId, String> {
     text.parse::<PeerId>()
         .map_err(|_| "that is not a peer id: use the form `bohio peer list` prints".to_owned())
 }
 
 /// The node `config` describes, with the identity of its data directory and the peers of the layers `watch`.
-fn node(config: &Config, watch: &[PathBuf], environment: &Environment) -> Result<Node, String> {
+fn node(found: &Found, environment: &Environment) -> Result<Node, String> {
+    let config = found.config();
     let data = Data::new(config.data_dir(environment));
     let identity = data.identity().map_err(|error| error.to_string())?;
-    let peers =
-        Arc::new(LayeredPeers::new(watch.to_vec(), &data).map_err(|error| error.to_string())?);
+    let peers = Arc::new(
+        LayeredPeers::new(found.watch.clone(), &data)
+            .map_err(|error| error.to_string())?
+            .with_create(found.create.clone()),
+    );
     let node = Node::new(config.node(), identity, peers.clone(), peers)
+        .map_err(|error| error.to_string())?
+        .with_pairing(data.store().map_err(|error| error.to_string())?)
         .map_err(|error| error.to_string())?;
     Ok(node.with_path(environment.path.clone().unwrap_or_default()))
 }
@@ -65,7 +69,7 @@ pub(super) fn serve(args: &ServeArgs, environment: &Environment) -> Result<(), S
             return Err("--stdio serves standard input and output alone: drop --listen".to_owned());
         }
         // Standard output is the link: nothing else is written to it, and [[listen]] entries are not bound.
-        let server = node(config, &found.watch, environment)?;
+        let server = node(&found, environment)?;
         guard(&found.layered.files, config, environment)?;
         tracing::info!(host = %server.host(), "serving standard input and output");
         return server.serve_stdio().map_err(|error| error.to_string());
@@ -144,7 +148,7 @@ pub(super) fn serve_endpoints(
                 .to_owned(),
         );
     }
-    let server = node(config, &found.watch, environment)?;
+    let server = node(found, environment)?;
     guard(&found.layered.files, config, environment)?;
     let settings = config.link.settings();
     let mut listeners = Vec::new();
@@ -395,57 +399,155 @@ fn peer_revoke(args: &RevokeArgs, environment: &Environment) -> Result<(), Strin
     Ok(())
 }
 
-/// `bohio pair`.
+/// `bohio pair`: arms the running node, or serves pairing alone on the configured listeners when none runs.
 pub(super) fn pair(args: &PairArgs, environment: &Environment) -> Result<(), String> {
     let (found, data) = source(&args.config, environment)?;
     let config = found.config();
-    let timeout = match &args.timeout {
-        Some(text) => {
-            Span::parse(text)
-                .ok_or_else(|| {
-                    "a time is a number of seconds or a unit of ms, s, m or h".to_owned()
-                })?
-                .0
-        }
-        None => Duration::from_secs(300),
-    };
-    let Endpoint::Tcp(address) =
-        Endpoint::parse(args.listen.as_deref().unwrap_or("tcp://127.0.0.1:0"))?
-    else {
-        return Err(PAIRING_ON_TCP.to_owned());
-    };
-    let listener = TcpListener::bind(address)
-        .map_err(|error| format!("cannot listen on {address}: {error}"))?;
-    let bound = listener.local_addr().map_err(|error| error.to_string())?;
     let identity = data.identity().map_err(|error| error.to_string())?;
+    if config.control.is_enabled()
+        && let Ok(control) = Endpoint::parse(&config.control.endpoint_for(&identity.peer_id()))
+        && let Ok(link) = LocalLink::connect(&control, &config.link.settings())
+    {
+        return pair_running(&link, &found, &identity.peer_id(), args);
+    }
+    pair_alone(&found, environment, args)
+}
+
+/// What `bohio pair` prints about the listeners: the entries as the configuration writes them.
+fn say_listeners(entries: &[ListenConfig]) {
+    for entry in entries {
+        say!("pairing on {}", entry.endpoint);
+    }
+}
+
+fn pair_running(
+    link: &LocalLink,
+    found: &Found,
+    host: &PeerId,
+    args: &PairArgs,
+) -> Result<(), String> {
+    let pairing = link
+        .pair(args.timeout)
+        .map_err(|error| format!("the running node cannot arm a PIN: {error}"))?;
+    say_listeners(&found.config().listen);
+    say!("host {host}");
     // The PIN is for the person who reads it out, so it goes to standard output and nowhere else.
-    let joined = peer::pair(&data, &listener, &config.link.settings(), timeout, |pin| {
-        say!("pairing on {}", Endpoint::Tcp(bound));
-        say!("host {}", identity.peer_id());
-        say!("pin {pin}");
-    })
-    .map_err(|error| error.to_string())?;
-    let approved = peer::approve(
-        &found.layered.files,
-        found.create.as_deref(),
-        &data,
-        &joined,
-        None,
-        None,
+    say!("pin {}", pairing.pin());
+    match pairing.wait().map_err(|error| error.to_string())? {
+        PairReply::Paired { peer } => {
+            say!("paired {peer}");
+            say!("it holds nothing until `bohio peer approve {peer} --allow ...`");
+            Ok(())
+        }
+        PairReply::Ended { reason } => Err(format!("nobody paired: {reason}")),
+        _ => Err("the node said something this command does not know".to_owned()),
+    }
+}
+
+/// The keys of a node that only pairs: it accepts nobody, so no proven peer is served while the PIN is armed, and
+/// a joiner is recorded as `inner` records it.
+struct PairOnly(LayeredPeers);
+
+impl Keys for PairOnly {
+    fn is_accepted(&self, _peer: &PeerId) -> bool {
+        false
+    }
+
+    fn paired(&self, peer: &PeerId, key: &KeyMaterial) -> Result<(), KeysError> {
+        self.0.paired(peer, key)
+    }
+}
+
+fn pair_alone(found: &Found, environment: &Environment, args: &PairArgs) -> Result<(), String> {
+    let config = found.config();
+    let mut entries = config.listen.clone();
+    match (&args.listen, entries.is_empty()) {
+        (Some(_), false) => {
+            return Err(
+                "--listen is for a configuration with no [[listen]] entry: pairing is served on the entries it has"
+                    .to_owned(),
+            );
+        }
+        (Some(endpoint), true) => entries.push(ListenConfig {
+            endpoint: endpoint.clone(),
+            ..ListenConfig::default()
+        }),
+        (None, true) => {
+            return Err(
+                "no node runs and there is nothing to listen on: add a [[listen]] entry to bohio.cfg or pass --listen"
+                    .to_owned(),
+            );
+        }
+        (None, false) => {}
+    }
+    let data = Data::new(config.data_dir(environment));
+    let identity = data.identity().map_err(|error| error.to_string())?;
+    let peers = LayeredPeers::new(found.watch.clone(), &data)
+        .map_err(|error| error.to_string())?
+        .with_create(found.create.clone());
+    let node = Node::new(
+        config.node(),
+        identity,
+        Arc::new(PairOnly(peers)),
+        Arc::new(MemoryGrants::new()) as Arc<dyn Grants>,
     )
+    .map_err(|error| error.to_string())?
+    .with_pairing(data.store().map_err(|error| error.to_string())?)
     .map_err(|error| error.to_string())?;
-    say!("paired {joined}");
-    say!("wrote {}", approved.file.display());
-    say!("it holds nothing until `bohio peer approve {joined} --allow ...`");
-    Ok(())
+    let settings = config.link.settings();
+    let mut listeners = Vec::new();
+    for entry in &entries {
+        let (listening, bound) = Listening::bind(entry, &settings).map_err(|error| {
+            format!("{error}; if `bohio serve` runs here without a [control] endpoint, `bohio pair` cannot reach it")
+        })?;
+        say!("pairing on {bound}");
+        if let Some(hash) = listening.certificate_hash() {
+            say!("certificate {hash} for {bound}");
+        }
+        listeners.push(listening);
+    }
+    let armed = node
+        .arm_pairing(args.timeout)
+        .map_err(|error| error.to_string())?;
+    say!("host {}", node.host());
+    // The PIN is for the person who reads it out, so it goes to standard output and nowhere else.
+    say!("pin {}", armed.pin());
+    let stop = AtomicBool::new(false);
+    let end = thread::scope(|scope| {
+        for listening in &listeners {
+            let (node, stop) = (&node, &stop);
+            scope.spawn(move || {
+                if let Err(error) = node.serve_listening(listening, stop) {
+                    tracing::error!("a listener failed: {error}");
+                }
+            });
+        }
+        let end = loop {
+            if let Some(end) = armed.wait(Duration::from_millis(200)) {
+                break end;
+            }
+        };
+        stop.store(true, Ordering::SeqCst);
+        end
+    });
+    match end {
+        crate::pair::PairEnd::Paired(peer) => {
+            say!("paired {peer}");
+            say!("it holds nothing until `bohio peer approve {peer} --allow ...`");
+            Ok(())
+        }
+        other => Err(format!("nobody paired: {other}")),
+    }
 }
 
 /// `bohio join`.
 pub(super) fn join(args: &JoinArgs, environment: &Environment) -> Result<(), String> {
     let (found, data) = source(&args.config, environment)?;
     let config = found.config();
-    let Endpoint::Tcp(address) = Endpoint::parse(&args.endpoint)? else {
-        return Err(PAIRING_ON_TCP.to_owned());
+    let endpoint = Endpoint::parse(&args.endpoint)?;
+    let endpoint = match &args.fallback {
+        Some(text) => endpoint.with_fallback(Endpoint::parse(text)?)?,
+        None => endpoint,
     };
     let text = match &args.pin {
         Some(pin) => pin.clone(),
@@ -458,18 +560,21 @@ pub(super) fn join(args: &JoinArgs, environment: &Environment) -> Result<(), Str
             line.trim().to_owned()
         }
     };
-    let pin = Pin::parse(&CodeAlphabet::pin(), &text)
-        .map_err(|_| "that is not a PIN: it is six digits".to_owned())?;
+    let pin = Pin::parse(&CodeAlphabet::new("0123456789", text.len()), &text)
+        .map_err(|_| "that is not a PIN: it is digits only".to_owned())?;
     let identity: Identity = data.identity().map_err(|error| error.to_string())?;
     let store = data.store().map_err(|error| error.to_string())?;
     let settings = config.link.settings();
-    let stream = TcpStream::connect_timeout(&address, settings.proof_timeout)
-        .map_err(|error| format!("cannot reach {address}: {error}"))?;
-    if stream.local_addr().ok() == stream.peer_addr().ok() {
-        return Err(format!("nothing is listening on {address}"));
-    }
-    let channel = socket(stream, &settings).map_err(|error| error.to_string())?;
-    let joined = pairing::join(&channel, &identity, pin, &store, settings.proof_timeout);
+    let trust = tls_trust(&endpoint, &args.ca, &args.cert_hash, args.clock_skew)?;
+    let channel = endpoint
+        .dial_with(settings.proof_timeout, &settings, &trust)
+        .map_err(|error| match error {
+            bohio_client::Error::Transport(coqui_transport::Failure::Certificate) => {
+                certificate_refused(&endpoint, &trust)
+            }
+            other => format!("cannot reach {endpoint}: {other}"),
+        })?;
+    let joined = pairing::join_shared(&channel, &identity, pin, &store, settings.proof_timeout);
     channel.close();
     let paired = joined.map_err(|error| error.to_string())?;
     let host = paired.peer.id();

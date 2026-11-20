@@ -126,6 +126,8 @@ pub struct Config {
     pub execution: ExecutionConfig,
     /// `[shell]`.
     pub shell: ShellConfig,
+    /// `[pairing]`: the PIN a node arms.
+    pub pairing: PairingConfig,
     /// `[control]`: the node's local endpoint.
     pub control: ControlConfig,
     /// `[peer.<id>]`: each accepted peer and what it may do. A key is accepted while any layer holds
@@ -655,6 +657,62 @@ impl Default for ShellConfig {
     }
 }
 
+/// `[pairing]`: the PIN a node arms for a joiner to try on its own listeners.
+///
+/// A PIN has `10^pin_length` values with the default digits, and a guess is made only against a PIN armed now: with `max_attempts`
+/// wrong guesses allowed, the chance that a stranger who reaches the node guesses one PIN is `max_attempts / 10^pin_length`
+/// (`10 / 10^6`, one in a hundred thousand, by default). `attempt_delay` slows a source that guesses, so `max_attempts = 0`
+/// (no limit) is bounded by time instead: from one source, the delay doubles from `attempt_delay` to `attempt_delay_max`, which is
+/// about 15 guesses in the default five minutes, but every source has its own delay, so a stranger with many addresses
+/// multiplies that. Unlimited trades the guess count for the lifetime, and is for a node that only a trusted network reaches.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct PairingConfig {
+    /// How long a PIN lasts when the request names no time. Same units as `[link] recheck`; not zero. Default `5m`.
+    pub timeout: Span,
+    /// Wrong guesses a PIN takes before it is used up; the last allowed wrong guess uses it up. `0` is no limit: the PIN then
+    /// lasts until `timeout`. Default `10`.
+    pub max_attempts: u32,
+    /// How long a source must wait after a wrong guess before it may try again; the wait doubles at each further wrong guess
+    /// from that source, up to `attempt_delay_max`. A source that tries sooner is refused without a try. `0` is no wait.
+    /// Default `1s`.
+    pub attempt_delay: Span,
+    /// The longest wait `attempt_delay` grows to; at least `attempt_delay`. Default `30s`.
+    pub attempt_delay_max: Span,
+    /// How many digits a PIN has. At least 1. Default `6`.
+    pub pin_length: usize,
+}
+
+impl Default for PairingConfig {
+    fn default() -> Self {
+        Self {
+            timeout: Span(Duration::from_secs(300)),
+            max_attempts: 10,
+            attempt_delay: Span(Duration::from_secs(1)),
+            attempt_delay_max: Span(Duration::from_secs(30)),
+            pin_length: 6,
+        }
+    }
+}
+
+impl PairingConfig {
+    fn validate(&self) -> Result<(), (&'static str, &'static str)> {
+        if self.timeout.0.is_zero() {
+            return Err(("pairing.timeout", "must not be zero"));
+        }
+        if self.attempt_delay_max.0 < self.attempt_delay.0 {
+            return Err((
+                "pairing.attempt_delay_max",
+                "must be at least attempt_delay",
+            ));
+        }
+        if self.pin_length == 0 {
+            return Err(("pairing.pin_length", "must be at least 1"));
+        }
+        Ok(())
+    }
+}
+
 /// A length of time, written as a number of seconds or as text with a unit.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Span(pub Duration);
@@ -727,6 +785,8 @@ pub struct NodeConfig {
     pub execution: ExecutionConfig,
     /// `[shell]`.
     pub shell: ShellConfig,
+    /// `[pairing]`.
+    pub pairing: PairingConfig,
 }
 
 impl Default for NodeConfig {
@@ -737,6 +797,7 @@ impl Default for NodeConfig {
             filesystem: FilesystemConfig::default(),
             execution: ExecutionConfig::default(),
             shell: ShellConfig::default(),
+            pairing: PairingConfig::default(),
         }
     }
 }
@@ -753,6 +814,9 @@ impl NodeConfig {
             key: key.to_owned(),
             message: message.to_owned(),
         };
+        if let Err((key, message)) = self.pairing.validate() {
+            return Err(invalid(key, message));
+        }
         if self.link.max_streams == 0 {
             return Err(invalid("link.max_streams", "must be at least 1"));
         }
@@ -897,6 +961,7 @@ impl Config {
             filesystem: self.filesystem.clone(),
             execution: self.execution.clone(),
             shell: self.shell.clone(),
+            pairing: self.pairing.clone(),
         }
     }
 

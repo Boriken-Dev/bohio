@@ -5,21 +5,16 @@
 //! do. The data directory holds what is state, not configuration: `identity` (this host's key) and
 //! `peers/waiting/`, the proven keys that were not accepted, until [`approve`] or [`revoke`] decides them.
 
-use std::net::{SocketAddr, TcpListener};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError, mpsc};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::sync::{Mutex, PoisonError};
 
-use bohio_client::link::{Settings, socket};
 use coqui_link::auth::{Identity, Method};
-use coqui_link::pairing;
 use coqui_peer::{KeyMaterial, PeerId, TrustStore};
-use coqui_transport::Channel;
 use toml_edit::{DocumentMut, Item, Table};
 
 use crate::config::{ConfigError, Layers};
-use crate::link::{Grants, GrantsError, Keys};
+use crate::link::{Grants, GrantsError, Keys, KeysError};
 use crate::policy::{Grant, Peers};
 
 /// Why a key or peer operation failed. Never holds a key, a PIN or a secret.
@@ -44,9 +39,6 @@ pub enum PeerError {
     /// No accepted or waiting peer has that id.
     #[error("no accepted or waiting peer has that id")]
     NoSuchPeer,
-    /// Pairing did not finish.
-    #[error("pairing failed: {0}")]
-    Pairing(String),
 }
 
 impl From<ConfigError> for PeerError {
@@ -168,6 +160,8 @@ pub fn list(files: &[PathBuf], data: &Data) -> Result<Listing, PeerError> {
 #[derive(Debug)]
 pub struct LayeredPeers {
     files: Vec<PathBuf>,
+    create: Option<PathBuf>,
+    data: Data,
     store: TrustStore,
     reported: Mutex<Option<String>>,
 }
@@ -182,9 +176,18 @@ impl LayeredPeers {
     pub fn new(files: Vec<PathBuf>, data: &Data) -> Result<Self, PeerError> {
         Ok(Self {
             files,
+            create: None,
+            data: data.clone(),
             store: data.store()?,
             reported: Mutex::new(None),
         })
+    }
+
+    /// The file a paired peer's table is written to when no layer can take it: see [`approve`].
+    #[must_use]
+    pub fn with_create(mut self, create: Option<PathBuf>) -> Self {
+        self.create = create;
+        self
     }
 
     fn current(&self) -> Result<Peers, GrantsError> {
@@ -214,6 +217,19 @@ impl Keys for LayeredPeers {
 
     fn stranger(&self, _peer: &PeerId, key: &KeyMaterial, source: Option<SocketAddr>) {
         self.store.record_waiting(key, source);
+    }
+
+    fn paired(&self, peer: &PeerId, _key: &KeyMaterial) -> Result<(), KeysError> {
+        approve(
+            &self.files,
+            self.create.as_deref(),
+            &self.data,
+            peer,
+            None,
+            None,
+        )
+        .map(|_| ())
+        .map_err(|error| KeysError::new(error.to_string()))
     }
 }
 
@@ -485,94 +501,4 @@ fn write_document(path: &Path, text: &str, made: bool) -> Result<(), PeerError> 
     #[cfg(not(unix))]
     let _ = made;
     Ok(())
-}
-
-/// Shows a PIN on `listener` and pairs the first peer that joins with it: the joiner's key is stored
-/// (the command then writes its `[peer.<id>]` table with [`approve`], which removes it from the store) and
-/// the host's key is stored by the joiner.
-///
-/// `shown` is called once with the PIN, for the person who reads it out; it is never logged. Returns
-/// the joiner's id.
-///
-/// # Errors
-///
-/// [`PeerError::Pairing`] when the PIN is used up or expires, nobody pairs within `timeout`, or the
-/// listener fails.
-pub fn pair(
-    data: &Data,
-    listener: &TcpListener,
-    settings: &Settings,
-    timeout: Duration,
-    shown: impl FnOnce(&str),
-) -> Result<PeerId, PeerError> {
-    const POLL: Duration = Duration::from_millis(50);
-    let identity = data.identity()?;
-    let store = data.store()?;
-    let desk = pairing::desk().map_err(|error| PeerError::Pairing(error.to_string()))?;
-    let pin = desk
-        .show_pin()
-        .map_err(|error| PeerError::Pairing(error.to_string()))?;
-    shown(pin.pin.as_str());
-    drop(pin);
-    listener
-        .set_nonblocking(true)
-        .map_err(|error| PeerError::Pairing(error.to_string()))?;
-    let until = Instant::now() + timeout;
-    let (report, reports) = mpsc::channel();
-    thread::scope(|scope| {
-        let mut running = 0_usize;
-        loop {
-            while let Ok(result) = reports.try_recv() {
-                running -= 1;
-                match result {
-                    Ok(id) => return Ok(id),
-                    Err(why) => {
-                        tracing::info!("a pairing attempt failed: {why}");
-                        if desk.shown_pin().is_none() {
-                            return Err(PeerError::Pairing(
-                                "the PIN is used up or expired: start again".to_owned(),
-                            ));
-                        }
-                    }
-                }
-            }
-            if Instant::now() >= until {
-                return Err(PeerError::Pairing("nobody paired in time".to_owned()));
-            }
-            match listener.accept() {
-                Ok((stream, source)) => {
-                    if running >= 16 {
-                        continue;
-                    }
-                    running += 1;
-                    let (identity, store, desk, report) =
-                        (&identity, &store, &desk, report.clone());
-                    scope.spawn(move || {
-                        let result = stream
-                            .set_nonblocking(false)
-                            .and_then(|()| socket(stream, settings))
-                            .map_err(|error| error.to_string())
-                            .and_then(|channel| {
-                                let paired = pairing::respond(
-                                    &channel,
-                                    identity,
-                                    store,
-                                    desk,
-                                    Some(source),
-                                    settings.proof_timeout,
-                                );
-                                channel.close();
-                                paired.map_err(|error| error.to_string())
-                            })
-                            .map(|paired| paired.peer.id());
-                        let _ = report.send(result);
-                    });
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    thread::sleep(POLL);
-                }
-                Err(error) => return Err(PeerError::Pairing(error.to_string())),
-            }
-        }
-    })
 }

@@ -4,7 +4,7 @@
 //! them is the node. [`Local`] is the endpoint it listens on (a pipe: a Windows named pipe or a Unix
 //! socket, this user alone by default); [`Node::serve_local`] serves two protocols there, never on a peer's
 //! link: [`bohio_proto::local::VIA`] carries a stream of any other protocol to a peer, and
-//! [`bohio_proto::local::LINKS`] lists the links. The mux on this endpoint is not sealed: who may connect is
+//! [`bohio_proto::local::LINKS`] lists the links, and [`bohio_proto::local::PAIR`] arms the node's pairing PIN. The mux on this endpoint is not sealed: who may connect is
 //! the boundary, as for the key file.
 //!
 //! [`Via`] is the client: an [`Open`] whose streams run on a node's link to one peer, so `info`, `exec`, `read`
@@ -21,9 +21,11 @@ use bohio_client::dial::Endpoint;
 use bohio_client::link::Settings;
 use bohio_client::relay::relay;
 use bohio_client::{Error, Open};
-use bohio_proto::local::{LINKS, LinkEntry, LinksReply, LinksRequest, VIA, ViaRequest};
+use bohio_proto::local::{
+    LINKS, LinkEntry, LinksReply, LinksRequest, PAIR, PairReply, PairRequest, VIA, ViaRequest,
+};
 use coqui_link::link::{Accepted, Host, Options, Services, serve_with};
-use coqui_link::mux::{CloseReason, LinkStream, Mux, Side, StreamEnd};
+use coqui_link::mux::{CloseReason, LinkStream, Mux, Side, StreamEnd, StreamLife};
 use coqui_link::peers::{NoEvents, PeerRecord, PeerStore};
 use coqui_peer::PeerId;
 use coqui_transport::{Channel, Failure};
@@ -32,6 +34,7 @@ use coqui_transport_pipe::{Listener as PipeListener, SocketGroup};
 use crate::config::ControlConfig;
 use crate::link::Grants;
 use crate::node::{Node, NodeError, Registry, Side as LinkSide};
+use crate::pair::{PairEnd, PairState};
 
 /// How long the accept loop waits for a connection before it looks at whether it was stopped.
 const ACCEPT_WAIT: Duration = Duration::from_millis(200);
@@ -115,6 +118,7 @@ impl Local {
 
 /// What the two local protocols read.
 struct Context {
+    pairing: Arc<PairState>,
     registry: Arc<Registry>,
     grants: Arc<dyn Grants>,
     settings: Settings,
@@ -125,7 +129,12 @@ struct Everything;
 
 impl PeerStore for Everything {
     fn get(&self, peer: &str) -> Result<Option<PeerRecord>, coqui_link::Error> {
-        Ok(Some(PeerRecord::new(peer).granting(VIA).granting(LINKS)))
+        Ok(Some(
+            PeerRecord::new(peer)
+                .granting(VIA)
+                .granting(LINKS)
+                .granting(PAIR),
+        ))
     }
 
     fn put(&self, _record: &PeerRecord) -> Result<(), coqui_link::Error> {
@@ -164,6 +173,7 @@ impl Node {
     pub fn serve_local_channel<C: Channel>(&self, channel: &C, stop: Option<&AtomicBool>) {
         let (registry, grants, settings) = self.local_parts();
         let context = Arc::new(Context {
+            pairing: self.pair_state(),
             registry,
             grants,
             settings,
@@ -186,6 +196,15 @@ impl Node {
                     let context = Arc::clone(&context);
                     move |stream: &dyn LinkStream, accepted: &Accepted| {
                         links(&context, stream, accepted);
+                    }
+                }),
+            )
+            .with(
+                PAIR,
+                Box::new({
+                    let context = Arc::clone(&context);
+                    move |stream: &dyn LinkStream, accepted: &Accepted| {
+                        pair(&context, stream, accepted);
                     }
                 }),
             );
@@ -335,6 +354,55 @@ fn links(context: &Context, stream: &dyn LinkStream, accepted: &Accepted) {
     let _ = stream.receive(Some(context.settings.send_limit));
 }
 
+/// `bohio-pair/1`: arms a PIN, says it, then says how it ended. A client that goes away withdraws the PIN.
+fn pair(context: &Context, stream: &dyn LinkStream, accepted: &Accepted) {
+    let Ok(request) = PairRequest::from_metadata(&accepted.metadata) else {
+        return stream.close_with(CloseReason::Refused, "that is not a pair request");
+    };
+    let send = |reply: &PairReply| {
+        if let Ok(message) = reply.encode() {
+            let _ = stream.send(&message);
+        }
+    };
+    let armed = match context
+        .pairing
+        .arm(request.lifetime_ms.map(Duration::from_millis))
+    {
+        Ok(armed) => armed,
+        Err(error) => {
+            send(&PairReply::Ended {
+                reason: error.to_string(),
+            });
+            let _ = stream.finish();
+            return;
+        }
+    };
+    send(&PairReply::Armed {
+        pin: armed.pin().to_owned(),
+        lifetime_ms: u64::try_from(armed.lifetime().as_millis()).unwrap_or(u64::MAX),
+    });
+    let poll = context.settings.poll_interval.max(Duration::from_millis(1));
+    let end = loop {
+        if let Some(end) = armed.wait(poll) {
+            break end;
+        }
+        if stream.life() != StreamLife::Open {
+            armed.withdraw();
+            return;
+        }
+    };
+    send(&match end {
+        PairEnd::Paired(peer) => PairReply::Paired {
+            peer: peer.to_string(),
+        },
+        other => PairReply::Ended {
+            reason: other.to_string(),
+        },
+    });
+    let _ = stream.finish();
+    let _ = stream.receive(Some(context.settings.send_limit));
+}
+
 /// A client of a node's local endpoint: the links it holds, and [`Via`] their streams.
 #[derive(Debug)]
 pub struct LocalLink {
@@ -374,6 +442,34 @@ impl LocalLink {
         })
     }
 
+    /// Asks the node to arm a PIN lasting `lifetime` (`[pairing] timeout` when `None`), which a joiner may try on any of
+    /// the node's listeners.
+    ///
+    /// # Errors
+    ///
+    /// The stream's failure; [`Error::Link`] with the node's reason when it cannot arm one (it has no store to pair into).
+    pub fn pair(&self, lifetime: Option<Duration>) -> Result<Pairing, Error> {
+        let request = PairRequest {
+            lifetime_ms: lifetime.map(|time| u64::try_from(time.as_millis()).unwrap_or(u64::MAX)),
+        };
+        let stream = self.opener.open(PAIR, &request.to_metadata()?)?;
+        let message = stream
+            .receive(Some(self.settings.proof_timeout))?
+            .ok_or(Error::Closed)?;
+        match PairReply::decode(&message).map_err(|error| Error::Link(error.to_string()))? {
+            PairReply::Armed { pin, lifetime_ms } => Ok(Pairing {
+                stream,
+                pin,
+                lifetime: Duration::from_millis(lifetime_ms),
+                settings: self.settings,
+            }),
+            PairReply::Ended { reason } => Err(Error::Link(reason)),
+            PairReply::Paired { .. } => {
+                Err(Error::Link("the node paired before it armed".to_owned()))
+            }
+        }
+    }
+
     /// The node's links, each with what the peer offers read just now (waiting up to `wait` for each).
     ///
     /// # Errors
@@ -402,6 +498,52 @@ impl Drop for LocalLink {
         if let Some(thread) = thread {
             let _ = thread.join();
         }
+    }
+}
+
+/// A PIN a node armed for a client that asked through its local endpoint. Dropping it before it ends withdraws the PIN.
+pub struct Pairing {
+    stream: Box<dyn Channel>,
+    pin: String,
+    lifetime: Duration,
+    settings: Settings,
+}
+
+impl Pairing {
+    /// The PIN, for the person who reads it out.
+    pub fn pin(&self) -> &str {
+        &self.pin
+    }
+
+    /// How long the node holds it.
+    pub const fn lifetime(&self) -> Duration {
+        self.lifetime
+    }
+
+    /// Waits for the PIN to end: the peer that paired with it, or why nobody did.
+    ///
+    /// # Errors
+    ///
+    /// The stream's failure, or [`Error::Link`] for a reply that is not one.
+    pub fn wait(self) -> Result<PairReply, Error> {
+        let until = self.lifetime.saturating_add(self.settings.proof_timeout);
+        let message = self.stream.receive(Some(until))?.ok_or(Error::Closed)?;
+        self.stream.close();
+        PairReply::decode(&message).map_err(|error| Error::Link(error.to_string()))
+    }
+}
+
+impl core::fmt::Debug for Pairing {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Pairing")
+            .field("lifetime", &self.lifetime)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for Pairing {
+    fn drop(&mut self) {
+        self.stream.close();
     }
 }
 

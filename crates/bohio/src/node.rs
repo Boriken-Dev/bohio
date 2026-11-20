@@ -29,10 +29,11 @@ use bohio_client::link::Settings;
 use bohio_client::relay::relay;
 use bohio_proto::info::Info;
 use bohio_proto::{ErrorBody, ErrorCode, protocol};
-use coqui_link::auth::{Identity, Proof, Sealed, Session, Trust, prove, prove_out};
+use coqui_link::auth::{Identity, Proof, Sealed, Session, Trust, prove_out};
 use coqui_link::link::{Accepted as Open, Host, Options, Services, serve_with};
 pub use coqui_link::mux::Side;
 use coqui_link::mux::{CloseReason, LinkStream};
+use coqui_link::pairing::{Answered, answer};
 use coqui_peer::{Established, Handshake, KeyMaterial, Method as ProofMethod, PeerId};
 use coqui_transport::Channel;
 
@@ -41,9 +42,12 @@ pub use crate::config::{DialConfig, NodeConfig};
 use crate::limit::Slots;
 use crate::link::{Bridge, NodePeers, PROTOCOLS, admission, grant_of, offered};
 pub use crate::link::{
-    Grants, GrantsError, Keys, LogEvents, MemoryGrants, MemoryKeys, NodeEvent, NodeEvents,
+    Grants, GrantsError, Keys, KeysError, LogEvents, MemoryGrants, MemoryKeys, NodeEvent,
+    NodeEvents,
 };
 use crate::listen::Listening;
+use crate::pair::PairState;
+pub use crate::pair::{Armed, PairEnd};
 use crate::policy::Grant;
 use crate::{control, exec, fs, info, shell};
 
@@ -63,6 +67,9 @@ pub enum NodeError {
     /// The proof could not be set up.
     #[error("the proof cannot be set up: {0}")]
     Proof(String),
+    /// A PIN could not be armed.
+    #[error("pairing cannot be armed: {0}")]
+    Pairing(String),
     /// A listener could not be opened.
     #[error("cannot listen on {endpoint}: {reason}")]
     Listen {
@@ -326,6 +333,7 @@ pub struct Node {
     peers: NodePeers,
     host: PeerId,
     connections: AtomicUsize,
+    pairing: Arc<PairState>,
     /// Connections still proving themselves, by source: `[link] max_unproven_per_source` each.
     unproven: Counted<IpAddr>,
     /// Proven links, by peer: `[link] max_links_per_peer` each.
@@ -382,7 +390,7 @@ impl<K: Eq + Hash> Drop for Hold<'_, K> {
 
 /// The source a connection counts against: an IPv4 address (an IPv4-mapped IPv6 address is its IPv4
 /// address), or the /64 an IPv6 address lies in, since one holder controls every address of a /64.
-fn source_key(source: SocketAddr) -> IpAddr {
+pub(crate) fn source_key(source: SocketAddr) -> IpAddr {
     match source.ip() {
         IpAddr::V6(address) => match address.to_ipv4_mapped() {
             Some(v4) => IpAddr::V4(v4),
@@ -474,6 +482,7 @@ impl Node {
             proof,
             host,
             connections: AtomicUsize::new(0),
+            pairing: Arc::new(PairState::new(config.pairing.clone())),
             unproven: Counted::new(config.link.max_unproven_per_source),
             links: Counted::new(config.link.max_links_per_peer),
         })
@@ -495,6 +504,27 @@ impl Node {
     pub fn with_path(mut self, path: OsString) -> Self {
         self.shared = Shared::new(&self.shared.config, &self.grants, self.host, path);
         self
+    }
+
+    /// Lets this node pair peers on its own listeners, accepting a joiner's key in `store` (the trust store `respond`
+    /// needs) and recording it through [`Keys::paired`]. A node without this refuses every joiner unanswered.
+    ///
+    /// # Errors
+    ///
+    /// [`NodeError::Proof`] when the pairing desk cannot be made.
+    pub fn with_pairing(self, store: coqui_peer::TrustStore) -> Result<Self, NodeError> {
+        self.pairing.enable(store)?;
+        Ok(self)
+    }
+
+    /// Arms a new PIN, lasting `lifetime` (`[pairing] timeout` when `None`), and withdraws the one armed before: a
+    /// joiner on any of this node's listeners may try it once.
+    ///
+    /// # Errors
+    ///
+    /// [`NodeError::Pairing`] when the node was not given a store by [`Node::with_pairing`] or the lifetime is zero.
+    pub fn arm_pairing(&self, lifetime: Option<Duration>) -> Result<Armed, NodeError> {
+        self.pairing.arm(lifetime)
     }
 
     /// One service per protocol, each admitted by the grants as they are at the time.
@@ -618,22 +648,81 @@ impl Node {
             proof: &self.proof,
             source,
         };
-        let established = match prove(
-            &sourced,
-            channel,
-            settings.proof_timeout,
-            settings.record_length(self.proof.method()),
-        ) {
-            Ok(established) => established,
-            Err(error @ coqui_link::Error::Proof(_)) => {
-                return tracing::info!(
-                    "a key was refused: {error}; a key that proved itself and is not accepted waits for `bohio peer approve`"
-                );
+        let key = source.map(source_key);
+        let mut attempts = 0;
+        let mut delayed = false;
+        let answered = self.pairing.host(&self.identity, key, |host, slot, wait| {
+            delayed = wait;
+            let answered = answer(
+                channel,
+                &sourced,
+                settings.record_length(self.proof.method()),
+                host,
+                source,
+                settings.proof_timeout,
+            );
+            if let Some(slot) = slot {
+                slot.attempted(matches!(answered, Ok(Answered::Paired(_))));
+                if !wait && matches!(&answered, Err(unanswered) if unanswered.pairing) {
+                    attempts = slot.failed(key);
+                }
             }
-            Err(error) => return tracing::info!("a connection ended before its proof: {error}"),
-        };
+            if let Ok(Answered::Paired(paired)) = &answered {
+                let end = self.record_pairing(&paired.peer);
+                if let Some(slot) = slot {
+                    slot.finish(end);
+                }
+            }
+            answered
+        });
         drop(proving);
+        let established = match answered {
+            Ok(Answered::Proven(established)) => established,
+            Ok(_) => return,
+            Err(unanswered) if unanswered.pairing => {
+                let reason = if delayed {
+                    "too soon after a wrong PIN from this source".to_owned()
+                } else {
+                    unanswered.error.to_string()
+                };
+                tracing::info!(?source, attempts, "a pairing was refused: {reason}");
+                return self.events.event(&NodeEvent::PairingRefused {
+                    source,
+                    attempts,
+                    reason,
+                });
+            }
+            Err(unanswered) => match unanswered.error {
+                error @ coqui_link::Error::Proof(_) => {
+                    return tracing::info!(
+                        "a key was refused: {error}; a key that proved itself and is not accepted waits for `bohio peer approve`"
+                    );
+                }
+                error => return tracing::info!("a connection ended before its proof: {error}"),
+            },
+        };
         let _ = self.serve_proven(channel, established, Side::Answered, source, None);
+    }
+
+    /// Hands a paired joiner's key to [`Keys::paired`] and tells the events.
+    fn record_pairing(&self, key: &KeyMaterial) -> PairEnd {
+        let peer = key.id();
+        match self.keys.paired(&peer, key) {
+            Ok(()) => {
+                self.events.event(&NodeEvent::Paired { peer });
+                PairEnd::Paired(peer)
+            }
+            Err(error) => {
+                let reason = format!("{peer} paired and could not be recorded: {error}");
+                tracing::warn!("{reason}");
+                self.events.event(&NodeEvent::PairingRefused {
+                    source: None,
+                    attempts: 0,
+                    reason: reason.clone(),
+                });
+                PairEnd::Failed(reason)
+            }
+        }
     }
 
     /// Dials a peer over `channel`, an unproven channel the caller opened (framed as
@@ -1059,6 +1148,11 @@ impl Jitter {
 }
 
 impl Node {
+    /// The node's armed pairing, for the local endpoint's `bohio-pair/1`.
+    pub(crate) fn pair_state(&self) -> Arc<PairState> {
+        Arc::clone(&self.pairing)
+    }
+
     /// What the local endpoint serves from: the links, the grants and the link settings.
     pub(crate) fn local_parts(&self) -> (Arc<Registry>, Arc<dyn Grants>, Settings) {
         (

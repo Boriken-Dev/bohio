@@ -116,7 +116,7 @@ fn a_host_dials_a_controller_that_does_not_know_it_and_links_once_it_is_approved
 #[test]
 fn a_host_that_joined_by_pin_dials_and_links_with_nothing_waiting() {
     let pair = Pair::new(false);
-    // The controller's pairing door, as a second process of the same node.
+    // `bohio pair` arms the running controller: the host joins on the controller's own listener.
     let mut door = Proc::start(
         &[
             "pair",
@@ -127,7 +127,7 @@ fn a_host_that_joined_by_pin_dials_and_links_with_nothing_waiting() {
         ],
         "warn",
     );
-    let door_endpoint = door.expect_line("pairing on ");
+    let door_endpoint = pair.endpoint.clone();
     let pin = door.expect_line("pin ");
     pair.host.write_with(BEAT, "");
     run_ok(&[

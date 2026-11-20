@@ -65,13 +65,37 @@ fn connect(args: &RemoteArgs, environment: &Environment) -> Result<Connection, S
         .build()
         .map_err(|error| error.to_string())?;
     let settings = config.link.settings();
+    let trust = tls_trust(&endpoint, &args.ca, &args.cert_hash, args.clock_skew)?;
+    Connection::connect_with(&endpoint, settings.proof_timeout, &proof, &settings, &trust).map_err(
+        |error| match error {
+            Error::Transport(coqui_transport::Failure::Certificate) => {
+                certificate_refused(&endpoint, &trust)
+            }
+            Error::Transport(_) | Error::Closed => format!(
+                "the link to {endpoint} ended before it was proven: the host may not be listening, \
+                 may not trust this key yet (it waits for `bohio peer approve`), or this side does \
+                 not trust the host (`bohio join`, or --server ID)"
+            ),
+            other => other.to_string(),
+        },
+    )
+}
+
+/// How the TLS host of `endpoint` is trusted: the PEM files, the hashes and the clock difference the operator gave. The set is
+/// checked now, so a bad file is named before anything connects.
+pub(super) fn tls_trust(
+    endpoint: &Endpoint,
+    ca: &[std::path::PathBuf],
+    cert_hash: &[String],
+    clock_skew: Option<Duration>,
+) -> Result<ServerTrust, String> {
     let mut trust = ServerTrust::default();
-    trust.ca_files.clone_from(&args.ca);
-    trust.clock_skew = args.clock_skew.unwrap_or_default();
-    for hash in &args.cert_hash {
+    trust.ca_files = ca.to_vec();
+    trust.clock_skew = clock_skew.unwrap_or_default();
+    for hash in cert_hash {
         trust.pin(hash)?;
     }
-    let needs_tls = match &endpoint {
+    let needs_tls = match endpoint {
         Endpoint::WebSocket(url) => url.scheme() == "wss",
         Endpoint::WebTransport { .. } => true,
         _ => false,
@@ -81,21 +105,17 @@ fn connect(args: &RemoteArgs, environment: &Environment) -> Result<Connection, S
             .client_config()
             .map_err(|reason| format!("the TLS trust cannot be set up: {reason}"))?;
     }
-    Connection::connect_with(&endpoint, settings.proof_timeout, &proof, &settings, &trust).map_err(
-        |error| match error {
-            Error::Transport(coqui_transport::Failure::Certificate) => format!(
-                "the host's TLS certificate was refused ({endpoint}): {}",
-                trust.refusal().unwrap_or_else(|| {
-                    "trust its issuer with --ca FILE, or the certificate itself with --cert-hash HASH".to_owned()
-                })
-            ),
-            Error::Transport(_) | Error::Closed => format!(
-                "the link to {endpoint} ended before it was proven: the host may not be listening, \
-                 may not trust this key yet (it waits for `bohio peer approve`), or this side does \
-                 not trust the host (`bohio join`, or --server ID)"
-            ),
-            other => other.to_string(),
-        },
+    Ok(trust)
+}
+
+/// What a person is told when the host's TLS certificate is refused.
+pub(super) fn certificate_refused(endpoint: &Endpoint, trust: &ServerTrust) -> String {
+    format!(
+        "the host's TLS certificate was refused ({endpoint}): {}",
+        trust.refusal().unwrap_or_else(|| {
+            "trust its issuer with --ca FILE, or the certificate itself with --cert-hash HASH"
+                .to_owned()
+        })
     )
 }
 
