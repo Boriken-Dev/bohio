@@ -1,0 +1,114 @@
+name: Release
+
+# A `v*` tag: the test gate (which also builds every release artifact), the strict docs build, then a GitHub release
+# holding the archives, the images and SHA256SUMS. Nothing is pushed to a registry. On demand the workflow runs every
+# job but the publish one, so a release is not the first run of a configuration.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to build (nothing is published from a dispatch)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test gate and release builds
+    uses: ./.github/workflows/test.yml
+    with:
+      ref: ${{ inputs.ref || github.ref }}
+
+  docs-gate:
+    name: Docs build (not deployed)
+    uses: ./.github/workflows/docs.yml
+    with:
+      deploy: false
+      ref: ${{ inputs.ref || github.ref }}
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+
+  collect:
+    name: Collect the release files
+    needs: [test, docs-gate]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - name: One SHA256SUMS, checked against the files
+        run: |
+          cd dist
+          cat SHA256SUMS.* | sort -k2 > SHA256SUMS
+          rm SHA256SUMS.*
+          sha256sum -c SHA256SUMS
+          ls -l
+      - name: The release notes are the changelog's section for the version
+        shell: python
+        run: |
+          import os, re, sys
+          ref = os.environ["GITHUB_REF_NAME"]
+          manifest = open("Cargo.toml", encoding="utf-8").read()
+          version = re.search(r'(?m)^version = "([^"]+)"', manifest).group(1)
+          tagged = ref.startswith("v")
+          if tagged and ref != "v" + version:
+              sys.exit(f"the tag {ref} is not v{version}, the version in Cargo.toml")
+          changelog = open("CHANGELOG.md", encoding="utf-8").read()
+          found = re.search(r"(?ms)^## \[" + re.escape(version) + r"\][^\n]*\n(.*?)(?=^## \[|\Z)", changelog)
+          if not found and tagged:
+              sys.exit(f"CHANGELOG.md has no section for {version}")
+          body = found.group(1).strip() if found else "(no changelog section for this version yet)"
+          open("notes.md", "w", encoding="utf-8").write(body + "\n")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-files
+          path: |
+            dist/*
+            notes.md
+          if-no-files-found: error
+
+  publish:
+    name: Publish the GitHub release
+    needs: collect
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-files
+          path: release
+      - uses: softprops/action-gh-release@v2
+        with:
+          # Unset, the target is the default branch, and a renamed branch fails every release at note generation.
+          target_commitish: ${{ github.sha }}
+          body_path: release/notes.md
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true
+          files: |
+            release/dist/*
+
+  docs:
+    name: Deploy the docs at the tag
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      # A release made with the workflow's own token starts no other workflow, so the docs workflow is dispatched.
+      - run: gh workflow run docs.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"
+        env:
+          GH_TOKEN: ${{ github.token }}

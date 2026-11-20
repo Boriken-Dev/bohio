@@ -56,3 +56,173 @@ jobs:
       - run: cargo doc --workspace --no-deps --all-features
         env:
           RUSTDOCFLAGS: -D warnings
+
+  # The copy of tools/build.py equals the release overlay's, the SDK lock agrees with the repository, and the
+  # deps branch commit the lock pins covers Cargo.lock and passes the scanner.
+  tools:
+    name: Build tool checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          # The tool's floor, not the newest: Debian 12 ships 3.11.
+          python-version: "3.11"
+      - name: Fetch the pinned deps commit
+        id: pin
+        run: |
+          sha=$(awk '$1=="deps" && $2=="crates" {print $3}' tools/sdk.lock)
+          test -n "$sha"
+          git fetch --depth 1 origin "$sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - run: python tools/build.py self check
+      - run: python tools/build.py sdk check --online
+      - run: python tools/build.py deps check --ref ${{ steps.pin.outputs.sha }}
+      - run: python tools/build.py scan ${{ steps.pin.outputs.sha }}
+
+  # A build from the deps branch with the network actually gone: a user and network namespace has no
+  # interface but a down loopback, so a build that reached for the network fails instead of passing quietly.
+  offline:
+    name: Offline build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: ./.github/actions/sdk
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Control, the network is cut
+        # cargo fetch with the default cargo home needs crates.io and GitHub: it must fail, and for the network's sake.
+        run: |
+          if out=$(unshare --user --map-root-user --net -- cargo fetch --locked 2>&1); then
+            echo "$out"
+            echo "cargo fetch succeeded: the network was not cut"
+            exit 1
+          fi
+          echo "$out" | tail -n 12
+          echo "$out" | grep -Eqi "resolve host|network|unable to update|failed to get|could not connect"
+      - name: Write the cargo config that replaces every source by the deps branch
+        id: use
+        run: |
+          config=$(python tools/build.py deps use --out "$RUNNER_TEMP/offline" --json | python -c 'import json,sys; print(json.load(sys.stdin)["config"])')
+          echo "config=$config" >> "$GITHUB_OUTPUT"
+      - name: Build with the network cut
+        run: |
+          unshare --user --map-root-user --net -- cargo --config "${{ steps.use.outputs.config }}" build --release --locked -p bohio --features cli --bin bohio
+          target/release/bohio --version
+      - name: Control, the registry is unreachable from the same namespace
+        run: |
+          if unshare --user --map-root-user --net -- curl -sS --max-time 15 -o /dev/null https://index.crates.io/config.json; then
+            echo "the network is reachable from the namespace"
+            exit 1
+          fi
+
+  release-matrix:
+    name: Release matrix
+    runs-on: ubuntu-latest
+    outputs:
+      binaries: ${{ steps.matrix.outputs.binaries }}
+      universal: ${{ steps.matrix.outputs.universal }}
+      images: ${{ steps.matrix.outputs.images }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - id: matrix
+        run: |
+          # The macOS targets are built together on one runner and joined, so they are not legs of their own.
+          echo "binaries=$(python tools/build.py release matrix --section binaries | jq -c '{include: [.include[] | select(.target | test("apple-darwin") | not)]}')" >> "$GITHUB_OUTPUT"
+          echo "universal=$(python tools/build.py release matrix --section universal)" >> "$GITHUB_OUTPUT"
+          echo "images=$(python tools/build.py release matrix --section images)" >> "$GITHUB_OUTPUT"
+
+  release-build:
+    name: Release ${{ matrix.target }}
+    needs: release-matrix
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.release-matrix.outputs.binaries) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - name: musl-gcc compiles ring's C for the static Linux targets
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - uses: ./.github/actions/sdk
+        with:
+          groups: core,release
+      - run: python tools/build.py release build --target ${{ matrix.target }} --offline
+      - name: Every Linux binary is static
+        if: runner.os == 'Linux'
+        run: python tools/build.py release verify --target ${{ matrix.target }}
+      - name: What was built
+        shell: bash
+        run: |
+          ls -l dist
+          cat dist/SHA256SUMS
+          mv dist/SHA256SUMS "dist/SHA256SUMS.${{ matrix.target }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release-universal:
+    name: Release universal-apple-darwin
+    needs: release-matrix
+    runs-on: ${{ fromJSON(needs.release-matrix.outputs.universal).include[0].runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: ./.github/actions/sdk
+        with:
+          groups: core,release
+      - name: Both Apple targets, then one binary for both
+        run: |
+          for target in ${{ fromJSON(needs.release-matrix.outputs.universal).include[0].targets }}; do
+            python tools/build.py release build --target "$target" --offline
+          done
+          python tools/build.py release universal
+          ls -l dist
+          tar -xzf dist/bohio-*-universal-apple-darwin.tar.gz -C "$RUNNER_TEMP"
+          lipo -info "$RUNNER_TEMP"/bohio-*-universal-apple-darwin/bohio
+          mv dist/SHA256SUMS dist/SHA256SUMS.universal-apple-darwin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-universal-apple-darwin
+          path: dist/*
+          if-no-files-found: error
+
+  release-image:
+    name: Release image ${{ matrix.arch }}
+    needs: release-matrix
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.release-matrix.outputs.images) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python tools/build.py release image --arch ${{ matrix.arch }}
+      - name: What was built
+        run: |
+          ls -l dist
+          mv dist/SHA256SUMS "dist/SHA256SUMS.image-${{ matrix.arch }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-image-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error

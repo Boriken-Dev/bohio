@@ -1,0 +1,49 @@
+name: Locked build environment
+description: >-
+  Python, the deps branch's pinned commit as a checkout (BUILD_DEPS), and, when groups is set, the
+  toolchains tools/sdk.lock names under one prefix, put on PATH. Run actions/checkout first.
+
+inputs:
+  groups:
+    description: "SDK lock groups to install (comma separated); empty installs nothing"
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - name: Check out the deps commit the lock pins
+      shell: bash
+      run: |
+        sha=$(awk '$1=="deps" && $2=="crates" {print $3}' tools/sdk.lock)
+        test -n "$sha"
+        git fetch --depth 1 origin "$sha"
+        git worktree add --detach "$RUNNER_TEMP/bohio-deps" "$sha"
+        echo "BUILD_DEPS=$RUNNER_TEMP/bohio-deps" >> "$GITHUB_ENV"
+    - name: Install the locked SDK
+      if: inputs.groups != '' && runner.os != 'Windows'
+      shell: bash
+      env:
+        GROUPS_TO_INSTALL: ${{ inputs.groups }}
+      run: |
+        python tools/build.py sdk install --groups "$GROUPS_TO_INSTALL" --prefix "$RUNNER_TEMP/sdk"
+        . "$RUNNER_TEMP/sdk/env.sh"
+        echo "RUSTUP_HOME=$RUSTUP_HOME" >> "$GITHUB_ENV"
+        echo "CARGO_HOME=$CARGO_HOME" >> "$GITHUB_ENV"
+        echo "$PATH" | tr ':' '\n' | grep -F "$RUNNER_TEMP/sdk" >> "$GITHUB_PATH"
+    - name: Install the locked SDK (Windows)
+      if: inputs.groups != '' && runner.os == 'Windows'
+      shell: pwsh
+      env:
+        GROUPS_TO_INSTALL: ${{ inputs.groups }}
+      run: |
+        python tools/build.py sdk install --groups $env:GROUPS_TO_INSTALL --prefix "$env:RUNNER_TEMP\sdk"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        . "$env:RUNNER_TEMP\sdk\env.ps1"
+        Add-Content $env:GITHUB_ENV "RUSTUP_HOME=$env:RUSTUP_HOME"
+        Add-Content $env:GITHUB_ENV "CARGO_HOME=$env:CARGO_HOME"
+        $prefix = "$env:RUNNER_TEMP\sdk"
+        ($env:PATH -split ';') | Where-Object { $_.StartsWith($prefix) } | ForEach-Object { Add-Content $env:GITHUB_PATH $_ }
