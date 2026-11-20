@@ -69,6 +69,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A pinned certificate made just now was refused at first and accepted later: a certificate is held to its dates even when pinned,
+  and a client whose clock is behind the host's sees it as not yet valid until its clock reaches the start, while the message
+  blamed the trust. The refusal now names the certificate's hash, its start or end and the clock difference;
+  `bohio remote --clock-skew SPAN` (`ServerTrust::clock_skew`) accepts a start or end within SPAN of the client's clock (default
+  none); the made WebTransport certificate's one-hour backdate is the setting `[[listen]] tls_backdate`. The message no longer
+  holds a run of spaces. `--cert-hash` above is released from the browser rule, not from the certificate's dates.
 - A grant narrowed while a stream runs now reaches it: a `bohio/1` stream reads the peer's grant again for every call, so
   taking away `fs.write` or a root applies to its next call (it used to keep the grant it opened with for as long as it
   stayed open), and the admission of an exec, a shell or a transfer checks that the program is still listed and the file
