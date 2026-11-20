@@ -17,5 +17,6 @@ nav:
   - Home: index.md
   - The protocol: protocol.md
   - Security: security.md
+  - Embedding a node: embedding.md
   - Using it from hostctl: hostctl.md
   - Building: building.md

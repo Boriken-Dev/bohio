@@ -19,7 +19,7 @@ A Bohío host answers `open` for a protocol token this page names, if the peer's
 
 ## Carriers
 
-The proof and the link run on any channel that delivers whole messages in order. The first message of a connection is the proof's, bounded to the proof's maximum size until the proof completes; after it the bound is the link's largest record, which is the largest message plus 5 bytes for the link's frame header plus the seal.
+The proof and the link run on any channel that delivers whole messages in order, whichever end opened it: the end that opened it sends the proof's first message and the other answers, and once the proof holds the link is the same in both directions (see [Roles](#roles)). The first message of a connection is the proof's, bounded to the proof's maximum size until the proof completes; after it the bound is the link's largest record, which is the largest message plus 5 bytes for the link's frame header plus the seal.
 
 | Endpoint | A message is |
 | --- | --- |
@@ -263,7 +263,7 @@ A link has two ends and no fixed roles: either side may open streams on it, and 
 
 ## Local control
 
-A running node holds links, including links a peer dialed, and only the node can open streams on them. It therefore listens on a local endpoint (`[control] endpoint`, a `pipe://` one, by default `pipe://bohio-` and the first 16 hex digits of the node's id, this user alone) and serves two protocols there. `bohio-pair/1` (below) arms the node's pairing PIN. They are never served on a peer's link and are not offered in a peer's `link/1` document. The link on this endpoint is a mux without the proof or the seal: who can connect is the boundary, as for the key file, and with no `socket_mode`, `socket_group` or `security_descriptor` set a client that the system does not say is this user is closed unread.
+A running node holds links, including links a peer dialed, and only the node can open streams on them. It therefore listens on a local endpoint (`[control] endpoint`, a `pipe://` one, by default `pipe://bohio-` and the first 16 hex digits of the node's id, this user alone) and serves three protocols there: `bohio-via/1` and `bohio-links/1` reach its links, and `bohio-pair/1` (below) arms the node's pairing PIN. They are never served on a peer's link and are not offered in a peer's `link/1` document. The link on this endpoint is a mux without the proof or the seal: who can connect is the boundary, as for the key file, and with no `socket_mode`, `socket_group` or `security_descriptor` set a client that the system does not say is this user is closed unread. A client checks the other way before it sends anything: with no access settings in its `[control]`, an endpoint the system does not say is served by the client's own account is refused, since another account could have bound the name first.
 
 ```text
 via-request   = { peer: text, protocol: text, ? metadata: bstr }   ; metadata defaults to empty

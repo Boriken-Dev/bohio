@@ -86,6 +86,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A configuration layer another account owns can no longer turn its own check off. `[service] check_access = false` in the lowest layer
+  waived every finding, so on Windows any local user who created `%ProgramData%ohioohio.cfg` (every user may, while the folder does not
+  exist) could write that line beside a `[peer.<id>]` table of their own and be served by every `bohio serve` and service that reads the
+  system file. It now waives only paths the operator owns that others may change; a layer or directory another account owns is refused either way.
+- A default layer that did not exist when `bohio serve` started was read at every decision once it appeared, and never checked: a system file
+  another user made under `%ProgramData%` while the node ran chose its peers at once. A missing layer is now read while serving only when the
+  nearest directory above it that exists passes the access check; otherwise it is read after a restart, which checks it.
+- Every command checks the system file when it exists, as `serve` checks every layer: it names the data directory, where a client's key is
+  made, and the control endpoint, so one another account made or every user may change is refused by `remote`, `join`, `id`, `pair` and `links` too.
+- A client of a node's local control endpoint checks that it is served by this account before it sends anything (`bohio::local::Server`,
+  `LocalLink::connect_to`, `Via::connect_to`, `ANOTHER_ACCOUNT`), unless `[control]` sets who may connect. The endpoint is not sealed, and
+  another account that bound the name first (a pipe name is visible to every Windows user) read every `remote --via` request and could answer
+  `bohio pair` with its own key as the one that paired; `pair` no longer falls back to serving alone when it meets one.
+- `Node::run_dial` no longer dials a peer its `Keys` no longer accept: a peer revoked while the dialer ran kept being dialed until a restart,
+  learning each time that this node was up, where it was and its key. It asks the keys again every `retry_min`.
 - A pinned certificate made just now was refused at first and accepted later: a certificate is held to its dates even when pinned,
   and a client whose clock is behind the host's sees it as not yet valid until its clock reaches the start, while the message
   blamed the trust. The refusal now names the certificate's hash, its start or end and the clock difference;

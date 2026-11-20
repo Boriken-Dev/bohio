@@ -100,6 +100,8 @@ bohio info --config examples/bohio.cfg --format json
 bohio serve | status | id | pair | join <endpoint>
 bohio peer list | approve <id> [--allow ...] | revoke <id>
 bohio remote <endpoint> info | exec -- <argv> | read <path> | shell
+bohio remote --via <id> info | exec -- <argv> | read <path> | shell
+bohio links
 ```
 
 See the [`bohio` crate](https://github.com/Boriken-Dev/bohio/tree/main/crates/bohio) for the
@@ -108,8 +110,8 @@ configuration search order, the exit statuses and the environment variables.
 ## Documentation
 
 The site at <https://boriken-dev.github.io/bohio/> has the [protocol](https://boriken-dev.github.io/bohio/protocol/) (the wire for an
-implementer in another language; `vectors/` holds its messages as hex), [security](https://boriken-dev.github.io/bohio/security/) and
-[hostctl](https://boriken-dev.github.io/bohio/hostctl/), plus the Rust API reference.
+implementer in another language; `vectors/` holds its messages as hex), [security](https://boriken-dev.github.io/bohio/security/),
+[embedding a node](https://boriken-dev.github.io/bohio/embedding/) and [hostctl](https://boriken-dev.github.io/bohio/hostctl/), plus the Rust API reference.
 
 ## Deployment
 

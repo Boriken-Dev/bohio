@@ -90,13 +90,13 @@ bohio info --config examples/bohio.cfg --format json
 
 `bohio config check` reads the configuration and prints `ok` with a summary, or one line naming
 the file, the position and the problem. `bohio info` prints this host's capabilities. With no
-`--config`, the first file that exists of `$BOHIO_CONFIG`, the user's `bohio.cfg` and the
-system's is used, and with none the defaults apply.
+`--config` (repeatable) or `$BOHIO_CONFIG`, the system's `bohio.cfg` is read and the user's merged
+over it, and with neither the defaults apply.
 
 `bohio serve [--config F] [--listen ENDPOINT]... [--stdio]` serves the `[[listen]]` endpoints (`tcp://`, `pipe://`, `ws://`, `wss://`, `webtransport://`, `serial://`)
 and each `--listen` and prints `listening <endpoint>` and `host <id>` once bound; `--stdio` serves one link on standard input and output. `bohio status`, `bohio id` and `bohio peer list|approve|revoke` show and change
 who may do what; `bohio pair` arms a PIN on the listeners the node already serves and accepts the one peer that joins with it (`bohio join <endpoint>`, over any endpoint, is the other side);
-`bohio remote <endpoint> info|exec -- <argv>|read <path>|shell` uses a host. See the header (`AGENTS.md`) for every flag.
+`bohio remote <endpoint> info|exec -- <argv>|read <path>|shell` uses a host, and `bohio remote --via <id> ...` the link a running node holds to that peer, whichever side dialed it (`bohio links` lists them). A peer's table with an `endpoint` makes `bohio serve` dial it. See the header (`AGENTS.md`) for every flag.
 
 | Status | Meaning |
 | --- | --- |
@@ -113,7 +113,9 @@ who may do what; `bohio pair` arms a PIN on the listeners the node already serve
 | `exec` | serves one `bohio-exec/1` stream |
 | `info` | this host's capabilities |
 | `link` | who may open which protocol: the `Keys` and `Grants` a node asks, their in-memory forms, admission and `NodeEvents` |
-| `peer` | the data directory, the identity, `LayeredPeers`, `list`, `approve`, `revoke` (they edit the layers in place) and PIN pairing |
+| `peer` | the data directory, the identity, `LayeredPeers`, `list`, `approve`, `revoke` (they edit the layers in place) |
+| `pair` | PIN pairing on a node's own listeners: the armed PIN and how it ended |
+| `local` | the local control endpoint of a running node (`Local`) and its clients (`LocalLink`, `Via`) |
 | `node` | `Node`: an embeddable host made from settings, an identity, `Keys` and `Grants` the caller supplies; accepts links, proves peers and runs each stream's engine |
 | `limit` | a counted bound on concurrent work |
 | `cli` | the command line (feature `cli`) |

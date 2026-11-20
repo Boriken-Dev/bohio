@@ -54,7 +54,7 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `[service] name` | `"bohio"` | name shown in `info` |
-| `[service] check_access` | `true` | refuse to start when another account may change a layer, the directory that holds it or (Windows) the data directory; `false` logs it and serves; lowest layer only |
+| `[service] check_access` | `true` | refuse to start when another account may change a layer, the directory that holds it or (Windows) the data directory; `false` logs it and serves, except for a path another account owns, which is refused either way; lowest layer only |
 | `[service] user_layer` | `true` | whether the user's file is read over the system's when no layers are named; lowest layer only |
 | `[service] data_dir` | `bohio` under `%LOCALAPPDATA%` / `$XDG_DATA_HOME` (else `~/.local/share`) | identity and the waiting list |
 | `[[listen]] endpoint` | none | `tcp://host:port`, `pipe://name` or `pipe:///path.sock`, `ws://host:port`, `wss://host:port`, `webtransport://host:port`, `serial://port?baud=N`; required in each entry |
@@ -121,7 +121,9 @@ highest layer that sets it, as are a `[peer.<name>]` whose name is not a peer id
 finds the layers (the library reads no environment variable): `--config FILE` (repeatable, lowest first) or else `BOHIO_CONFIG` name them, alone; else the system
 file (`%ProgramData%\bohio\bohio.cfg`, `/etc/bohio/bohio.cfg`) then the user's (`%APPDATA%\bohio\bohio.cfg`, `$XDG_CONFIG_HOME/bohio/bohio.cfg`, else
 `~/.config/bohio/bohio.cfg`), each if it exists; none: the defaults. The `[peer.*]` tables are read again from the files at every question (`peer::LayeredPeers`);
-every other section is read when the host starts.
+every other section is read when the host starts. A default layer that does not exist when `serve` starts is read once made only when the nearest directory above it
+that exists passes the access check below (so `%ProgramData%ohioohio.cfg`, which every Windows user may create, is read only after a restart); every command
+checks the system file when it exists, as `serve` checks every layer.
 
 ## Peer grants (`bohio::policy`)
 
@@ -373,7 +375,8 @@ a link serves only a key whose `Keys` accept it, so a dialed key that proved its
 `Keys::stranger`, `NodeEvent::Stranger`). A dialed link counts against `[link] max_links_per_peer`. Both sides dialing at once make two links; both serve.
 
 `run_dial` is the keep-alive of a dialed link: after a failure it waits `retry_min`, then that times `retry_factor` per further failure up to `retry_max` (with `retry_jitter`),
-and starts again from `retry_min` after a link that stayed up at least `retry_min`; it never dials while an up link to the peer exists, and the node's `[link] heartbeat`
+and starts again from `retry_min` after a link that stayed up at least `retry_min`; it never dials while an up link to the peer exists, nor while `Keys` do not accept the
+peer (asked again every `retry_min`, reported once as a `DialFailed`), so a peer revoked while the dialer runs is not reached again; the node's `[link] heartbeat`
 (25 s, 3 misses by default, both sides) ends a link whose path went silent without closing. A peer that does not prove itself as the table's key is a `DialFailed`
 (its reason, once per change); a peer that proves itself and then ends the link at once (it does not accept this node's key) is a failure too, with the same
 backoff, and sees this node's key as waiting. `NodeEvent::DialFailed` and `Dialing` carry an id, an endpoint and a reason, never a key.
@@ -425,8 +428,10 @@ impl Node {
     pub fn serve_local(&self, local: &Local, stop: &AtomicBool) -> io::Result<()>;   // accepts local clients until `stop`; a client that is not this user is closed unread unless the operator set socket_mode, socket_group or security_descriptor
     pub fn serve_local_channel<C: Channel>(&self, channel: &C, stop: Option<&AtomicBool>);   // one client on an unproven, framed channel, unsealed
 }
-pub struct LocalLink;                                              // Debug; Drop ends it. LocalLink::connect(&Endpoint, &Settings) -> Result<Self, Error>; pair(lifetime: Option<Duration>) -> Result<bohio::local::Pairing, Error> (pin(), lifetime(), wait(self) -> Result<PairReply, Error>; dropping it withdraws the PIN); links(wait: Duration) -> Result<bohio_proto::local::LinksReply, Error>
-pub struct Via;                                                    // Debug; bohio_client::Open. Via::connect(&Endpoint, &PeerId, &Settings) -> Result<Self, Error>; links(wait)
+#[non_exhaustive] pub enum Server { ThisAccount, Any }           // who a client accepts as the endpoint's server; Server::for_control(&ControlConfig): Any when it sets socket_mode, socket_group or security_descriptor
+pub const ANOTHER_ACCOUNT: &str;                                   // the Error::Link text of an endpoint another account serves
+pub struct LocalLink;                                              // Debug; Drop ends it. LocalLink::connect(&Endpoint, &Settings) -> Result<Self, Error> (Server::ThisAccount); connect_to(&Endpoint, &Settings, Server); pair(lifetime: Option<Duration>) -> Result<bohio::local::Pairing, Error> (pin(), lifetime(), wait(self) -> Result<PairReply, Error>; dropping it withdraws the PIN); links(wait: Duration) -> Result<bohio_proto::local::LinksReply, Error>
+pub struct Via;                                                    // Debug; bohio_client::Open. Via::connect(&Endpoint, &PeerId, &Settings) -> Result<Self, Error>; connect_to(&Endpoint, &PeerId, &Settings, Server); links(wait)
 pub fn since(entry: &LinkEntry) -> SystemTime;
 pub struct ControlConfig { pub enabled: Option<bool> /*true*/, pub endpoint: Option<String>, pub socket_mode: Option<String> /*"0o600"*/, pub socket_group: Option<String>, pub security_descriptor: Option<String> }   // `[control]`; endpoint_for(&PeerId) is `pipe://bohio-` and the first 16 hex digits of the id
 ```
@@ -435,7 +440,9 @@ The node serves `bohio-via/1`, `bohio-links/1` and `bohio-pair/1` (CDDL in `docs
 opens the named protocol on the node's oldest up link to the peer (`Node::peer`) and passes messages both ways; the peer's refusal or revoke closes the local stream with the
 same reason and text (`bohio_client::connect::Opened::end`, `Relay::end`); no link is `refused` with "no link to that peer". The endpoint holds what every peer grants this node:
 it is as sensitive as the key file, and the same-user check is defence in depth, not a replacement for the socket's own access. `bohio serve` binds it unless `[control] enabled = false`
-and prints `control <endpoint>`; a bind failure is logged and the node serves without it.
+and prints `control <endpoint>`; a bind failure is logged and the node serves without it. The endpoint is not sealed, so a client checks the other way too: `LocalLink::connect`
+and `Via::connect` refuse a `pipe://` endpoint the system does not report as served by this account (`Error::Link(ANOTHER_ACCOUNT)`, before anything is sent), since
+another account could bind the name first; `remote --via`, `links` and `pair` say so, and `pair` does not fall back to serving alone.
 
 ## Command line (`bohio::cli`, feature `cli`)
 
@@ -476,7 +483,8 @@ a person or a script reads is printed to standard output and flushed; diagnostic
 
 `serve`, `serve --stdio` and the service check every layer file and its directory, and the data directory (Windows only). On Unix a layer or its directory owned by an
 account other than the running one or root, or writable by its group or others, is refused (exit 1, one line naming the path); `[service] check_access = false`
-in the lowest layer logs each finding and starts. On Windows they refuse to start (exit 1, one line naming the path and the security id) when a
+in the lowest layer logs each finding and starts, except for a layer or directory another account owns, which is refused either way (that account could have
+written the line). On Windows they refuse to start (exit 1, one line naming the path and the security id) when a
 configuration layer they read is owned by another account than the one running `bohio`, SYSTEM or the administrators, or when Everyone,
 Authenticated Users, Users, INTERACTIVE, Guests, ANONYMOUS LOGON or Domain Users may change it; and when the data directory is so owned or
 any of those may change it or read what is made in it. A folder made under `%ProgramData%` is open to Users that way unless its access list
