@@ -7,7 +7,7 @@ with the source at <https://github.com/Boriken-Dev/bohio>.
 No Cargo features. MSRV Rust 1.89. Depends on `serde`, `ciborium` and `thiserror`. Version `0.0.0-alpha.0`, not published.
 
 Imports: the root holds `decode`, `decode_with_depth`, `encode`, `DEFAULT_DEPTH`, `Error`, `ErrorBody`, `ErrorCode` and
-`PROTOCOL_VERSION`. Public modules: `codec`, `control`, `error`, `exec`, `fs`, `info`, `protocol`, `shell`. No `unsafe` code
+`PROTOCOL_VERSION`. Public modules: `codec`, `control`, `error`, `exec`, `fs`, `info`, `local`, `protocol`, `shell`. No `unsafe` code
 (`#![forbid(unsafe_code)]`); no I/O; no process-wide state.
 
 ## Protocols (`bohio_proto::protocol`)
@@ -150,3 +150,15 @@ directly and never through a shell; `Command::Shell` is only for a caller that c
 
 - Raw output is bounded by the stream's message size, not by this crate: a host splits it into frames of at most that size less one.
 - `Exit::killed` is `true` whenever the host ended the tree (kill frame, closed stream or deadline); `timed_out` says it was the deadline.
+
+## Local control (`bohio_proto::local`)
+
+Spoken only on a running node's local endpoint, never on a peer's link (CDDL in `docs/protocol.md`, "Local control").
+
+```rust
+pub const VIA: &str = "bohio-via/1";   pub const LINKS: &str = "bohio-links/1";
+pub struct ViaRequest { peer: String, protocol: String, metadata: Vec<u8> /* a CBOR byte string */ }   // to_metadata(), from_metadata(&[u8])
+pub struct LinksRequest { wait_ms: Option<u64> }   // Default; to_metadata(), from_metadata (empty is the default)
+pub struct LinkEntry { peer, side: String /* dialed|answered */, endpoint: Option<String>, source: Option<String>, since: u64, mine: Vec<String>, theirs: Option<Vec<String>> }
+pub struct LinksReply { links: Vec<LinkEntry> }    // Default; encode(), decode(&[u8])
+```

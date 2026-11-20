@@ -179,6 +179,7 @@ impl Connection {
 pub struct Opens;                                                 // Debug; the serving half of an Opener
 impl Opener {
     pub fn pair() -> (Opener, Opens);                              // nothing opens until `Opens::run` runs on a link
+    pub fn open_stream(&self, protocol: &str, metadata: &[u8]) -> Result<Opened, Error>;   // as Open::open, keeping the type that says why a stream ended
     pub fn is_up(&self) -> bool;                                   // false once the link ended or `close` was called
     pub fn close(&self);                                           // closes every stream this opener opened and makes `Opens::run` return
     pub fn capabilities(&self, wait: Duration) -> Result<coqui_link::link::Capabilities, Error>;   // reads the peer's `link/1` document now, on a thread of the link's
@@ -199,6 +200,8 @@ pub fn stdio(settings: &Settings) -> io::Result<StreamChannel>;                 
 
 pub struct Relay;                                                 // Debug; Channel: an owned, bounded channel over one stream of a link
 pub fn relay<'scope, 'env, P: Deref + Clone + Send + 'scope>(scope: &'scope thread::Scope<'scope, 'env>, stream: P, settings: &Settings) -> Arc<Relay>
+pub fn relay_with<'scope, 'env, P: Deref + Clone + Send + 'scope, E: Fn(&P::Target) -> Option<coqui_link::mux::StreamEnd> + Send + 'scope>(scope: &'scope thread::Scope<'scope, 'env>, stream: P, settings: &Settings, ended: E) -> Arc<Relay>;   // relay, asking `ended` why the stream ended; Relay::end() -> Option<StreamEnd> gives it
+#[derive(Debug)] pub struct Opened;                                // an Open'ed stream: Channel; end() -> Option<coqui_link::mux::StreamEnd> (a refusal or revoke with the peer's text)
     where P::Target: Channel;
 ```
 

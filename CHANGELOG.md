@@ -29,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `retry_jitter` (`0.1`). `Node::run_dial` is the loop, reporting `NodeEvent::Dialing` and `DialFailed`; a node with no `[[listen]]` may only dial.
   `[link] heartbeat` (`25s`, `0` off) and `heartbeat_misses` (`3`) make both sides of every link ask whether the other is there, so a path that goes silent
   without closing ends the link. `bohio peer approve --endpoint` writes the endpoint, `peer list` and `status` show it, `config check` counts the dials.
+- Local control. A running node serves `bohio-via/1` and `bohio-links/1` on a local endpoint (`[control]`, by default `pipe://bohio-` and 16 hex digits of its id,
+  this user alone; `bohio::local::{Local, LocalLink, Via}`), never on a peer's link. `bohio remote --via ID <action>` runs `info`, `exec`, `read` and `shell` over
+  the link the node holds to that peer, whichever side made it, so the controller of a host that dials in is the node itself; `bohio links` lists each link with its side,
+  endpoint or source and what each end offers. `bohio_client::connect::Opened` and `Relay::end` carry a stream's end reason and text so a refusal or a revoke crosses
+  `--via` unchanged. `bohio_proto::local` has the wire types.
 
 ### Changed
 

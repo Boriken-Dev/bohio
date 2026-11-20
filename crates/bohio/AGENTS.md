@@ -398,6 +398,26 @@ after `listening`. A serial host opens its port, proves the peer, serves the lin
 port again; a client whose first message arrives before the host reopened it (a second `remote` right behind the first) is dropped and must try
 again. `serve --stdio` binds none of the `[[listen]]` entries.
 
+## Local control (`bohio::local`, `[control]`)
+
+```rust
+pub struct Local;                                                  // Debug; the bound endpoint: Local::bind(&ControlConfig, &PeerId) -> Result<Self, NodeError>, endpoint() -> &Endpoint
+impl Node {
+    pub fn serve_local(&self, local: &Local, stop: &AtomicBool) -> io::Result<()>;   // accepts local clients until `stop`; a client that is not this user is closed unread unless the operator set socket_mode, socket_group or security_descriptor
+    pub fn serve_local_channel<C: Channel>(&self, channel: &C, stop: Option<&AtomicBool>);   // one client on an unproven, framed channel, unsealed
+}
+pub struct LocalLink;                                              // Debug; Drop ends it. LocalLink::connect(&Endpoint, &Settings) -> Result<Self, Error>; links(wait: Duration) -> Result<bohio_proto::local::LinksReply, Error>
+pub struct Via;                                                    // Debug; bohio_client::Open. Via::connect(&Endpoint, &PeerId, &Settings) -> Result<Self, Error>; links(wait)
+pub fn since(entry: &LinkEntry) -> SystemTime;
+pub struct ControlConfig { pub enabled: Option<bool> /*true*/, pub endpoint: Option<String>, pub socket_mode: Option<String> /*"0o600"*/, pub socket_group: Option<String>, pub security_descriptor: Option<String> }   // `[control]`; endpoint_for(&PeerId) is `pipe://bohio-` and the first 16 hex digits of the id
+```
+
+The node serves `bohio-via/1` and `bohio-links/1` (CDDL in `docs/protocol.md`, types in `bohio_proto::local`) on this endpoint only, never on a peer's link. `bohio-via/1`
+opens the named protocol on the node's oldest up link to the peer (`Node::peer`) and passes messages both ways; the peer's refusal or revoke closes the local stream with the
+same reason and text (`bohio_client::connect::Opened::end`, `Relay::end`); no link is `refused` with "no link to that peer". The endpoint holds what every peer grants this node:
+it is as sensitive as the key file, and the same-user check is defence in depth, not a replacement for the socket's own access. `bohio serve` binds it unless `[control] enabled = false`
+and prints `control <endpoint>`; a bind failure is logged and the node serves without it.
+
 ## Command line (`bohio::cli`, feature `cli`)
 
 ```rust
@@ -417,6 +437,7 @@ a person or a script reads is printed to standard output and flushed; diagnostic
 | `info [--format text\|json]` | prints this host's capabilities (`json` is `bohio_proto::info::Info`) |
 | `serve [--listen ENDPOINT]...` | also dials each peer whose `[peer.<id>]` table has an `endpoint` (printing `dialing <endpoint> peer <id>`; with no `[[listen]]` and no `--listen`, a node that only dials is fine); serves each `[[listen]]` endpoint and `--listen` (`tcp://host:port`, port 0 picks one; `pipe://name`, `ws://host:port`, `wss://host:port` (needs a `[[listen]]` entry with `tls_cert` and `tls_key`), `webtransport://host:port`, `serial://port?baud=N`) until killed; prints `listening <endpoint>` for each, then `host <id>` |
 | `serve --stdio` | serves one link on standard input and output until it ends; prints nothing to standard output, logs to standard error; excludes `--listen` and binds no `[[listen]]` |
+| `links [--format text\|json] [--wait TIME]` | lists the links the running node of this configuration holds, through its local control endpoint (default wait `5s` for each peer's offers): `<peer> <dialed\|answered> <endpoint or source> offers-to-peer: ... offers-from-peer: ...` |
 | `status` | the host's id, key method, data directory, one `config: <file>` line per layer read, counts of accepted and waiting peers, one `dial: <endpoint> peer <id>` line per peer dialed, and one `listen: <endpoint> <state>` line per configured endpoint: `reachable` / `not reachable` (a connect is made; a TCP, WebSocket or pipe host sees it), `device present` / `device missing` (serial, Unix) or `device not checked` (Windows), `UDP not checked` (WebTransport), `not served by this build` |
 | `id` | the id of this machine's key, made on first use |
 | `peer list` | `accepted <id> allow: ...` (then ` dial: <endpoint>` when the table has one) and `waiting <id> from <ip>` lines |
@@ -428,6 +449,7 @@ a person or a script reads is printed to standard output and flushed; diagnostic
 | `service uninstall [--name NAME]` | Windows: stops and deletes the service |
 | `service run [--config FILE] [--name NAME]` | Windows: the service's entry point, started by the service manager (a person running it gets a one-line explanation); serves the configured `[[listen]]` endpoints until the manager sends stop or shutdown, then reports stopped and the process exits, which closes the job objects that end every process it started |
 | `remote <endpoint> [--server ID] [--ca FILE]... [--cert-hash HASH]... [--fallback ENDPOINT] info [--format text\|json]` | the host's capabilities over the link; the endpoint is any scheme above, or `stdio://program args`; `--ca`/`--cert-hash` check a `wss://` or `webtransport://` host's certificate (the system's roots without them), `--fallback` is a `ws://` (loopback) or `wss://` endpoint of the same host for a blocked UDP path |
+| `remote --via ID <action>` | the same actions over the link the running node holds to the peer ID, whichever side made it (a host that dialed in); exclusive with an endpoint and `--command`; `no link to ID` when there is none |
 | `remote --command "program args" [--server ID] info` | the same over a program the command starts, its standard streams the link (for example `docker exec -i NAME bohio serve --stdio`); the program is run directly, never through a shell, and its tree ends when the command does |
 | `remote <endpoint> exec [--cwd D] [--timeout-ms N] [--env K=V]... [--stdin] -- <argv>` | runs the program, streams its output, and exits with its status (124 on a deadline, `128+signal` when signalled) |
 | `remote <endpoint> read <path>` | writes the host's file to standard output |
