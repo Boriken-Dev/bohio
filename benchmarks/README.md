@@ -40,7 +40,7 @@ Names are metric prefixes. Sizes are `1KiB`, `16MiB`, ...; a count is `x100`.
 | `connect` | dial and proof until the link is ready |
 | `info` | a control stream and one `info`, on a ready link |
 | `stat_xN_serial` | N `stat`s, one after the other |
-| `open_close_xN` | N control streams opened and closed |
+| `open_close_xN` | N control streams opened and closed: an open does not wait for the host, so this is the client's cost; on a fast link 100 in a row are refused (the host's `max_streams` is 64), so `lan` runs 50 |
 | `read_<size>_cold` | a new link, then a read of the whole random file: what a one-shot command pays |
 | `read_<size>_warm` | the read on a link that has already carried one (past TCP slow start) |
 | `write_<size>` | a `replace` of that many bytes on a ready link |

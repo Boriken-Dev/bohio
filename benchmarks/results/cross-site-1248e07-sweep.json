@@ -1,0 +1,74 @@
+{
+  "name": "cross-site-sweep",
+  "raw": {
+    "commit": "bdf6370",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "os": "windows",
+    "arch": "aarch64",
+    "processor": "",
+    "transport": "tcp",
+    "link": "site-vpn",
+    "settings": {
+      "link.max_frame": "262144"
+    },
+    "label": "window and max_frame sweep, both sides alike; metric names carry the variant"
+  },
+  "metrics": {
+    "raw_down_16MiB_base_tcp_site-vpn": {
+      "min_ms": 14762.3235,
+      "median_ms": 15166.9056,
+      "max_ms": 18310.3563,
+      "samples": 6,
+      "bytes": 16777216
+    },
+    "read_16MiB_warm_base_tcp_site-vpn": {
+      "min_ms": 13777.7811,
+      "median_ms": 17875.12325,
+      "max_ms": 22943.215200000002,
+      "samples": 6,
+      "bytes": 16777216
+    },
+    "raw_down_16MiB_f256_tcp_site-vpn": {
+      "min_ms": 13329.0569,
+      "median_ms": 16229.367750000001,
+      "max_ms": 18688.2027,
+      "samples": 6,
+      "bytes": 16777216
+    },
+    "read_16MiB_warm_f256_tcp_site-vpn": {
+      "min_ms": 13635.252700000001,
+      "median_ms": 17205.53345,
+      "max_ms": 19279.0945,
+      "samples": 6,
+      "bytes": 16777216
+    },
+    "raw_down_16MiB_w16_tcp_site-vpn": {
+      "min_ms": 12326.0769,
+      "median_ms": 14908.2178,
+      "max_ms": 19226.158600000002,
+      "samples": 6,
+      "bytes": 16777216
+    },
+    "read_16MiB_warm_w16_tcp_site-vpn": {
+      "min_ms": 16392.4073,
+      "median_ms": 17626.86845,
+      "max_ms": 20376.566400000003,
+      "samples": 6,
+      "bytes": 16777216
+    },
+    "raw_down_16MiB_w4_tcp_site-vpn": {
+      "min_ms": 13741.425599999999,
+      "median_ms": 15978.194449999999,
+      "max_ms": 19738.6406,
+      "samples": 6,
+      "bytes": 16777216
+    },
+    "read_16MiB_warm_w4_tcp_site-vpn": {
+      "min_ms": 12915.3289,
+      "median_ms": 18068.3672,
+      "max_ms": 22579.6174,
+      "samples": 6,
+      "bytes": 16777216
+    }
+  }
+}

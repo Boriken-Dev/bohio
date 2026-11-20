@@ -1,0 +1,37 @@
+{
+  "name": "par-r1",
+  "raw": {
+    "commit": "be86ef7",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "os": "windows",
+    "arch": "aarch64",
+    "processor": "",
+    "transport": "tcp",
+    "link": "site-vpn",
+    "settings": {},
+    "label": "par"
+  },
+  "metrics": {
+    "raw_par_x1_down_5MiB_tcp_site-vpn": {
+      "min_ms": 5852.7577,
+      "median_ms": 6228.440799999999,
+      "max_ms": 7276.8333,
+      "samples": 3,
+      "bytes": 5242880
+    },
+    "raw_par_x4_down_5MiB_tcp_site-vpn": {
+      "min_ms": 15506.825299999999,
+      "median_ms": 16061.722199999998,
+      "max_ms": 19237.506100000002,
+      "samples": 3,
+      "bytes": 20971520
+    },
+    "raw_par_x8_down_5MiB_tcp_site-vpn": {
+      "min_ms": 25562.5763,
+      "median_ms": 29224.559100000002,
+      "max_ms": 30914.5119,
+      "samples": 3,
+      "bytes": 41943040
+    }
+  }
+}
