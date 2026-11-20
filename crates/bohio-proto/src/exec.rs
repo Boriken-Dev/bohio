@@ -10,14 +10,18 @@
 //! | host to client | `0x03` | [`Output::Stderr`] | raw bytes |
 //! | host to client | `0x04` | [`Output::Exit`] | CBOR [`Exit`] |
 //! | host to client | `0x05` | [`Output::Error`] | CBOR [`ErrorBody`] |
+//! | host to client | `0x06` | [`Output::StdoutCompressed`] | a piece of the compressed standard output |
+//! | host to client | `0x07` | [`Output::StderrCompressed`] | a piece of the compressed standard error |
 //! | client to host | `0x10` | [`Input::Stdin`] | raw bytes |
 //! | client to host | `0x11` | [`Input::StdinEnd`] | empty |
 //! | client to host | `0x12` | [`Input::Kill`] | empty |
+//! | client to host | `0x13` | [`Input::StdinCompressed`] | a piece of the compressed standard input |
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::compress::Compression;
 use crate::error::{Error, ErrorBody};
 use crate::shell::ShellKind;
 use crate::{decode, encode};
@@ -39,6 +43,13 @@ pub struct Request {
     /// Milliseconds after which the host ends the process tree; no deadline when absent.
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    /// How the host sends standard output and standard error (each its own compression context);
+    /// absent or `none` is raw frames. `started` says what it used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_compression: Option<Compression>,
+    /// How the client sends standard input: a concrete algorithm (never `auto`) the host offers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdin_compression: Option<Compression>,
 }
 
 impl Request {
@@ -56,6 +67,8 @@ impl Request {
             env: Env::default(),
             stdin: Stdin::default(),
             timeout_ms: None,
+            output_compression: None,
+            stdin_compression: None,
         }
     }
 
@@ -133,10 +146,27 @@ pub enum Stdin {
 }
 
 /// The process started.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Started {
     /// The host's process id.
     pub pid: u32,
+    /// What the host uses for output, never `auto`; absent when output is raw.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_compression: Option<Compression>,
+    /// What the host accepts for standard input; absent when none was asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdin_compression: Option<Compression>,
+}
+
+impl Started {
+    /// A report for a process whose streams are raw.
+    pub const fn new(pid: u32) -> Self {
+        Self {
+            pid,
+            output_compression: None,
+            stdin_compression: None,
+        }
+    }
 }
 
 /// How the process ended.
@@ -163,6 +193,10 @@ pub enum Output {
     Stdout(Vec<u8>),
     /// Bytes the process wrote to standard error.
     Stderr(Vec<u8>),
+    /// A piece of the compressed standard output. A `stdout` frame ends its compression context.
+    StdoutCompressed(Vec<u8>),
+    /// A piece of the compressed standard error. A `stderr` frame ends its compression context.
+    StderrCompressed(Vec<u8>),
     /// The process ended; the last frame, after every output byte.
     Exit(Exit),
     /// The request failed before or instead of running; the last frame.
@@ -177,6 +211,9 @@ const ERROR: u8 = 0x05;
 const STDIN: u8 = 0x10;
 const STDIN_END: u8 = 0x11;
 const KILL: u8 = 0x12;
+const STDOUT_COMPRESSED: u8 = 0x06;
+const STDERR_COMPRESSED: u8 = 0x07;
+const STDIN_COMPRESSED: u8 = 0x13;
 
 fn tagged(tag: u8, body: &[u8]) -> Vec<u8> {
     let mut frame = Vec::with_capacity(body.len() + 1);
@@ -203,6 +240,8 @@ impl Output {
             Self::Started(body) => tagged(STARTED, &encode(body)?),
             Self::Stdout(bytes) => tagged(STDOUT, bytes),
             Self::Stderr(bytes) => tagged(STDERR, bytes),
+            Self::StdoutCompressed(bytes) => tagged(STDOUT_COMPRESSED, bytes),
+            Self::StderrCompressed(bytes) => tagged(STDERR_COMPRESSED, bytes),
             Self::Exit(body) => tagged(EXIT, &encode(body)?),
             Self::Error(body) => tagged(ERROR, &encode(body)?),
         })
@@ -220,6 +259,8 @@ impl Output {
             STARTED => decode(body).map(Self::Started),
             STDOUT => Ok(Self::Stdout(body.to_vec())),
             STDERR => Ok(Self::Stderr(body.to_vec())),
+            STDOUT_COMPRESSED => Ok(Self::StdoutCompressed(body.to_vec())),
+            STDERR_COMPRESSED => Ok(Self::StderrCompressed(body.to_vec())),
             EXIT => decode(body).map(Self::Exit),
             ERROR => decode(body).map(Self::Error),
             other => Err(Error::Tag(other)),
@@ -233,6 +274,8 @@ impl Output {
 pub enum Input {
     /// Bytes for the process's standard input.
     Stdin(Vec<u8>),
+    /// A piece of the compressed standard input. A `stdin` frame ends its compression context.
+    StdinCompressed(Vec<u8>),
     /// No more standard input.
     StdinEnd,
     /// End the process tree now.
@@ -244,6 +287,7 @@ impl Input {
     pub fn encode(&self) -> Vec<u8> {
         match self {
             Self::Stdin(bytes) => tagged(STDIN, bytes),
+            Self::StdinCompressed(bytes) => tagged(STDIN_COMPRESSED, bytes),
             Self::StdinEnd => tagged(STDIN_END, &[]),
             Self::Kill => tagged(KILL, &[]),
         }
@@ -258,6 +302,7 @@ impl Input {
         let (tag, body) = split(frame)?;
         match tag {
             STDIN => Ok(Self::Stdin(body.to_vec())),
+            STDIN_COMPRESSED => Ok(Self::StdinCompressed(body.to_vec())),
             STDIN_END => Ok(Self::StdinEnd),
             KILL => Ok(Self::Kill),
             other => Err(Error::Tag(other)),

@@ -67,6 +67,21 @@ pub fn collect(config: &NodeConfig, path: &OsStr) -> Info {
                 max_streams: config.hash.max_streams as u64,
                 rate: config.hash.rate,
             },
+            compression: {
+                let caps = config.compression.caps();
+                config
+                    .compression
+                    .allowed
+                    .iter()
+                    .filter_map(|codec| caps.describe(codec))
+                    .collect()
+            },
+            compression_default: config
+                .compression
+                .allowed
+                .contains(&config.compression.default.algorithm)
+                .then(|| caps_default(&config.compression)),
+            prepared: config.filesystem.enabled && config.compression.prepare_dir.is_some(),
         },
         forward: ForwardInfo {
             enabled: config.forward.enabled,
@@ -78,6 +93,14 @@ pub fn collect(config: &NodeConfig, path: &OsStr) -> Info {
             listen: Vec::new(),
         },
     }
+}
+
+/// What `auto` means, after the caps: the level the host would use.
+fn caps_default(config: &crate::config::CompressionConfig) -> bohio_proto::compress::Compression {
+    config
+        .caps()
+        .clamp(&config.default)
+        .unwrap_or_else(|_| config.default.clone())
 }
 
 fn display(path: &Path) -> String {

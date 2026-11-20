@@ -124,6 +124,9 @@ impl Shared {
         path: OsString,
         events: &Arc<EventCell>,
     ) -> Arc<Self> {
+        if let Some(dir) = &config.compression.prepare_dir {
+            crate::fs::sweep_prepared(dir, config.compression.prepare_ttl.0);
+        }
         let mut capabilities = info::collect(config, &path);
         capabilities.host_id = Some(host.to_string());
         Arc::new(Self {
@@ -1054,6 +1057,7 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
         }
         return;
     }
+    let peer = accepted.peer.to_string();
     thread::scope(|scope| {
         let relay = relay(scope, stream, &shared.settings);
         let channel: Arc<dyn Channel> = relay.clone();
@@ -1063,6 +1067,8 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
             grant: &grant,
             config: &config.filesystem,
             hash: &config.hash,
+            compression: &config.compression,
+            peer: &peer,
             slots: &shared.transfers,
         };
         match accepted.protocol.as_str() {
@@ -1070,6 +1076,7 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
                 let context = exec::Context {
                     grant: &grant,
                     config: &config.execution,
+                    compression: &config.compression,
                     slots: &shared.processes,
                     path: &shared.path,
                 };

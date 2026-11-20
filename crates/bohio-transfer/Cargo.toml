@@ -1,13 +1,13 @@
 [package]
 name = "bohio-transfer"
-description = "Bohío's byte-level work, with no I/O of its own: digests of several algorithms in one pass"
+description = "Bohío's byte-level work, with no I/O of its own: digests of several algorithms in one pass, and compression piece by piece"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
-keywords = ["bohio", "hash", "digest", "crc32c"]
+keywords = ["bohio", "hash", "compression", "zstd", "lz4"]
 categories = ["cryptography", "algorithms"]
 exclude = [".*", "*.local.*"]
 # Its sibling bohio-proto is unpublished: released once it is.
@@ -16,6 +16,13 @@ publish = false
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = ["zstd"]
+# Zstandard through the C library (it compiles C with `cc`). Without it `zstd` is not offered and a request for it is unsupported; `lz4` and `deflate` stay.
+zstd = ["dep:zstd"]
+# zstd worker threads (`Caps::workers` above 0).
+zstdmt = ["zstd", "zstd/zstdmt"]
 
 [dependencies]
 bohio-proto.workspace = true
@@ -26,6 +33,13 @@ blake3.workspace = true
 xxhash-rust.workspace = true
 crc32c.workspace = true
 thiserror.workspace = true
+zstd = { workspace = true, optional = true }
+lz4_flex.workspace = true
+flate2.workspace = true
+
+[dev-dependencies]
+# Tests: the reference LZ4 frame encoder and decoder, to hold our frames to the standard.
+lz4_flex = { workspace = true, features = ["frame"] }
 
 [lints]
 workspace = true

@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::compress::{Codec, Compression};
 use crate::forward::ForwardInfo;
 use crate::hash::Algorithm;
 use crate::shell::ShellKind;
@@ -116,6 +117,39 @@ pub struct TransferInfo {
     pub hashes: Vec<Algorithm>,
     /// The bounds `bohio-hash/1` runs under.
     pub hash_limits: HashLimits,
+    /// The compression algorithms the host offers, each with the levels it takes; empty when it
+    /// compresses nothing (a build without zstd still offers `lz4` and `deflate`).
+    pub compression: Vec<CompressionInfo>,
+    /// What `auto` means on this host.
+    pub compression_default: Option<Compression>,
+    /// Whether the host compresses a whole range first when a read says `prepare`.
+    pub prepared: bool,
+}
+
+/// One compression algorithm a host offers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompressionInfo {
+    /// Which algorithm.
+    pub algorithm: Codec,
+    /// The levels it takes, after the host's own cap. `0` and `0` for an algorithm without levels.
+    #[serde(default)]
+    pub levels: Levels,
+    /// The level used when a request names none.
+    #[serde(default)]
+    pub default_level: i32,
+    /// The largest window the host uses or accepts, as a power of two; `0` for an algorithm without
+    /// a configurable window.
+    #[serde(default)]
+    pub window_log_max: u32,
+}
+
+/// A range of compression levels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Levels {
+    /// The lowest (fastest) level.
+    pub min: i32,
+    /// The highest level the host allows.
+    pub max: i32,
 }
 
 /// The bounds of `bohio-hash/1`.

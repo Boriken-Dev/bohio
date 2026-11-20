@@ -151,6 +151,44 @@ fn values_out_of_range_name_their_key() {
             "[hash]\nalgorithms = [\"md5\"]\n",
             "filesystem.write_hashes",
         ),
+        (
+            "[compression]\nallowed = [\"brotli\"]\n",
+            "compression.allowed",
+        ),
+        (
+            "[compression]\ndefault = { algorithm = \"none\" }\n",
+            "compression.default",
+        ),
+        (
+            "[compression]\nallowed = [\"lz4\"]\ndefault = { algorithm = \"deflate\" }\n",
+            "compression.default",
+        ),
+        (
+            "[compression]\nwindow_log_max = 5\n",
+            "compression.window_log_max",
+        ),
+        (
+            "[compression]\nwindow_log_max = 40\n",
+            "compression.window_log_max",
+        ),
+        (
+            "[compression]\ndeflate_max_level = 12\n",
+            "compression.deflate_max_level",
+        ),
+        ("[compression]\nmax_level = 0\n", "compression.max_level"),
+        (
+            "[compression]\nsample_ratio = 0.0\n",
+            "compression.sample_ratio",
+        ),
+        (
+            "[compression]\nprepare_max_bytes = 0\n",
+            "compression.prepare_max_bytes",
+        ),
+        (
+            "[compression]\nprepare_ttl = 0\n",
+            "compression.prepare_ttl",
+        ),
+        ("[compression]\nexclude = [\"[a\"]\n", "compression.exclude"),
         ("[shell]\nmax_sessions = 0\n", "shell.max_sessions"),
         ("[shell]\nchunk_size = 0\n", "shell.chunk_size"),
         ("[shell]\npoll_interval = 0\n", "shell.poll_interval"),
@@ -754,5 +792,39 @@ fn a_window_limit_that_means_nothing_is_refused_naming_its_key() {
             Err(ConfigError::Invalid { key: found, .. }) => assert_eq!(found, key, "{text}"),
             other => panic!("{text}: expected Invalid, got {other:?}"),
         }
+    }
+}
+
+#[test]
+fn a_weaker_compression_choice_is_a_choice_not_an_error() {
+    // Nothing allowed, no trial, no expansion bound, a window at the floor: each is meaningful, with a cost the
+    // documentation names, so each loads.
+    let config = parse(
+        "[compression]\nallowed = []\nsample_bytes = 0\nmax_expansion = 0\nwindow_log_max = 10\n\
+         skip_extensions = []\nexclude = []\nsample_ratio = 5.0\n",
+    )
+    .unwrap();
+    assert!(config.compression.allowed.is_empty());
+    assert_eq!(config.compression.max_expansion, 0);
+    // A host that allows nothing reports no default and no algorithm.
+    let info = bohio::info::collect(&config.node(), std::ffi::OsStr::new(""));
+    assert!(info.transfer.compression.is_empty() && info.transfer.compression_default.is_none());
+}
+
+#[cfg(not(feature = "zstd"))]
+#[test]
+fn without_zstd_it_cannot_be_named_and_workers_need_the_feature() {
+    assert!(matches!(
+        parse("[compression]\nallowed = [\"zstd\"]\n"),
+        Err(ConfigError::Invalid { .. })
+    ));
+}
+
+#[cfg(not(feature = "zstdmt"))]
+#[test]
+fn zstd_worker_threads_need_a_build_that_has_them() {
+    match parse("[compression]\nworkers = 2\n") {
+        Err(ConfigError::Invalid { key, .. }) => assert_eq!(key, "compression.workers"),
+        other => panic!("expected Invalid, got {other:?}"),
     }
 }

@@ -506,6 +506,136 @@ fn an_approved_peer_gets_info_runs_exec_and_reads_a_file() {
 }
 
 #[test]
+fn the_command_reads_writes_and_runs_programs_compressed() {
+    let world = World::new("");
+    let root = world.path("files");
+    std::fs::create_dir_all(&root).unwrap();
+    let text: String = (0..20_000)
+        .map(|n| {
+            format!(
+                "line {n}: the quick brown fox {} jumps over the lazy dog\n",
+                n % 17
+            )
+        })
+        .collect();
+    std::fs::write(root.join("log.txt"), &text).unwrap();
+    let host = world.serve("warn");
+    let client = approved(
+        &world,
+        "squeezer",
+        &[
+            "--allow",
+            "info,exec,fs.read,fs.write",
+            "--fs-root",
+            &root.to_string_lossy(),
+        ],
+    );
+    let path = root.join("log.txt").to_string_lossy().into_owned();
+
+    // What the host offers is printed with its levels.
+    let info = remote(&client, &host, &["info"]);
+    assert_eq!(info.code, Some(0), "{}", info.stderr);
+    assert!(
+        info.stdout.contains("compression: lz4 no levels"),
+        "{}",
+        info.stdout
+    );
+    assert!(
+        info.stdout
+            .contains("compression: deflate levels 0..9 (default 6)"),
+        "{}",
+        info.stdout
+    );
+    assert!(
+        info.stdout.contains("prepared reads: enabled"),
+        "{}",
+        info.stdout
+    );
+
+    // Reads: each algorithm, and prepared, give the file's own bytes.
+    let mut algorithms = vec!["lz4", "deflate:9", "auto", "none"];
+    if cfg!(feature = "zstd") {
+        algorithms.extend(["zstd:3", "zstd:19"]);
+    }
+    for algorithm in algorithms {
+        let read = remote(&client, &host, &["read", "--compress", algorithm, &path]);
+        assert_eq!(read.code, Some(0), "{algorithm}: {}", read.stderr);
+        assert_eq!(read.stdout, text, "{algorithm}");
+    }
+    let prepared = remote(
+        &client,
+        &host,
+        &["read", "--compress", "deflate", "--prepare", &path],
+    );
+    assert_eq!(prepared.code, Some(0), "{}", prepared.stderr);
+    assert_eq!(prepared.stdout, text);
+    let unknown = remote(&client, &host, &["read", "--compress", "brotli", &path]);
+    assert_eq!(unknown.code, Some(1));
+    assert!(
+        unknown.stderr.contains("not an algorithm"),
+        "{}",
+        unknown.stderr
+    );
+    let alone = remote(&client, &host, &["read", "--prepare", &path]);
+    assert_eq!(alone.code, Some(2), "--prepare needs --compress");
+
+    // Writes: standard input, compressed, lands intact.
+    for (index, algorithm) in ["lz4", "deflate:6", "auto"].into_iter().enumerate() {
+        let target = root
+            .join(format!("copy{index}.txt"))
+            .to_string_lossy()
+            .into_owned();
+        let mut args = vec!["remote", &host.endpoint, "--config", &client.config];
+        args.extend(["write", "--compress", algorithm, &target]);
+        let done = Proc::start(&args, Some(&text), "warn").finish();
+        assert_eq!(done.code, Some(0), "{algorithm}: {}", done.stderr);
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            text,
+            "{algorithm}"
+        );
+    }
+    let target = root.join("prepared.txt").to_string_lossy().into_owned();
+    let mut args = vec!["remote", &host.endpoint, "--config", &client.config];
+    args.extend(["write", "--compress", "deflate", "--prepare", &target]);
+    let done = Proc::start(&args, Some(&text), "warn").finish();
+    assert_eq!(done.code, Some(0), "{}", done.stderr);
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), text);
+
+    // Programs: output and input.
+    let both = remote(
+        &client,
+        &host,
+        &[
+            "exec",
+            "--compress",
+            "lz4",
+            "--",
+            &helper(),
+            "text",
+            "50000",
+        ],
+    );
+    assert_eq!(both.code, Some(0), "{}", both.stderr);
+    assert_eq!(both.stdout.len(), 50_000);
+    assert_eq!(both.stderr.len(), 50_000);
+    let program = helper();
+    let mut args = vec!["remote", &host.endpoint, "--config", &client.config];
+    args.extend([
+        "exec",
+        "--stdin",
+        "--compress",
+        "deflate",
+        "--",
+        &program,
+        "cat",
+    ]);
+    let echoed = Proc::start(&args, Some(&text), "warn").finish();
+    assert_eq!(echoed.code, Some(0), "{}", echoed.stderr);
+    assert_eq!(echoed.stdout, text);
+}
+
+#[test]
 fn an_unknown_proven_key_is_refused_and_listed_as_waiting() {
     let world = World::new("");
     let host = world.serve("warn");

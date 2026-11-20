@@ -175,7 +175,7 @@ fn config_check(args: &CheckArgs, environment: &Environment) -> Result<(), Strin
 fn info_command(args: &InfoArgs, environment: &Environment) -> Result<(), String> {
     let found = found(&args.config)?;
     let info = info::collect(
-        &found.config().node(),
+        &super::host::node_settings(found.config(), environment),
         &environment.path.clone().unwrap_or_default(),
     );
     match args.format {
@@ -236,6 +236,35 @@ pub(super) fn print_info(info: &Info) {
             format!("{}/s", transfer.hash_limits.rate)
         }
     );
+    if transfer.compression.is_empty() {
+        println!("compression: none");
+    }
+    for item in &transfer.compression {
+        let levels = if item.levels.min == 0 && item.levels.max == 0 {
+            "no levels".to_owned()
+        } else {
+            format!(
+                "levels {}..{} (default {})",
+                item.levels.min, item.levels.max, item.default_level
+            )
+        };
+        let window = if item.window_log_max == 0 {
+            String::new()
+        } else {
+            format!(", window up to 2^{}", item.window_log_max)
+        };
+        println!("compression: {} {levels}{window}", item.algorithm);
+    }
+    if let Some(default) = &transfer.compression_default {
+        println!(
+            "compression default (auto): {}{}",
+            default.algorithm,
+            default
+                .level
+                .map_or_else(String::new, |level| format!(":{level}"))
+        );
+    }
+    println!("prepared reads: {}", enabled(transfer.prepared));
 }
 
 fn limit(value: Option<u64>) -> String {

@@ -37,7 +37,7 @@ let request = Request::argv(["echo", "hello"]);
 let metadata = request.to_metadata()?;
 assert_eq!(Request::from_metadata(&metadata)?, request);
 
-let frame = Output::Started(Started { pid: 7 }).encode()?;
+let frame = Output::Started(Started::new(7)).encode()?;
 assert_eq!(frame[0], 0x01);
 # Ok(())
 # }

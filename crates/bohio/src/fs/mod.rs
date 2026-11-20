@@ -35,9 +35,11 @@
 //! to a file outside a root exposes that file, and a bind mount or a Windows junction an
 //! administrator places inside a root is part of the root.
 
+pub(crate) mod compress;
 mod hash;
 mod ops;
 mod path;
+mod prepare;
 mod read;
 mod stage;
 mod write;
@@ -45,11 +47,12 @@ mod write;
 use bohio_proto::control::{Call, Reply};
 use bohio_proto::{ErrorBody, ErrorCode};
 
-use crate::config::{FilesystemConfig, HashConfig};
+use crate::config::{CompressionConfig, FilesystemConfig, HashConfig};
 use crate::limit::Slots;
 use crate::policy::{Grant, Permission};
 
 pub use hash::{HashContext, serve_hash};
+pub use prepare::sweep as sweep_prepared;
 pub use read::serve_read;
 pub use write::serve_write;
 
@@ -64,6 +67,10 @@ pub struct Context<'a> {
     pub config: &'a FilesystemConfig,
     /// The `[hash]` settings: which digests reads and writes may name, and the hash streams' bounds.
     pub hash: &'a HashConfig,
+    /// The `[compression]` settings: what reads and writes may compress and how they are bounded.
+    pub compression: &'a CompressionConfig,
+    /// The peer's id as text: a prepared read is bound to the peer that made it.
+    pub peer: &'a str,
     /// The bound on concurrent transfers, shared by every stream.
     pub slots: &'a Slots,
 }

@@ -9,6 +9,7 @@ use bohio_proto::hash::Algorithm;
 use bohio_proto::{ErrorBody, ErrorCode};
 use coqui_transport::{Channel, Failure};
 
+use super::compress::{Settings, Sink, decode_failure};
 use super::hash::hasher_for;
 use super::ops::Roots;
 use super::stage::Staged;
@@ -91,6 +92,12 @@ fn run(
         .map_err(|_| ErrorBody::new(ErrorCode::BadRequest, "the request cannot be read"))?;
     authorize(context, &[Permission::FsWrite])?;
     check_request(&request)?;
+    let settings = Settings::new(context.compression);
+    let declared = settings.declared(request.compression.as_ref())?;
+    let mut decoder = declared
+        .as_ref()
+        .map(|used| settings.decoder(used))
+        .transpose()?;
     let answered: Vec<Algorithm> = request
         .hashes
         .clone()
@@ -134,7 +141,28 @@ fn run(
     loop {
         match channel.receive(Some(poll)) {
             Ok(Some(frame)) => match WriteInput::decode(&frame) {
+                Ok(WriteInput::Compressed(piece)) => {
+                    let decoder = decoder.as_mut().ok_or_else(|| {
+                        ErrorBody::new(
+                            ErrorCode::BadRequest,
+                            "compressed data needs a compression in the request",
+                        )
+                    })?;
+                    let mut sink = Sink {
+                        out: staged.file(),
+                        hasher: &mut hasher,
+                        written: &mut written,
+                    };
+                    decoder
+                        .feed(&piece, &mut sink)
+                        .map_err(|error| decode_failure(&error))?;
+                    last_progress = Instant::now();
+                }
                 Ok(WriteInput::Data(bytes)) => {
+                    // A raw frame ends the compression context.
+                    if let Some(decoder) = decoder.as_mut() {
+                        decoder.reset();
+                    }
                     staged
                         .file()
                         .write_all(&bytes)

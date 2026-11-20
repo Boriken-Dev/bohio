@@ -8,7 +8,9 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use bohio::config::{ExecutionConfig, FilesystemConfig, HashConfig, ShellConfig};
+use bohio::config::{
+    CompressionConfig, ExecutionConfig, FilesystemConfig, HashConfig, ShellConfig,
+};
 use bohio::exec::{self, Context};
 use bohio::limit::Slots;
 use bohio::policy::Grant;
@@ -42,6 +44,10 @@ pub struct Link {
     pub slots: Arc<Slots>,
     pub files: Arc<FilesystemConfig>,
     pub hash: Arc<HashConfig>,
+    /// The `[compression]` settings of the host; a test changes them with [`Link::compressing`].
+    pub compression: Arc<CompressionConfig>,
+    /// The peer id the host sees; a prepared read is bound to it.
+    pub peer: String,
     pub transfers: Arc<Slots>,
     pub hash_slots: Arc<Slots>,
     /// What the peer is granted now, when it differs from `grant`: a hash stream reads it before each item, as the
@@ -97,6 +103,13 @@ impl Link {
         link
     }
 
+    /// This host with the `[compression]` settings `compression`.
+    #[must_use]
+    pub fn compressing(mut self, compression: CompressionConfig) -> Self {
+        self.compression = Arc::new(compression);
+        self
+    }
+
     /// From now on the peer is granted `grant`: a hash stream's next item is decided by it.
     pub fn narrow(&self, grant: Grant) {
         *self.live.lock().unwrap() = Some(grant);
@@ -117,6 +130,8 @@ impl Link {
             slots: Arc::new(slots),
             hash_slots: Arc::new(Slots::new(HashConfig::default().max_streams)),
             hash: Arc::new(HashConfig::default()),
+            compression: Arc::new(CompressionConfig::default()),
+            peer: "test-peer".to_owned(),
             live: Arc::new(Mutex::new(None)),
             files: Arc::new(files),
             transfers: Arc::new(transfers),
@@ -231,16 +246,20 @@ impl Open for Link {
                 Arc::clone(&self.transfers),
                 Arc::clone(&self.info),
             );
-            let (hash, hash_slots, live) = (
+            let peer = self.peer.clone();
+            let (hash, hash_slots, live, compression) = (
                 Arc::clone(&self.hash),
                 Arc::clone(&self.hash_slots),
                 Arc::clone(&self.live),
+                Arc::clone(&self.compression),
             );
             let handle = std::thread::spawn(move || {
                 let context = fs::Context {
                     grant: &grant,
                     config: &files,
                     hash: &hash,
+                    compression: &compression,
+                    peer: &peer,
                     slots: &transfers,
                 };
                 let result = match name.as_str() {
@@ -282,16 +301,18 @@ impl Open for Link {
             self.served_fs.lock().unwrap().push(handle);
             return Ok(Box::new(Plain(channel(client_end))));
         }
-        let (grant, config, slots, path) = (
+        let (grant, config, slots, path, compression) = (
             Arc::clone(&self.grant),
             Arc::clone(&self.config),
             Arc::clone(&self.slots),
             Arc::clone(&self.path),
+            Arc::clone(&self.compression),
         );
         let handle = std::thread::spawn(move || {
             let context = Context {
                 grant: &grant,
                 config: &config,
+                compression: &compression,
                 slots: &slots,
                 path: &path,
             };

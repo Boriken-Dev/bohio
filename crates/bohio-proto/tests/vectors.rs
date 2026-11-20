@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use bohio_proto::compress::{Codec, Compression, Progress, Resume};
 use bohio_proto::control::{Call, Reply, Request as ControlRequest, Response};
 use bohio_proto::exec::{self, Env, Stdin};
 use bohio_proto::forward::{Answer, ConnectRequest, Connected, ForwardInfo, Target};
@@ -20,8 +21,8 @@ use bohio_proto::hash::{
     HashRequest, HashResult, ItemError,
 };
 use bohio_proto::info::{
-    ExecInfo, FilesystemInfo, HashLimits, Info, Limits, PROTOCOL_VERSION, Service, SessionInfo,
-    ShellInfo, TransferInfo,
+    CompressionInfo, ExecInfo, FilesystemInfo, HashLimits, Info, Levels, Limits, PROTOCOL_VERSION,
+    Service, SessionInfo, ShellInfo, TransferInfo,
 };
 use bohio_proto::shell::{self, ShellKind, Size};
 use bohio_proto::{Error, ErrorBody, ErrorCode, decode, encode};
@@ -209,8 +210,39 @@ fn sample_transfer() -> TransferInfo {
             max_streams: 4,
             rate: 0,
         },
+        compression: vec![
+            CompressionInfo {
+                algorithm: Codec::Zstd,
+                levels: Levels {
+                    min: -131_072,
+                    max: 19,
+                },
+                default_level: 3,
+                window_log_max: 23,
+            },
+            CompressionInfo {
+                algorithm: Codec::Lz4,
+                levels: Levels::default(),
+                default_level: 0,
+                window_log_max: 0,
+            },
+            CompressionInfo {
+                algorithm: Codec::Deflate,
+                levels: Levels { min: 0, max: 9 },
+                default_level: 6,
+                window_log_max: 0,
+            },
+        ],
+        compression_default: Some(Compression::new(Codec::Zstd).level(3)),
+        prepared: true,
     }
 }
+
+/// Pieces of the compressed stream of `hello hello hello hello hello hello\n`, one flushed piece of
+/// each algorithm; `bohio-transfer`'s tests decode these same bytes.
+const ZSTD_PIECE: &str = "28b52ffd00586c00003868656c6c6f200a0100b94b11";
+const LZ4_PIECE: &str = "04224d18607073110000006f68656c6c6f200600056068656c6c6f0a";
+const DEFLATE_PIECE: &str = "789cca48cdc9c957c8c0477201000000ffff";
 
 fn sample_metadata() -> Metadata {
     Metadata {
@@ -531,10 +563,40 @@ fn exec_cases() -> Vec<Case> {
             decode_only: true,
             error: None,
         },
+        message("open_compressed", OPEN, "open", "exec.Request", &{
+            let mut request = exec::Request::argv(["cat"]);
+            request.stdin = Stdin::Open;
+            request.output_compression = Some(Compression::auto());
+            request.stdin_compression = Some(Compression::new(Codec::Lz4));
+            request
+        }),
         output(
             "started",
-            exec::Output::Started(exec::Started { pid: 4242 }),
-            to_json(&exec::Started { pid: 4242 }),
+            exec::Output::Started(exec::Started::new(4242)),
+            to_json(&exec::Started::new(4242)),
+        ),
+        output(
+            "started_compressed",
+            exec::Output::Started(exec::Started {
+                pid: 4242,
+                output_compression: Some(Compression::new(Codec::Zstd).level(3)),
+                stdin_compression: Some(Compression::new(Codec::Lz4)),
+            }),
+            to_json(&exec::Started {
+                pid: 4242,
+                output_compression: Some(Compression::new(Codec::Zstd).level(3)),
+                stdin_compression: Some(Compression::new(Codec::Lz4)),
+            }),
+        ),
+        output(
+            "stdout_compressed",
+            exec::Output::StdoutCompressed(unhex(ZSTD_PIECE)),
+            raw(&unhex(ZSTD_PIECE)),
+        ),
+        output(
+            "stderr_compressed",
+            exec::Output::StderrCompressed(unhex(DEFLATE_PIECE)),
+            raw(&unhex(DEFLATE_PIECE)),
         ),
         output(
             "stdout",
@@ -558,6 +620,11 @@ fn exec_cases() -> Vec<Case> {
             to_json(&ErrorBody::new(ErrorCode::NotFound, "no such program")),
         ),
         input("stdin", exec::Input::Stdin(b"data".to_vec()), raw(b"data")),
+        input(
+            "stdin_compressed",
+            exec::Input::StdinCompressed(unhex(LZ4_PIECE)),
+            raw(&unhex(LZ4_PIECE)),
+        ),
         input("stdin_end", exec::Input::StdinEnd, Value::Null),
         input("kill", exec::Input::Kill, Value::Null),
         Case {
@@ -665,6 +732,20 @@ fn read_cases() -> Vec<Case> {
             (Algorithm::Xxh3, "78af5f94892f3950".into()),
         ]),
     };
+    let compressed_header = ReadHeader {
+        size: 9_000_000,
+        length: 9_000_000,
+        compression: Some(Compression::new(Codec::Zstd).level(19).window_log(23)),
+        compressed_length: None,
+        token: None,
+    };
+    let prepared_header = ReadHeader {
+        size: 9_000_000,
+        length: 9_000_000,
+        compression: Some(Compression::new(Codec::Zstd).level(3)),
+        compressed_length: Some(1_200_000),
+        token: Some("0123456789abcdef0123456789abcdef".into()),
+    };
     vec![
         message(
             "open_whole",
@@ -682,7 +763,41 @@ fn read_cases() -> Vec<Case> {
                 path: "/srv/big.bin".into(),
                 offset: 1_048_576,
                 length: Some(65_536),
-                hashes: Vec::new(),
+                ..ReadRequest::whole("/srv/big.bin")
+            },
+        ),
+        message(
+            "open_compressed",
+            OPEN,
+            "open",
+            "fs.ReadRequest",
+            &ReadRequest {
+                compression: Some(Compression::new(Codec::Zstd).level(19).window_log(23)),
+                ..ReadRequest::whole("/srv/big.log")
+            },
+        ),
+        message(
+            "open_prepared",
+            OPEN,
+            "open",
+            "fs.ReadRequest",
+            &ReadRequest {
+                compression: Some(Compression::auto()),
+                prepare: true,
+                ..ReadRequest::whole("/srv/big.log")
+            },
+        ),
+        message(
+            "open_resume",
+            OPEN,
+            "open",
+            "fs.ReadRequest",
+            &ReadRequest {
+                resume: Some(Resume {
+                    token: "0123456789abcdef0123456789abcdef".into(),
+                    offset: 65_536,
+                }),
+                ..ReadRequest::whole("/srv/big.log")
             },
         ),
         message(
@@ -697,10 +812,44 @@ fn read_cases() -> Vec<Case> {
         ),
         output(
             "header",
-            ReadOutput::Header(ReadHeader { size: 9, length: 5 }),
-            to_json(&ReadHeader { size: 9, length: 5 }),
+            ReadOutput::Header(ReadHeader::raw(9, 5)),
+            to_json(&ReadHeader::raw(9, 5)),
+        ),
+        output(
+            "header_compressed",
+            ReadOutput::Header(compressed_header.clone()),
+            to_json(&compressed_header),
+        ),
+        output(
+            "header_prepared",
+            ReadOutput::Header(prepared_header.clone()),
+            to_json(&prepared_header),
         ),
         output("data", ReadOutput::Data(b"hello".to_vec()), raw(b"hello")),
+        output(
+            "compressed",
+            ReadOutput::Compressed(unhex(ZSTD_PIECE)),
+            raw(&unhex(ZSTD_PIECE)),
+        ),
+        output(
+            "compressed_lz4",
+            ReadOutput::Compressed(unhex(LZ4_PIECE)),
+            raw(&unhex(LZ4_PIECE)),
+        ),
+        output(
+            "compressed_deflate",
+            ReadOutput::Compressed(unhex(DEFLATE_PIECE)),
+            raw(&unhex(DEFLATE_PIECE)),
+        ),
+        output(
+            "progress",
+            ReadOutput::Progress(Progress {
+                prepared: 1_048_576,
+            }),
+            to_json(&Progress {
+                prepared: 1_048_576,
+            }),
+        ),
         output(
             "done",
             ReadOutput::Done(ReadDone::default()),
@@ -758,6 +907,16 @@ fn write_cases() -> Vec<Case> {
         ),
         message("open_checked", OPEN, "open", "fs.WriteRequest", &checked),
         message(
+            "open_compressed",
+            OPEN,
+            "open",
+            "fs.WriteRequest",
+            &WriteRequest {
+                compression: Some(Compression::new(Codec::Zstd).level(9)),
+                ..WriteRequest::replace("/srv/out.log")
+            },
+        ),
+        message(
             "open_append",
             OPEN,
             "open",
@@ -795,6 +954,11 @@ fn write_cases() -> Vec<Case> {
             to_json(&ErrorBody::new(ErrorCode::Exists, "exists")),
         ),
         input("data", WriteInput::Data(b"hello".to_vec()), raw(b"hello")),
+        input(
+            "compressed",
+            WriteInput::Compressed(unhex(ZSTD_PIECE)),
+            raw(&unhex(ZSTD_PIECE)),
+        ),
         input("end", WriteInput::End, Value::Null),
     ]
 }

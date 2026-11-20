@@ -327,6 +327,8 @@ pub enum RemoteAction {
     Exec(RemoteExecArgs),
     /// Write a file of the host to standard output.
     Read(RemoteReadArgs),
+    /// Write standard input to a file of the host (replacing it, atomically, unless --append or --create).
+    Write(RemoteWriteArgs),
     /// Print digests of files on the host, computed there: `HEX  PATH` for one algorithm, `NAME HEX  PATH` for several.
     Hash(RemoteHashArgs),
     /// Open an interactive shell on the host.
@@ -361,6 +363,10 @@ pub struct RemoteExecArgs {
     /// Send this process's standard input to the program.
     #[arg(long)]
     pub stdin: bool,
+    /// Compress the program's output and the input this sends: `ALG` or `ALG:LEVEL`, where ALG is zstd, lz4,
+    /// deflate, none or auto (the host's default). The host clamps the level to its caps.
+    #[arg(long, value_name = "ALG[:LEVEL]")]
+    pub compress: Option<String>,
     /// The program and its arguments, after `--`; run directly, never through a shell.
     #[arg(last = true, required = true, value_name = "ARGV")]
     pub argv: Vec<String>,
@@ -371,6 +377,45 @@ pub struct RemoteExecArgs {
 pub struct RemoteReadArgs {
     /// The file, in the host's own path text.
     pub path: String,
+    /// Have the host compress what it sends: `ALG` or `ALG:LEVEL`, where ALG is zstd, lz4, deflate, none or auto (the
+    /// host's default). A file that does not compress (already compressed, or its start does not) is sent raw.
+    #[arg(long, value_name = "ALG[:LEVEL]")]
+    pub compress: Option<String>,
+    /// Have the host compress the whole file first, then send it: the best ratio for a slow link, at the price of the
+    /// host's time and disk before the first byte. Needs --compress.
+    #[arg(long, requires = "compress")]
+    pub prepare: bool,
+    /// The zstd window as a power of two (a long window finds repeats further back, at the cost of memory on both
+    /// ends); the host clamps it to its own limit.
+    #[arg(long, value_name = "LOG2", requires = "compress")]
+    pub window_log: Option<u32>,
+}
+
+/// `bohio remote ... write`.
+#[derive(Debug, Args)]
+pub struct RemoteWriteArgs {
+    /// The file, in the host's own path text.
+    pub path: String,
+    /// Compress what is sent: `ALG` or `ALG:LEVEL`, where ALG is zstd, lz4, deflate or auto (the host's default,
+    /// read from its `info`). The host decodes within its `[compression]` bounds.
+    #[arg(long, value_name = "ALG[:LEVEL]")]
+    pub compress: Option<String>,
+    /// Compress everything into a temporary file first, then send it: one compression context over the whole input
+    /// (the best ratio) at the price of the time and disk before the first byte leaves. Needs --compress.
+    #[arg(long, requires = "compress")]
+    pub prepare: bool,
+    /// The zstd window as a power of two; the host's own limit applies to what it accepts.
+    #[arg(long, value_name = "LOG2", requires = "compress")]
+    pub window_log: Option<u32>,
+    /// Add to the end of the file, creating it, instead of replacing it.
+    #[arg(long, conflicts_with = "create")]
+    pub append: bool,
+    /// Create the file, which must not exist, instead of replacing it.
+    #[arg(long)]
+    pub create: bool,
+    /// Create missing directories above the file.
+    #[arg(long)]
+    pub parents: bool,
 }
 
 /// `bohio remote ... hash`.

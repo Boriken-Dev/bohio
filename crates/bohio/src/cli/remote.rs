@@ -11,12 +11,14 @@ use bohio_client::control::Control;
 use bohio_client::dial::{ServerTrust, split_command};
 use bohio_client::exec::{Event, Exec};
 use bohio_client::forward::ForwardSettings;
-use bohio_client::fs::Reader;
+use bohio_client::fs::{PutOptions, ReadOptions, Reader, put, resolve_auto};
 use bohio_client::hash::hash_many;
 use bohio_client::shell::{Event as ShellEvent, Shell};
 use bohio_client::{Error, Open};
+use bohio_proto::compress::{Codec, Compression};
 use bohio_proto::exec::{Request, Stdin};
 use bohio_proto::forward::Target;
+use bohio_proto::fs::{WriteMode, WriteRequest};
 use bohio_proto::hash::{Algorithm, HashItem};
 use bohio_proto::shell::{Request as ShellRequest, ShellKind};
 use coqui_link::auth::{Proof, Trust};
@@ -25,7 +27,7 @@ use coqui_peer::PeerId;
 use super::commands::{print_info, source};
 use super::{
     Format, RemoteAction, RemoteArgs, RemoteConnectArgs, RemoteExecArgs, RemoteForwardArgs,
-    RemoteHashArgs, RemoteShellArgs,
+    RemoteHashArgs, RemoteShellArgs, RemoteWriteArgs,
 };
 use crate::config::{Environment, Layers};
 use crate::local::{ANOTHER_ACCOUNT, Server, Via};
@@ -150,10 +152,15 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
         }
         RemoteAction::Exec(exec) => exec_command(&*link, exec),
         RemoteAction::Read(read) => {
-            let reader = Reader::start(
+            let mut request = bohio_proto::fs::ReadRequest::whole(read.path.clone());
+            request.compression = wanted(read.compress.as_deref(), read.window_log)?;
+            request.prepare = read.prepare;
+            // A prepared read is silent while the host compresses: the host's progress frames keep the wait alive.
+            let reader = Reader::start_with(
                 &*link,
-                &bohio_proto::fs::ReadRequest::whole(read.path.clone()),
+                &request,
                 Some(Duration::from_secs(30)),
+                ReadOptions::default(),
             )
             .map_err(|error| explain(&error))?;
             let mut out = std::io::stdout().lock();
@@ -163,6 +170,7 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
             out.flush().map_err(|error| error.to_string())?;
             Ok(ExitCode::SUCCESS)
         }
+        RemoteAction::Write(write) => write_command(&*link, write),
         RemoteAction::Hash(hash) => hash_command(&*link, hash),
         RemoteAction::Shell(shell) => shell_command(&*link, shell),
         RemoteAction::Connect(connect) => {
@@ -344,6 +352,68 @@ fn forward_command(
     lost.map_or(Ok(ExitCode::SUCCESS), Err)
 }
 
+/// The compression a flag asks for: `ALG[:LEVEL]` and the window, `None` when the flag is absent.
+fn wanted(flag: Option<&str>, window_log: Option<u32>) -> Result<Option<Compression>, String> {
+    let Some(text) = flag else {
+        return Ok(None);
+    };
+    let mut compression =
+        Compression::parse(text).map_err(|reason| format!("--compress: {reason}"))?;
+    if let Codec::Other(name) = &compression.algorithm {
+        return Err(format!(
+            "--compress: `{name}` is not an algorithm; the names are zstd, lz4, deflate, none and auto"
+        ));
+    }
+    compression.window_log = window_log;
+    Ok(Some(compression))
+}
+
+/// The algorithm a client names for what it sends: `auto` is the host's default, read from its `info`.
+fn named(link: &dyn Open, compression: Compression) -> Result<Compression, String> {
+    if compression.algorithm != Codec::Auto {
+        return Ok(compression);
+    }
+    let control = Control::open(link).map_err(|error| explain(&error))?;
+    let info = control
+        .info(Some(Duration::from_secs(30)))
+        .map_err(|error| explain(&error))?;
+    resolve_auto(&info, &compression).ok_or_else(|| {
+        "the host reports no default compression: name an algorithm, such as --compress zstd:3"
+            .to_owned()
+    })
+}
+
+/// `bohio remote ... write`: standard input to a file of the host.
+fn write_command(link: &dyn Open, args: &RemoteWriteArgs) -> Result<ExitCode, String> {
+    let mut request = WriteRequest::replace(args.path.clone());
+    request.parents = args.parents;
+    if args.append {
+        request.mode = WriteMode::Append;
+    } else if args.create {
+        request.mode = WriteMode::Create;
+    }
+    let compression = match wanted(args.compress.as_deref(), args.window_log)? {
+        Some(compression) if compression.algorithm == Codec::None => None,
+        Some(compression) => Some(named(link, compression)?),
+        None => None,
+    };
+    let options = PutOptions {
+        compression,
+        prepare: args.prepare,
+        ..PutOptions::default()
+    };
+    let done = put(
+        link,
+        &request,
+        &mut std::io::stdin().lock(),
+        &options,
+        Some(Duration::from_secs(300)),
+    )
+    .map_err(|error| explain(&error))?;
+    eprintln!("bohio: wrote {} bytes", done.written);
+    Ok(ExitCode::SUCCESS)
+}
+
 /// `bohio remote ... hash`: one line per file, in the order given; a file that cannot be hashed is reported and
 /// the exit status is 1 after the rest are printed.
 fn hash_command(link: &dyn Open, args: &RemoteHashArgs) -> Result<ExitCode, String> {
@@ -421,6 +491,14 @@ fn exec_command(link: &dyn Open, args: &RemoteExecArgs) -> Result<ExitCode, Stri
     }
     if args.stdin {
         request.stdin = Stdin::Open;
+    }
+    if let Some(compression) = wanted(args.compress.as_deref(), None)?
+        && compression.algorithm != Codec::None
+    {
+        request.output_compression = Some(compression.clone());
+        if args.stdin {
+            request.stdin_compression = Some(named(link, compression)?);
+        }
     }
     let exec = Arc::new(Exec::start(link, &request).map_err(|error| explain(&error))?);
     if args.stdin {

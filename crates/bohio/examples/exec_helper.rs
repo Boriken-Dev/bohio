@@ -100,9 +100,52 @@ fn main() {
                 left -= take;
             }
         }
+        // Varied text of the given length on standard output and, the same bytes, on standard error;
+        // `noise` is pseudo-random bytes (incompressible) on standard output.
+        ["text", bytes] => {
+            let text = varied(bytes.parse().unwrap_or(0));
+            let mut err = std::io::stderr();
+            for part in text.chunks(1000) {
+                let _ = out.write_all(part);
+                let _ = out.flush();
+                let _ = err.write_all(part);
+                let _ = err.flush();
+            }
+        }
+        ["noise", bytes] => {
+            let mut state = 0x2545_F491_4F6C_DD1D_u64;
+            let noise: Vec<u8> = (0..bytes.parse().unwrap_or(0_usize))
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    (state >> 24) as u8
+                })
+                .collect();
+            let _ = out.write_all(&noise);
+        }
         _ => {
             eprintln!("unknown command");
             std::process::exit(64);
         }
     }
+}
+
+/// Text that repeats with variation, so a compressor finds a lot and not everything.
+fn varied(length: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(length + 80);
+    let mut n = 0_u32;
+    while out.len() < length {
+        out.extend_from_slice(
+            format!(
+                "line {n}: the quick brown fox {} jumps over the lazy dog {}\n",
+                n % 17,
+                n.wrapping_mul(2_654_435_761) % 1000
+            )
+            .as_bytes(),
+        );
+        n += 1;
+    }
+    out.truncate(length);
+    out
 }

@@ -43,6 +43,28 @@
     },
     {
       "direction": "client_to_host",
+      "hex": "a764706174686c2f7372762f6f75742e6c6f67646d6f6465a16474797065677265706c61636567706172656e7473f46966696c655f6d6f6465f666657870656374a066686173686573f66b636f6d7072657373696f6ea369616c676f726974686d647a737464656c6576656c096a77696e646f775f6c6f67f6",
+      "kind": "open",
+      "name": "open_compressed",
+      "type": "fs.WriteRequest",
+      "value": {
+        "compression": {
+          "algorithm": "zstd",
+          "level": 9,
+          "window_log": null
+        },
+        "expect": {},
+        "file_mode": null,
+        "hashes": null,
+        "mode": {
+          "type": "replace"
+        },
+        "parents": false,
+        "path": "/srv/out.log"
+      }
+    },
+    {
+      "direction": "client_to_host",
       "hex": "a664706174686c2f7372762f6c6f672e747874646d6f6465a1647479706566617070656e6467706172656e7473f46966696c655f6d6f6465f666657870656374a066686173686573f6",
       "kind": "open",
       "name": "open_append",
@@ -143,6 +165,17 @@
       "value": {
         "data_hex": "68656c6c6f",
         "tag": 16
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "1428b52ffd00586c00003868656c6c6f200a0100b94b11",
+      "kind": "frame",
+      "name": "compressed",
+      "type": "fs.WriteInput",
+      "value": {
+        "data_hex": "28b52ffd00586c00003868656c6c6f200a0100b94b11",
+        "tag": 20
       }
     },
     {

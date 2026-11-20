@@ -2,6 +2,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod codec;
+pub mod compress;
 pub mod control;
 pub mod error;
 pub mod exec;

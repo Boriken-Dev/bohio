@@ -25,7 +25,11 @@ required-features = ["cli"]
 doc = false
 
 [features]
-default = ["cli"]
+default = ["cli", "zstd"]
+# Zstandard through the C library, for the compression of reads, writes and exec streams (it compiles C with `cc`). Without it `zstd` is not offered, and `lz4` and `deflate` remain.
+zstd = ["bohio-transfer/zstd", "bohio-client/zstd"]
+# zstd worker threads: `[compression] workers` above 0.
+zstdmt = ["zstd", "bohio-transfer/zstdmt"]
 # The `bohio` command: arguments, output and the diagnostics subscriber. An embedding host takes the library alone.
 cli = ["dep:clap", "dep:tracing-subscriber", "dep:serde_json", "dep:crossterm", "dep:windows-service"]
 
@@ -48,6 +52,8 @@ portable-pty.workspace = true
 cap-std.workspace = true
 cap-fs-ext.workspace = true
 thiserror.workspace = true
+globset.workspace = true
+getrandom.workspace = true
 x509-parser.workspace = true
 tracing.workspace = true
 clap = { workspace = true, optional = true }

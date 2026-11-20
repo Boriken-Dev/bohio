@@ -30,6 +30,60 @@
     },
     {
       "direction": "client_to_host",
+      "hex": "a564706174686c2f7372762f6269672e6c6f67666f666673657400666c656e677468f666686173686573806b636f6d7072657373696f6ea369616c676f726974686d647a737464656c6576656c136a77696e646f775f6c6f6717",
+      "kind": "open",
+      "name": "open_compressed",
+      "type": "fs.ReadRequest",
+      "value": {
+        "compression": {
+          "algorithm": "zstd",
+          "level": 19,
+          "window_log": 23
+        },
+        "hashes": [],
+        "length": null,
+        "offset": 0,
+        "path": "/srv/big.log"
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a664706174686c2f7372762f6269672e6c6f67666f666673657400666c656e677468f666686173686573806b636f6d7072657373696f6ea369616c676f726974686d646175746f656c6576656cf66a77696e646f775f6c6f67f66770726570617265f5",
+      "kind": "open",
+      "name": "open_prepared",
+      "type": "fs.ReadRequest",
+      "value": {
+        "compression": {
+          "algorithm": "auto",
+          "level": null,
+          "window_log": null
+        },
+        "hashes": [],
+        "length": null,
+        "offset": 0,
+        "path": "/srv/big.log",
+        "prepare": true
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a564706174686c2f7372762f6269672e6c6f67666f666673657400666c656e677468f6666861736865738066726573756d65a265746f6b656e78203031323334353637383961626364656630313233343536373839616263646566666f66667365741a00010000",
+      "kind": "open",
+      "name": "open_resume",
+      "type": "fs.ReadRequest",
+      "value": {
+        "hashes": [],
+        "length": null,
+        "offset": 0,
+        "path": "/srv/big.log",
+        "resume": {
+          "offset": 65536,
+          "token": "0123456789abcdef0123456789abcdef"
+        }
+      }
+    },
+    {
+      "direction": "client_to_host",
       "hex": "a464706174686c2f7372762f6269672e62696e666f666673657400666c656e677468f66668617368657382667368613235366478786833",
       "kind": "open",
       "name": "open_hashed",
@@ -60,6 +114,46 @@
     },
     {
       "direction": "host_to_client",
+      "hex": "01a36473697a651a00895440666c656e6774681a008954406b636f6d7072657373696f6ea369616c676f726974686d647a737464656c6576656c136a77696e646f775f6c6f6717",
+      "kind": "frame",
+      "name": "header_compressed",
+      "type": "fs.ReadOutput",
+      "value": {
+        "message": {
+          "compression": {
+            "algorithm": "zstd",
+            "level": 19,
+            "window_log": 23
+          },
+          "length": 9000000,
+          "size": 9000000
+        },
+        "tag": 1
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "01a56473697a651a00895440666c656e6774681a008954406b636f6d7072657373696f6ea369616c676f726974686d647a737464656c6576656c036a77696e646f775f6c6f67f671636f6d707265737365645f6c656e6774681a00124f8065746f6b656e78203031323334353637383961626364656630313233343536373839616263646566",
+      "kind": "frame",
+      "name": "header_prepared",
+      "type": "fs.ReadOutput",
+      "value": {
+        "message": {
+          "compressed_length": 1200000,
+          "compression": {
+            "algorithm": "zstd",
+            "level": 3,
+            "window_log": null
+          },
+          "length": 9000000,
+          "size": 9000000,
+          "token": "0123456789abcdef0123456789abcdef"
+        },
+        "tag": 1
+      }
+    },
+    {
+      "direction": "host_to_client",
       "hex": "0268656c6c6f",
       "kind": "frame",
       "name": "data",
@@ -67,6 +161,52 @@
       "value": {
         "data_hex": "68656c6c6f",
         "tag": 2
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "0628b52ffd00586c00003868656c6c6f200a0100b94b11",
+      "kind": "frame",
+      "name": "compressed",
+      "type": "fs.ReadOutput",
+      "value": {
+        "data_hex": "28b52ffd00586c00003868656c6c6f200a0100b94b11",
+        "tag": 6
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "0604224d18607073110000006f68656c6c6f200600056068656c6c6f0a",
+      "kind": "frame",
+      "name": "compressed_lz4",
+      "type": "fs.ReadOutput",
+      "value": {
+        "data_hex": "04224d18607073110000006f68656c6c6f200600056068656c6c6f0a",
+        "tag": 6
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "06789cca48cdc9c957c8c0477201000000ffff",
+      "kind": "frame",
+      "name": "compressed_deflate",
+      "type": "fs.ReadOutput",
+      "value": {
+        "data_hex": "789cca48cdc9c957c8c0477201000000ffff",
+        "tag": 6
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "08a16870726570617265641a00100000",
+      "kind": "frame",
+      "name": "progress",
+      "type": "fs.ReadOutput",
+      "value": {
+        "message": {
+          "prepared": 1048576
+        },
+        "tag": 8
       }
     },
     {

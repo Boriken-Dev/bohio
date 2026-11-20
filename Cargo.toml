@@ -77,10 +77,21 @@ blake3 = { version = "1", default-features = false, features = ["std"] }
 xxhash-rust = { version = "0.8", default-features = false, features = ["xxh3", "xxh64"] }
 # CRC-32C (Castagnoli), hardware accelerated where the CPU has it.
 crc32c = "0.6"
+# Zstandard through the C library (levels to 22, long windows, worker threads with `zstdmt`): the compression a slow link wants. It compiles C
+# through `cc`, as ring already does on every platform.
+zstd = { version = "0.14", default-features = false }
+# LZ4 blocks, for the hosts whose CPU cannot afford more. The frame around them is written and read by `bohio-transfer` itself, piece by piece.
+lz4_flex = { version = "0.14", default-features = false, features = ["std", "safe-encode", "safe-decode"] }
+# Deflate (zlib framing) on pure-Rust miniz_oxide: what a browser's `DecompressionStream` and Python's `zlib` decode.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# Globs for the files a host never compresses.
+globset = { version = "0.4", default-features = false }
+# Unguessable names for prepared files.
+getrandom = "0.4"
 # Tests: scratch directories that remove themselves.
 tempfile = "3"
 bohio-proto = { path = "crates/bohio-proto" }
-bohio-transfer = { path = "crates/bohio-transfer" }
+bohio-transfer = { path = "crates/bohio-transfer", default-features = false }
 bohio-client = { path = "crates/bohio-client" }
 
 # One PeerId type across the graph needs one source: the methods name coqui-peer by version.

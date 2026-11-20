@@ -25,6 +25,10 @@ pub enum Error {
     /// The stream ended before the operation's last frame.
     #[error("the stream ended before the operation finished")]
     Closed,
+    /// A compression this build cannot use: an algorithm it lacks (`zstd` without the feature, `auto` where
+    /// the client must name one) or a compressed stream that could not be set up.
+    #[error("compression cannot be used: {0}")]
+    Compression(String),
 }
 
 impl From<Failure> for Error {

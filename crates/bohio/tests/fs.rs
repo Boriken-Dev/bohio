@@ -204,7 +204,7 @@ fn reads_honour_offset_and_length() {
             path: "n.txt".into(),
             offset,
             length,
-            hashes: Vec::new(),
+            ..ReadRequest::whole("n.txt")
         };
         let reader = Reader::start(&fixture.link, &request, WAIT)?;
         let header = reader.header();

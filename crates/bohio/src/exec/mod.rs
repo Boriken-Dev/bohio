@@ -15,11 +15,14 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use bohio_proto::compress::Compression;
 use bohio_proto::exec::{Exit, Input, Output, Request, Started};
 use bohio_proto::{ErrorBody, ErrorCode};
+use bohio_transfer::compress::{Caps, Decoder, Encoder, Piece};
 use coqui_transport::{Channel, Failure};
 
-use crate::config::ExecutionConfig;
+use crate::config::{CompressionConfig, ExecutionConfig};
+use crate::fs::compress::{Settings, decode_failure};
 use crate::limit::Slots;
 use crate::platform::{self, Control, ProcessExit};
 use crate::policy::{Grant, Permission};
@@ -31,6 +34,8 @@ pub struct Context<'a> {
     pub grant: &'a Grant,
     /// The `[execution]` settings.
     pub config: &'a ExecutionConfig,
+    /// The `[compression]` settings, for output and standard input a request asks to compress.
+    pub compression: &'a CompressionConfig,
     /// The bound on concurrent processes, shared by every stream.
     pub slots: &'a Slots,
     /// The host's own `PATH`: where a program a grant lists is looked for. The library reads no
@@ -50,7 +55,13 @@ pub struct Context<'a> {
 /// The [`ErrorBody`] sent to the peer: `bad_request` for undecodable or impossible requests,
 /// `unsupported` when execution is disabled, `denied` for a peer without `exec` or a program its
 /// grant does not list, `busy` at `max_processes`, `not_found` for a program or working directory
-/// that does not exist, `io` for other start failures.
+/// that does not exist, `io` for other start failures, `unsupported` for a compression the host does
+/// not offer, `bad_request` for `auto` as the compression of standard input (the client names the
+/// algorithm it sends) and, later, for compressed standard input that expands past `max_expansion`.
+///
+/// With `output_compression` each flushed chunk of standard output and of standard error is a
+/// compressed frame when that is smaller and a raw frame when it is not (which ends that stream's
+/// compression context); the two outputs have contexts of their own. `started` says what was used.
 pub fn serve(
     channel: Arc<dyn Channel>,
     metadata: &[u8],
@@ -64,13 +75,18 @@ pub fn serve(
         done: AtomicBool::new(false),
         killed: AtomicBool::new(false),
     });
-    let (request, spawned, _permit) = match start(metadata, context) {
+    let (request, spawned, _permit, negotiated) = match start(metadata, context) {
         Ok(started) => started,
         Err(error) => {
             let _ = shared.send(&encode(&Output::Error(error.clone())));
             return Err(error);
         }
     };
+    let Negotiated {
+        output,
+        stdin: stdin_used,
+        mut decoder,
+    } = negotiated;
     let platform::Spawned {
         control,
         mut stdin,
@@ -79,7 +95,12 @@ pub fn serve(
     } = spawned;
     tracing::debug!(pid = control.id(), "process started");
 
-    if !shared.send(&encode(&Output::Started(Started { pid: control.id() }))) {
+    let started = Started {
+        pid: control.id(),
+        output_compression: output.clone(),
+        stdin_compression: stdin_used,
+    };
+    if !shared.send(&encode(&Output::Started(started))) {
         let _ = control.kill();
         return Ok(Exit {
             killed: true,
@@ -95,9 +116,12 @@ pub fn serve(
     ] {
         let for_pump = Arc::clone(&shared);
         let done = done_tx.clone();
+        let compression = output
+            .clone()
+            .map(|used| (used, context.compression.caps()));
         let spawned = thread::Builder::new()
             .name("bohio-exec-pump".to_owned())
-            .spawn(move || pump(&for_pump, reader, is_stderr, chunk, &done));
+            .spawn(move || pump(&for_pump, reader, is_stderr, chunk, &done, compression));
         if spawned.is_err() {
             let _ = control.kill();
             let error = ErrorBody::new(ErrorCode::Internal, "a thread could not be started");
@@ -123,7 +147,7 @@ pub fn serve(
         return Err(error);
     };
 
-    receive_frames(&shared, &control, &mut stdin);
+    receive_frames(&shared, &control, &mut stdin, &mut decoder);
     drop(stdin);
     Ok(finish(monitor, &control))
 }
@@ -185,11 +209,29 @@ fn chunk_size(shared: &Shared, configured: usize) -> usize {
         .max(1)
 }
 
+/// What the request asked of compression, after the host's settings.
+struct Negotiated {
+    /// What output is sent with, never `auto`.
+    output: Option<Compression>,
+    /// What standard input is received with.
+    stdin: Option<Compression>,
+    /// The decoder of standard input, when it is compressed.
+    decoder: Option<Decoder>,
+}
+
 /// Checks the request and starts the process, returning the slot it holds.
 fn start<'a>(
     metadata: &[u8],
     context: &Context<'a>,
-) -> Result<(Request, platform::Spawned, crate::limit::Permit<'a>), ErrorBody> {
+) -> Result<
+    (
+        Request,
+        platform::Spawned,
+        crate::limit::Permit<'a>,
+        Negotiated,
+    ),
+    ErrorBody,
+> {
     let request = Request::from_metadata(metadata)
         .map_err(|_| ErrorBody::new(ErrorCode::BadRequest, "the request cannot be read"))?;
     if !context.config.enabled {
@@ -204,6 +246,13 @@ fn start<'a>(
             "this peer may not run processes",
         ));
     }
+    let settings = Settings::new(context.compression);
+    let output = settings.resolve(request.output_compression.as_ref())?;
+    let stdin = settings.declared(request.stdin_compression.as_ref())?;
+    let decoder = stdin
+        .as_ref()
+        .map(|used| settings.decoder(used))
+        .transpose()?;
     let spec = command::spec(&request, context.grant, context.path)?;
     if let Some(cwd) = &spec.cwd
         && !cwd.is_dir()
@@ -229,7 +278,16 @@ fn start<'a>(
         ),
         _ => ErrorBody::new(ErrorCode::Io, "the process could not be started"),
     })?;
-    Ok((request, spawned, permit))
+    Ok((
+        request,
+        spawned,
+        permit,
+        Negotiated {
+            output,
+            stdin,
+            decoder,
+        },
+    ))
 }
 
 enum Reader {
@@ -246,18 +304,38 @@ impl Read for Reader {
     }
 }
 
-/// Copies a pipe to the stream in frames until the pipe ends, then reports so.
-fn pump(shared: &Shared, mut reader: Reader, is_stderr: bool, chunk: usize, done: &Sender<()>) {
+/// Copies a pipe to the stream in frames until the pipe ends, then reports so. With `compression`
+/// each chunk is one flushed piece of this pipe's own context.
+fn pump(
+    shared: &Shared,
+    mut reader: Reader,
+    is_stderr: bool,
+    chunk: usize,
+    done: &Sender<()>,
+    compression: Option<(Compression, Caps)>,
+) {
+    let mut encoder = compression.and_then(|(used, caps)| Encoder::new(&used, &caps).ok());
     let mut buffer = vec![0_u8; chunk];
     loop {
         match reader.read(&mut buffer) {
             Ok(0) => break,
             Ok(count) => {
-                let bytes = buffer[..count].to_vec();
-                let output = if is_stderr {
-                    Output::Stderr(bytes)
-                } else {
-                    Output::Stdout(bytes)
+                let raw = |bytes: Vec<u8>| {
+                    if is_stderr {
+                        Output::Stderr(bytes)
+                    } else {
+                        Output::Stdout(bytes)
+                    }
+                };
+                let output = match encoder
+                    .as_mut()
+                    .map(|encoder| encoder.frame(&buffer[..count]))
+                {
+                    Some(Ok(Piece::Compressed(piece))) if is_stderr => {
+                        Output::StderrCompressed(piece)
+                    }
+                    Some(Ok(Piece::Compressed(piece))) => Output::StdoutCompressed(piece),
+                    _ => raw(buffer[..count].to_vec()),
                 };
                 if !shared.send(&encode(&output)) {
                     // Nobody is listening: keep emptying the pipe so the process is not
@@ -355,11 +433,40 @@ fn receive_frames(
     shared: &Shared,
     control: &Control,
     stdin: &mut Option<std::process::ChildStdin>,
+    decoder: &mut Option<Decoder>,
 ) {
     while !shared.done.load(Ordering::Acquire) {
         match shared.channel.receive(Some(shared.poll)) {
             Ok(Some(frame)) => match Input::decode(&frame) {
+                Ok(Input::StdinCompressed(piece)) => {
+                    let Some(decoder) = decoder.as_mut() else {
+                        refuse(
+                            shared,
+                            control,
+                            ErrorBody::new(
+                                ErrorCode::BadRequest,
+                                "compressed input needs a stdin_compression in the request",
+                            ),
+                        );
+                        continue;
+                    };
+                    if let Some(pipe) = stdin.as_mut() {
+                        match decoder.feed(&piece, pipe) {
+                            Ok(_) => {
+                                if pipe.flush().is_err() {
+                                    *stdin = None;
+                                }
+                            }
+                            Err(bohio_transfer::compress::DecodeError::Write(_)) => *stdin = None,
+                            Err(error) => refuse(shared, control, decode_failure(&error)),
+                        }
+                    }
+                }
                 Ok(Input::Stdin(bytes)) => {
+                    // A raw frame ends the compression context.
+                    if let Some(decoder) = decoder.as_mut() {
+                        decoder.reset();
+                    }
                     if let Some(pipe) = stdin.as_mut()
                         && pipe.write_all(&bytes).and_then(|()| pipe.flush()).is_err()
                     {
@@ -384,6 +491,13 @@ fn receive_frames(
             }
         }
     }
+}
+
+/// Ends the process and tells the client why: its input could not be taken.
+fn refuse(shared: &Shared, control: &Control, error: ErrorBody) {
+    shared.killed.store(true, Ordering::Release);
+    let _ = shared.send(&encode(&Output::Error(error)));
+    let _ = control.kill();
 }
 
 /// Waits for the monitor, which always ends once the process is gone.

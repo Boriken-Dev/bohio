@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use bohio_proto::compress::{Codec, Compression, Progress, Resume};
 use bohio_proto::control::{Call, Reply, Request as ControlRequest, Response};
 use bohio_proto::exec::{
     Command, Env, Exit, Input, Output, Request as ExecRequest, Started, Stdin,
@@ -69,6 +70,9 @@ fn sample_transfer() -> TransferInfo {
             max_streams: 4,
             rate: 0,
         },
+        compression: Vec::new(),
+        compression_default: None,
+        prepared: false,
     }
 }
 
@@ -124,7 +128,14 @@ fn every_exec_message_round_trips() {
         killed: false,
     };
     for output in [
-        Output::Started(Started { pid: 42 }),
+        Output::Started(Started::new(42)),
+        Output::Started(Started {
+            pid: 42,
+            output_compression: Some(Compression::new(Codec::Zstd).level(3)),
+            stdin_compression: Some(Compression::new(Codec::Lz4)),
+        }),
+        Output::StdoutCompressed(vec![1, 2, 3]),
+        Output::StderrCompressed(vec![4]),
         Output::Stdout(vec![0, 255, 10]),
         Output::Stderr(Vec::new()),
         Output::Exit(exit),
@@ -132,7 +143,12 @@ fn every_exec_message_round_trips() {
     ] {
         assert_eq!(Output::decode(&output.encode().unwrap()).unwrap(), output);
     }
-    for input in [Input::Stdin(vec![1, 2, 3]), Input::StdinEnd, Input::Kill] {
+    for input in [
+        Input::Stdin(vec![1, 2, 3]),
+        Input::StdinCompressed(vec![4, 5]),
+        Input::StdinEnd,
+        Input::Kill,
+    ] {
         assert_eq!(Input::decode(&input.encode()).unwrap(), input);
     }
 }
@@ -414,6 +430,12 @@ fn every_transfer_message_round_trips() {
         offset: 4,
         length: Some(8),
         hashes: vec![Algorithm::Md5, Algorithm::Xxh3],
+        compression: Some(Compression::new(Codec::Deflate).level(9)),
+        prepare: true,
+        resume: Some(Resume {
+            token: "ab".into(),
+            offset: 7,
+        }),
     };
     assert_eq!(
         ReadRequest::from_metadata(&read.to_metadata().unwrap()).unwrap(),
@@ -432,6 +454,7 @@ fn every_transfer_message_round_trips() {
             file_mode: Some(0o600),
             expect: Digests::from([(Algorithm::Sha256, "cd".repeat(32))]),
             hashes: Some(vec![Algorithm::Sha256, Algorithm::Crc32c]),
+            compression: Some(Compression::new(Codec::Lz4)),
         };
         assert_eq!(
             WriteRequest::from_metadata(&write.to_metadata().unwrap()).unwrap(),
@@ -440,8 +463,17 @@ fn every_transfer_message_round_trips() {
     }
     let error = ErrorBody::new(ErrorCode::OutsideRoot, "no");
     for output in [
-        ReadOutput::Header(ReadHeader { size: 5, length: 3 }),
+        ReadOutput::Header(ReadHeader::raw(5, 3)),
+        ReadOutput::Header(ReadHeader {
+            size: 5,
+            length: 3,
+            compression: Some(Compression::new(Codec::Zstd).level(3).window_log(21)),
+            compressed_length: Some(4),
+            token: Some("ab".into()),
+        }),
         ReadOutput::Data(vec![0, 1, 255]),
+        ReadOutput::Compressed(vec![9, 8]),
+        ReadOutput::Progress(Progress { prepared: 3 }),
         ReadOutput::Done(ReadDone {
             hashes: Digests::from([(Algorithm::Crc32c, "e3069283".into())]),
         }),
@@ -465,7 +497,11 @@ fn every_transfer_message_round_trips() {
             output
         );
     }
-    for input in [WriteInput::Data(vec![9, 8]), WriteInput::End] {
+    for input in [
+        WriteInput::Data(vec![9, 8]),
+        WriteInput::Compressed(vec![7]),
+        WriteInput::End,
+    ] {
         assert_eq!(WriteInput::decode(&input.encode()).unwrap(), input);
     }
     assert_eq!(ReadOutput::decode(&[]), Err(Error::Short));

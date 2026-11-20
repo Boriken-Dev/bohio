@@ -102,6 +102,39 @@
       }
     },
     {
+      "direction": "client_to_host",
+      "hex": "a767636f6d6d616e64a2647479706564617267766461726776816363617463637764f663656e76a365636c656172f463736574a06672656d6f76658065737464696e646f70656e6a74696d656f75745f6d73f6726f75747075745f636f6d7072657373696f6ea369616c676f726974686d646175746f656c6576656cf66a77696e646f775f6c6f67f671737464696e5f636f6d7072657373696f6ea369616c676f726974686d636c7a34656c6576656cf66a77696e646f775f6c6f67f6",
+      "kind": "open",
+      "name": "open_compressed",
+      "type": "exec.Request",
+      "value": {
+        "command": {
+          "argv": [
+            "cat"
+          ],
+          "type": "argv"
+        },
+        "cwd": null,
+        "env": {
+          "clear": false,
+          "remove": [],
+          "set": {}
+        },
+        "output_compression": {
+          "algorithm": "auto",
+          "level": null,
+          "window_log": null
+        },
+        "stdin": "open",
+        "stdin_compression": {
+          "algorithm": "lz4",
+          "level": null,
+          "window_log": null
+        },
+        "timeout_ms": null
+      }
+    },
+    {
       "direction": "host_to_client",
       "hex": "01a163706964191092",
       "kind": "frame",
@@ -112,6 +145,51 @@
           "pid": 4242
         },
         "tag": 1
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "01a363706964191092726f75747075745f636f6d7072657373696f6ea369616c676f726974686d647a737464656c6576656c036a77696e646f775f6c6f67f671737464696e5f636f6d7072657373696f6ea369616c676f726974686d636c7a34656c6576656cf66a77696e646f775f6c6f67f6",
+      "kind": "frame",
+      "name": "started_compressed",
+      "type": "exec.Output",
+      "value": {
+        "message": {
+          "output_compression": {
+            "algorithm": "zstd",
+            "level": 3,
+            "window_log": null
+          },
+          "pid": 4242,
+          "stdin_compression": {
+            "algorithm": "lz4",
+            "level": null,
+            "window_log": null
+          }
+        },
+        "tag": 1
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "0628b52ffd00586c00003868656c6c6f200a0100b94b11",
+      "kind": "frame",
+      "name": "stdout_compressed",
+      "type": "exec.Output",
+      "value": {
+        "data_hex": "28b52ffd00586c00003868656c6c6f200a0100b94b11",
+        "tag": 6
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "07789cca48cdc9c957c8c0477201000000ffff",
+      "kind": "frame",
+      "name": "stderr_compressed",
+      "type": "exec.Output",
+      "value": {
+        "data_hex": "789cca48cdc9c957c8c0477201000000ffff",
+        "tag": 7
       }
     },
     {
@@ -191,6 +269,17 @@
       "value": {
         "data_hex": "64617461",
         "tag": 16
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "1304224d18607073110000006f68656c6c6f200600056068656c6c6f0a",
+      "kind": "frame",
+      "name": "stdin_compressed",
+      "type": "exec.Input",
+      "value": {
+        "data_hex": "04224d18607073110000006f68656c6c6f200600056068656c6c6f0a",
+        "tag": 19
       }
     },
     {

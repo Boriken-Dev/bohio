@@ -1,9 +1,12 @@
 //! Running one process on a host: `bohio-exec/1`.
 
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use bohio_proto::compress::{Codec, Compression};
 use bohio_proto::exec::{Exit, Input, Output, Request};
 use bohio_proto::protocol;
+use bohio_transfer::compress::{Bounds, Caps, Decoder, Encoder, Piece};
 use coqui_transport::Channel;
 
 use crate::{Error, Open};
@@ -42,6 +45,19 @@ pub struct Completed {
 /// input while another reads events. Dropping it closes the stream, which ends the process.
 pub struct Exec {
     channel: Box<dyn Channel>,
+    /// What the host reported it uses for output and accepts for standard input, once `started` arrived.
+    used: Mutex<(Option<Compression>, Option<Compression>)>,
+    /// The decoders of standard output and standard error, made when `started` says output is compressed.
+    decoders: Mutex<(Option<Decoder>, Option<Decoder>)>,
+    /// The encoder of standard input, when the request declared it compressed.
+    encoder: Mutex<Option<Encoder>>,
+    window_log_max: u32,
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 impl core::fmt::Debug for Exec {
@@ -57,10 +73,107 @@ impl Exec {
     ///
     /// [`Error::Protocol`] when the request cannot be encoded, else whatever `link` reports.
     pub fn start(link: &dyn Open, request: &Request) -> Result<Self, Error> {
+        Self::start_with(
+            link,
+            request,
+            &Caps {
+                window_log_max: 27,
+                ..Caps::default()
+            },
+        )
+    }
+
+    /// As [`Exec::start`], compressing standard input within `caps` and refusing output that asks for a
+    /// window above `caps.window_log_max` (`start` accepts 128 MiB; a host's own `window_log_max` sets
+    /// what it sends). The request's `stdin_compression` names the algorithm, never `auto`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Exec::start`]; [`Error::Compression`] when the algorithm of standard input is `auto` or this
+    /// build lacks it.
+    pub fn start_with(link: &dyn Open, request: &Request, caps: &Caps) -> Result<Self, Error> {
+        let encoder = match &request.stdin_compression {
+            Some(wanted) if wanted.algorithm.compresses() => Some(
+                Encoder::new(wanted, caps)
+                    .map_err(|error| Error::Compression(error.to_string()))?,
+            ),
+            Some(wanted) if wanted.algorithm == Codec::Auto => {
+                return Err(Error::Compression(
+                    "name the algorithm to send standard input with: auto is for what the host sends"
+                        .to_owned(),
+                ));
+            }
+            _ => None,
+        };
         let metadata = request.to_metadata()?;
         Ok(Self {
             channel: link.open(protocol::EXEC, &metadata)?,
+            used: Mutex::new((None, None)),
+            decoders: Mutex::new((None, None)),
+            encoder: Mutex::new(encoder),
+            window_log_max: caps.window_log_max,
         })
+    }
+
+    /// What the host reported it uses for output and accepts for standard input (the level it clamped
+    /// to), known once the `Started` event arrived; `None` for a raw stream.
+    pub fn compression(&self) -> (Option<Compression>, Option<Compression>) {
+        lock(&self.used).clone()
+    }
+
+    fn decode(&self, error: &bohio_transfer::compress::DecodeError) -> Error {
+        use bohio_transfer::compress::DecodeError;
+        match error {
+            DecodeError::Unsupported(_) | DecodeError::Setup(_) => {
+                Error::Compression(error.to_string())
+            }
+            _ => Error::Protocol(bohio_proto::Error::Decode),
+        }
+    }
+
+    /// Decodes a piece of standard output (`stderr` false) or standard error; `None` when it yields nothing yet.
+    fn decoded(&self, piece: &[u8], stderr: bool) -> Result<Option<Vec<u8>>, Error> {
+        let mut decoders = lock(&self.decoders);
+        let slot = if stderr {
+            &mut decoders.1
+        } else {
+            &mut decoders.0
+        };
+        let decoder = slot
+            .as_mut()
+            .ok_or(Error::Protocol(bohio_proto::Error::Decode))?;
+        let mut out = Vec::new();
+        decoder
+            .feed(piece, &mut out)
+            .map_err(|error| self.decode(&error))?;
+        Ok((!out.is_empty()).then_some(out))
+    }
+
+    /// A raw frame ends the compression context of its stream.
+    fn raw(&self, stderr: bool) {
+        let mut decoders = lock(&self.decoders);
+        let slot = if stderr {
+            &mut decoders.1
+        } else {
+            &mut decoders.0
+        };
+        if let Some(decoder) = slot.as_mut() {
+            decoder.reset();
+        }
+    }
+
+    fn start_decoders(&self, used: &Compression) -> Result<(), Error> {
+        if !used.algorithm.compresses() {
+            return Ok(());
+        }
+        let bounds = Bounds {
+            window_log_max: self.window_log_max,
+            max_output: None,
+            max_expansion: 0,
+        };
+        let make = || Decoder::new(used, &bounds).map_err(|error| self.decode(&error));
+        *lock(&self.decoders) = (Some(make()?), Some(make()?));
+        Ok(())
     }
 
     /// The next event, waiting up to `timeout` (`None`: without limit). `Ok(None)` once the
@@ -79,10 +192,30 @@ impl Exec {
             };
             match Output::decode(&frame) {
                 Ok(Output::Started(started)) => {
+                    if let Some(used) = &started.output_compression {
+                        self.start_decoders(used)?;
+                    }
+                    *lock(&self.used) = (started.output_compression, started.stdin_compression);
                     return Ok(Some(Event::Started { pid: started.pid }));
                 }
-                Ok(Output::Stdout(bytes)) => return Ok(Some(Event::Stdout(bytes))),
-                Ok(Output::Stderr(bytes)) => return Ok(Some(Event::Stderr(bytes))),
+                Ok(Output::Stdout(bytes)) => {
+                    self.raw(false);
+                    return Ok(Some(Event::Stdout(bytes)));
+                }
+                Ok(Output::Stderr(bytes)) => {
+                    self.raw(true);
+                    return Ok(Some(Event::Stderr(bytes)));
+                }
+                Ok(Output::StdoutCompressed(piece)) => {
+                    if let Some(bytes) = self.decoded(&piece, false)? {
+                        return Ok(Some(Event::Stdout(bytes)));
+                    }
+                }
+                Ok(Output::StderrCompressed(piece)) => {
+                    if let Some(bytes) = self.decoded(&piece, true)? {
+                        return Ok(Some(Event::Stderr(bytes)));
+                    }
+                }
                 Ok(Output::Exit(exit)) => return Ok(Some(Event::Exit(exit))),
                 Ok(Output::Error(body)) => return Err(Error::Remote(body)),
                 Ok(_) | Err(bohio_proto::Error::Tag(_)) => {}
@@ -105,7 +238,19 @@ impl Exec {
             .map_or(bytes.len(), |max| max.saturating_sub(1))
             .max(1);
         for piece in bytes.chunks(room) {
-            self.send(&Input::Stdin(piece.to_vec()).encode())?;
+            let compressed = match lock(&self.encoder).as_mut() {
+                Some(encoder) => match encoder
+                    .frame(piece)
+                    .map_err(|error| Error::Compression(error.to_string()))?
+                {
+                    Piece::Compressed(compressed) => Some(compressed),
+                    Piece::Raw => None,
+                },
+                None => None,
+            };
+            let frame =
+                compressed.map_or_else(|| Input::Stdin(piece.to_vec()), Input::StdinCompressed);
+            self.send(&frame.encode())?;
         }
         Ok(())
     }

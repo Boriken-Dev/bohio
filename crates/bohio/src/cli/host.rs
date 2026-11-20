@@ -55,10 +55,15 @@ fn node(found: &Found, watch: Vec<PathBuf>, environment: &Environment) -> Result
             .map_err(|error| error.to_string())?
             .with_create(create),
     );
-    let node = Node::new(config.node(), identity, peers.clone(), peers)
-        .map_err(|error| error.to_string())?
-        .with_pairing(data.store().map_err(|error| error.to_string())?)
-        .map_err(|error| error.to_string())?;
+    let node = Node::new(
+        node_settings(config, environment),
+        identity,
+        peers.clone(),
+        peers,
+    )
+    .map_err(|error| error.to_string())?
+    .with_pairing(data.store().map_err(|error| error.to_string())?)
+    .map_err(|error| error.to_string())?;
     Ok(node.with_path(environment.path.clone().unwrap_or_default()))
 }
 
@@ -641,6 +646,20 @@ pub(super) fn join(args: &JoinArgs, environment: &Environment) -> Result<(), Str
         identity.peer_id()
     );
     Ok(())
+}
+
+/// The settings a node serves with: the file's, and prepared reads kept in `prepared` in the data directory unless
+/// the file names another place.
+pub(super) fn node_settings(
+    config: &crate::config::Config,
+    environment: &Environment,
+) -> crate::config::NodeConfig {
+    let mut settings = config.node();
+    settings
+        .compression
+        .prepare_dir
+        .get_or_insert_with(|| config.data_dir(environment).join("prepared"));
+    settings
 }
 
 #[cfg(test)]

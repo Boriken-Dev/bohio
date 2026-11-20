@@ -17,7 +17,13 @@ publish = false
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+[features]
+# Decode zstd (the C library). Without it a reader that gets zstd compressed data reports it as unsupported.
+zstd = ["bohio-transfer/zstd"]
+
 [dependencies]
+bohio-transfer.workspace = true
+tempfile.workspace = true
 bohio-proto.workspace = true
 coqui-transport.workspace = true
 coqui-link.workspace = true

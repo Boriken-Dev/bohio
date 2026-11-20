@@ -12,6 +12,8 @@
 //! | host to client | `0x02` | [`ReadOutput::Data`] | raw bytes |
 //! | host to client | `0x04` | [`ReadOutput::Done`] | CBOR [`ReadDone`] |
 //! | host to client | `0x05` | [`ReadOutput::Error`] | CBOR [`ErrorBody`] |
+//! | host to client | `0x06` | [`ReadOutput::Compressed`] | a piece of the compressed stream |
+//! | host to client | `0x08` | [`ReadOutput::Progress`] | CBOR [`Progress`] |
 //!
 //! `bohio-write/1`: the open's metadata is a [`WriteRequest`].
 //!
@@ -22,9 +24,11 @@
 //! | host to client | `0x05` | [`WriteOutput::Error`] | CBOR [`ErrorBody`] |
 //! | client to host | `0x10` | [`WriteInput::Data`] | raw bytes |
 //! | client to host | `0x11` | [`WriteInput::End`] | empty |
+//! | client to host | `0x14` | [`WriteInput::Compressed`] | a piece of the compressed stream |
 
 use serde::{Deserialize, Serialize};
 
+use crate::compress::{Compression, Progress, Resume};
 use crate::error::{Error, ErrorBody};
 use crate::hash::{Algorithm, Digests};
 use crate::{decode, encode};
@@ -120,6 +124,19 @@ pub struct ReadRequest {
     /// Digests of the bytes sent, answered in the closing frame. Default none.
     #[serde(default)]
     pub hashes: Vec<Algorithm>,
+    /// How the host sends the bytes: absent or `none` is raw `data` frames. The header says what the
+    /// host used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compression: Option<Compression>,
+    /// Compress the whole range into a file on the host first, then send it (a slow link pays for
+    /// the best ratio once, and the transfer can resume). The host answers `progress` frames while
+    /// it works. Needs `compression` and a host that offers it (`info.transfer.prepared`).
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub prepare: bool,
+    /// Continue a prepared read from a compressed offset; `path`, `offset`, `length` and
+    /// `compression` are then taken from the prepared file, which only the peer that made it may use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume: Option<Resume>,
 }
 
 impl ReadRequest {
@@ -130,6 +147,9 @@ impl ReadRequest {
             offset: 0,
             length: None,
             hashes: Vec::new(),
+            compression: None,
+            prepare: false,
+            resume: None,
         }
     }
 
@@ -153,12 +173,36 @@ impl ReadRequest {
 }
 
 /// The first frame of a read: what follows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadHeader {
     /// The file's size when the read started.
     pub size: u64,
-    /// How many data bytes follow in total.
+    /// How many data bytes follow in total, after decompression.
     pub length: u64,
+    /// What the host used, never `auto`: absent when the data is raw. The level is the one the
+    /// host clamped to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compression: Option<Compression>,
+    /// For a prepared read, how many compressed bytes follow in all (from the start, even when the
+    /// read resumes later).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compressed_length: Option<u64>,
+    /// For a prepared read, the name to resume it by, for as long as the host keeps the file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+}
+
+impl ReadHeader {
+    /// A header for raw data.
+    pub const fn raw(size: u64, length: u64) -> Self {
+        Self {
+            size,
+            length,
+            compression: None,
+            compressed_length: None,
+            token: None,
+        }
+    }
 }
 
 /// The last frame of a read that succeeded.
@@ -214,6 +258,10 @@ pub struct WriteRequest {
     /// `[filesystem] write_hashes` applies; an empty list asks for none.
     #[serde(default)]
     pub hashes: Option<Vec<Algorithm>>,
+    /// How the client sends the bytes: absent or `none` is raw `data` frames only. The client names
+    /// a concrete algorithm (never `auto`) the host offers; the host decodes within its bounds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compression: Option<Compression>,
 }
 
 impl WriteRequest {
@@ -226,6 +274,7 @@ impl WriteRequest {
             file_mode: None,
             expect: Digests::new(),
             hashes: None,
+            compression: None,
         }
     }
 
@@ -265,6 +314,9 @@ const DONE: u8 = 0x04;
 const ERROR: u8 = 0x05;
 const WRITE_DATA: u8 = 0x10;
 const WRITE_END: u8 = 0x11;
+const COMPRESSED: u8 = 0x06;
+const PROGRESS: u8 = 0x08;
+const WRITE_COMPRESSED: u8 = 0x14;
 
 fn tagged(tag: u8, body: &[u8]) -> Vec<u8> {
     let mut frame = Vec::with_capacity(body.len() + 1);
@@ -288,6 +340,11 @@ pub enum ReadOutput {
     Header(ReadHeader),
     /// Bytes of the file, in order.
     Data(Vec<u8>),
+    /// A piece of the compressed stream. A `data` frame ends the compression context (see
+    /// `docs/protocol.md`).
+    Compressed(Vec<u8>),
+    /// The host is still compressing a prepared read.
+    Progress(Progress),
     /// Every byte was sent; the last frame.
     Done(ReadDone),
     /// The read failed; the last frame.
@@ -304,6 +361,8 @@ impl ReadOutput {
         Ok(match self {
             Self::Header(body) => tagged(HEADER, &encode(body)?),
             Self::Data(bytes) => tagged(DATA, bytes),
+            Self::Compressed(bytes) => tagged(COMPRESSED, bytes),
+            Self::Progress(body) => tagged(PROGRESS, &encode(body)?),
             Self::Done(body) => tagged(DONE, &encode(body)?),
             Self::Error(body) => tagged(ERROR, &encode(body)?),
         })
@@ -320,6 +379,8 @@ impl ReadOutput {
         match tag {
             HEADER => decode(body).map(Self::Header),
             DATA => Ok(Self::Data(body.to_vec())),
+            COMPRESSED => Ok(Self::Compressed(body.to_vec())),
+            PROGRESS => decode(body).map(Self::Progress),
             DONE => decode(body).map(Self::Done),
             ERROR => decode(body).map(Self::Error),
             other => Err(Error::Tag(other)),
@@ -376,6 +437,8 @@ impl WriteOutput {
 pub enum WriteInput {
     /// Bytes for the file, in order.
     Data(Vec<u8>),
+    /// A piece of the compressed stream. A `data` frame ends the compression context.
+    Compressed(Vec<u8>),
     /// No more data: put it in place.
     End,
 }
@@ -385,6 +448,7 @@ impl WriteInput {
     pub fn encode(&self) -> Vec<u8> {
         match self {
             Self::Data(bytes) => tagged(WRITE_DATA, bytes),
+            Self::Compressed(bytes) => tagged(WRITE_COMPRESSED, bytes),
             Self::End => tagged(WRITE_END, &[]),
         }
     }
@@ -398,6 +462,7 @@ impl WriteInput {
         let (tag, body) = split(frame)?;
         match tag {
             WRITE_DATA => Ok(Self::Data(body.to_vec())),
+            WRITE_COMPRESSED => Ok(Self::Compressed(body.to_vec())),
             WRITE_END => Ok(Self::End),
             other => Err(Error::Tag(other)),
         }

@@ -17,6 +17,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde::de::{self, Deserializer};
 
+use bohio_proto::compress::{Codec, Compression};
 use bohio_proto::hash::Algorithm;
 
 use crate::policy::Peers;
@@ -126,6 +127,8 @@ pub struct Config {
     pub filesystem: FilesystemConfig,
     /// `[hash]`.
     pub hash: HashConfig,
+    /// `[compression]`.
+    pub compression: CompressionConfig,
     /// `[execution]`.
     pub execution: ExecutionConfig,
     /// `[shell]`.
@@ -640,6 +643,159 @@ impl Default for HashConfig {
     }
 }
 
+/// `[compression]`: what a host compresses for a peer that asks, and what it accepts compressed.
+///
+/// A client names the compression of each stream (`read`, `write`, `exec` output and input) and the
+/// host applies these caps and reports what it used. Compression costs the host CPU and memory, so
+/// every cost is a setting: a weak host allows `lz4` alone and a low `max_level`, a host on a thin
+/// link allows high zstd levels and long windows. The control and shell streams are never compressed.
+/// Whatever a peer sends compressed is decoded within `window_log_max` and `max_expansion`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct CompressionConfig {
+    /// The algorithms a peer may ask for, among those this build has (`zstd`, `lz4`, `deflate`). A
+    /// request for another is `unsupported`. Empty allows none. Default every algorithm this build has.
+    pub allowed: Vec<Codec>,
+    /// What a request for `auto` means. It must be one of `allowed`. Default `zstd` at level 3 (`lz4`
+    /// in a build without zstd).
+    pub default: Compression,
+    /// The highest zstd level a request gets; a higher one is clamped and the header says so. Level 19
+    /// costs tens of mebibytes and a fraction of a core's speed. Default `19`.
+    pub max_level: i32,
+    /// The highest deflate level, 0 to 9. Default `9`.
+    pub deflate_max_level: i32,
+    /// The largest zstd window, as a power of two: it caps what the host compresses with and what it
+    /// accepts (a decoder holds about one window of memory per stream). A long window finds repeats
+    /// further back and costs memory on both ends. 10 to 31. Default `23` (8 MiB).
+    pub window_log_max: u32,
+    /// zstd worker threads per stream; `0` compresses in the stream's own thread. Above `0` needs a
+    /// build with the `zstdmt` feature. Default `0`.
+    pub workers: u32,
+    /// File extensions (without the dot, any case) a read never compresses, because the files are
+    /// compressed already. Default archives, images, audio, video, documents and packages.
+    pub skip_extensions: Vec<String>,
+    /// How many bytes from the start of a file a read compresses as a trial; when the result is not
+    /// smaller than `sample_ratio` the file is sent raw. `0` turns the trial off (each frame still goes
+    /// raw when it does not shrink). Default `65536`.
+    pub sample_bytes: usize,
+    /// The compressed-to-raw ratio of the trial above which a file is sent raw: `0.9` sends a file
+    /// raw unless compression saves a tenth. Above `0`. Default `0.9`.
+    pub sample_ratio: f64,
+    /// Globs of files never compressed, matched against the whole path and the file name: a file
+    /// named secret and the same bytes in a stream may share a compression context with bytes a peer
+    /// chose, so a host keeps key material out of it. Default key, certificate and password-store
+    /// names.
+    pub exclude: Vec<String>,
+    /// How many times its compressed size what a peer sends may expand to, checked once more than a
+    /// mebibyte has been produced; past it the write or the standard input ends with `bad_request`.
+    /// A real file can beat any ratio (zeros compress about 1000 to 1 with deflate and far more with
+    /// zstd), so a host that must take such files sets `0`, which turns the check off and leaves only
+    /// the disk to stop a bomb. Default `1024`.
+    pub max_expansion: u32,
+    /// Where prepared reads keep the compressed files. Absent: the command uses `prepared` in its
+    /// data directory and an embedding application has no prepared reads.
+    pub prepare_dir: Option<PathBuf>,
+    /// The most compressed bytes one prepared read may hold; a larger result is `busy`. At least 1.
+    /// Default `1073741824` (1 GiB).
+    pub prepare_max_bytes: u64,
+    /// How long a prepared file is kept after it was made, for resuming. Not zero. Default `10m`.
+    pub prepare_ttl: Span,
+}
+
+impl Default for CompressionConfig {
+    fn default() -> Self {
+        let allowed = bohio_transfer::compress::available();
+        let default = if allowed.contains(&Codec::Zstd) {
+            Compression::new(Codec::Zstd).level(3)
+        } else {
+            Compression::new(Codec::Lz4)
+        };
+        let words = |list: &str| list.split_whitespace().map(str::to_owned).collect();
+        Self {
+            allowed,
+            default,
+            max_level: 19,
+            deflate_max_level: 9,
+            window_log_max: 23,
+            workers: 0,
+            skip_extensions: words(
+                "zip gz tgz bz2 xz zst lz4 7z rar jpg jpeg png gif webp mp3 mp4 mkv mov avi webm pdf docx xlsx pptx jar apk whl iso",
+            ),
+            sample_bytes: 64 * 1024,
+            sample_ratio: 0.9,
+            exclude: words("*.key *.pem *.p12 *.pfx id_* .env *.kdbx"),
+            max_expansion: 1024,
+            prepare_dir: None,
+            prepare_max_bytes: 1024 * 1024 * 1024,
+            prepare_ttl: Span(Duration::from_secs(600)),
+        }
+    }
+}
+
+impl CompressionConfig {
+    /// The caps the codecs run under.
+    pub const fn caps(&self) -> bohio_transfer::compress::Caps {
+        bohio_transfer::compress::Caps {
+            max_level_zstd: self.max_level,
+            max_level_deflate: self.deflate_max_level,
+            window_log_max: self.window_log_max,
+            workers: self.workers,
+        }
+    }
+
+    fn validate(&self) -> Result<(), (&'static str, &'static str)> {
+        let have = bohio_transfer::compress::available();
+        if self.allowed.iter().any(|codec| !have.contains(codec)) {
+            return Err((
+                "compression.allowed",
+                "names an algorithm this build does not have (zstd, lz4, deflate)",
+            ));
+        }
+        // A host that allows nothing has no default to check.
+        if !self.allowed.is_empty()
+            && (!self.default.algorithm.compresses()
+                || !self.allowed.contains(&self.default.algorithm))
+        {
+            return Err((
+                "compression.default",
+                "must be one of the allowed algorithms, never none or auto",
+            ));
+        }
+        if !(10..=31).contains(&self.window_log_max) {
+            return Err(("compression.window_log_max", "must be from 10 to 31"));
+        }
+        if self.deflate_max_level > 9 || self.deflate_max_level < 0 {
+            return Err(("compression.deflate_max_level", "must be from 0 to 9"));
+        }
+        if self.max_level < 1 {
+            return Err(("compression.max_level", "must be at least 1"));
+        }
+        if self.workers > 0 && !bohio_transfer::compress::MULTITHREAD {
+            return Err((
+                "compression.workers",
+                "needs a build with the zstdmt feature",
+            ));
+        }
+        if !(self.sample_ratio.is_finite() && self.sample_ratio > 0.0) {
+            return Err(("compression.sample_ratio", "must be more than zero"));
+        }
+        if self.prepare_max_bytes == 0 {
+            return Err(("compression.prepare_max_bytes", "must be at least 1"));
+        }
+        if self.prepare_ttl.0.is_zero() {
+            return Err(("compression.prepare_ttl", "must not be zero"));
+        }
+        if self
+            .exclude
+            .iter()
+            .any(|glob| globset::Glob::new(glob).is_err())
+        {
+            return Err(("compression.exclude", "holds a glob that cannot be read"));
+        }
+        Ok(())
+    }
+}
+
 /// `[execution]`: one-shot processes.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -904,7 +1060,7 @@ impl<'de> Deserialize<'de> for Span {
 /// What a [`Node`](crate::node::Node) runs on: its name, the link bounds and the three engines'
 /// settings. An embedding application reads it from any section of its own settings; `bohio.cfg`'s
 /// `[service] name`, `[link]`, `[filesystem]`, `[execution]` and `[shell]` are one.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct NodeConfig {
     /// A name shown in `info` and logs. Default `bohio`.
@@ -915,6 +1071,8 @@ pub struct NodeConfig {
     pub filesystem: FilesystemConfig,
     /// `[hash]`.
     pub hash: HashConfig,
+    /// `[compression]`.
+    pub compression: CompressionConfig,
     /// `[execution]`.
     pub execution: ExecutionConfig,
     /// `[shell]`.
@@ -932,6 +1090,7 @@ impl Default for NodeConfig {
             link: LinkConfig::default(),
             filesystem: FilesystemConfig::default(),
             hash: HashConfig::default(),
+            compression: CompressionConfig::default(),
             execution: ExecutionConfig::default(),
             shell: ShellConfig::default(),
             forward: ForwardConfig::default(),
@@ -1082,6 +1241,9 @@ impl NodeConfig {
                 "must name only algorithms that [hash] algorithms allows",
             ));
         }
+        if let Err((key, message)) = self.compression.validate() {
+            return Err(invalid(key, message));
+        }
         if self.shell.max_sessions == 0 {
             return Err(invalid("shell.max_sessions", "must be at least 1"));
         }
@@ -1175,6 +1337,7 @@ impl Config {
             link: self.link.clone(),
             filesystem: self.filesystem.clone(),
             hash: self.hash.clone(),
+            compression: self.compression.clone(),
             execution: self.execution.clone(),
             shell: self.shell.clone(),
             forward: self.forward.clone(),
