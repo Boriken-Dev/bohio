@@ -724,6 +724,11 @@ struct Certificates {
 
 impl Certificates {
     fn new() -> Self {
+        Self::starting_in(Duration::ZERO)
+    }
+
+    /// As [`Certificates::new`], the host certificate valid only from `delay` on.
+    fn starting_in(delay: Duration) -> Self {
         let dir = tempfile::tempdir().expect("a directory");
         let path = |name: &str| dir.path().join(name);
         use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair};
@@ -740,10 +745,11 @@ impl Certificates {
         let trusted = authority().self_signed(&authority_key).unwrap();
         let signer = Issuer::new(authority(), authority_key);
         let leaf_key = KeyPair::generate().unwrap();
-        let leaf = CertificateParams::new(vec!["127.0.0.1".to_owned()])
-            .unwrap()
-            .signed_by(&leaf_key, &signer)
-            .unwrap();
+        let mut leaf_params = CertificateParams::new(vec!["127.0.0.1".to_owned()]).unwrap();
+        if !delay.is_zero() {
+            leaf_params.not_before = time::OffsetDateTime::now_utc() + delay;
+        }
+        let leaf = leaf_params.signed_by(&leaf_key, &signer).unwrap();
         let ca_path = path("ca.pem");
         std::fs::write(&ca_path, trusted.pem()).unwrap();
         let cert = path("cert.pem");
@@ -857,6 +863,66 @@ fn wss_is_reached_by_the_certificates_hash_and_not_by_another() {
         "{}",
         wrong.stderr
     );
+}
+
+/// Whether a `remote` run got past the carrier's TLS handshake: the link's proof then refuses the
+/// key the host has not approved, which is a different message.
+fn tls_accepted(attempt: &Finished) -> bool {
+    attempt.code == Some(1) && !attempt.stderr.contains("TLS certificate")
+}
+
+#[test]
+fn wss_certificate_that_starts_later_is_refused_by_its_hash_until_it_starts() {
+    // A certificate made just before the host starts, or a client whose clock is a minute behind: the
+    // same hash is refused at first and taken once the client's clock reaches the certificate's start.
+    let certificates = Certificates::starting_in(Duration::from_secs(6));
+    let world = World::new(&certificates.listen("wss://127.0.0.1:0"));
+    let (_host, bound) = world.serve_listed("warn");
+    let early = world.remote(&["--cert-hash", &certificates.hash, &bound], &["info"]);
+    assert!(!tls_accepted(&early), "{}", early.stderr);
+    assert!(
+        early.stderr.contains("TLS certificate was refused"),
+        "{}",
+        early.stderr
+    );
+    thread::sleep(Duration::from_secs(7));
+    let later = world.remote(&["--cert-hash", &certificates.hash, &bound], &["info"]);
+    assert!(tls_accepted(&later), "{}", later.stderr);
+}
+
+#[test]
+fn a_refused_certificate_says_why_and_which_certificate_the_host_presented() {
+    let certificates = Certificates::starting_in(Duration::from_secs(600));
+    let other = Certificates::new();
+    let world = World::new(&certificates.listen("wss://127.0.0.1:0"));
+    let (_host, bound) = world.serve_listed("warn");
+    // Pinned, but not valid yet: the reason is the clock, and the way out is named.
+    let early = world.remote(&["--cert-hash", &certificates.hash, &bound], &["info"]);
+    assert!(
+        early.stderr.contains("not valid until") && early.stderr.contains("--clock-skew"),
+        "{}",
+        early.stderr
+    );
+    // Another hash: the message holds the hash the host does present, so a stale pin shows.
+    let stale = world.remote(&["--cert-hash", &other.hash, &bound], &["info"]);
+    assert!(
+        stale.stderr.contains(&certificates.hash),
+        "the presented certificate is not named: {}",
+        stale.stderr
+    );
+}
+
+#[test]
+fn a_clock_skew_the_client_allows_takes_a_certificate_that_starts_within_it() {
+    let certificates = Certificates::starting_in(Duration::from_secs(600));
+    let world = World::new(&certificates.listen("wss://127.0.0.1:0"));
+    let (_host, bound) = world.serve_listed("warn");
+    let pin = ["--cert-hash", certificates.hash.as_str()];
+    let args = |skew: &'static str| [pin[0], pin[1], "--clock-skew", skew, bound.as_str()];
+    let within = world.remote(&args("15m"), &["info"]);
+    assert!(tls_accepted(&within), "{}", within.stderr);
+    let short = world.remote(&args("1m"), &["info"]);
+    assert!(!tls_accepted(&short), "{}", short.stderr);
 }
 
 /// A hash in the right form that no certificate has.
@@ -1123,4 +1189,21 @@ fn a_blocked_udp_path_falls_back_to_the_websocket_endpoint_and_a_refused_certifi
         &["info", "--format", "json"],
     );
     assert_eq!(pinned.code, Some(0), "{}", pinned.stderr);
+}
+
+#[test]
+fn a_made_webtransport_certificate_takes_the_backdate_the_entry_gives() {
+    let world = World::new(
+        "[[listen]]\nendpoint = \"webtransport://127.0.0.1:0\"\ntls_backdate = \"0s\"\n",
+    );
+    let (mut host, bound) = world.serve_listed("warn");
+    let hash = host
+        .expect_line("certificate ")
+        .split(' ')
+        .next()
+        .unwrap()
+        .to_owned();
+    // Starting now, on the same clock, it is valid.
+    let reached = world.remote(&["--cert-hash", &hash, &bound], &["info"]);
+    assert!(tls_accepted(&reached), "{}", reached.stderr);
 }

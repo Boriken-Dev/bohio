@@ -210,6 +210,7 @@ dependencies = [
  "sysinfo",
  "tempfile",
  "thiserror 2.0.21",
+ "time",
  "toml",
  "toml_edit",
  "tracing",
@@ -250,6 +251,7 @@ dependencies = [
  "rustls",
  "thiserror 2.0.21",
  "url",
+ "x509-parser",
 ]
 
 [[package]]

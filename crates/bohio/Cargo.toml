@@ -66,6 +66,7 @@ windows-service = { workspace = true, optional = true }
 sysinfo.workspace = true
 tempfile.workspace = true
 rcgen.workspace = true
+time.workspace = true
 sha2.workspace = true
 
 [[test]]

@@ -67,6 +67,7 @@ fn connect(args: &RemoteArgs, environment: &Environment) -> Result<Connection, S
     let settings = config.link.settings();
     let mut trust = ServerTrust::default();
     trust.ca_files.clone_from(&args.ca);
+    trust.clock_skew = args.clock_skew.unwrap_or_default();
     for hash in &args.cert_hash {
         trust.pin(hash)?;
     }
@@ -83,7 +84,10 @@ fn connect(args: &RemoteArgs, environment: &Environment) -> Result<Connection, S
     Connection::connect_with(&endpoint, settings.proof_timeout, &proof, &settings, &trust).map_err(
         |error| match error {
             Error::Transport(coqui_transport::Failure::Certificate) => format!(
-                "the host's TLS certificate was refused: trust its issuer with --ca FILE, or the                  certificate itself with --cert-hash HASH (endpoint {endpoint})"
+                "the host's TLS certificate was refused ({endpoint}): {}",
+                trust.refusal().unwrap_or_else(|| {
+                    "trust its issuer with --ca FILE, or the certificate itself with --cert-hash HASH".to_owned()
+                })
             ),
             Error::Transport(_) | Error::Closed => format!(
                 "the link to {endpoint} ended before it was proven: the host may not be listening, \

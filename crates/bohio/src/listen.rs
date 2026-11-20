@@ -27,6 +27,9 @@ use crate::node::NodeError;
 /// a browser pinning it by hash accepts at most 14, and a day short of that leaves room for a slow clock.
 const DEFAULT_CERTIFICATE_DAYS: u32 = 13;
 
+/// How long before now a certificate the host makes starts to be valid when the entry says nothing.
+const DEFAULT_BACKDATE: Duration = Duration::from_secs(3600);
+
 /// The longest validity, in days, a browser accepts for a certificate pinned by hash (`serverCertificateHashes`).
 const BROWSER_PIN_DAYS: u64 = 14;
 
@@ -341,10 +344,11 @@ impl Listening {
                     if days > BROWSER_PIN_DAYS {
                         tracing::warn!("the WebTransport certificate is valid for {days} days: a browser will not accept it pinned by its hash, which takes at most {BROWSER_PIN_DAYS}");
                     }
-                    // An hour back: a client whose clock is behind still accepts it. Browsers allow 14 days.
                     let made = MadeCertificate::new(
                         Duration::from_secs(days * 24 * 3600),
-                        Duration::from_secs(3600),
+                        config
+                            .tls_backdate
+                            .map_or(DEFAULT_BACKDATE, |span| span.0),
                     )
                     .map_err(fail)?;
                     let renewing = Arc::clone(&made);

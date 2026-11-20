@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use coqui_link::auth::MAX_PROOF_MESSAGE;
 use coqui_peer::PeerId;
-use coqui_peer_tls::{ClientBuilder, Pins, Roots, Trust};
+use coqui_peer_tls::{ClientBuilder, PeerServerVerifier, Pins, Policy, Roots, ServerAuth, Trust};
 use coqui_transport::process::{ErrorOutput, Launch, ProcessBuilder};
 use coqui_transport::{Channel, Connector as _, Failure};
 use coqui_transport_pipe::PipeName;
@@ -34,6 +34,7 @@ use coqui_transport_web::{Dialer as WebDialer, Endpoints, Kind, Limits, NoPrefli
 use url::Url;
 
 use crate::Error;
+use crate::certificate::{Checked, Refusals};
 use crate::link::{Settings, framed, socket, stream};
 
 /// The serial line settings an endpoint or a `[[listen]]` entry gives; a setting left out takes the port
@@ -130,6 +131,10 @@ impl SerialOptions {
 /// handshake succeeds. With nothing set the system's roots decide. CA files replace the system's
 /// roots; pins accept the certificate they name whatever its name and issuer. With both, a
 /// certificate that matches a pin or chains to a CA file is accepted.
+///
+/// A certificate is also held to its dates. `clock_skew` is how far this machine's clock may differ from the
+/// certificate's maker: a certificate that starts, or ends, within it is accepted. Zero is strict, and then a
+/// certificate made just now on a host whose clock is ahead is refused until this clock reaches its start.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ServerTrust {
@@ -137,6 +142,9 @@ pub struct ServerTrust {
     pub ca_files: Vec<PathBuf>,
     /// SHA-256 digests of certificates trusted as they are, each `sha256:` and 64 hex digits.
     pub pins: Vec<PeerId>,
+    /// How far the certificate's dates may be from this clock and still be accepted. Default zero.
+    pub clock_skew: Duration,
+    refusals: Refusals,
 }
 
 impl ServerTrust {
@@ -154,6 +162,13 @@ impl ServerTrust {
         }
         self.pins.push(id);
         Ok(())
+    }
+
+    /// Why the last certificate a configuration from this trust refused was refused, naming the certificate by its
+    /// hash and, for its dates, the clock difference; `None` when none was.
+    #[must_use]
+    pub fn refusal(&self) -> Option<String> {
+        self.refusals.last()
     }
 
     /// The configuration a TLS client uses to check the host's certificate.
@@ -182,8 +197,15 @@ impl ServerTrust {
                 roots,
             },
         };
+        let inner = PeerServerVerifier::new(&trust, &Policy::default())
+            .map_err(|error| error.to_string())?;
+        let checked = Checked {
+            inner,
+            skew: self.clock_skew,
+            refusals: self.refusals.clone(),
+        };
         let built = ClientBuilder::new()
-            .server(trust)
+            .server(ServerAuth::Verifier(Arc::new(checked)))
             .build()
             .map_err(|error| error.to_string())?;
         Ok(Arc::new(built.config))

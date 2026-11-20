@@ -199,6 +199,11 @@ pub struct ListenConfig {
     /// The host makes a new one halfway through and prints its hash. Default `13`.
     #[serde(default)]
     pub tls_valid_days: Option<u32>,
+    /// `webtransport` without `tls_cert`: how far before now the certificate the host makes starts to be valid, so a client
+    /// whose clock is behind the host's accepts it at once. `0s` starts it now. Default `1h`. A client further behind
+    /// is refused until its clock reaches the start (see `bohio remote --clock-skew`).
+    #[serde(default)]
+    pub tls_backdate: Option<Span>,
     /// `serial`: bits per second. Not zero. Default `115200`.
     #[serde(default)]
     pub baud: Option<u32>,
@@ -859,6 +864,11 @@ impl Config {
                     "webtransport",
                     listen.tls_valid_days.is_some(),
                 ),
+                (
+                    "tls_backdate",
+                    "webtransport",
+                    listen.tls_backdate.is_some(),
+                ),
                 ("baud", "serial", listen.baud.is_some()),
                 ("data_bits", "serial", listen.data_bits.is_some()),
                 ("parity", "serial", listen.parity.is_some()),
@@ -880,6 +890,12 @@ impl Config {
                         ),
                     ));
                 }
+            }
+            if listen.tls_backdate.is_some() && listen.tls_cert.is_some() {
+                return Err(invalid(
+                    "listen.tls_backdate",
+                    "is for the certificate the host makes: drop it, or drop `tls_cert`",
+                ));
             }
             if let Some(days) = listen.tls_valid_days {
                 if days == 0 {

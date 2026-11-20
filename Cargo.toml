@@ -43,6 +43,8 @@ rustls = { version = "0.23", default-features = false, features = ["std", "ring"
 x509-parser = { version = "0.18", default-features = false }
 # Tests: certificates generated at test time.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
+# Tests: a certificate whose validity starts later.
+time = { version = "0.3", default-features = false, features = ["std"] }
 coqui-transport-serial = { git = "https://github.com/Boriken-Dev/coqui-transport-serial", rev = "98b295f5580b9acbaefe43c1d0e3c83aff62afe1" }
 # A WebSocket endpoint is a URL.
 url = "2.5"

@@ -238,6 +238,15 @@ pub struct JoinArgs {
     pub pin: Option<String>,
 }
 
+/// A time as the configuration writes it: seconds, or a number with `ms`, `s`, `m` or `h`.
+fn parse_span(text: &str) -> Result<std::time::Duration, String> {
+    crate::config::Span::parse(text)
+        .map(|span| span.0)
+        .ok_or_else(|| {
+            format!("`{text}` is not a time: use a number of seconds or a unit of ms, s, m or h")
+        })
+}
+
 /// `bohio remote`.
 #[derive(Debug, Args)]
 pub struct RemoteArgs {
@@ -271,6 +280,12 @@ pub struct RemoteArgs {
     /// whatever its name and issuer, as a self-signed host needs. May be repeated.
     #[arg(long, value_name = "HASH")]
     pub cert_hash: Vec<String>,
+    /// For `wss://` and `webtransport://`: accept a certificate whose validity starts or ends within this long of this
+    /// machine's clock (`30`, `5m`, `1h`; a bare number is seconds), for a clock that differs from the host's. Default
+    /// none: a certificate made just now, by a host whose clock is ahead, is refused until this clock reaches its start,
+    /// and one that has just expired is refused. Allowing it weakens only the dates, never the hash or the issuer.
+    #[arg(long, value_name = "SPAN", value_parser = parse_span)]
+    pub clock_skew: Option<std::time::Duration>,
     /// For a `webtransport://` host: a `ws://` or `wss://` endpoint to dial when the UDP path is
     /// blocked. A certificate that is refused never falls back. A `ws://` one is plain until the
     /// link's proof has run, and one on another host sends the proof there: naming either is the choice.
