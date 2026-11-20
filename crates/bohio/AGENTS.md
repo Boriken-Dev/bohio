@@ -66,6 +66,7 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[[listen]] tls_backdate` | `1h` | `webtransport` without `tls_cert`: how long before now the made certificate starts to be valid, so a client whose clock is behind the host's accepts it at once (`0s` starts it now; a client further behind is refused until its clock reaches the start, or allows for it with `--clock-skew`); a time as in `[link]` |
 | `[[listen]] baud`, `data_bits`, `parity`, `stop_bits`, `flow_control` | `115200`, `8`, `none`, `1`, `none` | `serial`: the line; the endpoint's query (`?baud=9600`) wins; `flow_control` is `none` or `hardware`; a key for another scheme is refused naming it |
 | `[link] recheck` | `5s` | how often a running stream's permission is decided again; not zero |
+| `[link] key_recheck` | unset (`2 x recheck`) | how often the link itself asks whether the peer's key is still accepted; when it is not, each running stream is closed with a revoke and the link ends; not zero |
 | `[link] max_streams` | `64` | streams per peer; at least 1 |
 | `[link] max_connections` | `128` | links open at once across peers, those still proving included; one past it is closed unread; at least 1 |
 | `[link] max_unproven_per_source` | `16` | connections from one source (an IPv4 address or an IPv6 /64) still proving themselves; one past it is closed unread; a pipe, serial line or stdio link has no source; at least 1 |
@@ -319,7 +320,7 @@ impl Node {
 #[derive(Clone)] pub struct PeerLink;                              // Debug; bohio_client::Open (Error::Closed once the link ended); peer(), is_up(), offers(wait) -> Result<Vec<String>, bohio_client::Error> (the peer's `link/1` offers now)
 
 pub trait Keys: Send + Sync {
-    fn is_accepted(&self, peer: &PeerId) -> bool;                  // the proof, every stream decision and the link's check every `2 x recheck`
+    fn is_accepted(&self, peer: &PeerId) -> bool;                  // the proof, every stream decision and the link's check every `[link] key_recheck`
     fn stranger(&self, peer: &PeerId, key: &KeyMaterial, source: Option<SocketAddr>) {}   // a proven key that was refused; default ignores
     fn paired(&self, peer: &PeerId, key: &KeyMaterial) -> Result<(), KeysError> {}   // a key that paired by the armed PIN: record it as accepted, holding nothing; the default errors, so such keys pair nobody (`MemoryKeys` accepts it, `LayeredPeers` writes `[peer.<id>]`)
 }
@@ -362,7 +363,7 @@ that. An accepted peer's link is served by `coqui_link::link::serve`: each strea
 hold: an exec's or a shell's explicit program is one the program list holds, a transfer's file lies under a root), and each running stream is decided again
 every `[link] recheck`, so removing a key or a grant, or narrowing a program list or the roots under a running stream, closes the stream with a revoke whose
 reason reaches the peer (a `Permission` failure). A `bohio/1` stream reads the grant again at every call. A `Grants` that cannot be read refuses. The link itself
-checks that the key is still accepted every `2 x recheck`. The stream's engine then runs behind a `Relay` with the grant the peer has at that moment.
+checks that the key is still accepted every `[link] key_recheck` (`2 x recheck` unset) and, when it is not, closes each running stream with a revoke before it ends. The stream's engine then runs behind a `Relay` with the grant the peer has at that moment.
 
 Either side opens streams on any link. `serve_channel` and `serve_listening` answer a link; `connect` and `connect_channel` dial one (`prove_out` with the
 responder's key pinned to `expect`, so a path that leads elsewhere gets nothing, then served exactly as an answered link, `Side::Dialed`). Every link, whichever
@@ -516,7 +517,7 @@ Exit status: 0 success, 1 the operation failed (one line on standard error), 2 t
   invitation flow, so there is no invitation secret.
 - A peer id is public; `bohio peer list` and the log print them. A key that proves itself and is not accepted is recorded under the connection's source
   address, so a flood from one source cannot fill the waiting list for the others.
-- A revoked peer's link ends at the second re-check (`2 x recheck`) at the latest; its streams end at the first.
+- A revoked peer's link ends at its key check (`[link] key_recheck`, `2 x recheck` unset) at the latest; its streams end at the first re-check or at that check, whichever comes first, and either way hear a revoke.
 - `bohio serve` stops only when killed: the exec trees it started are ended when the stream drops, and on Windows by the job object when the
   process dies; on Unix a killed host leaves nothing to end them.
 - A loopback connect to a closed port in the ephemeral range can connect a socket to itself; `Connection::connect_tcp` and `bohio join` refuse one.
