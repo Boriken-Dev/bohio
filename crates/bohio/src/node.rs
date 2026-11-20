@@ -11,9 +11,7 @@
 //! it opens is decided by [`crate::link`] at open and at every `[link] recheck`, and runs one engine
 //! behind a bounded [`Relay`](bohio_client::relay::Relay).
 
-use std::collections::HashMap;
 use std::ffi::OsString;
-use std::hash::Hash;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -39,7 +37,7 @@ use coqui_transport::Channel;
 
 use crate::config::ConfigError;
 pub use crate::config::{DialConfig, NodeConfig};
-use crate::limit::Slots;
+use crate::limit::{Counted, Hold, Slots};
 use crate::link::{Bridge, NodePeers, PROTOCOLS, admission, grant_of, offered};
 pub use crate::link::{
     Grants, GrantsError, Keys, KeysError, LogEvents, MemoryGrants, MemoryKeys, NodeEvent,
@@ -49,7 +47,7 @@ use crate::listen::Listening;
 use crate::pair::PairState;
 pub use crate::pair::{Armed, PairEnd};
 use crate::policy::Grant;
-use crate::{control, exec, fs, info, shell};
+use crate::{control, exec, forward, fs, info, shell};
 
 /// How long a listener waits for a connection before it looks at whether it was stopped.
 const ACCEPT_WAIT: Duration = Duration::from_millis(200);
@@ -113,6 +111,9 @@ struct Shared {
     transfers: Slots,
     hashes: Slots,
     sessions: Slots,
+    forwards: Slots,
+    forwards_per_peer: Counted<String>,
+    events: Arc<EventCell>,
 }
 
 impl Shared {
@@ -121,6 +122,7 @@ impl Shared {
         grants: &Arc<dyn Grants>,
         host: PeerId,
         path: OsString,
+        events: &Arc<EventCell>,
     ) -> Arc<Self> {
         let mut capabilities = info::collect(config, &path);
         capabilities.host_id = Some(host.to_string());
@@ -133,6 +135,9 @@ impl Shared {
             transfers: Slots::new(config.filesystem.max_transfers),
             hashes: Slots::new(config.hash.max_streams),
             sessions: Slots::new(config.shell.max_sessions),
+            forwards: Slots::new(config.forward.max_connections),
+            forwards_per_peer: Counted::new(config.forward.max_connections_per_peer),
+            events: Arc::clone(events),
             config: config.clone(),
         })
     }
@@ -231,7 +236,7 @@ impl OpenStreams for PeerLink {
         &self,
         protocol: &str,
         metadata: &[u8],
-    ) -> Result<Box<dyn Channel>, bohio_client::Error> {
+    ) -> Result<Box<dyn LinkStream>, bohio_client::Error> {
         self.opener.open(protocol, metadata)
     }
 
@@ -240,12 +245,16 @@ impl OpenStreams for PeerLink {
         protocol: &str,
         metadata: &[u8],
         options: &bohio_client::OpenOptions,
-    ) -> Result<Box<dyn Channel>, bohio_client::Error> {
+    ) -> Result<Box<dyn LinkStream>, bohio_client::Error> {
         self.opener.open_with(protocol, metadata, options)
     }
 
     fn bulk_window(&self) -> Option<u32> {
         self.opener.bulk_window()
+    }
+
+    fn is_up(&self) -> bool {
+        self.opener.is_up()
     }
 }
 
@@ -342,54 +351,6 @@ pub struct Node {
     links: Counted<String>,
 }
 
-/// How many of something each key holds, at most `limit` at once.
-struct Counted<K> {
-    held: Mutex<HashMap<K, usize>>,
-    limit: usize,
-}
-
-impl<K: Eq + Hash + Clone> Counted<K> {
-    fn new(limit: usize) -> Self {
-        Self {
-            held: Mutex::new(HashMap::new()),
-            limit,
-        }
-    }
-
-    /// One more for `key`, given back when the hold drops; `None` when `key` holds `limit`.
-    fn take(&self, key: K) -> Option<Hold<'_, K>> {
-        let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
-        let count = held.entry(key.clone()).or_insert(0);
-        if *count >= self.limit {
-            return None;
-        }
-        *count += 1;
-        Some(Hold { counted: self, key })
-    }
-}
-
-/// One of a key's [`Counted`] holds.
-struct Hold<'a, K: Eq + Hash> {
-    counted: &'a Counted<K>,
-    key: K,
-}
-
-impl<K: Eq + Hash> Drop for Hold<'_, K> {
-    fn drop(&mut self) {
-        let mut held = self
-            .counted
-            .held
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if let Some(count) = held.get_mut(&self.key) {
-            *count = count.saturating_sub(1);
-            if *count == 0 {
-                held.remove(&self.key);
-            }
-        }
-    }
-}
-
 /// The source a connection counts against: an IPv4 address (an IPv4-mapped IPv6 address is its IPv4
 /// address), or the /64 an IPv6 address lies in, since one holder controls every address of a /64.
 pub(crate) fn source_key(source: SocketAddr) -> IpAddr {
@@ -476,7 +437,7 @@ impl Node {
         Ok(Self {
             identity,
             registry: Arc::default(),
-            shared: Shared::new(&config, &grants, host, OsString::new()),
+            shared: Shared::new(&config, &grants, host, OsString::new(), &events),
             peers: NodePeers::new(Arc::clone(&keys), Arc::clone(&grants)),
             grants,
             keys,
@@ -504,7 +465,13 @@ impl Node {
     /// The host's own `PATH`: where programs and shells are looked for, and what `info` reports.
     #[must_use]
     pub fn with_path(mut self, path: OsString) -> Self {
-        self.shared = Shared::new(&self.shared.config, &self.grants, self.host, path);
+        self.shared = Shared::new(
+            &self.shared.config,
+            &self.grants,
+            self.host,
+            path,
+            &self.events,
+        );
         self
     }
 
@@ -1063,6 +1030,29 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
     if accepted.protocol == protocol::WRITE && shared.settings.bulk_window > shared.settings.window
     {
         let _ = stream.grant(shared.settings.bulk_window - shared.settings.window);
+    }
+    // A forward carries a connection's bytes on the stream itself, with no relay in between.
+    if matches!(
+        accepted.protocol.as_str(),
+        protocol::CONNECT | protocol::TCP
+    ) {
+        let Ok(peer) = accepted.peer.parse::<PeerId>() else {
+            return stream.close_with(CloseReason::Refused, "that is not a peer id");
+        };
+        let context = forward::Context {
+            grant: &grant,
+            config: &shared.config.forward,
+            slots: &shared.forwards,
+            per_peer: &shared.forwards_per_peer,
+            peer,
+            events: shared.events.as_ref(),
+        };
+        if accepted.protocol == protocol::CONNECT {
+            forward::serve_connect(stream, &accepted.metadata, &context);
+        } else {
+            forward::serve_tcp(stream, &accepted.metadata, &context);
+        }
+        return;
     }
     thread::scope(|scope| {
         let relay = relay(scope, stream, &shared.settings);

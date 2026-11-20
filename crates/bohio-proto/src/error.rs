@@ -44,6 +44,12 @@ pub enum ErrorCode {
     OutsideRoot,
     /// The operating system refused for another reason.
     Io,
+    /// A forward's target refused the connection.
+    Refused,
+    /// A forward's target cannot be reached: no route, or a network that is down.
+    Unreachable,
+    /// A forward's target did not answer within the connect timeout.
+    Timeout,
     /// The host failed in a way the request did not cause.
     Internal,
     /// A code this version does not know.

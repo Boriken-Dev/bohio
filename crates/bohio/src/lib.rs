@@ -4,6 +4,7 @@
 pub mod config;
 pub mod control;
 pub mod exec;
+pub mod forward;
 pub mod fs;
 pub mod info;
 pub mod limit;

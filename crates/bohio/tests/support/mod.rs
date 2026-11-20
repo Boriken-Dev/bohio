@@ -13,10 +13,12 @@ use bohio::exec::{self, Context};
 use bohio::limit::Slots;
 use bohio::policy::Grant;
 use bohio::{control, fs, shell};
+use bohio_client::relay::Plain;
 use bohio_client::{Error, Open};
 use bohio_proto::exec::Exit;
 use bohio_proto::info::Info;
 use bohio_proto::{ErrorBody, protocol};
+use coqui_link::mux::LinkStream;
 use coqui_transport::frame::LengthPrefix;
 use coqui_transport::{Channel, StreamChannel, StreamChannelBuilder, memory};
 
@@ -196,7 +198,7 @@ fn channel(stream: memory::Stream) -> StreamChannel {
 }
 
 impl Open for Link {
-    fn open(&self, protocol_name: &str, metadata: &[u8]) -> Result<Box<dyn Channel>, Error> {
+    fn open(&self, protocol_name: &str, metadata: &[u8]) -> Result<Box<dyn LinkStream>, Error> {
         let (host_end, client_end) = memory::pipe(self.capacity);
         let host: Arc<dyn Channel> = Arc::new(channel(host_end));
         let metadata = metadata.to_vec();
@@ -219,7 +221,7 @@ impl Open for Link {
                 result
             });
             self.served_shell.lock().unwrap().push(handle);
-            return Ok(Box::new(channel(client_end)));
+            return Ok(Box::new(Plain(channel(client_end))));
         }
         if protocol_name != protocol::EXEC {
             let name = protocol_name.to_owned();
@@ -278,7 +280,7 @@ impl Open for Link {
                 result
             });
             self.served_fs.lock().unwrap().push(handle);
-            return Ok(Box::new(channel(client_end)));
+            return Ok(Box::new(Plain(channel(client_end))));
         }
         let (grant, config, slots, path) = (
             Arc::clone(&self.grant),
@@ -298,7 +300,7 @@ impl Open for Link {
             result
         });
         self.served.lock().unwrap().push(handle);
-        Ok(Box::new(channel(client_end)))
+        Ok(Box::new(Plain(channel(client_end))))
     }
 }
 

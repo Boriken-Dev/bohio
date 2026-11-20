@@ -10,18 +10,23 @@ use bohio_client::connect::Connection;
 use bohio_client::control::Control;
 use bohio_client::dial::{ServerTrust, split_command};
 use bohio_client::exec::{Event, Exec};
+use bohio_client::forward::ForwardSettings;
 use bohio_client::fs::Reader;
 use bohio_client::hash::hash_many;
 use bohio_client::shell::{Event as ShellEvent, Shell};
 use bohio_client::{Error, Open};
 use bohio_proto::exec::{Request, Stdin};
+use bohio_proto::forward::Target;
 use bohio_proto::hash::{Algorithm, HashItem};
 use bohio_proto::shell::{Request as ShellRequest, ShellKind};
 use coqui_link::auth::{Proof, Trust};
 use coqui_peer::PeerId;
 
 use super::commands::{print_info, source};
-use super::{Format, RemoteAction, RemoteArgs, RemoteExecArgs, RemoteHashArgs, RemoteShellArgs};
+use super::{
+    Format, RemoteAction, RemoteArgs, RemoteConnectArgs, RemoteExecArgs, RemoteForwardArgs,
+    RemoteHashArgs, RemoteShellArgs,
+};
 use crate::config::{Environment, Layers};
 use crate::local::{ANOTHER_ACCOUNT, Server, Via};
 use crate::node::Endpoint;
@@ -160,7 +165,183 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
         }
         RemoteAction::Hash(hash) => hash_command(&*link, hash),
         RemoteAction::Shell(shell) => shell_command(&*link, shell),
+        RemoteAction::Connect(connect) => {
+            let (found, _) = source(&args.config, environment)?;
+            connect_command(&*link, connect, &found.config().forward.client())
+        }
+        RemoteAction::Forward(forward) => {
+            let (found, _) = source(&args.config, environment)?;
+            forward_command(&*link, forward, &found.config().forward.client())
+        }
     }
+}
+
+/// `bohio remote ... connect`: the host connects to a target and its bytes meet standard input and output.
+fn connect_command(
+    link: &dyn Open,
+    args: &RemoteConnectArgs,
+    settings: &ForwardSettings,
+) -> Result<ExitCode, String> {
+    let target: Target = args
+        .target
+        .parse()
+        .map_err(|error: bohio_proto::forward::BadTarget| error.to_string())?;
+    let tunnel = bohio_client::forward::connect(link, &target, settings)
+        .map_err(|error| explain_forward(&error))?;
+    if args.check {
+        match tunnel.address() {
+            Some(address) => println!("connected {address}"),
+            None => println!("connected"),
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+    let mut out = std::io::stdout().lock();
+    tunnel
+        .bridge(std::io::stdin(), &mut out)
+        .map_err(|error| explain_forward(&error))?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// What a person is told when a forward fails: the host's reason, or that the grant does not cover the target.
+fn explain_forward(error: &Error) -> String {
+    match error {
+        Error::Remote(body) => format!("the host did not connect ({:?}): {}", body.code, body.message),
+        Error::Transport(coqui_transport::Failure::Permission) => {
+            "the host refused or ended the forward: this peer holds no `forward.connect` rule for that target, or its access was revoked".to_owned()
+        }
+        Error::Closed => "the host ended the stream before the target did".to_owned(),
+        other => other.to_string(),
+    }
+}
+
+/// A local listener of `bohio remote ... forward`.
+enum Listener {
+    Tcp(std::net::TcpListener),
+    Ipc(coqui_transport_pipe::Listener),
+}
+
+/// One `-L` entry, bound.
+struct Bound {
+    listener: Listener,
+    shown: String,
+    target: Target,
+}
+
+/// Reads `[BIND:]PORT=TARGET`, `unix:PATH=TARGET` or `pipe:NAME=TARGET` and binds the local side.
+fn bind_local(spec: &str, settings: &ForwardSettings) -> Result<Bound, String> {
+    let (listen, target) = spec
+        .split_once('=')
+        .ok_or_else(|| format!("-L `{spec}`: write LISTEN=TARGET"))?;
+    let target: Target = target
+        .parse()
+        .map_err(|error: bohio_proto::forward::BadTarget| format!("-L `{spec}`: {error}"))?;
+    if listen.starts_with("unix:") || listen.starts_with("pipe:") {
+        let name: coqui_transport_pipe::PipeName = listen
+            .parse()
+            .map_err(|error: coqui_transport_pipe::Error| format!("-L `{spec}`: {error}"))?;
+        let listener = bohio_client::forward::ipc::listener(&name, &settings.options)
+            .map_err(|error| format!("-L `{spec}`: {error}"))?;
+        return Ok(Bound {
+            shown: listener.name().to_string(),
+            listener: Listener::Ipc(listener),
+            target,
+        });
+    }
+    let (bind, port) = match listen.rsplit_once(':') {
+        Some((bind, port)) => (Some(bind), port),
+        None => (None, listen),
+    };
+    let port: u16 = port
+        .parse()
+        .map_err(|_| format!("-L `{spec}`: the port is a number from 0 to 65535"))?;
+    let address: std::net::IpAddr = match bind {
+        None => std::net::Ipv4Addr::LOCALHOST.into(),
+        Some(bind) => bind
+            .strip_prefix('[')
+            .and_then(|inner| inner.strip_suffix(']'))
+            .unwrap_or(bind)
+            .parse()
+            .map_err(|_| format!("-L `{spec}`: BIND is an address (an IPv6 one in brackets)"))?,
+    };
+    if !address.is_loopback() {
+        println!("non-default: bind {address}");
+    }
+    let listener = std::net::TcpListener::bind((address, port))
+        .map_err(|error| format!("-L `{spec}`: {error}"))?;
+    let shown = listener
+        .local_addr()
+        .map_or_else(|_| listen.to_owned(), |bound| bound.to_string());
+    Ok(Bound {
+        listener: Listener::Tcp(listener),
+        shown,
+        target,
+    })
+}
+
+/// `bohio remote ... forward -L`: listens until interrupted, or until the link ends (status 1).
+fn forward_command(
+    link: &dyn Open,
+    args: &RemoteForwardArgs,
+    settings: &ForwardSettings,
+) -> Result<ExitCode, String> {
+    let bound = args
+        .local
+        .iter()
+        .map(|spec| bind_local(spec, settings))
+        .collect::<Result<Vec<_>, _>>()?;
+    for entry in &bound {
+        println!("local {} -> {}", entry.shown, entry.target);
+    }
+    let _ = std::io::stdout().flush();
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    let report = |error: &Error| {
+        eprintln!(
+            "bohio: a forwarded connection failed: {}",
+            explain_forward(error)
+        )
+    };
+    let lost = thread::scope(|scope| {
+        let handles: Vec<_> = bound
+            .iter()
+            .map(|entry| {
+                let (stop, report) = (&stop, &report);
+                scope.spawn(move || {
+                    let ended = match &entry.listener {
+                        Listener::Tcp(listener) => bohio_client::forward::listen_tcp(
+                            link,
+                            listener,
+                            &entry.target,
+                            settings,
+                            stop,
+                            report,
+                        ),
+                        Listener::Ipc(listener) => bohio_client::forward::listen_ipc(
+                            link,
+                            listener,
+                            &entry.target,
+                            settings,
+                            stop,
+                            report,
+                        ),
+                    };
+                    // One listener ending ends them all: the link is gone, or this one could not go on.
+                    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+                    ended
+                })
+            })
+            .collect();
+        let mut failure = None;
+        for handle in handles {
+            match handle.join() {
+                Ok(Ok(bohio_client::forward::Ended::Stopped)) => {}
+                Ok(Ok(_)) => failure = Some("the link to the host ended".to_owned()),
+                Ok(Err(error)) => failure = Some(format!("a listener failed: {error}")),
+                Err(_) => failure = Some("a listener failed".to_owned()),
+            }
+        }
+        failure
+    });
+    lost.map_or(Ok(ExitCode::SUCCESS), Err)
 }
 
 /// `bohio remote ... hash`: one line per file, in the order given; a file that cannot be hashed is reported and

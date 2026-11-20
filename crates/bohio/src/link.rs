@@ -24,7 +24,7 @@ use bohio_proto::protocol;
 use crate::policy::{Grant, Permission};
 
 /// The protocols a host serves, each with the permissions of which a peer needs at least one to open it.
-pub const PROTOCOLS: [(&str, &[Permission]); 6] = [
+pub const PROTOCOLS: [(&str, &[Permission]); 8] = [
     (
         protocol::CONTROL,
         &[Permission::Info, Permission::FsRead, Permission::FsWrite],
@@ -34,6 +34,8 @@ pub const PROTOCOLS: [(&str, &[Permission]); 6] = [
     (protocol::READ, &[Permission::FsRead]),
     (protocol::WRITE, &[Permission::FsWrite]),
     (protocol::HASH, &[Permission::FsRead]),
+    (protocol::CONNECT, &[Permission::ForwardConnect]),
+    (protocol::TCP, &[Permission::ForwardConnect]),
 ];
 
 /// Which keys a node accepts.
@@ -282,6 +284,35 @@ pub enum NodeEvent {
         /// Where it connected from, when known.
         source: Option<SocketAddr>,
     },
+    /// The host made a connection for a peer, or could not. The target is its text, never a byte of what it carried.
+    Forwarded {
+        /// The peer.
+        peer: PeerId,
+        /// What kind of forward.
+        kind: ForwardKind,
+        /// The target, as `HOST:PORT`, `unix:PATH` or `pipe:NAME`.
+        target: String,
+        /// How it went.
+        outcome: ForwardOutcome,
+    },
+}
+
+/// What kind of forward a [`NodeEvent::Forwarded`] tells of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ForwardKind {
+    /// The host connected to a target for the peer.
+    Connect,
+}
+
+/// How a forward began.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ForwardOutcome {
+    /// The connection was made and its bytes are carried.
+    Connected,
+    /// Nothing was connected, for this reason.
+    Failed(bohio_proto::ErrorCode),
 }
 
 /// Where a node's events go.
@@ -326,6 +357,12 @@ impl NodeEvents for LogEvents {
             NodeEvent::Stranger { peer, source } => {
                 tracing::info!(%peer, ?source, "a key proved itself and is not accepted");
             }
+            NodeEvent::Forwarded {
+                peer,
+                kind,
+                target,
+                outcome,
+            } => tracing::info!(%peer, ?kind, %target, ?outcome, "forward"),
         }
     }
 }
@@ -464,6 +501,8 @@ pub fn covers(grant: &Grant, protocol: &str, metadata: &[u8]) -> bool {
         protocol::SHELL => crate::shell::covers(grant, metadata),
         protocol::READ => crate::fs::covers_read(grant, metadata),
         protocol::WRITE => crate::fs::covers_write(grant, metadata),
+        protocol::CONNECT => crate::forward::covers(grant, metadata),
+        protocol::TCP => crate::forward::covers_tcp(grant, metadata),
         _ => true,
     }
 }

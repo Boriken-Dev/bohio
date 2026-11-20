@@ -4,6 +4,7 @@ use std::ffi::OsStr;
 use std::path::Path;
 
 use bohio_proto::PROTOCOL_VERSION;
+use bohio_proto::forward::ForwardInfo;
 use bohio_proto::info::{
     ExecInfo, FilesystemInfo, HashLimits, Info, Limits, Service, SessionInfo, ShellInfo,
     TransferInfo,
@@ -66,6 +67,15 @@ pub fn collect(config: &NodeConfig, path: &OsStr) -> Info {
                 max_streams: config.hash.max_streams as u64,
                 rate: config.hash.rate,
             },
+        },
+        forward: ForwardInfo {
+            enabled: config.forward.enabled,
+            connect: if config.forward.enabled {
+                crate::forward::connect_kinds()
+            } else {
+                Vec::new()
+            },
+            listen: Vec::new(),
         },
     }
 }

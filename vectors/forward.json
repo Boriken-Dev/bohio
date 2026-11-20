@@ -1,0 +1,118 @@
+{
+  "encoding": "hex is the stream message exactly as it travels: open metadata and control messages are bare CBOR, a frame is one tag byte then its body",
+  "protocol": "bohio-connect/1",
+  "vectors": [
+    {
+      "direction": "client_to_host",
+      "hex": "a166746172676574a364747970656374637064686f73746664622e6c616e64706f7274191538",
+      "kind": "open",
+      "name": "open_tcp",
+      "type": "forward.ConnectRequest",
+      "value": {
+        "target": {
+          "host": "db.lan",
+          "port": 5432,
+          "type": "tcp"
+        }
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a166746172676574a364747970656374637064686f737467666430303a3a3564706f727416",
+      "kind": "open",
+      "name": "open_tcp_ipv6",
+      "type": "forward.ConnectRequest",
+      "value": {
+        "target": {
+          "host": "fd00::5",
+          "port": 22,
+          "type": "tcp"
+        }
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a166746172676574a2647479706564756e69786470617468702f72756e2f646f636b65722e736f636b",
+      "kind": "open",
+      "name": "open_unix",
+      "type": "forward.ConnectRequest",
+      "value": {
+        "target": {
+          "path": "/run/docker.sock",
+          "type": "unix"
+        }
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a166746172676574a264747970656470697065646e616d656d646f636b65725f656e67696e65",
+      "kind": "open",
+      "name": "open_pipe",
+      "type": "forward.ConnectRequest",
+      "value": {
+        "target": {
+          "name": "docker_engine",
+          "type": "pipe"
+        }
+      }
+    },
+    {
+      "decode_only": true,
+      "direction": "client_to_host",
+      "error": "decode",
+      "hex": "a166746172676574a264747970656673657269616c64706f727464434f4d33",
+      "kind": "open",
+      "name": "open_unknown_kind",
+      "type": "forward.ConnectRequest"
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "01a167616464726573736e3139322e302e322e373a35343332",
+      "kind": "frame",
+      "name": "connected",
+      "type": "forward.Answer",
+      "value": {
+        "message": {
+          "address": "192.0.2.7:5432"
+        },
+        "tag": 1
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "01a16761646472657373f6",
+      "kind": "frame",
+      "name": "connected_without_address",
+      "type": "forward.Answer",
+      "value": {
+        "message": {
+          "address": null
+        },
+        "tag": 1
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "05a264636f64656772656675736564676d65737361676578217468652074617267657420726566757365642074686520636f6e6e656374696f6e",
+      "kind": "frame",
+      "name": "error_refused",
+      "type": "forward.Answer",
+      "value": {
+        "message": {
+          "code": "refused",
+          "message": "the target refused the connection"
+        },
+        "tag": 5
+      }
+    },
+    {
+      "decode_only": true,
+      "direction": "host_to_client",
+      "error": "tag",
+      "hex": "7f",
+      "kind": "frame",
+      "name": "unknown_tag",
+      "type": "forward.Answer"
+    }
+  ]
+}

@@ -154,6 +154,32 @@ fn values_out_of_range_name_their_key() {
         ("[shell]\nmax_sessions = 0\n", "shell.max_sessions"),
         ("[shell]\nchunk_size = 0\n", "shell.chunk_size"),
         ("[shell]\npoll_interval = 0\n", "shell.poll_interval"),
+        (
+            "[forward]\nmax_connections = 0\n",
+            "forward.max_connections",
+        ),
+        (
+            "[forward]\nmax_connections_per_peer = 0\n",
+            "forward.max_connections_per_peer",
+        ),
+        ("[forward]\nchunk_size = 0\n", "forward.chunk_size"),
+        (
+            "[forward]\nconnect_timeout = 0\n",
+            "forward.connect_timeout",
+        ),
+        ("[forward]\nstalled = 0\n", "forward.stalled"),
+        ("[forward]\nwatch = 0\n", "forward.watch"),
+        ("[forward]\nlisten_poll = 0\n", "forward.listen_poll"),
+        ("[forward]\nanswer_timeout = 0\n", "forward.answer_timeout"),
+        (
+            "[forward]\nmax_local_connections = 0\n",
+            "forward.max_local_connections",
+        ),
+        (
+            "[forward]\nidle_min = \"5ms\"\nidle_max = \"1ms\"\n",
+            "forward.idle_max",
+        ),
+        ("[forward]\nchunk_size = 2000000\n", "link.max_message"),
         ("[[listen]]\nendpoint = \"nowhere\"\n", "listen.endpoint"),
     ] {
         match parse(text) {

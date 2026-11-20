@@ -12,7 +12,9 @@ use std::time::Duration;
 
 use coqui_link::auth::{Proof, Sealed, prove_out};
 use coqui_link::link::{Capabilities, LINK_PROTOCOL, capabilities};
-use coqui_link::mux::{LinkState, Mux, Side, Stream, StreamEnd};
+use coqui_link::mux::{
+    CloseReason, LinkState, LinkStream, Mux, Side, Stream, StreamEnd, StreamLife,
+};
 use coqui_peer::PeerId;
 use coqui_transport::{Channel, Failure};
 
@@ -184,9 +186,9 @@ impl Opener {
 }
 
 impl Open for Opener {
-    fn open(&self, protocol: &str, metadata: &[u8]) -> Result<Box<dyn Channel>, Error> {
+    fn open(&self, protocol: &str, metadata: &[u8]) -> Result<Box<dyn LinkStream>, Error> {
         self.open_stream(protocol, metadata)
-            .map(|opened| Box::new(opened) as Box<dyn Channel>)
+            .map(|opened| Box::new(opened) as Box<dyn LinkStream>)
     }
 
     fn open_with(
@@ -194,13 +196,17 @@ impl Open for Opener {
         protocol: &str,
         metadata: &[u8],
         options: &OpenOptions,
-    ) -> Result<Box<dyn Channel>, Error> {
+    ) -> Result<Box<dyn LinkStream>, Error> {
         self.open_stream_with(protocol, metadata, options)
-            .map(|opened| Box::new(opened) as Box<dyn Channel>)
+            .map(|opened| Box::new(opened) as Box<dyn LinkStream>)
     }
 
     fn bulk_window(&self) -> Option<u32> {
         self.shared.bulk_window
+    }
+
+    fn is_up(&self) -> bool {
+        Self::is_up(self)
     }
 }
 
@@ -412,7 +418,7 @@ impl Drop for Connection {
 }
 
 impl Open for Connection {
-    fn open(&self, protocol: &str, metadata: &[u8]) -> Result<Box<dyn Channel>, Error> {
+    fn open(&self, protocol: &str, metadata: &[u8]) -> Result<Box<dyn LinkStream>, Error> {
         self.opener.open(protocol, metadata)
     }
 
@@ -421,12 +427,16 @@ impl Open for Connection {
         protocol: &str,
         metadata: &[u8],
         options: &OpenOptions,
-    ) -> Result<Box<dyn Channel>, Error> {
+    ) -> Result<Box<dyn LinkStream>, Error> {
         self.opener.open_with(protocol, metadata, options)
     }
 
     fn bulk_window(&self) -> Option<u32> {
         self.opener.bulk_window()
+    }
+
+    fn is_up(&self) -> bool {
+        Self::is_up(self)
     }
 }
 
@@ -521,6 +531,24 @@ impl Channel for Opened {
 
     fn is_closed(&self) -> bool {
         self.0.is_closed()
+    }
+}
+
+impl LinkStream for Opened {
+    fn life(&self) -> StreamLife {
+        self.0.life()
+    }
+
+    fn finish(&self) -> Result<(), Failure> {
+        self.0.finish()
+    }
+
+    fn finished_by_peer(&self) -> bool {
+        self.0.finished_by_peer()
+    }
+
+    fn close_with(&self, reason: CloseReason, text: &str) {
+        self.0.close_with(reason, text);
     }
 }
 

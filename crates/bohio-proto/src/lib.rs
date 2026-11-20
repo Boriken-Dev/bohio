@@ -5,6 +5,7 @@ pub mod codec;
 pub mod control;
 pub mod error;
 pub mod exec;
+pub mod forward;
 pub mod fs;
 pub mod hash;
 pub mod info;
@@ -29,4 +30,9 @@ pub mod protocol {
     pub const WRITE: &str = "bohio-write/1";
     /// Digests of many files, streamed.
     pub const HASH: &str = "bohio-hash/1";
+    /// One connection from the host to a target, then its raw bytes both ways.
+    pub const CONNECT: &str = "bohio-connect/1";
+    /// `coqui-link`'s `tcp/1`, served under the same grant as [`CONNECT`]: the open's metadata is `HOST:PORT`
+    /// text and the stream is raw bytes at once, with no answer before them.
+    pub const TCP: &str = "tcp/1";
 }

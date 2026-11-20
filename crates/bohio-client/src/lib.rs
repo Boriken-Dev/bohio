@@ -7,6 +7,7 @@ pub mod control;
 pub mod dial;
 mod error;
 pub mod exec;
+pub mod forward;
 pub mod fs;
 pub mod hash;
 pub mod link;
@@ -15,7 +16,7 @@ pub mod shell;
 
 pub use error::Error;
 
-use coqui_transport::Channel;
+use coqui_link::mux::LinkStream;
 
 /// Options of one open that a link can honour and a plain implementation may ignore.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -41,15 +42,16 @@ impl OpenOptions {
 ///
 /// An implementation owns the link: it opens a stream named `protocol` (see
 /// `bohio_proto::protocol`) carrying `metadata` as the open's request, and returns the stream as a
-/// channel. The in-process tests of the host implement it over a pair of memory channels; a
-/// network client implements it over its authenticated link.
+/// [`LinkStream`]: a channel that can also finish (half-close) and say how much of it is left. The in-process tests of
+/// the host implement it over a pair of memory channels wrapped in [`relay::Plain`]; a network client implements it
+/// over its authenticated link.
 pub trait Open: Send + Sync {
     /// Opens a stream for `protocol` whose open carries `metadata`.
     ///
     /// # Errors
     ///
     /// [`Error::Transport`] or [`Error::Remote`] when the link cannot open the stream.
-    fn open(&self, protocol: &str, metadata: &[u8]) -> Result<Box<dyn Channel>, Error>;
+    fn open(&self, protocol: &str, metadata: &[u8]) -> Result<Box<dyn LinkStream>, Error>;
 
     /// As [`Open::open`], with `options`. The default ignores them, which is right for a link whose streams
     /// have no window.
@@ -62,7 +64,7 @@ pub trait Open: Send + Sync {
         protocol: &str,
         metadata: &[u8],
         options: &OpenOptions,
-    ) -> Result<Box<dyn Channel>, Error> {
+    ) -> Result<Box<dyn LinkStream>, Error> {
         let _ = options;
         self.open(protocol, metadata)
     }
@@ -71,5 +73,11 @@ pub trait Open: Send + Sync {
     /// when it asks for more than its own window. Reads use it. The default is `None`.
     fn bulk_window(&self) -> Option<u32> {
         None
+    }
+
+    /// Whether the link can still open streams. A listener that serves a forward ends when it is not. The default is `true`:
+    /// a link that cannot tell finds out when an open fails.
+    fn is_up(&self) -> bool {
+        true
     }
 }

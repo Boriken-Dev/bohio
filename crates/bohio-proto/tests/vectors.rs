@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use bohio_proto::control::{Call, Reply, Request as ControlRequest, Response};
 use bohio_proto::exec::{self, Env, Stdin};
+use bohio_proto::forward::{Answer, ConnectRequest, Connected, ForwardInfo, Target};
 use bohio_proto::fs::{
     Entry, FileKind, Listing, Metadata, ReadDone, ReadHeader, ReadOutput, ReadRequest, Timestamp,
     WriteDone, WriteInput, WriteMode, WriteOutput, WriteRequest,
@@ -193,6 +194,11 @@ fn sample_info() -> Info {
             max_sessions: None,
         },
         transfer: sample_transfer(),
+        forward: ForwardInfo {
+            enabled: true,
+            connect: vec!["tcp".into(), "unix".into()],
+            listen: Vec::new(),
+        },
     }
 }
 
@@ -921,6 +927,103 @@ fn hash_cases() -> Vec<Case> {
     ]
 }
 
+fn forward_cases() -> Vec<Case> {
+    let answer = |name: &str, value: Answer, body: Value| {
+        frame(
+            name,
+            TO_CLIENT,
+            "forward.Answer",
+            value.encode().unwrap(),
+            body,
+        )
+    };
+    let connected = Connected {
+        address: Some("192.0.2.7:5432".into()),
+    };
+    let refused = ErrorBody::new(ErrorCode::Refused, "the target refused the connection");
+    vec![
+        message(
+            "open_tcp",
+            OPEN,
+            "open",
+            "forward.ConnectRequest",
+            &ConnectRequest::new(Target::Tcp {
+                host: "db.lan".into(),
+                port: 5432,
+            }),
+        ),
+        message(
+            "open_tcp_ipv6",
+            OPEN,
+            "open",
+            "forward.ConnectRequest",
+            &ConnectRequest::new(Target::Tcp {
+                host: "fd00::5".into(),
+                port: 22,
+            }),
+        ),
+        message(
+            "open_unix",
+            OPEN,
+            "open",
+            "forward.ConnectRequest",
+            &ConnectRequest::new(Target::Unix {
+                path: "/run/docker.sock".into(),
+            }),
+        ),
+        message(
+            "open_pipe",
+            OPEN,
+            "open",
+            "forward.ConnectRequest",
+            &ConnectRequest::new(Target::Pipe {
+                name: "docker_engine".into(),
+            }),
+        ),
+        Case {
+            name: "open_unknown_kind".into(),
+            direction: OPEN,
+            kind: "open",
+            ty: "forward.ConnectRequest",
+            bytes: map(vec![(
+                "target",
+                Cbor::Map(vec![
+                    (text("type"), text("serial")),
+                    (text("port"), text("COM3")),
+                ]),
+            )]),
+            value: None,
+            decode_only: true,
+            error: Some("decode"),
+        },
+        answer(
+            "connected",
+            Answer::Connected(connected.clone()),
+            to_json(&connected),
+        ),
+        answer(
+            "connected_without_address",
+            Answer::Connected(Connected::default()),
+            to_json(&Connected::default()),
+        ),
+        answer(
+            "error_refused",
+            Answer::Error(refused.clone()),
+            to_json(&refused),
+        ),
+        Case {
+            name: "unknown_tag".into(),
+            direction: TO_CLIENT,
+            kind: "frame",
+            ty: "forward.Answer",
+            bytes: vec![0x7f],
+            value: None,
+            decode_only: true,
+            error: Some("tag"),
+        },
+    ]
+}
+
 fn files() -> Vec<(&'static str, &'static str, Vec<Case>)> {
     vec![
         ("control.json", "bohio/1", control()),
@@ -929,6 +1032,7 @@ fn files() -> Vec<(&'static str, &'static str, Vec<Case>)> {
         ("read.json", "bohio-read/1", read_cases()),
         ("write.json", "bohio-write/1", write_cases()),
         ("hash.json", "bohio-hash/1", hash_cases()),
+        ("forward.json", "bohio-connect/1", forward_cases()),
     ]
 }
 
@@ -965,6 +1069,8 @@ fn decode_error(ty: &str, bytes: &[u8]) -> Result<(), Error> {
         "hash.Request" => HashRequest::from_metadata(bytes).map(|_| ()),
         "hash.Output" => HashOutput::decode(bytes).map(|_| ()),
         "hash.Input" => HashInput::decode(bytes).map(|_| ()),
+        "forward.ConnectRequest" => ConnectRequest::from_metadata(bytes).map(|_| ()),
+        "forward.Answer" => Answer::decode(bytes).map(|_| ()),
         other => panic!("a vector names a type this test does not know: {other}"),
     }
 }
@@ -1026,6 +1132,8 @@ fn check(entry: &Value) {
         "fs.WriteInput" => check_frame(entry, &bytes, WriteInput::decode, WriteInput::encode),
         "hash.Output" => check_frame(entry, &bytes, HashOutput::decode, |v| v.encode().unwrap()),
         "hash.Input" => check_frame(entry, &bytes, HashInput::decode, |v| v.encode().unwrap()),
+        "forward.ConnectRequest" => check_message::<ConnectRequest>(entry, &bytes),
+        "forward.Answer" => check_frame(entry, &bytes, Answer::decode, |v| v.encode().unwrap()),
         other => panic!("a vector names a type this test does not know: {other}"),
     }
 }

@@ -10,6 +10,9 @@
 //!
 //! [peer.<id>.exec]
 //! programs = ["git", "make"]
+//!
+//! [peer.<id>.forward]
+//! connect = ["db.lan:5432", "10.0.0.0/8:22", "unix:/run/docker.sock"]
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -41,17 +44,22 @@ pub enum Permission {
     /// Manage the host's peers.
     #[serde(rename = "admin")]
     Admin,
+    /// Have the host connect to the targets `[peer.<id>.forward] connect` lists: TCP, Unix sockets and Windows
+    /// named pipes, from the host's own network position.
+    #[serde(rename = "forward.connect")]
+    ForwardConnect,
 }
 
 impl Permission {
     /// Every permission, in order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Info,
         Self::FsRead,
         Self::FsWrite,
         Self::Exec,
         Self::Shell,
         Self::Admin,
+        Self::ForwardConnect,
     ];
 
     /// The permission named `name` as `bohio.cfg` writes it.
@@ -70,6 +78,7 @@ impl Permission {
             Self::Exec => "exec",
             Self::Shell => "shell",
             Self::Admin => "admin",
+            Self::ForwardConnect => "forward.connect",
         }
     }
 }
@@ -86,6 +95,31 @@ pub struct Grant {
     /// Limits on `exec`.
     #[serde(skip_serializing_if = "ExecGrant::is_unlimited")]
     exec: ExecGrant,
+    /// Where `forward.connect` reaches.
+    #[serde(skip_serializing_if = "ForwardGrant::is_empty")]
+    forward: ForwardGrant,
+}
+
+/// `[peer.<id>.forward]`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ForwardGrant {
+    /// The targets the peer may have the host connect to, as rules: `HOST:PORT` where HOST is an exact name, `*.suffix`,
+    /// `*`, an address or a CIDR network and PORT is `N`, `A-B` or `*` (`coqui_link::forward::Rule`); `unix:PATH` and
+    /// `pipe:NAME`, exactly or with `*` and `?`, which match within one path component. The peer needs `forward.connect`
+    /// as well as a rule that matches; an empty list allows nothing.
+    connect: Vec<String>,
+}
+
+impl ForwardGrant {
+    fn is_empty(&self) -> bool {
+        self.connect.is_empty()
+    }
+
+    /// The rule texts, in order.
+    pub fn connect(&self) -> &[String] {
+        &self.connect
+    }
 }
 
 /// `[peer.<id>.exec]`.
@@ -200,6 +234,18 @@ impl Grant {
         self.exec.programs.is_empty() || self.exec.programs.iter().any(|p| p == program)
     }
 
+    /// Lets the peer have the host connect to what `rules` match; the peer also needs [`Permission::ForwardConnect`].
+    #[must_use]
+    pub fn with_connect(mut self, rules: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.forward.connect = rules.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// The `[forward]` part of the grant.
+    pub const fn forward(&self) -> &ForwardGrant {
+        &self.forward
+    }
+
     /// Whether the grant lists programs: the peer may then start only those, from the host's own
     /// search path.
     pub fn restricts_programs(&self) -> bool {
@@ -221,6 +267,7 @@ pub struct PeerTable {
     allow: BTreeSet<Permission>,
     fs_roots: Vec<PathBuf>,
     exec: ExecGrant,
+    forward: ForwardGrant,
     /// Where this node dials the peer, any endpoint `bohio remote` takes. The table's name pins the key
     /// that must answer there. Absent: this node does not dial the peer.
     endpoint: Option<String>,
@@ -234,6 +281,7 @@ impl PeerTable {
             allow: self.allow.clone(),
             fs_roots: self.fs_roots.clone(),
             exec: self.exec.clone(),
+            forward: self.forward.clone(),
         }
     }
 

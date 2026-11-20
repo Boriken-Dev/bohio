@@ -14,7 +14,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::Scope;
 use std::time::{Duration, Instant};
 
-use coqui_link::mux::StreamEnd;
+use coqui_link::mux::{CloseReason, LinkStream, StreamEnd, StreamLife};
 use coqui_transport::{Capabilities, Carrier, Channel, Failure};
 
 use crate::link::Settings;
@@ -47,11 +47,29 @@ struct State {
     closed: Option<Instant>,
     /// When the stream's link ended: what the stream still holds is delivered to a reader that takes it, for at most `give_up`.
     link_over: Option<Instant>,
+    /// The peer said it sends nothing more (`finish`) and the stream itself is still open: the other direction goes on.
+    peer_finished: bool,
+    /// The peer closed the stream in order after it had finished.
+    peer_closed: bool,
+    /// [`LinkStream::finish`] was called: after what is queued, the stream is finished.
+    finish_requested: bool,
+    /// The writer has finished the stream.
+    finish_sent: bool,
+    /// What [`LinkStream::close_with`] asked the stream to be closed with, once what is queued is delivered.
+    close_with: Option<(CloseReason, String)>,
+}
+
+impl State {
+    /// The peer finished its sending and the stream is open otherwise: this side's direction goes on.
+    fn half_open(&self) -> bool {
+        self.peer_finished && !self.peer_closed && matches!(self.inbound_end, Some(None))
+    }
 }
 
 /// What the writer thread finds next.
 enum Next {
     Message(Vec<u8>),
+    Finish,
     Idle,
     Done,
 }
@@ -147,6 +165,49 @@ impl Relay {
         self.lock().cause.clone()
     }
 
+    /// The peer finished its sending and the stream is still open: what this side sends still goes.
+    fn end_inbound_finished(&self) {
+        let mut state = self.lock();
+        if state.inbound_end.is_none() {
+            state.inbound_end = Some(None);
+            state.peer_finished = true;
+        }
+        self.changed.notify_all();
+    }
+
+    /// The peer finished and closed the stream in order, both before this side read the end of its input.
+    fn end_finished_and_closed(&self, cause: Option<StreamEnd>) {
+        let mut state = self.lock();
+        if state.inbound_end.is_none() {
+            state.inbound_end = Some(None);
+            state.peer_finished = true;
+            state.peer_closed = true;
+            state.cause = cause;
+        }
+        self.changed.notify_all();
+    }
+
+    /// The peer closed the stream in order after finishing it: nothing more can be sent.
+    fn end_after_finish(&self, failure: Option<Failure>, cause: Option<StreamEnd>) {
+        let mut state = self.lock();
+        match failure {
+            Some(failure) => state.inbound_end = Some(Some(failure)),
+            None => state.peer_closed = true,
+        }
+        state.cause = cause;
+        self.changed.notify_all();
+    }
+
+    /// Waits up to `poll` for a change; `false` once the relay was closed.
+    fn pause(&self, poll: Duration) -> bool {
+        let state = self.lock();
+        if state.closed.is_some() {
+            return false;
+        }
+        drop(self.wait(state, Some(Instant::now() + poll)));
+        true
+    }
+
     fn next_outbound(&self, wait: Duration) -> Next {
         let mut state = self.lock();
         if let Some(message) = state.outbound.pop_front() {
@@ -154,11 +215,21 @@ impl Relay {
             self.changed.notify_all();
             return Next::Message(message);
         }
-        if state.closed.is_some() || state.inbound_end.is_some() {
+        if state.finish_requested && !state.finish_sent {
+            state.finish_sent = true;
+            return Next::Finish;
+        }
+        // A peer that finished and left the stream open is still read from, so this side's sending goes on.
+        if state.closed.is_some() || !(state.inbound_end.is_none() || state.half_open()) {
             return Next::Done;
         }
         drop(self.wait(state, Some(Instant::now() + wait)));
         Next::Idle
+    }
+
+    /// What the writer closes the stream with when it is done, if the relay was closed with a reason.
+    fn take_close_with(&self) -> Option<(CloseReason, String)> {
+        self.lock().close_with.take()
     }
 
     fn fail_outbound(&self, failure: Failure) {
@@ -208,6 +279,10 @@ impl Channel for Relay {
             }
             if let Some(failure) = state.outbound_failed {
                 return Err(failure);
+            }
+            // This side said it was done sending, as the stream itself refuses what follows.
+            if state.finish_requested {
+                return Err(Failure::Protocol);
             }
             if state.outbound_bytes == 0 || state.outbound_bytes + message.len() <= self.queue_bytes
             {
@@ -261,7 +336,9 @@ impl Channel for Relay {
 
     fn is_closed(&self) -> bool {
         let state = self.lock();
-        state.closed.is_some() || state.inbound_end.is_some() || state.outbound_failed.is_some()
+        state.closed.is_some()
+            || state.outbound_failed.is_some()
+            || (state.inbound_end.is_some() && !state.half_open())
     }
 }
 
@@ -269,8 +346,8 @@ impl Channel for Relay {
 /// relay. The threads end once the relay is closed and what it holds is delivered, or the stream
 /// ends; the caller closes the relay before the scope ends.
 ///
-/// `stream` is anything that derefs to a channel and can be handed to two threads: a reference
-/// to a stream (`&dyn Channel`) or an `Arc` of one. A stream the host refused, revoked or lost
+/// `stream` is anything that derefs to a link stream and can be handed to two threads: a reference
+/// to a stream (`&dyn LinkStream`) or an `Arc` of one. A stream the host refused, revoked or lost
 /// surfaces from [`Relay::receive`] as the failure it reported (`Permission` for a refusal or a
 /// revoke).
 pub fn relay<'scope, 'env, P>(
@@ -280,7 +357,7 @@ pub fn relay<'scope, 'env, P>(
 ) -> Arc<Relay>
 where
     P: Deref + Clone + Send + 'scope,
-    P::Target: Channel,
+    P::Target: LinkStream,
 {
     relay_with(scope, stream, settings, |_| None)
 }
@@ -295,7 +372,7 @@ pub fn relay_with<'scope, 'env, P, E>(
 ) -> Arc<Relay>
 where
     P: Deref + Clone + Send + 'scope,
-    P::Target: Channel,
+    P::Target: LinkStream,
     E: Fn(&P::Target) -> Option<StreamEnd> + Send + 'scope,
 {
     let relay = Arc::new(Relay::new(settings));
@@ -312,7 +389,7 @@ where
 }
 
 /// Moves what the stream receives into the relay.
-fn read_side<C: Channel + ?Sized>(
+fn read_side<C: LinkStream + ?Sized>(
     relay: &Relay,
     stream: &C,
     poll: Duration,
@@ -328,6 +405,14 @@ fn read_side<C: Channel + ?Sized>(
                     return;
                 }
             }
+            // The peer's `finish` and a stream closed in order both read as the end; only the first leaves the stream open.
+            Ok(None) if stream.finished_by_peer() => {
+                if stream.life() != StreamLife::Open {
+                    return relay.end_finished_and_closed(ended(stream));
+                }
+                relay.end_inbound_finished();
+                return after_finish(relay, stream, poll, ended);
+            }
             Ok(None) => return relay.end_inbound(None, ended(stream)),
             Err(Failure::Timeout) => {}
             Err(failure) => return relay.end_inbound(Some(failure), ended(stream)),
@@ -335,8 +420,31 @@ fn read_side<C: Channel + ?Sized>(
     }
 }
 
+/// Watches a stream whose peer has finished until it ends, which a receive cannot wait for any longer: it answers the end
+/// of input at once.
+fn after_finish<C: LinkStream + ?Sized>(
+    relay: &Relay,
+    stream: &C,
+    poll: Duration,
+    ended: impl Fn(&C) -> Option<StreamEnd>,
+) {
+    while relay.pause(poll) {
+        match stream.life() {
+            StreamLife::Open => {}
+            StreamLife::Draining => return relay.end_after_finish(None, ended(stream)),
+            StreamLife::Gone => {
+                let failure = match stream.receive(Some(Duration::ZERO)) {
+                    Err(failure) if failure != Failure::Timeout => failure,
+                    _ => Failure::PathLost,
+                };
+                return relay.end_after_finish(Some(failure), ended(stream));
+            }
+        }
+    }
+}
+
 /// Moves what the relay's writer queued onto the stream.
-fn write_side<C: Channel + ?Sized>(relay: &Relay, stream: &C, poll: Duration) {
+fn write_side<C: LinkStream + ?Sized>(relay: &Relay, stream: &C, poll: Duration) {
     loop {
         match relay.next_outbound(poll) {
             Next::Message(message) => loop {
@@ -350,8 +458,111 @@ fn write_side<C: Channel + ?Sized>(relay: &Relay, stream: &C, poll: Duration) {
                     Err(failure) => return relay.fail_outbound(failure),
                 }
             },
+            Next::Finish => {
+                if let Err(failure) = stream.finish() {
+                    return relay.fail_outbound(failure);
+                }
+            }
             Next::Idle => {}
-            Next::Done => return relay.fail_outbound(relay.reason_gone()),
+            Next::Done => {
+                if let Some((reason, text)) = relay.take_close_with() {
+                    stream.close_with(reason, &text);
+                }
+                return relay.fail_outbound(relay.reason_gone());
+            }
         }
+    }
+}
+
+impl LinkStream for Relay {
+    fn life(&self) -> StreamLife {
+        let state = self.lock();
+        if state.closed.is_some() || state.outbound_failed.is_some() {
+            return StreamLife::Gone;
+        }
+        match state.inbound_end {
+            None => StreamLife::Open,
+            Some(Some(_)) => StreamLife::Gone,
+            Some(None) if state.half_open() => StreamLife::Open,
+            Some(None) => StreamLife::Draining,
+        }
+    }
+
+    /// Says this side sends nothing more, once what is queued is delivered; the peer's direction goes on.
+    fn finish(&self) -> Result<(), Failure> {
+        let mut state = self.lock();
+        if state.closed.is_some() {
+            return Err(Failure::PathLost);
+        }
+        if let Some(failure) = state.outbound_failed {
+            return Err(failure);
+        }
+        state.finish_requested = true;
+        self.changed.notify_all();
+        Ok(())
+    }
+
+    fn finished_by_peer(&self) -> bool {
+        self.lock().peer_finished
+    }
+
+    /// Closes the relay, and the stream with `reason` and `text` once what is queued is delivered.
+    fn close_with(&self, reason: CloseReason, text: &str) {
+        let mut state = self.lock();
+        state
+            .close_with
+            .get_or_insert_with(|| (reason, text.to_owned()));
+        state.closed.get_or_insert_with(Instant::now);
+        self.changed.notify_all();
+    }
+}
+
+/// A [`Channel`] with no half-close as a [`LinkStream`], for an [`Open`](crate::Open) that is not a link: a test's pair of
+/// memory channels, or a stream another protocol carries. It is open until the channel is closed, cannot finish, and closes
+/// the channel whatever the reason.
+#[derive(Debug)]
+pub struct Plain<C>(pub C);
+
+impl<C: Channel> Channel for Plain<C> {
+    fn send(&self, message: &[u8]) -> Result<(), Failure> {
+        self.0.send(message)
+    }
+
+    fn send_timeout(&self, message: &[u8], timeout: Option<Duration>) -> Result<(), Failure> {
+        self.0.send_timeout(message, timeout)
+    }
+
+    fn receive(&self, timeout: Option<Duration>) -> Result<Option<Vec<u8>>, Failure> {
+        self.0.receive(timeout)
+    }
+
+    fn close(&self) {
+        self.0.close();
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        self.0.capabilities()
+    }
+
+    fn is_closed(&self) -> bool {
+        self.0.is_closed()
+    }
+}
+
+impl<C: Channel> LinkStream for Plain<C> {
+    fn life(&self) -> StreamLife {
+        if self.0.is_closed() {
+            StreamLife::Gone
+        } else {
+            StreamLife::Open
+        }
+    }
+
+    fn finish(&self) -> Result<(), Failure> {
+        Err(Failure::Unsupported)
+    }
+
+    fn close_with(&self, _reason: CloseReason, _text: &str) {
+        self.0.close();
     }
 }

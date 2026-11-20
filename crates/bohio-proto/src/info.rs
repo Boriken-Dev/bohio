@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::forward::ForwardInfo;
 use crate::hash::Algorithm;
 use crate::shell::ShellKind;
 
@@ -37,6 +38,8 @@ pub struct Info {
     pub limits: Limits,
     /// What the host does to move and compare bytes.
     pub transfer: TransferInfo,
+    /// Forwarding.
+    pub forward: ForwardInfo,
 }
 
 /// The serving program.

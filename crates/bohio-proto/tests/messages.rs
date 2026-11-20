@@ -54,6 +54,11 @@ fn sample_info() -> Info {
             max_sessions: None,
         },
         transfer: sample_transfer(),
+        forward: bohio_proto::forward::ForwardInfo {
+            enabled: true,
+            connect: vec!["tcp".into()],
+            listen: Vec::new(),
+        },
     }
 }
 
@@ -151,6 +156,9 @@ fn every_error_code_round_trips() {
         ErrorCode::Busy,
         ErrorCode::OutsideRoot,
         ErrorCode::Io,
+        ErrorCode::Refused,
+        ErrorCode::Unreachable,
+        ErrorCode::Timeout,
         ErrorCode::Internal,
         ErrorCode::Other,
     ] {

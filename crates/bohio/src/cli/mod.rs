@@ -178,8 +178,8 @@ pub struct ApproveArgs {
     pub config: ConfigOption,
     /// The peer's id, as `bohio peer list` prints it.
     pub id: String,
-    /// What the peer may do: info, fs.read, fs.write, exec, shell, admin (repeat or separate with
-    /// commas). Setting any of `--allow`, `--fs-root` and `--program` replaces the peer's whole table;
+    /// What the peer may do: info, fs.read, fs.write, exec, shell, admin, forward.connect (repeat or separate with
+    /// commas). Setting any of `--allow`, `--fs-root`, `--program` and `--connect` replaces the peer's whole table;
     /// without them an existing table stays and a new peer holds nothing.
     #[arg(long, value_delimiter = ',', value_name = "PERMISSION")]
     pub allow: Vec<String>,
@@ -189,6 +189,12 @@ pub struct ApproveArgs {
     /// A program the peer may run, as the host finds it on its own PATH (repeat); with none, any.
     #[arg(long, value_name = "NAME")]
     pub program: Vec<String>,
+    /// A target the host may connect to for the peer (repeat; with none, the peer's list is empty): `HOST:PORT` where HOST is
+    /// an exact name, `*.suffix`, `*`, an address or a CIDR network (`10.0.0.0/8`, an IPv6 one in brackets) and PORT is `N`,
+    /// `A-B` or `*`; `unix:PATH` or `pipe:NAME`, exactly or with `*` and `?`. Naming a rule grants `forward.connect`, which a
+    /// rule needs; a name is matched as a name and never resolved, so an address rule matches only an address target.
+    #[arg(long, value_name = "RULE")]
+    pub connect: Vec<String>,
     /// With `--program`: an environment variable the peer's requests may set or remove (repeat);
     /// with none, they may change none. A request may change PATH only when it is named here: a program that
     /// starts others then runs what the peer's PATH finds.
@@ -325,6 +331,11 @@ pub enum RemoteAction {
     Hash(RemoteHashArgs),
     /// Open an interactive shell on the host.
     Shell(RemoteShellArgs),
+    /// Have the host connect to a target and bridge it to standard input and output (netcat); `ssh -o ProxyCommand` can
+    /// use it.
+    Connect(RemoteConnectArgs),
+    /// Listen on this machine and have the host connect to a target for each connection (`ssh -L`).
+    Forward(RemoteForwardArgs),
 }
 
 /// `bohio remote ... info`.
@@ -372,6 +383,30 @@ pub struct RemoteHashArgs {
     /// The files, in the host's own path text.
     #[arg(required = true, value_name = "PATH")]
     pub paths: Vec<String>,
+}
+
+/// `bohio remote ... connect`.
+#[derive(Debug, Args)]
+pub struct RemoteConnectArgs {
+    /// Where the host connects: `HOST:PORT` (an IPv6 address in brackets), `unix:PATH` or `pipe:NAME`. The peer's grant
+    /// must hold `forward.connect` and a rule that matches.
+    pub target: String,
+    /// Connect, print `connected ADDRESS` and end, with status 0 when the host connected and 1 when it did not.
+    #[arg(long)]
+    pub check: bool,
+}
+
+/// `bohio remote ... forward`.
+#[derive(Debug, Args)]
+pub struct RemoteForwardArgs {
+    /// Listen here and have the host connect to a target for each connection: `[BIND:]PORT=TARGET`,
+    /// `unix:PATH=TARGET` or `pipe:NAME=TARGET`, where TARGET is `HOST:PORT`, `unix:PATH` or `pipe:NAME` (repeat). BIND is
+    /// an address and defaults to `127.0.0.1`; port 0 picks a free one. Another address is used as named and reported as
+    /// `non-default: bind ADDRESS`: whoever can reach it has what this peer is granted. A local socket or pipe is for this
+    /// user alone, mode `0o600`. Prints `local BOUND -> TARGET` for each, then runs until interrupted or the link ends
+    /// (status 1).
+    #[arg(short = 'L', long = "local", value_name = "SPEC", required = true)]
+    pub local: Vec<String>,
 }
 
 /// `bohio remote ... shell`.

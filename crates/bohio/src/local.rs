@@ -11,7 +11,7 @@
 //! and `shell` work over a link the peer made.
 
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -242,18 +242,24 @@ impl Node {
     }
 }
 
-/// Moves messages from `from` to `to` until either ends or `done` is set.
-fn pump(from: &dyn Channel, to: &dyn Channel, done: &AtomicBool, poll: Duration) {
+/// Moves messages from `from` to `to` until `from` ends or `done` is set. A `finish` of `from` is passed on and only this
+/// direction ends (the other goes on, which is how a half-close crosses); any other end of either stream sets `done`.
+fn pump(from: &dyn LinkStream, to: &dyn LinkStream, done: &AtomicBool, poll: Duration) {
     while !done.load(Ordering::SeqCst) {
         match from.receive(Some(poll)) {
             Ok(Some(message)) => {
                 if to.send(&message).is_err() {
-                    return;
+                    return done.store(true, Ordering::SeqCst);
                 }
             }
-            Ok(None) | Err(_) if done.load(Ordering::SeqCst) => return,
+            Ok(None) if from.finished_by_peer() => {
+                if to.finish().is_err() {
+                    done.store(true, Ordering::SeqCst);
+                }
+                return;
+            }
             Err(Failure::Timeout) => {}
-            Ok(None) | Err(_) => return,
+            Ok(None) | Err(_) => return done.store(true, Ordering::SeqCst),
         }
     }
 }
@@ -281,16 +287,28 @@ fn via(context: &Context, stream: &dyn LinkStream, accepted: &Accepted) {
     };
     let poll = context.settings.poll_interval.max(Duration::from_millis(1));
     let done = AtomicBool::new(false);
+    let finished = AtomicUsize::new(0);
     thread::scope(|scope| {
         let local = relay(scope, stream, &context.settings);
-        let inbound = Arc::clone(&local);
-        let (done, remote) = (&done, &remote);
-        scope.spawn(move || {
-            pump(&*inbound, remote, done, poll);
-            done.store(true, Ordering::SeqCst);
-            remote.close();
-        });
-        pump(remote, &*local, done, poll);
+        let (done, finished, remote) = (&done, &finished, &remote);
+        {
+            let local = Arc::clone(&local);
+            scope.spawn(move || {
+                pump(&*local, remote, done, poll);
+                finished.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        {
+            let local = Arc::clone(&local);
+            scope.spawn(move || {
+                pump(remote, &*local, done, poll);
+                finished.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        // Both directions end in order (each passed its finish on), or either fails or ends otherwise.
+        while !done.load(Ordering::SeqCst) && finished.load(Ordering::SeqCst) < 2 {
+            thread::sleep(poll);
+        }
         done.store(true, Ordering::SeqCst);
         match remote.end() {
             Some(StreamEnd::Refused(text)) => stream.close_with(CloseReason::Refused, &text),
@@ -665,13 +683,17 @@ impl Via {
 }
 
 impl Open for Via {
-    fn open(&self, protocol: &str, metadata: &[u8]) -> Result<Box<dyn Channel>, Error> {
+    fn open(&self, protocol: &str, metadata: &[u8]) -> Result<Box<dyn LinkStream>, Error> {
         let request = ViaRequest {
             peer: self.peer.to_string(),
             protocol: protocol.to_owned(),
             metadata: metadata.to_vec(),
         };
         self.link.opener.open(VIA, &request.to_metadata()?)
+    }
+
+    fn is_up(&self) -> bool {
+        self.link.opener.is_up()
     }
 }
 

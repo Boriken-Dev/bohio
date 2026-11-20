@@ -130,6 +130,8 @@ pub struct Config {
     pub execution: ExecutionConfig,
     /// `[shell]`.
     pub shell: ShellConfig,
+    /// `[forward]`.
+    pub forward: ForwardConfig,
     /// `[pairing]`: the PIN a node arms.
     pub pairing: PairingConfig,
     /// `[control]`: the node's local endpoint.
@@ -704,6 +706,89 @@ impl Default for ShellConfig {
     }
 }
 
+/// `[forward]`: connections the host makes for a peer (`bohio-connect/1` and `tcp/1`), and the bounds of a forward's pump,
+/// which `bohio remote ... forward` and `connect` read from the client's own file as well.
+///
+/// A peer is allowed targets by its grant (`forward.connect` and `[peer.<id>.forward] connect`), not here: this section only
+/// bounds what a granted forward costs the host.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ForwardConfig {
+    /// Whether the host makes connections for peers. Default `true`; a peer still needs `forward.connect` and a rule.
+    pub enabled: bool,
+    /// How long the host waits for a target to answer, for each address its name resolves to. Not zero. Default `10s`.
+    pub connect_timeout: Span,
+    /// The most forwarded connections open at once, across peers; one past it is `busy`. At least 1. Default `64`.
+    pub max_connections: usize,
+    /// The most forwarded connections one peer has open at once; one past it is `busy`. At least 1. Default `16`.
+    pub max_connections_per_peer: usize,
+    /// The most bytes of a connection sent as one message; the link's `max_message` must allow it. At least 1. Default `16384`.
+    pub chunk_size: usize,
+    /// How long a connection that has stopped reading may hold what a stream that ended in order sent before it is reset;
+    /// also how long a write to a socket or pipe may take. Not zero. Default `30s`.
+    pub stalled: Span,
+    /// How soon each direction of a pump looks at its stream again while its connection has nothing for it, growing from
+    /// `idle_min` to `idle_max` and starting over after traffic. A longer wait spares the CPU of an idle forward and slows
+    /// its first byte. Not zero; `idle_max` at least `idle_min`. Default `1ms`.
+    pub idle_min: Span,
+    /// The longest that wait grows to. Default `10ms`.
+    pub idle_max: Span,
+    /// How often a pump looks at its stream and its connection for an end while it waits for a message. Not zero. Default `50ms`.
+    pub watch: Span,
+    /// How often a local listener (`bohio remote ... forward`) looks for a connection and for the link's end. Not zero.
+    /// Default `50ms`.
+    pub listen_poll: Span,
+    /// How long `bohio remote` waits for the host to answer a connect, which covers the host's `connect_timeout` and the
+    /// link's round trip. Not zero. Default `30s`.
+    pub answer_timeout: Span,
+    /// The most connections one local listener of `bohio remote ... forward` serves at once; one past it is closed at once.
+    /// At least 1. Default `64`.
+    pub max_local_connections: usize,
+}
+
+impl Default for ForwardConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            connect_timeout: Span(Duration::from_secs(10)),
+            max_connections: 64,
+            max_connections_per_peer: 16,
+            chunk_size: 16 * 1024,
+            stalled: Span(Duration::from_secs(30)),
+            idle_min: Span(Duration::from_millis(1)),
+            idle_max: Span(Duration::from_millis(10)),
+            watch: Span(Duration::from_millis(50)),
+            listen_poll: Span(Duration::from_millis(50)),
+            answer_timeout: Span(Duration::from_secs(30)),
+            max_local_connections: 64,
+        }
+    }
+}
+
+impl ForwardConfig {
+    /// The pump's bounds, as `coqui-link` names them.
+    pub fn options(&self) -> coqui_link::forward::Options {
+        let mut options = coqui_link::forward::Options::default();
+        options.connect_timeout = self.connect_timeout.0;
+        options.chunk = self.chunk_size;
+        options.stalled = self.stalled.0;
+        options.idle_min = self.idle_min.0;
+        options.idle_max = self.idle_max.0;
+        options.watch = self.watch.0;
+        options.listen_poll = self.listen_poll.0;
+        options
+    }
+
+    /// What a client waits for and how its pump moves bytes.
+    pub fn client(&self) -> bohio_client::forward::ForwardSettings {
+        let mut settings = bohio_client::forward::ForwardSettings::default();
+        settings.options = self.options();
+        settings.answer_timeout = self.answer_timeout.0;
+        settings.max_connections = self.max_local_connections;
+        settings
+    }
+}
+
 /// `[pairing]`: the PIN a node arms for a joiner to try on its own listeners.
 ///
 /// A PIN has `10^pin_length` values with the default digits, and a guess is made only against a PIN armed now: with `max_attempts`
@@ -834,6 +919,8 @@ pub struct NodeConfig {
     pub execution: ExecutionConfig,
     /// `[shell]`.
     pub shell: ShellConfig,
+    /// `[forward]`.
+    pub forward: ForwardConfig,
     /// `[pairing]`.
     pub pairing: PairingConfig,
 }
@@ -847,6 +934,7 @@ impl Default for NodeConfig {
             hash: HashConfig::default(),
             execution: ExecutionConfig::default(),
             shell: ShellConfig::default(),
+            forward: ForwardConfig::default(),
             pairing: PairingConfig::default(),
         }
     }
@@ -1003,6 +1091,50 @@ impl NodeConfig {
         if self.shell.poll_interval.0.is_zero() {
             return Err(invalid("shell.poll_interval", "must not be zero"));
         }
+        let forward = &self.forward;
+        for (key, zero) in [
+            ("forward.max_connections", forward.max_connections == 0),
+            (
+                "forward.max_connections_per_peer",
+                forward.max_connections_per_peer == 0,
+            ),
+            ("forward.chunk_size", forward.chunk_size == 0),
+            (
+                "forward.max_local_connections",
+                forward.max_local_connections == 0,
+            ),
+        ] {
+            if zero {
+                return Err(invalid(key, "must be at least 1"));
+            }
+        }
+        for (key, zero) in [
+            (
+                "forward.connect_timeout",
+                forward.connect_timeout.0.is_zero(),
+            ),
+            ("forward.stalled", forward.stalled.0.is_zero()),
+            ("forward.idle_min", forward.idle_min.0.is_zero()),
+            ("forward.watch", forward.watch.0.is_zero()),
+            ("forward.listen_poll", forward.listen_poll.0.is_zero()),
+            ("forward.answer_timeout", forward.answer_timeout.0.is_zero()),
+        ] {
+            if zero {
+                return Err(invalid(key, "must not be zero"));
+            }
+        }
+        if forward.idle_max.0 < forward.idle_min.0 {
+            return Err(invalid(
+                "forward.idle_max",
+                "must be at least forward.idle_min",
+            ));
+        }
+        if link.max_message <= forward.chunk_size {
+            return Err(invalid(
+                "link.max_message",
+                "must be more than forward.chunk_size",
+            ));
+        }
         Ok(())
     }
 }
@@ -1045,6 +1177,7 @@ impl Config {
             hash: self.hash.clone(),
             execution: self.execution.clone(),
             shell: self.shell.clone(),
+            forward: self.forward.clone(),
             pairing: self.pairing.clone(),
         }
     }
@@ -1056,6 +1189,16 @@ impl Config {
             message: message.to_owned(),
         };
         self.node().validate(path)?;
+        for id in self.peer.ids() {
+            for rule in self.peer.grant_for(id).forward().connect() {
+                if let Err(error) = rule.parse::<crate::forward::ConnectRule>() {
+                    return Err(invalid(
+                        &format!("peer.{id}.forward.connect"),
+                        &format!("`{rule}`: {error}"),
+                    ));
+                }
+            }
+        }
         for listen in &self.listen {
             let shaped = listen
                 .endpoint
