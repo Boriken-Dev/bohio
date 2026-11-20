@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Choices the operator may make are no longer refusals; each keeps its strict default and says in the docs what it costs.
+  `--fallback ENDPOINT` takes a `ws://` endpoint on any address (it used to be loopback only) and one on another host than the
+  `webtransport://` endpoint; naming it is the choice. `tls_valid_days` takes any value from 1 (it was 1 to 14): a certificate valid
+  longer than 14 days, or from files with a key that is not ECDSA P-256, is logged once at start as one a browser will not accept
+  pinned by its hash, and other clients pin it by hash whatever its key or validity (`--cert-hash` no longer holds a WebTransport
+  hash to the browser rule). A grant that lists `PATH` under `exec.env` lets a request set it (it was refused even when named).
+  `[service] check_access = false` starts the host on Windows although another account may change its configuration file or data
+  directory, and logs what was found; the default is still to refuse. `bohio-client`'s `Endpoint::with_fallback` no longer checks
+  the host. Pins `coqui-transport-web` at the revision whose `Endpoints` takes these choices.
+
 ### Fixed
 
 - A grant narrowed while a stream runs now reaches it: a `bohio/1` stream reads the peer's grant again for every call, so

@@ -45,13 +45,14 @@ pub struct Span(pub Duration);                                    // a number of
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `[service] name` | `"bohio"` | name shown in `info` |
+| `[service] check_access` | `true` | Windows: refuse to start when another account may change the configuration file or data directory; `false` logs it and serves |
 | `[service] data_dir` | `bohio` under `%LOCALAPPDATA%` / `$XDG_DATA_HOME` (else `~/.local/share`) | identity, trust store, `peers.cfg` |
 | `[[listen]] endpoint` | none | `tcp://host:port`, `pipe://name` or `pipe:///path.sock`, `ws://host:port`, `wss://host:port`, `webtransport://host:port`, `serial://port?baud=N`; required in each entry |
 | `[[listen]] socket_mode` | `"0o600"` | `pipe`, Unix: the socket's mode, octal text with the `0o` prefix |
 | `[[listen]] remote_clients` | `false` | `pipe`, Windows: clients on other hosts through file sharing |
 | `[[listen]] origins` | none | `ws`, `wss`, `webtransport`: the origins a browser may connect from; none allows any |
 | `[[listen]] tls_cert`, `tls_key` | none | `wss`, `webtransport`: PEM files, the certificate (leaf first, then its intermediates) and its private key; both or neither; `wss` needs both; read at start, never logged; a `webtransport` entry with neither makes its own certificate |
-| `[[listen]] tls_valid_days` | `13` | `webtransport` without `tls_cert`: the made certificate's validity, 1 to 14 (a browser's limit for a pin); a new one is made halfway through and its hash logged |
+| `[[listen]] tls_valid_days` | `13` | `webtransport` without `tls_cert`: the made certificate's validity in days, at least 1 (a browser pins at most 14: a longer one is logged once as not browser-pinnable); a new one is made halfway through and its hash logged |
 | `[[listen]] baud`, `data_bits`, `parity`, `stop_bits`, `flow_control` | `115200`, `8`, `none`, `1`, `none` | `serial`: the line; the endpoint's query (`?baud=9600`) wins; `flow_control` is `none` or `hardware`; a key for another scheme is refused naming it |
 | `[link] recheck` | `5s` | how often a running stream's permission is decided again; not zero |
 | `[link] max_streams` | `64` | streams per peer; at least 1 |
@@ -113,8 +114,8 @@ permission is `PolicyError::Parse`. A peer with no entry, or no `allow`, holds n
 explicit shell scripts; non-empty means only those programs, each named exactly as the peer asks for it, and no shell script
 (a shell runs anything). Under a non-empty list each name is resolved on the host's own `PATH` (a name with a directory
 must be absolute; a relative one is `not_found`) and that absolute path is started, never what the request's `PATH` or working
-directory would find, and a request may set or remove only the variables `env` names (exactly; without case on Windows), never `PATH`
-(even when named), and may not clear the environment, else it is `denied`: a variable is as strong as an argument (`LD_PRELOAD`,
+directory would find, and a request may set or remove only the variables `env` names (exactly; without case on Windows), `PATH` too only when `env`
+names it (the program still starts from the host's own `PATH`), and may not clear the environment, else it is `denied`: a variable is as strong as an argument (`LD_PRELOAD`,
 `DYLD_INSERT_LIBRARIES`, `BASH_ENV` load or run code the peer chose). `permits_env` is that check; without a program list it always holds. The list
 limits which program starts, not what it does: `git -c alias.x=!cmd`, `make`, `find -exec` and interpreters run anything they are
 given, so list only programs that are safe with every argument. `fs_roots` empty means no file operation is allowed.
