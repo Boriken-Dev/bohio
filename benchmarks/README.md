@@ -94,5 +94,22 @@ change: a claim needs the same job on both commits, more than once, with the con
 
 ## Baseline
 
-The state before any transfer optimisation: BohÃ­o `main` at `1248e07` plus the harness. See the files
-named below; each is the merge of three rounds.
+The state before any transfer optimisation: Bohío's code at `1248e07` plus the harness (`615c626`, the
+bench workflow's `ref`). Each emulated-link file is the merge of three alternating rounds of three samples
+(`workflow_dispatch`, run 44683809202):
+
+- `results/baseline-615c626-{lan,fat,wan,lossy,slow,weak}.json`
+- `results/baseline-615c626-lan-windows-arm64.json` and `...-lan-linux-arm64.json`: the same `lan` set
+  on a Windows ARM64 workstation and in WSL (Linux aarch64), five samples, one round.
+
+The cross-site pair (this workstation to a Linux x86-64 host over a site VPN, 272 ms round trip), three
+rounds at different times, measured on the same code:
+
+- `results/cross-site-1248e07-before.json`: the scenarios of the timeline and the controls.
+- `results/cross-site-1248e07-sweep.json`: `read_16MiB_warm` with `link.window` 1, 4, 16 MiB and
+  `link.max_frame` 64, 256 KiB, both sides alike (metric names carry `base`, `w4`, `w16`, `f256`).
+- `results/cross-site-1248e07-flows.json`: 1, 4 and 8 raw downloads at once.
+
+Known gaps in these files: `open_close_x100` and `open_close_x50` fail on a fast Linux link (the host's
+stream limit; the metric is missing from the `lan` files made on Linux),; the first
+cross-site round predates the warm raw control, so `raw_warm_*` there come from two rounds.

@@ -1,267 +1,289 @@
 {
-  "name": "A-wan-r1",
+  "name": "A-weak-r1",
   "raw": {
-    "commit": "bdf6370",
+    "commit": "615c626",
     "rustc": "",
     "os": "linux",
     "arch": "x86_64",
-    "processor": "AMD EPYC 7763 64-Core Processor",
+    "processor": "INTEL(R) XEON(R) PLATINUM 8573C",
     "transport": "tcp",
-    "link": "wan",
+    "link": "weak",
     "settings": {},
     "label": "A"
   },
   "metrics": {
-    "checksum_1MiB_host_cpu_tcp_wan": {
+    "checksum_1MiB_host_cpu_tcp_weak": {
       "min_ms": 0.0,
       "median_ms": 0.0,
-      "max_ms": 10.0,
+      "max_ms": 20.0,
       "samples": 9
     },
-    "checksum_1MiB_tcp_wan": {
-      "min_ms": 267.212722,
-      "median_ms": 267.267233,
-      "max_ms": 267.440747,
+    "checksum_1MiB_tcp_weak": {
+      "min_ms": 267.363591,
+      "median_ms": 267.43120999999996,
+      "max_ms": 267.708391,
       "samples": 9,
       "bytes": 1048576
     },
-    "connect_host_cpu_tcp_wan": {
+    "connect_host_cpu_tcp_weak": {
       "min_ms": 0.0,
       "median_ms": 0.0,
       "max_ms": 0.0,
       "samples": 9
     },
-    "connect_tcp_wan": {
-      "min_ms": 803.2866309999999,
-      "median_ms": 819.295228,
-      "max_ms": 916.107333,
+    "connect_tcp_weak": {
+      "min_ms": 814.085492,
+      "median_ms": 817.700782,
+      "max_ms": 819.291762,
       "samples": 9
     },
-    "cpu_sha256_256MiB_tcp_wan": {
-      "min_ms": 168.84179,
-      "median_ms": 169.17004599999999,
-      "max_ms": 169.197232,
+    "cpu_sha256_256MiB_tcp_weak": {
+      "min_ms": 178.056736,
+      "median_ms": 182.805318,
+      "max_ms": 188.68452299999998,
       "samples": 9,
       "bytes": 268435456
     },
-    "exec_echo_host_cpu_tcp_wan": {
+    "exec_echo_host_cpu_tcp_weak": {
       "min_ms": 0.0,
-      "median_ms": 10.0,
+      "median_ms": 0.0,
       "max_ms": 20.0,
       "samples": 9
     },
-    "exec_echo_tcp_wan": {
-      "min_ms": 289.36825100000004,
-      "median_ms": 289.56978,
-      "max_ms": 289.767512,
+    "exec_echo_tcp_weak": {
+      "min_ms": 288.66668,
+      "median_ms": 288.773169,
+      "max_ms": 289.03499500000004,
       "samples": 9
     },
-    "info_host_cpu_tcp_wan": {
+    "info_host_cpu_tcp_weak": {
       "min_ms": 0.0,
       "median_ms": 0.0,
       "max_ms": 10.0,
       "samples": 9
     },
-    "info_tcp_wan": {
-      "min_ms": 266.81440200000003,
-      "median_ms": 266.89947800000004,
-      "max_ms": 267.038615,
+    "info_tcp_weak": {
+      "min_ms": 266.91690800000003,
+      "median_ms": 266.96873500000004,
+      "max_ms": 267.097443,
       "samples": 9
     },
-    "open_close_x20_host_cpu_tcp_wan": {
+    "open_close_x20_host_cpu_tcp_weak": {
       "min_ms": 0.0,
       "median_ms": 0.0,
       "max_ms": 0.0,
       "samples": 9
     },
-    "open_close_x20_tcp_wan": {
-      "min_ms": 1.948086,
-      "median_ms": 2.0219460000000002,
-      "max_ms": 2.472445,
+    "open_close_x20_tcp_weak": {
+      "min_ms": 1.584111,
+      "median_ms": 1.661889,
+      "max_ms": 1.838089,
       "samples": 9
     },
-    "raw_connect_host_cpu_tcp_wan": {
+    "raw_connect_host_cpu_tcp_weak": {
       "min_ms": 0.0,
       "median_ms": 0.0,
-      "max_ms": 0.0,
+      "max_ms": 10.0,
       "samples": 9
     },
-    "raw_connect_tcp_wan": {
-      "min_ms": 266.135735,
-      "median_ms": 266.150008,
-      "max_ms": 266.17634699999996,
+    "raw_connect_tcp_weak": {
+      "min_ms": 266.166308,
+      "median_ms": 266.19759999999997,
+      "max_ms": 266.303465,
       "samples": 9
     },
-    "raw_down_16MiB_host_cpu_tcp_wan": {
+    "raw_down_16MiB_host_cpu_tcp_weak": {
       "min_ms": 0.0,
-      "median_ms": 20.0,
-      "max_ms": 30.0,
-      "samples": 9
-    },
-    "raw_down_16MiB_tcp_wan": {
-      "min_ms": 8771.953152,
-      "median_ms": 8772.077636,
-      "max_ms": 8772.219993,
-      "samples": 9,
-      "bytes": 16777216
-    },
-    "raw_up_1MiB_host_cpu_tcp_wan": {
-      "min_ms": 0.0,
-      "median_ms": 0.0,
+      "median_ms": 10.0,
       "max_ms": 20.0,
       "samples": 9
     },
-    "raw_up_1MiB_tcp_wan": {
-      "min_ms": 2192.493322,
-      "median_ms": 2192.544733,
-      "max_ms": 2192.660958,
+    "raw_down_16MiB_tcp_weak": {
+      "min_ms": 8772.233214,
+      "median_ms": 8772.422677999999,
+      "max_ms": 8772.546837,
+      "samples": 9,
+      "bytes": 16777216
+    },
+    "raw_up_1MiB_host_cpu_tcp_weak": {
+      "min_ms": 0.0,
+      "median_ms": 0.0,
+      "max_ms": 10.0,
+      "samples": 9
+    },
+    "raw_up_1MiB_tcp_weak": {
+      "min_ms": 2192.768623,
+      "median_ms": 2192.823591,
+      "max_ms": 2193.0136660000003,
       "samples": 9,
       "bytes": 1048576
     },
-    "read_16MiB_warm_host_cpu_tcp_wan": {
+    "raw_warm_down_16MiB_host_cpu_tcp_weak": {
+      "min_ms": 0.0,
+      "median_ms": 20.0,
+      "max_ms": 20.0,
+      "samples": 9
+    },
+    "raw_warm_down_16MiB_tcp_weak": {
+      "min_ms": 7282.925599,
+      "median_ms": 7283.12508,
+      "max_ms": 7283.274577,
+      "samples": 9,
+      "bytes": 16777216
+    },
+    "raw_warm_up_1MiB_host_cpu_tcp_weak": {
+      "min_ms": 0.0,
+      "median_ms": 0.0,
+      "max_ms": 10.0,
+      "samples": 9
+    },
+    "raw_warm_up_1MiB_tcp_weak": {
+      "min_ms": 705.1724579999999,
+      "median_ms": 705.223858,
+      "max_ms": 705.330014,
+      "samples": 9,
+      "bytes": 1048576
+    },
+    "read_16MiB_warm_host_cpu_tcp_weak": {
       "min_ms": 100.0,
-      "median_ms": 130.0,
-      "max_ms": 140.0,
+      "median_ms": 120.0,
+      "max_ms": 150.0,
       "samples": 9
     },
-    "read_16MiB_warm_tcp_wan": {
-      "min_ms": 7309.916896,
-      "median_ms": 7310.106115,
-      "max_ms": 7310.187721,
+    "read_16MiB_warm_tcp_weak": {
+      "min_ms": 7310.096036,
+      "median_ms": 7310.158782,
+      "max_ms": 7310.230005,
       "samples": 9,
       "bytes": 16777216
     },
-    "read_1MiB_cold_host_cpu_tcp_wan": {
+    "read_1MiB_cold_host_cpu_tcp_weak": {
       "min_ms": 0.0,
       "median_ms": 10.0,
       "max_ms": 20.0,
       "samples": 9
     },
-    "read_1MiB_cold_tcp_wan": {
-      "min_ms": 2829.652286,
-      "median_ms": 2843.544438,
-      "max_ms": 2843.948641,
+    "read_1MiB_cold_tcp_weak": {
+      "min_ms": 2828.142992,
+      "median_ms": 2833.945153,
+      "max_ms": 2847.544394,
       "samples": 9,
       "bytes": 1048576
     },
-    "remote_read_1MiB_host_cpu_tcp_wan": {
+    "remote_read_1MiB_host_cpu_tcp_weak": {
       "min_ms": 0.0,
       "median_ms": 10.0,
-      "max_ms": 30.0,
+      "max_ms": 20.0,
       "samples": 9
     },
-    "remote_read_1MiB_tcp_wan": {
-      "min_ms": 2830.407932,
-      "median_ms": 2845.008179,
-      "max_ms": 2845.436534,
+    "remote_read_1MiB_tcp_weak": {
+      "min_ms": 2835.232408,
+      "median_ms": 2847.4066850000004,
+      "max_ms": 2848.342742,
       "samples": 9,
       "bytes": 1048576
     },
-    "stat_x20_serial_host_cpu_tcp_wan": {
-      "min_ms": 20.0,
+    "stat_x20_serial_host_cpu_tcp_weak": {
+      "min_ms": 10.0,
       "median_ms": 20.0,
-      "max_ms": 30.0,
+      "max_ms": 40.0,
       "samples": 9
     },
-    "stat_x20_serial_tcp_wan": {
-      "min_ms": 5330.038114999999,
-      "median_ms": 5330.294157,
-      "max_ms": 5330.50038,
+    "stat_x20_serial_tcp_weak": {
+      "min_ms": 5331.433453,
+      "median_ms": 5332.0595490000005,
+      "max_ms": 5333.257847,
       "samples": 9
     },
-    "timeline_read_1MiB_body_tcp_wan": {
-      "min_ms": 1116.3459030000001,
-      "median_ms": 1116.409273,
-      "max_ms": 1116.53043,
+    "timeline_read_1MiB_body_tcp_weak": {
+      "min_ms": 1116.3792509999998,
+      "median_ms": 1116.552939,
+      "max_ms": 1116.603938,
       "samples": 9,
       "bytes": 1048576
     },
-    "timeline_read_1MiB_dial_tcp_wan": {
-      "min_ms": 266.221008,
-      "median_ms": 266.25972199999995,
-      "max_ms": 266.292559,
+    "timeline_read_1MiB_dial_tcp_weak": {
+      "min_ms": 266.26086300000003,
+      "median_ms": 266.281424,
+      "max_ms": 266.354088,
       "samples": 9
     },
-    "timeline_read_1MiB_first_tcp_wan": {
-      "min_ms": 544.3941530000001,
-      "median_ms": 544.440261,
-      "max_ms": 544.468406,
+    "timeline_read_1MiB_first_tcp_weak": {
+      "min_ms": 544.45256,
+      "median_ms": 544.508648,
+      "max_ms": 544.579625,
       "samples": 9
     },
-    "timeline_read_1MiB_open_tcp_wan": {
-      "min_ms": 266.664538,
-      "median_ms": 266.738876,
-      "max_ms": 266.84986599999996,
+    "timeline_read_1MiB_open_tcp_weak": {
+      "min_ms": 266.794038,
+      "median_ms": 266.828369,
+      "max_ms": 267.036671,
       "samples": 9
     },
-    "timeline_read_1MiB_proof_tcp_wan": {
-      "min_ms": 270.287906,
-      "median_ms": 271.780342,
-      "max_ms": 278.642677,
+    "timeline_read_1MiB_proof_tcp_weak": {
+      "min_ms": 267.22683600000005,
+      "median_ms": 272.222288,
+      "max_ms": 279.139143,
       "samples": 9
     },
-    "timeline_read_1MiB_total_tcp_wan": {
-      "min_ms": 2463.976878,
-      "median_ms": 2465.706714,
-      "max_ms": 2472.4501710000004,
+    "timeline_read_1MiB_total_tcp_weak": {
+      "min_ms": 2461.3361760000003,
+      "median_ms": 2466.4954049999997,
+      "max_ms": 2473.3603820000003,
       "samples": 9,
       "bytes": 1048576
     },
-    "write_1MiB_host_cpu_tcp_wan": {
+    "write_1MiB_host_cpu_tcp_weak": {
       "min_ms": 10.0,
       "median_ms": 10.0,
-      "max_ms": 30.0,
+      "max_ms": 20.0,
       "samples": 9
     },
-    "write_1MiB_tcp_wan": {
-      "min_ms": 974.3752959999999,
-      "median_ms": 974.562582,
-      "max_ms": 2196.441269,
+    "write_1MiB_tcp_weak": {
+      "min_ms": 974.705943,
+      "median_ms": 974.9823250000001,
+      "max_ms": 2196.650972,
       "samples": 9,
       "bytes": 1048576
     }
   },
   "curves": {
-    "timeline_read_1MiB_tcp_wan": [
+    "timeline_read_1MiB_tcp_weak": [
       [
         [
           0,
           0
         ],
         [
-          1351,
+          1355,
           65536
         ],
         [
-          1621,
+          1625,
           131072
         ],
         [
-          1895,
+          1900,
           262144
         ],
         [
-          1922,
-          327680
-        ],
-        [
-          2148,
+          2152,
           458752
         ],
         [
-          2203,
+          2207,
           589824
         ],
         [
-          2313,
+          2317,
           851968
         ],
         [
-          2413,
+          2417,
           917504
         ],
         [
-          2468,
+          2472,
           1048576
         ]
       ],
@@ -271,39 +293,287 @@
           0
         ],
         [
-          1347,
+          1349,
           65536
         ],
         [
-          1617,
+          1619,
           131072
         ],
         [
-          1891,
+          1894,
           262144
         ],
         [
-          1918,
+          1920,
           327680
         ],
         [
-          2144,
+          2147,
           458752
         ],
         [
-          2226,
-          655360
+          2201,
+          589824
         ],
         [
-          2309,
+          2311,
           851968
         ],
         [
-          2409,
+          2411,
           917504
         ],
         [
-          2463,
+          2466,
+          1048576
+        ]
+      ],
+      [
+        [
+          0,
+          0
+        ],
+        [
+          1350,
+          65536
+        ],
+        [
+          1620,
+          131072
+        ],
+        [
+          1894,
+          262144
+        ],
+        [
+          1921,
+          327680
+        ],
+        [
+          2147,
+          458752
+        ],
+        [
+          2202,
+          589824
+        ],
+        [
+          2312,
+          851968
+        ],
+        [
+          2412,
+          917504
+        ],
+        [
+          2467,
+          1048576
+        ]
+      ],
+      [
+        [
+          0,
+          0
+        ],
+        [
+          1356,
+          65536
+        ],
+        [
+          1626,
+          131072
+        ],
+        [
+          1901,
+          262144
+        ],
+        [
+          2154,
+          458752
+        ],
+        [
+          2208,
+          589824
+        ],
+        [
+          2318,
+          851968
+        ],
+        [
+          2418,
+          917504
+        ],
+        [
+          2473,
+          1048576
+        ]
+      ],
+      [
+        [
+          0,
+          0
+        ],
+        [
+          1349,
+          65536
+        ],
+        [
+          1619,
+          131072
+        ],
+        [
+          1894,
+          262144
+        ],
+        [
+          1920,
+          327680
+        ],
+        [
+          2146,
+          458752
+        ],
+        [
+          2201,
+          589824
+        ],
+        [
+          2311,
+          851968
+        ],
+        [
+          2411,
+          917504
+        ],
+        [
+          2466,
+          1048576
+        ]
+      ],
+      [
+        [
+          0,
+          0
+        ],
+        [
+          1349,
+          65536
+        ],
+        [
+          1619,
+          131072
+        ],
+        [
+          1894,
+          262144
+        ],
+        [
+          1920,
+          327680
+        ],
+        [
+          2147,
+          458752
+        ],
+        [
+          2201,
+          589824
+        ],
+        [
+          2311,
+          851968
+        ],
+        [
+          2411,
+          917504
+        ],
+        [
+          2466,
+          1048576
+        ]
+      ],
+      [
+        [
+          0,
+          0
+        ],
+        [
+          1344,
+          65536
+        ],
+        [
+          1614,
+          131072
+        ],
+        [
+          1889,
+          262144
+        ],
+        [
+          1915,
+          327680
+        ],
+        [
+          2141,
+          458752
+        ],
+        [
+          2224,
+          655360
+        ],
+        [
+          2306,
+          851968
+        ],
+        [
+          2406,
+          917504
+        ],
+        [
+          2461,
+          1048576
+        ]
+      ],
+      [
+        [
+          0,
+          0
+        ],
+        [
+          1350,
+          65536
+        ],
+        [
+          1620,
+          131072
+        ],
+        [
+          1894,
+          262144
+        ],
+        [
+          1921,
+          327680
+        ],
+        [
+          2147,
+          458752
+        ],
+        [
+          2202,
+          589824
+        ],
+        [
+          2312,
+          851968
+        ],
+        [
+          2412,
+          917504
+        ],
+        [
+          2467,
           1048576
         ]
       ],
@@ -346,254 +616,6 @@
         ],
         [
           2466,
-          1048576
-        ]
-      ],
-      [
-        [
-          0,
-          0
-        ],
-        [
-          1354,
-          65536
-        ],
-        [
-          1624,
-          131072
-        ],
-        [
-          1898,
-          262144
-        ],
-        [
-          1925,
-          327680
-        ],
-        [
-          2151,
-          458752
-        ],
-        [
-          2206,
-          589824
-        ],
-        [
-          2316,
-          851968
-        ],
-        [
-          2416,
-          917504
-        ],
-        [
-          2470,
-          1048576
-        ]
-      ],
-      [
-        [
-          0,
-          0
-        ],
-        [
-          1348,
-          65536
-        ],
-        [
-          1618,
-          131072
-        ],
-        [
-          1892,
-          262144
-        ],
-        [
-          1919,
-          327680
-        ],
-        [
-          2145,
-          458752
-        ],
-        [
-          2227,
-          655360
-        ],
-        [
-          2310,
-          851968
-        ],
-        [
-          2410,
-          917504
-        ],
-        [
-          2464,
-          1048576
-        ]
-      ],
-      [
-        [
-          0,
-          0
-        ],
-        [
-          1349,
-          65536
-        ],
-        [
-          1619,
-          131072
-        ],
-        [
-          1893,
-          262144
-        ],
-        [
-          1920,
-          327680
-        ],
-        [
-          2146,
-          458752
-        ],
-        [
-          2200,
-          589824
-        ],
-        [
-          2311,
-          851968
-        ],
-        [
-          2411,
-          917504
-        ],
-        [
-          2465,
-          1048576
-        ]
-      ],
-      [
-        [
-          0,
-          0
-        ],
-        [
-          1356,
-          65536
-        ],
-        [
-          1625,
-          131072
-        ],
-        [
-          1900,
-          262144
-        ],
-        [
-          2153,
-          458752
-        ],
-        [
-          2207,
-          589824
-        ],
-        [
-          2317,
-          851968
-        ],
-        [
-          2417,
-          917504
-        ],
-        [
-          2472,
-          1048576
-        ]
-      ],
-      [
-        [
-          0,
-          0
-        ],
-        [
-          1348,
-          65536
-        ],
-        [
-          1617,
-          131072
-        ],
-        [
-          1892,
-          262144
-        ],
-        [
-          1919,
-          327680
-        ],
-        [
-          2145,
-          458752
-        ],
-        [
-          2227,
-          655360
-        ],
-        [
-          2310,
-          851968
-        ],
-        [
-          2410,
-          917504
-        ],
-        [
-          2464,
-          1048576
-        ]
-      ],
-      [
-        [
-          0,
-          0
-        ],
-        [
-          1348,
-          65536
-        ],
-        [
-          1618,
-          131072
-        ],
-        [
-          1892,
-          262144
-        ],
-        [
-          1919,
-          327680
-        ],
-        [
-          2145,
-          458752
-        ],
-        [
-          2200,
-          589824
-        ],
-        [
-          2310,
-          851968
-        ],
-        [
-          2410,
-          917504
-        ],
-        [
-          2465,
           1048576
         ]
       ]

@@ -1,11 +1,11 @@
 {
   "name": "A-slow-r1",
   "raw": {
-    "commit": "bdf6370",
+    "commit": "615c626",
     "rustc": "",
     "os": "linux",
     "arch": "x86_64",
-    "processor": "AMD EPYC 7763 64-Core Processor",
+    "processor": "INTEL(R) XEON(R) PLATINUM 8573C",
     "transport": "tcp",
     "link": "slow",
     "settings": {},
@@ -15,57 +15,57 @@
     "checksum_256KiB_host_cpu_tcp_slow": {
       "min_ms": 0.0,
       "median_ms": 0.0,
-      "max_ms": 20.0,
+      "max_ms": 10.0,
       "samples": 9
     },
     "checksum_256KiB_tcp_slow": {
-      "min_ms": 608.988733,
-      "median_ms": 609.0174820000001,
-      "max_ms": 613.2742169999999,
+      "min_ms": 609.014963,
+      "median_ms": 609.050372,
+      "max_ms": 614.542126,
       "samples": 9,
       "bytes": 262144
     },
     "connect_host_cpu_tcp_slow": {
       "min_ms": 0.0,
       "median_ms": 0.0,
-      "max_ms": 10.0,
+      "max_ms": 0.0,
       "samples": 9
     },
     "connect_tcp_slow": {
-      "min_ms": 1718.429615,
-      "median_ms": 1725.262461,
-      "max_ms": 1818.9222599999998,
+      "min_ms": 1710.90464,
+      "median_ms": 1719.059365,
+      "max_ms": 1723.9427389999998,
       "samples": 9
     },
     "cpu_sha256_256MiB_tcp_slow": {
-      "min_ms": 169.008726,
-      "median_ms": 169.186619,
-      "max_ms": 169.373013,
+      "min_ms": 167.827654,
+      "median_ms": 179.26344999999998,
+      "max_ms": 185.579671,
       "samples": 9,
       "bytes": 268435456
     },
     "exec_echo_host_cpu_tcp_slow": {
       "min_ms": 0.0,
-      "median_ms": 10.0,
+      "median_ms": 0.0,
       "max_ms": 10.0,
       "samples": 9
     },
     "exec_echo_tcp_slow": {
-      "min_ms": 633.119085,
-      "median_ms": 633.38649,
-      "max_ms": 634.811523,
+      "min_ms": 631.854647,
+      "median_ms": 632.0717559999999,
+      "max_ms": 634.710865,
       "samples": 9
     },
     "info_host_cpu_tcp_slow": {
       "min_ms": 0.0,
       "median_ms": 0.0,
-      "max_ms": 0.0,
+      "max_ms": 10.0,
       "samples": 9
     },
     "info_tcp_slow": {
-      "min_ms": 612.219771,
-      "median_ms": 612.6722289999999,
-      "max_ms": 613.769563,
+      "min_ms": 612.236318,
+      "median_ms": 612.6864410000001,
+      "max_ms": 615.037147,
       "samples": 9
     },
     "open_close_x20_host_cpu_tcp_slow": {
@@ -75,148 +75,174 @@
       "samples": 9
     },
     "open_close_x20_tcp_slow": {
-      "min_ms": 1.929638,
-      "median_ms": 1.98933,
-      "max_ms": 2.1767269999999996,
+      "min_ms": 1.606066,
+      "median_ms": 1.679419,
+      "max_ms": 1.709876,
       "samples": 9
     },
     "raw_connect_host_cpu_tcp_slow": {
       "min_ms": 0.0,
       "median_ms": 0.0,
-      "max_ms": 0.0,
+      "max_ms": 10.0,
       "samples": 9
     },
     "raw_connect_tcp_slow": {
-      "min_ms": 602.99598,
-      "median_ms": 603.018369,
-      "max_ms": 603.045468,
+      "min_ms": 603.002289,
+      "median_ms": 603.0122660000001,
+      "max_ms": 603.0971870000001,
       "samples": 9
     },
     "raw_down_1MiB_host_cpu_tcp_slow": {
       "min_ms": 10.0,
       "median_ms": 20.0,
-      "max_ms": 30.0,
+      "max_ms": 20.0,
       "samples": 9
     },
     "raw_down_1MiB_tcp_slow": {
-      "min_ms": 11010.590320000001,
-      "median_ms": 11010.608839,
-      "max_ms": 11010.764325,
+      "min_ms": 11010.63663,
+      "median_ms": 11010.697945,
+      "max_ms": 11011.008513,
       "samples": 9,
       "bytes": 1048576
     },
     "raw_up_256KiB_host_cpu_tcp_slow": {
       "min_ms": 10.0,
-      "median_ms": 20.0,
-      "max_ms": 30.0,
+      "median_ms": 10.0,
+      "max_ms": 20.0,
       "samples": 9
     },
     "raw_up_256KiB_tcp_slow": {
-      "min_ms": 9950.658356,
-      "median_ms": 9950.680695,
-      "max_ms": 9950.695087,
+      "min_ms": 9950.687599,
+      "median_ms": 9950.724773999998,
+      "max_ms": 9952.891228,
+      "samples": 9,
+      "bytes": 262144
+    },
+    "raw_warm_down_1MiB_host_cpu_tcp_slow": {
+      "min_ms": 10.0,
+      "median_ms": 20.0,
+      "max_ms": 20.0,
+      "samples": 9
+    },
+    "raw_warm_down_1MiB_tcp_slow": {
+      "min_ms": 9373.847286,
+      "median_ms": 9373.871068,
+      "max_ms": 9374.0189,
+      "samples": 9,
+      "bytes": 1048576
+    },
+    "raw_warm_up_256KiB_host_cpu_tcp_slow": {
+      "min_ms": 0.0,
+      "median_ms": 10.0,
+      "max_ms": 20.0,
+      "samples": 9
+    },
+    "raw_warm_up_256KiB_tcp_slow": {
+      "min_ms": 9170.857999000002,
+      "median_ms": 9170.880314,
+      "max_ms": 9175.142839999999,
       "samples": 9,
       "bytes": 262144
     },
     "read_1MiB_warm_host_cpu_tcp_slow": {
-      "min_ms": 20.0,
+      "min_ms": 10.0,
       "median_ms": 20.0,
       "max_ms": 30.0,
       "samples": 9
     },
     "read_1MiB_warm_tcp_slow": {
-      "min_ms": 9399.041358,
-      "median_ms": 9407.27603,
-      "max_ms": 9412.694015,
+      "min_ms": 9400.197922,
+      "median_ms": 9410.184361000001,
+      "max_ms": 9415.797798,
       "samples": 9,
       "bytes": 1048576
     },
     "read_256KiB_cold_host_cpu_tcp_slow": {
       "min_ms": 0.0,
       "median_ms": 20.0,
-      "max_ms": 50.0,
+      "max_ms": 40.0,
       "samples": 9
     },
     "read_256KiB_cold_tcp_slow": {
-      "min_ms": 6520.184997,
-      "median_ms": 6521.545117,
-      "max_ms": 6525.665862000001,
+      "min_ms": 6523.348495,
+      "median_ms": 6526.754268999999,
+      "max_ms": 6527.865882,
       "samples": 9,
       "bytes": 262144
     },
     "remote_read_256KiB_host_cpu_tcp_slow": {
       "min_ms": 0.0,
-      "median_ms": 20.0,
-      "max_ms": 30.0,
+      "median_ms": 10.0,
+      "max_ms": 20.0,
       "samples": 9
     },
     "remote_read_256KiB_tcp_slow": {
-      "min_ms": 6520.771901,
-      "median_ms": 6522.383507,
-      "max_ms": 6524.618663,
+      "min_ms": 6523.819706,
+      "median_ms": 6525.126194,
+      "max_ms": 6532.959283,
       "samples": 9,
       "bytes": 262144
     },
     "stat_x20_serial_host_cpu_tcp_slow": {
-      "min_ms": 40.0,
+      "min_ms": 20.0,
       "median_ms": 50.0,
       "max_ms": 60.0,
       "samples": 9
     },
     "stat_x20_serial_tcp_slow": {
-      "min_ms": 12275.1538,
-      "median_ms": 12275.397573999999,
-      "max_ms": 12278.718892,
+      "min_ms": 12275.116486,
+      "median_ms": 12275.484035,
+      "max_ms": 12279.890766999999,
       "samples": 9
     },
     "timeline_read_256KiB_body_tcp_slow": {
-      "min_ms": 2654.3679129999996,
-      "median_ms": 2654.505828,
-      "max_ms": 2654.60234,
+      "min_ms": 2654.431851,
+      "median_ms": 2654.5376589999996,
+      "max_ms": 2654.795668,
       "samples": 9,
       "bytes": 262144
     },
     "timeline_read_256KiB_dial_tcp_slow": {
-      "min_ms": 603.079241,
-      "median_ms": 603.127082,
-      "max_ms": 603.1594230000001,
+      "min_ms": 603.137575,
+      "median_ms": 603.1474340000001,
+      "max_ms": 603.2787189999999,
       "samples": 9
     },
     "timeline_read_256KiB_first_tcp_slow": {
-      "min_ms": 1435.489618,
-      "median_ms": 1435.564431,
-      "max_ms": 1435.686802,
+      "min_ms": 1435.560884,
+      "median_ms": 1435.6752470000001,
+      "max_ms": 1435.794912,
       "samples": 9
     },
     "timeline_read_256KiB_open_tcp_slow": {
-      "min_ms": 612.884062,
-      "median_ms": 612.9168040000001,
-      "max_ms": 612.9877580000001,
+      "min_ms": 612.9597620000001,
+      "median_ms": 612.979778,
+      "max_ms": 613.008681,
       "samples": 9
     },
     "timeline_read_256KiB_proof_tcp_slow": {
-      "min_ms": 608.577565,
-      "median_ms": 621.78176,
-      "max_ms": 623.537057,
+      "min_ms": 607.388559,
+      "median_ms": 622.144475,
+      "max_ms": 623.331773,
       "samples": 9
     },
     "timeline_read_256KiB_total_tcp_slow": {
-      "min_ms": 5914.737569999999,
-      "median_ms": 5927.796121,
-      "max_ms": 5929.655013,
+      "min_ms": 5913.819426,
+      "median_ms": 5928.705096,
+      "max_ms": 5929.670986,
       "samples": 9,
       "bytes": 262144
     },
     "write_256KiB_host_cpu_tcp_slow": {
-      "min_ms": 20.0,
-      "median_ms": 50.0,
-      "max_ms": 50.0,
+      "min_ms": 30.0,
+      "median_ms": 30.0,
+      "max_ms": 60.0,
       "samples": 9
     },
     "write_256KiB_tcp_slow": {
-      "min_ms": 9800.860764,
-      "median_ms": 9812.012069999999,
-      "max_ms": 10017.379139,
+      "min_ms": 9802.326153999998,
+      "median_ms": 9813.716447,
+      "max_ms": 10018.450431,
       "samples": 9,
       "bytes": 262144
     }
@@ -229,23 +255,23 @@
           0
         ],
         [
-          3260,
+          3259,
           65536
         ],
         [
-          4355,
+          4354,
           131072
         ],
         [
-          5175,
+          5174,
           196608
         ],
         [
-          5914,
+          5913,
           262144
         ],
         [
-          5914,
+          5913,
           262144
         ]
       ],
@@ -259,19 +285,19 @@
           65536
         ],
         [
-          4368,
+          4369,
           131072
         ],
         [
-          5188,
+          5189,
           196608
         ],
         [
-          5927,
+          5928,
           262144
         ],
         [
-          5927,
+          5928,
           262144
         ]
       ],
@@ -307,140 +333,36 @@
           0
         ],
         [
-          3263,
-          65536
-        ],
-        [
-          4358,
-          131072
-        ],
-        [
-          5178,
-          196608
-        ],
-        [
-          5917,
-          262144
-        ],
-        [
-          5917,
-          262144
-        ]
-      ],
-      [
-        [
-          0,
-          0
-        ],
-        [
-          3272,
-          65536
-        ],
-        [
-          4367,
-          131072
-        ],
-        [
-          5187,
-          196608
-        ],
-        [
-          5926,
-          262144
-        ],
-        [
-          5926,
-          262144
-        ]
-      ],
-      [
-        [
-          0,
-          0
-        ],
-        [
-          3274,
-          65536
-        ],
-        [
-          4369,
-          131072
-        ],
-        [
-          5189,
-          196608
-        ],
-        [
-          5928,
-          262144
-        ],
-        [
-          5928,
-          262144
-        ]
-      ],
-      [
-        [
-          0,
-          0
-        ],
-        [
-          3269,
-          65536
-        ],
-        [
-          4364,
-          131072
-        ],
-        [
-          5184,
-          196608
-        ],
-        [
-          5924,
-          262144
-        ],
-        [
-          5924,
-          262144
-        ]
-      ],
-      [
-        [
-          0,
-          0
-        ],
-        [
-          3274,
-          65536
-        ],
-        [
-          4369,
-          131072
-        ],
-        [
-          5189,
-          196608
-        ],
-        [
-          5929,
-          262144
-        ],
-        [
-          5929,
-          262144
-        ]
-      ],
-      [
-        [
-          0,
-          0
-        ],
-        [
           3273,
           65536
         ],
         [
+          4368,
+          131072
+        ],
+        [
+          5189,
+          196608
+        ],
+        [
+          5928,
+          262144
+        ],
+        [
+          5928,
+          262144
+        ]
+      ],
+      [
+        [
+          0,
+          0
+        ],
+        [
+          3274,
+          65536
+        ],
+        [
           4369,
           131072
         ],
@@ -454,6 +376,110 @@
         ],
         [
           5928,
+          262144
+        ]
+      ],
+      [
+        [
+          0,
+          0
+        ],
+        [
+          3274,
+          65536
+        ],
+        [
+          4369,
+          131072
+        ],
+        [
+          5189,
+          196608
+        ],
+        [
+          5928,
+          262144
+        ],
+        [
+          5928,
+          262144
+        ]
+      ],
+      [
+        [
+          0,
+          0
+        ],
+        [
+          3260,
+          65536
+        ],
+        [
+          4355,
+          131072
+        ],
+        [
+          5176,
+          196608
+        ],
+        [
+          5915,
+          262144
+        ],
+        [
+          5915,
+          262144
+        ]
+      ],
+      [
+        [
+          0,
+          0
+        ],
+        [
+          3259,
+          65536
+        ],
+        [
+          4354,
+          131072
+        ],
+        [
+          5174,
+          196608
+        ],
+        [
+          5913,
+          262144
+        ],
+        [
+          5913,
+          262144
+        ]
+      ],
+      [
+        [
+          0,
+          0
+        ],
+        [
+          3259,
+          65536
+        ],
+        [
+          4354,
+          131072
+        ],
+        [
+          5174,
+          196608
+        ],
+        [
+          5913,
+          262144
+        ],
+        [
+          5913,
           262144
         ]
       ]

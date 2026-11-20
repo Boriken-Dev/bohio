@@ -1,96 +1,84 @@
 {
-  "name": "baseline-bdf6370-lan-windows-arm64",
+  "name": "baseline-615c626-lan-linux-arm64",
   "raw": {
-    "commit": "bdf6370",
-    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
-    "os": "windows",
+    "commit": "615c626",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28) (Fedora 1.99.0-1.fc44)",
+    "os": "linux",
     "arch": "aarch64",
     "processor": "",
     "transport": "tcp",
     "link": "lan",
     "settings": {},
-    "label": "windows-arm64"
+    "label": "linux-arm64"
   },
   "metrics": {
     "checksum_16MiB_host_cpu_tcp_lan": {
-      "min_ms": 31.0,
-      "median_ms": 31.0,
-      "max_ms": 47.0,
+      "min_ms": 90.0,
+      "median_ms": 100.0,
+      "max_ms": 100.0,
       "samples": 5
     },
     "checksum_16MiB_tcp_lan": {
-      "min_ms": 37.2327,
-      "median_ms": 42.357,
-      "max_ms": 43.803399999999996,
+      "min_ms": 47.028465,
+      "median_ms": 51.221219,
+      "max_ms": 53.374744,
       "samples": 5,
       "bytes": 16777216
     },
     "connect_host_cpu_tcp_lan": {
       "min_ms": 0.0,
       "median_ms": 0.0,
-      "max_ms": 15.0,
+      "max_ms": 10.0,
       "samples": 5
     },
     "connect_tcp_lan": {
-      "min_ms": 13.3612,
-      "median_ms": 15.6013,
-      "max_ms": 108.2887,
+      "min_ms": 16.005345000000002,
+      "median_ms": 118.04260699999999,
+      "max_ms": 121.37879,
       "samples": 5
     },
     "cpu_sha256_256MiB_tcp_lan": {
-      "min_ms": 711.6692999999999,
-      "median_ms": 806.3169,
-      "max_ms": 900.5395000000001,
+      "min_ms": 693.495387,
+      "median_ms": 739.845575,
+      "max_ms": 744.730305,
       "samples": 5,
       "bytes": 268435456
     },
     "exec_echo_host_cpu_tcp_lan": {
       "min_ms": 0.0,
-      "median_ms": 15.0,
-      "max_ms": 16.0,
+      "median_ms": 0.0,
+      "max_ms": 10.0,
       "samples": 5
     },
     "exec_echo_tcp_lan": {
-      "min_ms": 24.258399999999998,
-      "median_ms": 24.4756,
-      "max_ms": 64.6235,
+      "min_ms": 22.027936,
+      "median_ms": 22.313526,
+      "max_ms": 27.660541000000002,
       "samples": 5
     },
     "exec_out_16MiB_host_cpu_tcp_lan": {
-      "min_ms": 109.0,
-      "median_ms": 188.0,
-      "max_ms": 250.0,
+      "min_ms": 140.0,
+      "median_ms": 150.0,
+      "max_ms": 180.0,
       "samples": 5
     },
     "exec_out_16MiB_tcp_lan": {
-      "min_ms": 146.31930000000003,
-      "median_ms": 166.8655,
-      "max_ms": 172.5014,
+      "min_ms": 62.433834,
+      "median_ms": 82.281739,
+      "max_ms": 103.170812,
       "samples": 5,
       "bytes": 16777216
     },
     "info_host_cpu_tcp_lan": {
       "min_ms": 0.0,
       "median_ms": 0.0,
-      "max_ms": 0.0,
+      "max_ms": 20.0,
       "samples": 5
     },
     "info_tcp_lan": {
-      "min_ms": 0.9190999999999999,
-      "median_ms": 1.159,
-      "max_ms": 1.2754999999999999,
-      "samples": 5
-    },
-    "open_close_x100_host_cpu_tcp_lan": {
-      "min_ms": 0.0,
-      "median_ms": 47.0,
-      "max_ms": 62.0,
-      "samples": 5
-    },
-    "open_close_x100_tcp_lan": {
-      "min_ms": 6.9917,
-      "median_ms": 7.236700000000001,
-      "max_ms": 8.6373,
+      "min_ms": 1.3512540000000002,
+      "median_ms": 1.781938,
+      "max_ms": 3.328685,
       "samples": 5
     },
     "raw_connect_host_cpu_tcp_lan": {
@@ -100,9 +88,9 @@
       "samples": 5
     },
     "raw_connect_tcp_lan": {
-      "min_ms": 0.5837,
-      "median_ms": 0.6566000000000001,
-      "max_ms": 1.0533000000000001,
+      "min_ms": 0.049298,
+      "median_ms": 0.081997,
+      "max_ms": 0.384187,
       "samples": 5
     },
     "raw_down_256MiB_host_cpu_tcp_lan": {
@@ -112,9 +100,9 @@
       "samples": 5
     },
     "raw_down_256MiB_tcp_lan": {
-      "min_ms": 524.7448,
-      "median_ms": 579.619,
-      "max_ms": 707.3724,
+      "min_ms": 32.540869,
+      "median_ms": 36.796020999999996,
+      "max_ms": 40.752583,
       "samples": 5,
       "bytes": 268435456
     },
@@ -125,136 +113,162 @@
       "samples": 5
     },
     "raw_up_16MiB_tcp_lan": {
-      "min_ms": 39.3424,
-      "median_ms": 58.9328,
-      "max_ms": 83.3744,
+      "min_ms": 3.2572859999999997,
+      "median_ms": 3.980062,
+      "max_ms": 7.18105,
       "samples": 5,
       "bytes": 16777216
     },
-    "read_16MiB_cold_host_cpu_tcp_lan": {
-      "min_ms": 140.0,
-      "median_ms": 156.0,
-      "max_ms": 188.0,
-      "samples": 5
-    },
-    "read_16MiB_cold_tcp_lan": {
-      "min_ms": 233.01649999999998,
-      "median_ms": 285.7312,
-      "max_ms": 295.6158,
-      "samples": 5,
-      "bytes": 16777216
-    },
-    "read_1MiB_cold_host_cpu_tcp_lan": {
-      "min_ms": 0.0,
-      "median_ms": 0.0,
-      "max_ms": 16.0,
-      "samples": 5
-    },
-    "read_1MiB_cold_tcp_lan": {
-      "min_ms": 74.4418,
-      "median_ms": 187.1043,
-      "max_ms": 194.1762,
-      "samples": 5,
-      "bytes": 1048576
-    },
-    "read_256MiB_warm_host_cpu_tcp_lan": {
-      "min_ms": 2375.0,
-      "median_ms": 2438.0,
-      "max_ms": 2672.0,
-      "samples": 5
-    },
-    "read_256MiB_warm_tcp_lan": {
-      "min_ms": 1892.6093,
-      "median_ms": 1994.2869999999998,
-      "max_ms": 2343.9948,
-      "samples": 5,
-      "bytes": 268435456
-    },
-    "remote_info_host_cpu_tcp_lan": {
+    "raw_warm_down_256MiB_host_cpu_tcp_lan": {
       "min_ms": 0.0,
       "median_ms": 0.0,
       "max_ms": 0.0,
       "samples": 5
     },
+    "raw_warm_down_256MiB_tcp_lan": {
+      "min_ms": 30.941224,
+      "median_ms": 33.799125,
+      "max_ms": 39.869014,
+      "samples": 5,
+      "bytes": 268435456
+    },
+    "raw_warm_up_16MiB_host_cpu_tcp_lan": {
+      "min_ms": 0.0,
+      "median_ms": 0.0,
+      "max_ms": 0.0,
+      "samples": 5
+    },
+    "raw_warm_up_16MiB_tcp_lan": {
+      "min_ms": 1.682941,
+      "median_ms": 2.511313,
+      "max_ms": 3.17279,
+      "samples": 5,
+      "bytes": 16777216
+    },
+    "read_16MiB_cold_host_cpu_tcp_lan": {
+      "min_ms": 40.0,
+      "median_ms": 50.0,
+      "max_ms": 60.0,
+      "samples": 5
+    },
+    "read_16MiB_cold_tcp_lan": {
+      "min_ms": 58.459772,
+      "median_ms": 159.063284,
+      "max_ms": 162.855152,
+      "samples": 5,
+      "bytes": 16777216
+    },
+    "read_1MiB_cold_host_cpu_tcp_lan": {
+      "min_ms": 0.0,
+      "median_ms": 10.0,
+      "max_ms": 100.0,
+      "samples": 5
+    },
+    "read_1MiB_cold_tcp_lan": {
+      "min_ms": 63.83728599999999,
+      "median_ms": 159.885155,
+      "max_ms": 181.721198,
+      "samples": 5,
+      "bytes": 1048576
+    },
+    "read_256MiB_warm_host_cpu_tcp_lan": {
+      "min_ms": 810.0,
+      "median_ms": 930.0,
+      "max_ms": 1100.0,
+      "samples": 5
+    },
+    "read_256MiB_warm_tcp_lan": {
+      "min_ms": 377.966592,
+      "median_ms": 398.878867,
+      "max_ms": 517.399256,
+      "samples": 5,
+      "bytes": 268435456
+    },
+    "remote_info_host_cpu_tcp_lan": {
+      "min_ms": 0.0,
+      "median_ms": 10.0,
+      "max_ms": 10.0,
+      "samples": 5
+    },
     "remote_info_tcp_lan": {
-      "min_ms": 137.81789999999998,
-      "median_ms": 142.8762,
-      "max_ms": 148.79919999999998,
+      "min_ms": 113.412357,
+      "median_ms": 118.589476,
+      "max_ms": 126.233511,
       "samples": 5
     },
     "remote_read_16MiB_host_cpu_tcp_lan": {
-      "min_ms": 141.0,
-      "median_ms": 172.0,
-      "max_ms": 235.0,
+      "min_ms": 40.0,
+      "median_ms": 50.0,
+      "max_ms": 50.0,
       "samples": 5
     },
     "remote_read_16MiB_tcp_lan": {
-      "min_ms": 281.402,
-      "median_ms": 311.711,
-      "max_ms": 365.6294,
+      "min_ms": 158.301296,
+      "median_ms": 167.077991,
+      "max_ms": 178.093408,
       "samples": 5,
       "bytes": 16777216
     },
     "stat_x100_serial_host_cpu_tcp_lan": {
-      "min_ms": 0.0,
-      "median_ms": 16.0,
-      "max_ms": 109.0,
+      "min_ms": 50.0,
+      "median_ms": 90.0,
+      "max_ms": 90.0,
       "samples": 5
     },
     "stat_x100_serial_tcp_lan": {
-      "min_ms": 25.381,
-      "median_ms": 27.5718,
-      "max_ms": 30.334400000000002,
+      "min_ms": 54.489911,
+      "median_ms": 61.549966,
+      "max_ms": 86.577797,
       "samples": 5
     },
     "timeline_read_16MiB_body_tcp_lan": {
-      "min_ms": 177.7792,
-      "median_ms": 211.40429999999998,
-      "max_ms": 231.47590000000002,
+      "min_ms": 28.954393,
+      "median_ms": 39.040143,
+      "max_ms": 71.661609,
       "samples": 5,
       "bytes": 16777216
     },
     "timeline_read_16MiB_dial_tcp_lan": {
-      "min_ms": 1.0445,
-      "median_ms": 1.4188,
-      "max_ms": 2.0075000000000003,
+      "min_ms": 0.228192,
+      "median_ms": 0.28679,
+      "max_ms": 0.411185,
       "samples": 5
     },
     "timeline_read_16MiB_first_tcp_lan": {
-      "min_ms": 1.5008000000000001,
-      "median_ms": 1.7788000000000002,
-      "max_ms": 2.3658,
+      "min_ms": 0.0069,
+      "median_ms": 0.008199000000000001,
+      "max_ms": 0.870969,
       "samples": 5
     },
     "timeline_read_16MiB_open_tcp_lan": {
-      "min_ms": 1.3467,
-      "median_ms": 1.6456000000000002,
-      "max_ms": 2.2055,
+      "min_ms": 0.697376,
+      "median_ms": 1.845036,
+      "max_ms": 2.1167260000000003,
       "samples": 5
     },
     "timeline_read_16MiB_proof_tcp_lan": {
-      "min_ms": 6.9324,
-      "median_ms": 11.2937,
-      "max_ms": 17.7126,
+      "min_ms": 2.0996270000000004,
+      "median_ms": 9.147582,
+      "max_ms": 18.309564,
       "samples": 5
     },
     "timeline_read_16MiB_total_tcp_lan": {
-      "min_ms": 193.92780000000002,
-      "median_ms": 222.4555,
-      "max_ms": 254.7622,
+      "min_ms": 40.182103,
+      "median_ms": 51.702802,
+      "max_ms": 82.343237,
       "samples": 5,
       "bytes": 16777216
     },
     "write_16MiB_host_cpu_tcp_lan": {
-      "min_ms": 187.0,
-      "median_ms": 203.0,
-      "max_ms": 203.0,
+      "min_ms": 110.0,
+      "median_ms": 130.0,
+      "max_ms": 220.0,
       "samples": 5
     },
     "write_16MiB_tcp_lan": {
-      "min_ms": 136.6583,
-      "median_ms": 144.5132,
-      "max_ms": 164.7911,
+      "min_ms": 84.598066,
+      "median_ms": 114.122842,
+      "max_ms": 118.768381,
       "samples": 5,
       "bytes": 16777216
     }
@@ -267,15 +281,7 @@
           0
         ],
         [
-          100,
-          6029312
-        ],
-        [
-          200,
-          13172736
-        ],
-        [
-          254,
+          51,
           16777216
         ]
       ],
@@ -285,15 +291,7 @@
           0
         ],
         [
-          100,
-          5570560
-        ],
-        [
-          200,
-          13238272
-        ],
-        [
-          244,
+          43,
           16777216
         ]
       ],
@@ -303,11 +301,7 @@
           0
         ],
         [
-          100,
-          6750208
-        ],
-        [
-          193,
+          82,
           16777216
         ]
       ],
@@ -317,15 +311,7 @@
           0
         ],
         [
-          100,
-          7864320
-        ],
-        [
-          200,
-          15990784
-        ],
-        [
-          209,
+          40,
           16777216
         ]
       ],
@@ -335,15 +321,7 @@
           0
         ],
         [
-          100,
-          7274496
-        ],
-        [
-          200,
-          15138816
-        ],
-        [
-          222,
+          65,
           16777216
         ]
       ]
