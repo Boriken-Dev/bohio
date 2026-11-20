@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use support::procs::{DEADLINE, Node, Proc, run_ok};
+use support::procs::{DEADLINE, Node, Proc, run, run_ok};
 
 /// How fast the host retries in these tests.
 const DIAL: &str = "retry_min = \"200ms\"\nretry_max = \"1s\"";
@@ -636,4 +636,92 @@ fn bohio_links_shows_each_side_and_what_each_offers() {
         "{}",
         json.stdout
     );
+}
+
+/// Lets every other account of the machine add files to `directory`.
+fn open_to_others(directory: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o777))
+            .expect("the directory is opened");
+    }
+    #[cfg(windows)]
+    {
+        let done = std::process::Command::new("icacls")
+            .arg(directory)
+            .args(["/grant", "*S-1-5-32-545:(OI)(CI)M"])
+            .output()
+            .expect("icacls runs");
+        assert!(done.status.success(), "icacls could not open the directory");
+    }
+}
+
+/// `bohio serve` with no layer at all, finding them where the platform keeps them: the system file under `home`
+/// on Windows (`PROGRAMDATA`, as `C:\ProgramData`), the user's file under it elsewhere (`XDG_CONFIG_HOME`), and
+/// its data under `data`. Answers the node, its endpoint and id, and the layer file it would read once made.
+fn serve_finding_layers_in(
+    home: &std::path::Path,
+    data: &std::path::Path,
+    nowhere: &std::path::Path,
+) -> (Proc, String, String, std::path::PathBuf) {
+    let environment: Vec<(&str, &std::path::Path)> = if cfg!(windows) {
+        vec![
+            ("PROGRAMDATA", home),
+            ("APPDATA", nowhere),
+            ("LOCALAPPDATA", data),
+        ]
+    } else {
+        vec![("XDG_CONFIG_HOME", home), ("XDG_DATA_HOME", data)]
+    };
+    let mut serving = Proc::start_in(
+        &["serve", "--listen", "tcp://127.0.0.1:0"],
+        "info",
+        &environment,
+    );
+    let endpoint = serving.expect_line("listening ");
+    let id = serving.expect_line("host ");
+    (serving, endpoint, id, home.join("bohio").join("bohio.cfg"))
+}
+
+/// A layer that does not exist when the node starts is read once it is made, as a peer approved later is, but only
+/// where no other account could make it: a file another account makes in an open directory (`%ProgramData%` lets
+/// every user add one) is never checked, so it would choose who the node accepts and what each may do.
+#[test]
+fn a_layer_made_while_serving_is_read_only_where_no_other_account_could_make_it() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let client = Node::new(dir.path(), "client");
+    let nowhere = dir.path().join("nowhere");
+    std::fs::create_dir(&nowhere).expect("a directory");
+    let info = |endpoint: &str, host: &str| {
+        client.write(&Node::peer_table(host, None, "", ""));
+        run(&["remote", endpoint, "--config", &client.config(), "info"])
+    };
+    let grant = Node::peer_table(&client.id, None, "allow = [\"info\"]", "");
+
+    let open = dir.path().join("open");
+    std::fs::create_dir(&open).expect("a directory");
+    open_to_others(&open);
+    let (serving, endpoint, host, layer) =
+        serve_finding_layers_in(&open, &dir.path().join("open-data"), &nowhere);
+    std::fs::create_dir_all(layer.parent().expect("a directory")).expect("a directory");
+    std::fs::write(&layer, &grant).expect("the layer is made");
+    let refused = info(&endpoint, &host);
+    assert_ne!(
+        refused.code,
+        Some(0),
+        "a layer another account could have made granted info: {}",
+        refused.stdout
+    );
+    serving.wait_stderr("is not read until a restart", 1, DEADLINE);
+    drop(serving);
+
+    let private = dir.path().join("private");
+    std::fs::create_dir(&private).expect("a directory");
+    let (_serving, endpoint, host, layer) =
+        serve_finding_layers_in(&private, &dir.path().join("private-data"), &nowhere);
+    std::fs::create_dir_all(layer.parent().expect("a directory")).expect("a directory");
+    std::fs::write(&layer, &grant).expect("the layer is made");
+    let served = info(&endpoint, &host);
+    assert_eq!(served.code, Some(0), "{}", served.stderr);
 }

@@ -49,7 +49,15 @@ fn text(bytes: &Mutex<Vec<u8>>) -> String {
 impl Proc {
     /// Starts `bohio` with `args` and `log` as its log filter.
     pub fn start(args: &[&str], log: &str) -> Self {
+        Self::start_in(args, log, &[])
+    }
+
+    /// [`Proc::start`] with `environment` set on the child.
+    pub fn start_in(args: &[&str], log: &str, environment: &[(&str, &Path)]) -> Self {
         let mut command = Command::new(env!("CARGO_BIN_EXE_bohio"));
+        for (name, value) in environment {
+            command.env(name, value);
+        }
         command
             .args(args)
             .env_remove("BOHIO_CONFIG")

@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use bohio_proto::info::Info;
 
 use super::{
-    CheckArgs, Command, ConfigAction, ConfigOption, Format, InfoArgs, host, remote, service,
+    CheckArgs, Command, ConfigAction, ConfigOption, Format, InfoArgs, access, host, remote, service,
 };
 use crate::config::{Config, Environment, Layered, Layers};
 use crate::info;
@@ -88,11 +88,14 @@ fn found_in(named: &[PathBuf], system: PathBuf, user: Option<PathBuf>) -> Result
         });
     }
     let user_layer = if system.is_file() {
-        Layers::load(std::slice::from_ref(&system))
+        let service = Layers::load(std::slice::from_ref(&system))
             .map_err(|error| error.to_string())?
             .config
-            .service
-            .user_layer
+            .service;
+        // Every command reads the system file, the client's identity and the control endpoint included, so one
+        // another account made or may change is refused before anything uses it.
+        access::decide(&access::layer_problems(&system), service.check_access)?;
+        service.user_layer
     } else {
         true
     };

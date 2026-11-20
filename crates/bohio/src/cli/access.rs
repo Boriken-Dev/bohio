@@ -28,6 +28,31 @@ impl Guarded {
     }
 }
 
+/// What is wrong with a path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Kind {
+    /// Another account owns it: whoever that is made it, so nothing in it, `check_access` included, is the
+    /// operator's.
+    Foreign,
+    /// The operator's own path, which other accounts may change (or, for the data directory, read).
+    Open,
+    /// Who may change it could not be found out.
+    Unknown,
+}
+
+/// Why a path is refused: its [`Kind`] and one line naming the path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Problem {
+    pub(super) kind: Kind,
+    pub(super) text: String,
+}
+
+impl Problem {
+    fn new(kind: Kind, text: String) -> Self {
+        Self { kind, text }
+    }
+}
+
 /// Refuses `path` when a user other than the host's own account, SYSTEM or the administrators owns it
 /// or may change it (for the data directory, also read what is made in it). On Unix a configuration
 /// layer or its directory is refused when another account than the running one or root owns it, or its
@@ -35,30 +60,39 @@ impl Guarded {
 ///
 /// # Errors
 ///
-/// One line saying what is wrong and with which path, or why it could not be checked.
+/// A [`Problem`] saying what is wrong and with which path, or why it could not be checked.
 #[cfg(unix)]
-pub(super) fn check(path: &Path, what: Guarded) -> Result<(), String> {
+pub(super) fn check(path: &Path, what: Guarded) -> Result<(), Problem> {
     use std::os::unix::fs::MetadataExt;
     if what != Guarded::Config {
         return Ok(());
     }
     let meta = std::fs::metadata(path).map_err(|error| {
-        format!(
-            "cannot check who may change the configuration {}: {error}",
-            path.display()
+        Problem::new(
+            Kind::Unknown,
+            format!(
+                "cannot check who may change the configuration {}: {error}",
+                path.display()
+            ),
         )
     })?;
     let me = rustix::process::geteuid().as_raw();
     if meta.uid() != me && meta.uid() != 0 {
-        return Err(format!(
-            "the configuration {} is owned by another account: give it to the account that runs bohio, or to root",
-            path.display()
+        return Err(Problem::new(
+            Kind::Foreign,
+            format!(
+                "the configuration {} is owned by another account: give it to the account that runs bohio, or to root",
+                path.display()
+            ),
         ));
     }
     if meta.mode() & 0o022 != 0 {
-        return Err(format!(
-            "the configuration {} can be changed by its group or by others: remove their write access",
-            path.display()
+        return Err(Problem::new(
+            Kind::Open,
+            format!(
+                "the configuration {} can be changed by its group or by others: remove their write access",
+                path.display()
+            ),
         ));
     }
     Ok(())
@@ -70,7 +104,7 @@ pub(super) fn check(path: &Path, what: Guarded) -> Result<(), String> {
 ///
 /// Never.
 #[cfg(not(any(unix, windows)))]
-pub(super) fn check(_path: &Path, _what: Guarded) -> Result<(), String> {
+pub(super) fn check(_path: &Path, _what: Guarded) -> Result<(), Problem> {
     Ok(())
 }
 
@@ -78,29 +112,91 @@ pub(super) fn check(_path: &Path, _what: Guarded) -> Result<(), String> {
 ///
 /// # Errors
 ///
-/// One line saying what is wrong and with which path, or why it could not be checked.
+/// A [`Problem`] saying what is wrong and with which path, or why it could not be checked.
 #[cfg(windows)]
-pub(super) fn check(path: &Path, what: Guarded) -> Result<(), String> {
+pub(super) fn check(path: &Path, what: Guarded) -> Result<(), Problem> {
     let listed = windows::list(path).map_err(|reason| {
-        format!(
-            "cannot check who may change {} {}: {reason}",
-            what.name(),
-            path.display()
+        Problem::new(
+            Kind::Unknown,
+            format!(
+                "cannot check who may change {} {}: {reason}",
+                what.name(),
+                path.display()
+            ),
         )
     })?;
     match windows::judge(&listed, what) {
         Ok(()) => Ok(()),
-        Err(who) => Err(format!(
-            "{} {} {who}: give it to the account that runs bohio, SYSTEM and the administrators alone",
-            what.name(),
-            path.display()
+        Err((kind, who)) => Err(Problem::new(
+            kind,
+            format!(
+                "{} {} {who}: give it to the account that runs bohio, SYSTEM and the administrators alone",
+                what.name(),
+                path.display()
+            ),
         )),
     }
 }
 
+/// The problems of `layers` (each file and the directory that holds it) as `check_access` decides them: a path
+/// another account owns is refused whatever the setting says, since that account could have written the
+/// setting; the rest are refused while `check_access` holds, and otherwise logged.
+///
+/// # Errors
+///
+/// Every refused problem, joined into one line.
+pub(super) fn decide(problems: &[Problem], check_access: bool) -> Result<(), String> {
+    let (refused, waived): (Vec<&Problem>, Vec<&Problem>) = problems
+        .iter()
+        .partition(|problem| check_access || problem.kind == Kind::Foreign);
+    for problem in waived {
+        tracing::warn!("going on, as `check_access` is false: {}", problem.text);
+    }
+    if refused.is_empty() {
+        Ok(())
+    } else {
+        let texts: Vec<&str> = refused
+            .iter()
+            .map(|problem| problem.text.as_str())
+            .collect();
+        Err(texts.join("; "))
+    }
+}
+
+/// The problems of the layer file `file` and of the directory that holds it.
+pub(super) fn layer_problems(file: &Path) -> Vec<Problem> {
+    let mut problems = Vec::new();
+    if let Err(problem) = check(file, Guarded::Config) {
+        problems.push(problem);
+    }
+    if let Err(problem) = check(&directory_of(file), Guarded::Config) {
+        problems.push(problem);
+    }
+    problems
+}
+
+/// The directory that holds `path`: its parent, or the current directory for a bare file name.
+fn directory_of(path: &Path) -> std::path::PathBuf {
+    path.parent()
+        .filter(|directory| !directory.as_os_str().is_empty())
+        .map_or_else(|| Path::new(".").to_owned(), Path::to_owned)
+}
+
+/// Whether a layer `file` that does not exist yet may be read once it does: the nearest directory above it that
+/// exists must be one no other account may change, or another account could make the file and choose the
+/// peers. `Err` says why not.
+pub(super) fn may_appear(file: &Path) -> Result<(), Problem> {
+    let directory = directory_of(file);
+    let existing = directory
+        .ancestors()
+        .find(|ancestor| !ancestor.as_os_str().is_empty() && ancestor.is_dir())
+        .map_or_else(|| Path::new(".").to_owned(), Path::to_owned);
+    check(&existing, Guarded::Config)
+}
+
 #[cfg(any(windows, test))]
 mod windows {
-    use super::Guarded;
+    use super::{Guarded, Kind};
 
     /// SYSTEM, the administrators and TrustedInstaller, who may change anything anyway.
     const TRUSTED: [&str; 3] = [
@@ -184,10 +280,13 @@ mod windows {
     }
 
     /// Why `listed` is not safe for `what`: who owns it, or who may change or read it.
-    pub(super) fn judge(listed: &Listed, what: Guarded) -> Result<(), String> {
+    pub(super) fn judge(listed: &Listed, what: Guarded) -> Result<(), (Kind, String)> {
         let trusted = |sid: &str| TRUSTED.contains(&sid) || sid == listed.me;
         if !trusted(&listed.owner) {
-            return Err(format!("is owned by another account ({})", listed.owner));
+            return Err((
+                Kind::Foreign,
+                format!("is owned by another account ({})", listed.owner),
+            ));
         }
         for (sid, rights, propagation) in &listed.allowed {
             if trusted(sid) || sid == CREATOR_OWNER {
@@ -206,7 +305,7 @@ mod windows {
                 Guarded::DataDir => rights & (CHANGE | READ) != 0,
             };
             if reaches {
-                return Err(format!("is open to every user ({sid})"));
+                return Err((Kind::Open, format!("is open to every user ({sid})")));
             }
         }
         Ok(())

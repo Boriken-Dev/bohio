@@ -44,14 +44,15 @@ fn parse_id(text: &str) -> Result<PeerId, String> {
 }
 
 /// The node `config` describes, with the identity of its data directory and the peers of the layers `watch`.
-fn node(found: &Found, environment: &Environment) -> Result<Node, String> {
+fn node(found: &Found, watch: Vec<PathBuf>, environment: &Environment) -> Result<Node, String> {
     let config = found.config();
     let data = Data::new(config.data_dir(environment));
     let identity = data.identity().map_err(|error| error.to_string())?;
+    let create = found.create.clone().filter(|file| watch.contains(file));
     let peers = Arc::new(
-        LayeredPeers::new(found.watch.clone(), &data)
+        LayeredPeers::new(watch, &data)
             .map_err(|error| error.to_string())?
-            .with_create(found.create.clone()),
+            .with_create(create),
     );
     let node = Node::new(config.node(), identity, peers.clone(), peers)
         .map_err(|error| error.to_string())?
@@ -69,8 +70,8 @@ pub(super) fn serve(args: &ServeArgs, environment: &Environment) -> Result<(), S
             return Err("--stdio serves standard input and output alone: drop --listen".to_owned());
         }
         // Standard output is the link: nothing else is written to it, and [[listen]] entries are not bound.
-        let server = node(&found, environment)?;
-        guard(&found.layered.files, config, environment)?;
+        let watch = guard(&found, environment)?;
+        let server = node(&found, watch, environment)?;
         tracing::info!(host = %server.host(), "serving standard input and output");
         return server.serve_stdio().map_err(|error| error.to_string());
     }
@@ -83,41 +84,60 @@ pub(super) fn serve(args: &ServeArgs, environment: &Environment) -> Result<(), S
 }
 
 /// Refuses to serve from a layer or a data directory another user may change, unless `[service]
-/// check_access` is false: then what was found is logged and the host serves. `files` are the layers read.
-fn guard(files: &[PathBuf], config: &Config, environment: &Environment) -> Result<(), String> {
-    let mut problems: Vec<String> = Vec::new();
-    for file in files {
-        if let Err(problem) = access::check(file, Guarded::Config) {
-            problems.push(problem);
-        }
-        if let Some(directory) = file
-            .parent()
-            .filter(|directory| !directory.as_os_str().is_empty())
-            && let Err(problem) = access::check(directory, Guarded::Config)
-        {
-            problems.push(problem);
-        }
+/// check_access` is false: then what was found is logged and the host serves. A layer or directory another
+/// account owns is refused either way. Answers the layers to read the peers from while serving.
+fn guard(found: &Found, environment: &Environment) -> Result<Vec<PathBuf>, String> {
+    let config = found.config();
+    let mut problems = Vec::new();
+    for file in &found.layered.files {
+        problems.extend(access::layer_problems(file));
     }
-    if let Err(problem) = access::check(&config.data_dir(environment), Guarded::DataDir) {
-        problems.push(problem);
-    }
-    let found = if problems.is_empty() {
-        Ok(())
-    } else {
-        Err(problems.join("; "))
-    };
-    allowed(found, config.service.check_access)
+    access::decide(&problems, config.service.check_access)?;
+    // The layers are the operator's, so the directory they name is made (as the node would make it) and checked.
+    let data = config.data_dir(environment);
+    let _ = std::fs::create_dir_all(&data);
+    let problems: Vec<_> = access::check(&data, Guarded::DataDir)
+        .err()
+        .into_iter()
+        .collect();
+    access::decide(&problems, config.service.check_access)?;
+    Ok(watched(found))
 }
 
-/// `found` as the operator's choice makes it: an access problem is an error only while `check_access` holds.
-fn allowed(found: Result<(), String>, check_access: bool) -> Result<(), String> {
-    match found {
-        Err(problem) if !check_access => {
-            tracing::warn!("serving anyway, as `check_access` is false: {problem}");
-            Ok(())
-        }
-        other => other,
-    }
+/// The layers whose peers are read again while serving: each layer read at start, and each that does not exist
+/// yet in a place no other account may change. One another account could make is left out until a restart
+/// checks it, since a layer made while serving is read unchecked.
+fn watched(found: &Found) -> Vec<PathBuf> {
+    let check_access = found.config().service.check_access;
+    found
+        .watch
+        .iter()
+        .filter(|file| {
+            if found.layered.files.contains(file) {
+                return true;
+            }
+            match access::may_appear(file) {
+                Ok(()) => true,
+                Err(problem) if problem.kind == access::Kind::Unknown && !check_access => {
+                    tracing::warn!(
+                        "{} is read if it is made, as `check_access` is false: {}",
+                        file.display(),
+                        problem.text
+                    );
+                    true
+                }
+                Err(problem) => {
+                    tracing::info!(
+                        "{} is not read until a restart if it is made: {}",
+                        file.display(),
+                        problem.text
+                    );
+                    false
+                }
+            }
+        })
+        .cloned()
+        .collect()
 }
 
 /// The peers a node dials, from the merged configuration: each id, endpoint text and dial settings. The text
@@ -148,8 +168,8 @@ pub(super) fn serve_endpoints(
                 .to_owned(),
         );
     }
-    let server = node(found, environment)?;
-    guard(&found.layered.files, config, environment)?;
+    let watch = guard(found, environment)?;
+    let server = node(found, watch, environment)?;
     let settings = config.link.settings();
     let mut listeners = Vec::new();
     for entry in entries {
@@ -482,9 +502,11 @@ fn pair_alone(found: &Found, environment: &Environment, args: &PairArgs) -> Resu
     }
     let data = Data::new(config.data_dir(environment));
     let identity = data.identity().map_err(|error| error.to_string())?;
-    let peers = LayeredPeers::new(found.watch.clone(), &data)
+    let watch = watched(found);
+    let create = found.create.clone().filter(|file| watch.contains(file));
+    let peers = LayeredPeers::new(watch, &data)
         .map_err(|error| error.to_string())?
-        .with_create(found.create.clone());
+        .with_create(create);
     let node = Node::new(
         config.node(),
         identity,
@@ -598,13 +620,28 @@ pub(super) fn join(args: &JoinArgs, environment: &Environment) -> Result<(), Str
 
 #[cfg(test)]
 mod tests {
-    use super::allowed;
+    use super::access::{Kind, Problem, decide};
+
+    fn problem(kind: Kind) -> Problem {
+        Problem {
+            kind,
+            text: "the data directory is open to every user".to_owned(),
+        }
+    }
 
     #[test]
     fn an_access_problem_is_an_error_until_the_operator_turns_the_check_off() {
-        let problem = || Err("the data directory is open to every user".to_owned());
-        assert!(allowed(problem(), true).is_err());
-        assert!(allowed(problem(), false).is_ok());
-        assert!(allowed(Ok(()), true).is_ok());
+        assert!(decide(&[problem(Kind::Open)], true).is_err());
+        assert!(decide(&[problem(Kind::Open)], false).is_ok());
+        assert!(decide(&[problem(Kind::Unknown)], false).is_ok());
+        assert!(decide(&[], true).is_ok());
+    }
+
+    /// Whoever owns a layer wrote what it says, `check_access = false` included, so a layer another account owns
+    /// cannot turn its own check off.
+    #[test]
+    fn a_path_another_account_owns_is_refused_even_when_the_check_is_off() {
+        assert!(decide(&[problem(Kind::Foreign)], false).is_err());
+        assert!(decide(&[problem(Kind::Open), problem(Kind::Foreign)], false).is_err());
     }
 }

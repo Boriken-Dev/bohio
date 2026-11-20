@@ -502,6 +502,61 @@ fn user_layer_false_in_the_system_file_leaves_the_user_file_out() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+/// Every command reads the system file, so one every user may change would choose any user's data directory
+/// (where its key is made), its control endpoint and the peers it trusts. Each command refuses it, unless the
+/// file says `check_access = false`: a file the operator owns may vouch for itself.
+#[cfg(windows)]
+#[test]
+fn every_command_refuses_a_system_file_every_user_may_change() {
+    let directory = scratch("system-open");
+    let (user_root, system_root) = (directory.join("user"), directory.join("system"));
+    std::fs::create_dir_all(&user_root).unwrap();
+    let planted_data = directory.join("planted-data");
+    let system = write_layer(
+        &system_root,
+        &format!("[service]\ndata_dir = '{}'\n", planted_data.display()),
+    );
+    let environment = locations(&user_root, &system_root);
+    let id = || bohio_in(&["id"], &environment);
+    let done = id();
+    assert_eq!(done.status.code(), Some(0), "{}", text(&done.stderr));
+
+    icacls(
+        system.parent().unwrap(),
+        &["/grant", "*S-1-5-32-545:(OI)(CI)M"],
+    );
+    std::fs::remove_dir_all(&planted_data).unwrap();
+    let refused = id();
+    assert_ne!(
+        refused.status.code(),
+        Some(0),
+        "a system file every user may change chose the data directory: {}",
+        text(&refused.stdout)
+    );
+    assert!(
+        text(&refused.stderr).contains("S-1-5-32-545"),
+        "{}",
+        text(&refused.stderr)
+    );
+    assert!(
+        !planted_data.exists(),
+        "the key was made where the planted file said"
+    );
+
+    std::fs::write(
+        &system,
+        format!(
+            "[service]\ndata_dir = '{}'\ncheck_access = false\n",
+            planted_data.display()
+        ),
+    )
+    .unwrap();
+    let vouched = id();
+    assert_eq!(vouched.status.code(), Some(0), "{}", text(&vouched.stderr));
+    icacls(&directory, &["/reset", "/T"]);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 /// A peer id, from a data directory of its own.
 fn made_id(directory: &Path, name: &str) -> String {
     let config = directory.join(format!("{name}.cfg"));
