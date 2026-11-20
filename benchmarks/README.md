@@ -132,5 +132,5 @@ and the controls do not move:
 | `raw_warm_down_64MiB` (control) | 5385 | 5385 | +0.0% |
 | `cpu_sha256_256MiB` (control) | 154.5 | 154.4 | -0.1% |
 
-`connect` moves between about 1000 and 1300 ms from one round to the next on both builds (a round trip, one way or the other):
-read it as noise.
+`connect` is either about 1000 or about 1300 ms (a round trip apart) and stays so within one job; two jobs of this change gave it
+to different builds, so it is a property of the job and not of a build.
