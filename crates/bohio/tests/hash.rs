@@ -305,30 +305,31 @@ fn seconds(link: &Link, path: &str) -> f64 {
 #[test]
 fn rate_holds_a_stream_to_the_configured_bytes_a_second() {
     const SIZE: usize = 16 * 1024 * 1024;
-    const RATE: u64 = 8 * 1024 * 1024;
     let data = pseudo(SIZE, 11);
+    let free = fixture(&READ);
+    std::fs::write(free.root.join("big.bin"), &data).unwrap();
+    // How long the work takes unlimited, here: the limit is chosen well below that speed (a quarter of it, and
+    // at most 8 MiB a second), so it and not the machine decides how long the hash takes.
+    let unlimited = seconds(&free.link, "big.bin");
+    let expected = (unlimited * 4.0).max(2.0);
+    let rate = (SIZE as f64 / expected) as u64;
     let limited = fixture_with(
         &READ,
         HashConfig {
-            rate: RATE,
+            rate,
             ..HashConfig::default()
         },
     );
-    let free = fixture(&READ);
-    for fixture in [&limited, &free] {
-        std::fs::write(fixture.root.join("big.bin"), &data).unwrap();
-    }
-    let expected = SIZE as f64 / RATE as f64;
+    std::fs::write(limited.root.join("big.bin"), &data).unwrap();
     let took = seconds(&limited.link, "big.bin");
     assert!(
         (expected * 0.8..=expected * 1.2).contains(&took),
-        "16 MiB at 8 MiB/s should take about {expected} s, took {took} s"
+        "16 MiB at {rate} B/s should take about {expected} s (unlimited: {unlimited} s), took {took} s"
     );
-    // The control: without a rate the same hash is far quicker, so the rate is what slowed it.
-    let unlimited = seconds(&free.link, "big.bin");
+    // The control: the same hash without the rate was far quicker, so the rate is what slowed it.
     assert!(
-        unlimited < expected / 2.0,
-        "unlimited took {unlimited} s, no quicker than the {expected} s limit"
+        took > unlimited * 2.0,
+        "the limit changed nothing: {took} s against {unlimited} s"
     );
 }
 
