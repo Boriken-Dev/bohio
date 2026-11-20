@@ -209,6 +209,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "bohio-bench"
+version = "0.0.0-alpha.0"
+dependencies = [
+ "bohio",
+ "bohio-client",
+ "bohio-proto",
+ "clap",
+ "coqui-link",
+ "coqui-transport",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sysinfo",
+]
+
+[[package]]
 name = "bohio-client"
 version = "0.0.0-alpha.0"
 dependencies = [
