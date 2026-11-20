@@ -70,12 +70,24 @@ pub(super) fn serve(args: &ServeArgs, environment: &Environment) -> Result<(), S
     )
 }
 
-/// Refuses to serve from a configuration file (`from`) or a data directory another user may change.
+/// Refuses to serve from a configuration file (`from`) or a data directory another user may change,
+/// unless `[service] check_access` is false: then what was found is logged and the host serves.
 fn guard(from: Option<&Path>, config: &Config, environment: &Environment) -> Result<(), String> {
-    if let Some(path) = from {
-        access::check(path, Guarded::Config)?;
+    let found = from
+        .map_or(Ok(()), |path| access::check(path, Guarded::Config))
+        .and_then(|()| access::check(&config.data_dir(environment), Guarded::DataDir));
+    allowed(found, config.service.check_access)
+}
+
+/// `found` as the operator's choice makes it: an access problem is an error only while `check_access` holds.
+fn allowed(found: Result<(), String>, check_access: bool) -> Result<(), String> {
+    match found {
+        Err(problem) if !check_access => {
+            tracing::warn!("serving anyway, as `check_access` is false: {problem}");
+            Ok(())
+        }
+        other => other,
     }
-    access::check(&config.data_dir(environment), Guarded::DataDir)
 }
 
 /// Binds every entry, prints what is listening, and serves them until `stop` is set. A host started
@@ -353,4 +365,17 @@ pub(super) fn join(args: &JoinArgs, environment: &Environment) -> Result<(), Str
         identity.peer_id()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::allowed;
+
+    #[test]
+    fn an_access_problem_is_an_error_until_the_operator_turns_the_check_off() {
+        let problem = || Err("the data directory is open to every user".to_owned());
+        assert!(allowed(problem(), true).is_err());
+        assert!(allowed(problem(), false).is_ok());
+        assert!(allowed(Ok(()), true).is_ok());
+    }
 }
