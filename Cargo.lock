@@ -249,7 +249,9 @@ dependencies = [
  "coqui-transport-serial",
  "coqui-transport-web",
  "rustls",
+ "socket2",
  "thiserror 2.0.21",
+ "tracing",
  "url",
  "x509-parser",
 ]
@@ -493,7 +495,7 @@ dependencies = [
 [[package]]
 name = "coqui-link"
 version = "0.0.0-alpha.0"
-source = "git+https://github.com/Boriken-Dev/coqui-link?rev=b35d665b6537ca84668a51d082ac35af90a7f0c1#b35d665b6537ca84668a51d082ac35af90a7f0c1"
+source = "git+https://github.com/Boriken-Dev/coqui-link?rev=128d5fd72fc66aafa59c7642b31b9a89cd8a0f80#128d5fd72fc66aafa59c7642b31b9a89cd8a0f80"
 dependencies = [
  "coqui-builder",
  "coqui-peer",
