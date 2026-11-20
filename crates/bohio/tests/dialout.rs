@@ -574,8 +574,10 @@ fn a_revoke_found_by_the_links_key_check_still_reaches_a_running_read_as_revoked
     assert!(
         said.contains("revoked") && !said.contains("wire format"),
         "the reader was not told it was revoked: {said}
-host log: {}",
-        up.host.stderr()
+host log: {}
+controller log: {}",
+        up.host.stderr(),
+        up.pair.controller_proc.stderr()
     );
 }
 

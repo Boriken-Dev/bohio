@@ -46,6 +46,19 @@ struct Shared {
 }
 
 impl Shared {
+    /// Tells every open stream its link ended: see [`Relay::link_ended`].
+    fn link_ended(&self) {
+        for open in self
+            .relays
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter_map(Weak::upgrade)
+        {
+            open.link_ended();
+        }
+    }
+
     fn close_relays(&self) {
         for open in self
             .relays
@@ -260,8 +273,9 @@ impl Opens {
             }
             drop(probe);
             self.shared.ended.store(true, Ordering::SeqCst);
-            // The link is over: whatever is still open is closed, so the scope can end.
-            self.shared.close_relays();
+            // The link is over. What each stream received and how it ended still reaches its reader, for at most `send_limit`
+            // each, so a transfer cut by a revoke reads as one and the scope can still end.
+            self.shared.link_ended();
         });
     }
 }

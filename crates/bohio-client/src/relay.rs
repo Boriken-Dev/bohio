@@ -45,6 +45,8 @@ struct State {
     outbound_bytes: usize,
     outbound_failed: Option<Failure>,
     closed: Option<Instant>,
+    /// When the stream's link ended: what the stream still holds is delivered to a reader that takes it, for at most `give_up`.
+    link_over: Option<Instant>,
 }
 
 /// What the writer thread finds next.
@@ -109,8 +111,25 @@ impl Relay {
                 self.changed.notify_all();
                 return true;
             }
-            state = self.wait(state, None).0;
+            // A reader that takes nothing for `give_up` after the link ended is not waited for any longer.
+            let until = state.link_over.map(|over| over + self.give_up);
+            let (next, expired) = self.wait(state, until);
+            state = next;
+            if expired {
+                state.closed.get_or_insert_with(Instant::now);
+                self.changed.notify_all();
+                return false;
+            }
         }
+    }
+
+    /// The stream's link has ended. Unlike [`Channel::close`] this keeps what the stream still holds for the reader, and the
+    /// way it ended (a revoke, a refusal), which the reader gets once it has taken the rest; a reader that does not take it
+    /// within `give_up` is dropped as one that closed.
+    pub(crate) fn link_ended(&self) {
+        let mut state = self.lock();
+        state.link_over.get_or_insert_with(Instant::now);
+        self.changed.notify_all();
     }
 
     fn end_inbound(&self, failure: Option<Failure>, cause: Option<StreamEnd>) {
