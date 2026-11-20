@@ -1,4 +1,4 @@
-# coqui-link/. at 517c5db0d6cd68960d0abe32327427e434cd1198, with what it inherits written out.
+# coqui-link/. at 50c768d942579c0612d7567f8815a590a943f887, with what it inherits written out.
 test = [{ name = "pairing", required-features = ["sealed"] }, { name = "interop", required-features = ["sealed", "forward"] }, { name = "asked", required-features = ["sealed"] }, { name = "shared", required-features = ["sealed"] }]
 [package]
 name = "coqui-link"
