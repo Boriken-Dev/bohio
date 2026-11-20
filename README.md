@@ -59,13 +59,13 @@ To serve a peer, on the host:
 
 ```text
 bohio serve --listen tcp://0.0.0.0:7620     # prints `listening tcp://...` and `host sha256:...`
-bohio pair --listen tcp://0.0.0.0:7621      # prints a PIN; waits for one peer to join with it
+bohio pair                                  # prints a PIN, armed on the node's own listeners; waits for one peer
 ```
 
 and on the peer:
 
 ```text
-bohio join tcp://host:7621 --pin 123456     # each side now keeps the other's key
+bohio join tcp://host:7620 --pin 123456     # any endpoint `remote` takes; each side now keeps the other's key
 bohio id                                    # the peer's id, for the host to approve
 ```
 
@@ -87,7 +87,7 @@ Every transport is one endpoint scheme; the proof, the grants and the engines ar
 | `stdio://program args`, `bohio remote --command "program args"` | the client starts a program and uses its standard streams |
 
 For example `bohio remote --command "docker exec -i box bohio serve --stdio" --server <host id> info`. A peer is
-approved by its id over any transport (`bohio peer approve`); pairing by PIN (`pair`, `join`) is TCP only.
+approved by its id over any transport (`bohio peer approve`), and pairing by PIN (`pair`, `join`) runs on the same listener a node serves, over every transport.
 
 ## Command line
 

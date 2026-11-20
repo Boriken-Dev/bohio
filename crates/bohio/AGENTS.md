@@ -17,7 +17,7 @@ Imports: the root holds `Config`, `ConfigError`, `Environment`, `Grant`, `Peers`
 `config`, `control`, `exec`, `fs`, `info`, `limit`, `link`, `listen`, `node`, `peer`, `policy`, `shell`, `cli` (feature `cli`). No `unsafe` code
 (`#![forbid(unsafe_code)]`). The library prints nothing, reads no environment variable and installs no logger; it starts threads only inside
 `exec::serve`, `shell::serve`, the transfer and control engines, `node::Node` (a thread per connection, per stream and per relay) and
-`peer::pair`.
+`pair::Armed` waits and the pairing a node answers.
 
 ## Configuration (`bohio::config`)
 
@@ -27,9 +27,9 @@ pub struct Environment { pub windows: bool, pub local_app_data: Option<PathBuf>,
 impl Environment { pub fn default_data_dir(&self) -> PathBuf; }
 
 pub struct Config { pub service: ServiceConfig, pub listen: Vec<ListenConfig>, pub link: LinkConfig, pub filesystem: FilesystemConfig,
-                    pub execution: ExecutionConfig, pub shell: ShellConfig, pub peer: Peers }     // Default; unknown keys refused; `peer` is `[peer.<id>]`
+                    pub execution: ExecutionConfig, pub shell: ShellConfig, pub pairing: PairingConfig, pub control: ControlConfig, pub peer: Peers }     // Default; unknown keys refused; `peer` is `[peer.<id>]`
 pub struct NodeConfig { pub name: String, pub link: LinkConfig, pub filesystem: FilesystemConfig,
-                        pub execution: ExecutionConfig, pub shell: ShellConfig }   // Default, Deserialize, unknown keys refused: what a Node runs on, read by an app from any section of its own settings
+                        pub execution: ExecutionConfig, pub shell: ShellConfig, pub pairing: PairingConfig }   // Default, Deserialize, unknown keys refused: what a Node runs on, read by an app from any section of its own settings
 impl NodeConfig { pub fn validate(&self, label: &str) -> Result<(), ConfigError>; }   // every range check; `Node::new` calls it
 impl Config {
     pub fn node(&self) -> NodeConfig;                                            // `[service] name`, `[link]`, `[filesystem]`, `[execution]`, `[shell]`
@@ -70,11 +70,16 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[link] max_connections` | `128` | links open at once across peers, those still proving included; one past it is closed unread; at least 1 |
 | `[link] max_unproven_per_source` | `16` | connections from one source (an IPv4 address or an IPv6 /64) still proving themselves; one past it is closed unread; a pipe, serial line or stdio link has no source; at least 1 |
 | `[link] max_links_per_peer` | `16` | links one proven peer may have open; one past it is closed after its proof; at least 1 |
-| `[link] proof_timeout` | `10s` | how long a peer has to prove itself; not zero |
 | `[link] window` | `1048576` | bytes a peer may send on one stream ahead of what the host has read (the credit window); at least 1. Not negotiated: each sender starts a stream with its own as credit, so keep it equal on both sides (a side whose window is larger can end the other's streams as broken; each side logs a difference in `window` or `max_frame` that the peer's `link/1` shows, once per link, and refuses nothing). One stream moves at most `window` per round trip |
 | `[link] bulk_window` | unset (`window`) | the receive window this side grants a bulk stream it receives: a client's `bohio-read/1`, a host's `bohio-write/1`; widens a stream by granting credit, so it may differ between sides and needs no change at the peer; at most `max_window`; a value below `window` changes nothing; costs that much memory for each bulk stream whose reader falls behind |
 | `[link] max_window` | unset (the larger of `window` and `bulk_window`) | the most a stream's receive window may grow to, by `bulk_window` or `auto_window`; at least 1; at least `window`, and at least `bulk_window` |
 | `[link] auto_window` | `false` | grows a stream's window by itself while data arrives (one `ping` per round trip; a stream that received over two thirds of its window before the `pong` doubles it, up to `max_window`); never shrinks; does nothing unless `max_window` is above `window` |
+| `[link] proof_timeout` | `10s` | how long a peer has to prove itself, or to pair; not zero |
+| `[pairing] timeout` | `5m` | how long an armed PIN lasts when its request names no time; not zero |
+| `[pairing] max_attempts` | `10` | wrong guesses a PIN takes before it is used up (the last allowed one uses it up); `0` is no limit, the PIN then lasts until `timeout`; the odds with the defaults are `10 / 10^6` per armed PIN (`docs/security.md`) |
+| `[pairing] attempt_delay` | `1s` | how long a source waits after a wrong guess; doubles at each further one from it up to `attempt_delay_max`; a source that tries sooner is refused without a try; `0` is no wait |
+| `[pairing] attempt_delay_max` | `30s` | the longest wait; at least `attempt_delay` |
+| `[pairing] pin_length` | `6` | digits in a PIN; at least 1 |
 | `[link] max_frame` | `65536` | most bytes of one message in one frame (a longer message is sent in parts); at least 1 |
 | `[link] max_metadata` | `4096` | most metadata one open may carry; an open with more is refused; at least 1 |
 | `[link] max_pending_opens` | `8` | streams a peer may have opened that nothing has accepted yet; at least 1 |
@@ -297,6 +302,8 @@ impl Node {
     pub fn new(config: NodeConfig, identity: Identity, keys: Arc<dyn Keys>, grants: Arc<dyn Grants>) -> Result<Self, NodeError>;   // validates `config`; the proof is built once over `keys`
     pub fn with_events(self, events: Arc<dyn NodeEvents>) -> Self;  // default `LogEvents`
     pub fn with_path(self, path: OsString) -> Self;                 // the host's own PATH: programs, shells and `info`; default empty
+    pub fn with_pairing(self, store: coqui_peer::TrustStore) -> Result<Self, NodeError>;   // lets the node pair on its own listeners (the store `respond` accepts a joiner in); without it every joiner is closed unanswered
+    pub fn arm_pairing(&self, lifetime: Option<Duration>) -> Result<Armed, NodeError>;   // a new PIN (replacing the armed one), `[pairing] timeout` when None; Pairing error without a store or for a zero lifetime
     pub const fn host(&self) -> coqui_peer::PeerId;
     pub fn serve_listening(&self, listening: &Listening, stop: &AtomicBool) -> io::Result<()>;   // accepts until `stop`; a thread per connection (a serial line: one link at a time, the port reopened after each)
     pub fn serve_stdio(&self) -> io::Result<()>;                   // the one link on standard input and output; nothing else may write to standard output
@@ -307,14 +314,16 @@ impl Node {
     pub fn links(&self) -> Vec<LinkInfo>;                           // every link that is up, oldest first
     pub fn run_dial(&self, peer: &PeerId, endpoint: &str, dial: &DialConfig, stop: &AtomicBool);   // keeps a link to `peer` at `endpoint` (text, read again at each attempt) until `stop`: dials, serves, waits (retry_min x retry_factor per failure, up to retry_max, with jitter), repeats; no dial while an up link to the peer exists
 }
-#[non_exhaustive] pub enum NodeError { Config(ConfigError), Proof(String), Listen { endpoint, reason }, Dial { endpoint, reason }, Stranger { peer } }   // Dial: the path or the proof failed; Stranger: the dialed key proved itself and Keys do not accept it
+#[non_exhaustive] pub enum NodeError { Config(ConfigError), Proof(String), Pairing(String), Listen { endpoint, reason }, Dial { endpoint, reason }, Stranger { peer } }   // Dial: the path or the proof failed; Stranger: the dialed key proved itself and Keys do not accept it
 #[non_exhaustive] pub struct LinkInfo { pub peer: PeerId, pub side: Side, pub endpoint: Option<String>, pub source: Option<SocketAddr>, pub since: SystemTime, pub mine: Vec<String> }   // `mine`: the tokens this node offers the peer now, computed when asked   // `side` (Dialed or Answered) decides nothing
 #[derive(Clone)] pub struct PeerLink;                              // Debug; bohio_client::Open (Error::Closed once the link ended); peer(), is_up(), offers(wait) -> Result<Vec<String>, bohio_client::Error> (the peer's `link/1` offers now)
 
 pub trait Keys: Send + Sync {
     fn is_accepted(&self, peer: &PeerId) -> bool;                  // the proof, every stream decision and the link's check every `2 x recheck`
     fn stranger(&self, peer: &PeerId, key: &KeyMaterial, source: Option<SocketAddr>) {}   // a proven key that was refused; default ignores
+    fn paired(&self, peer: &PeerId, key: &KeyMaterial) -> Result<(), KeysError> {}   // a key that paired by the armed PIN: record it as accepted, holding nothing; the default errors, so such keys pair nobody (`MemoryKeys` accepts it, `LayeredPeers` writes `[peer.<id>]`)
 }
+pub struct KeysError;                                              // KeysError::new(reason)
 pub trait Grants: Send + Sync {
     fn grant(&self, peer: &PeerId) -> Result<Grant, GrantsError>;  // asked at every open, every recheck and every `bohio/1` call; an error refuses
 }
@@ -323,8 +332,11 @@ pub struct MemoryKeys;                                             // new(), acc
 pub struct MemoryGrants;                                           // new(), set(PeerId, Grant), remove(&PeerId) -> bool; FromIterator<(PeerId, Grant)>; no entry: Grant::none()
 
 pub trait NodeEvents: Send + Sync { fn event(&self, event: &NodeEvent); }   // runs on the link's thread: return quickly
-#[non_exhaustive] pub enum NodeEvent { LinkUp { peer, side }, LinkDown { peer }, Opened { peer, protocol }, Refused { peer, protocol }, Revoked { peer, protocol }, Dialing { peer, endpoint }, DialFailed { peer, endpoint, reason, retry_in }, Stranger { peer, source } }   // an id, a protocol, an address: never a key, PIN or request
+#[non_exhaustive] pub enum NodeEvent { LinkUp { peer, side }, LinkDown { peer }, Opened { peer, protocol }, Refused { peer, protocol }, Revoked { peer, protocol }, Dialing { peer, endpoint }, DialFailed { peer, endpoint, reason, retry_in }, Paired { peer }, PairingRefused { source, attempts, reason }, Stranger { peer, source } }   // an id, a protocol, an address: never a key, PIN or request
 pub struct LogEvents;                                              // the default: log lines
+
+pub mod pair;   // Armed { pin(), lifetime(), wait(up_to) -> Option<PairEnd>, withdraw() } (Debug hides the PIN); #[non_exhaustive] PairEnd { Paired(PeerId), Expired, UsedUp, Replaced, Withdrawn, Failed(String) }
+// PairingConfig { timeout, max_attempts, attempt_delay, attempt_delay_max, pin_length } is `[pairing]`; one PIN at a time, in memory; a connection's first message `coqui_link::pairing::MARKER` makes it a pairing (else a proof)
 
 pub const PROTOCOLS: [(&str, &[Permission]); 5];                   // each protocol with the permissions of which a peer needs one to open it
 pub struct NodePeers;                                              // coqui_link::peers::PeerStore over `Keys` and `Grants`: NodePeers::new(keys, grants); an accepted key may open each protocol its grant holds a permission for, which is what `link/1` offers it
@@ -338,8 +350,7 @@ pub struct LayeredPeers;                                           // Keys + Gra
 pub fn list(files: &[PathBuf], data: &Data) -> Result<Listing, PeerError>;   // Listing { accepted: Vec<Accepted{id, grant, endpoint}>, waiting: Vec<Waiting{id, source}> }
 pub fn approve(files: &[PathBuf], create: Option<&Path>, data: &Data, id: &PeerId, grant: Option<&Grant>, endpoint: Option<&str>) -> Result<Approved, PeerError>;   // Approved { file, made }
 pub fn revoke(files: &[PathBuf], data: &Data, id: &PeerId) -> Result<Revoked, PeerError>;   // Revoked { files, unwritable, key }; NoSuchPeer when nothing was removed and no layer holds it
-pub fn pair(data: &Data, listener: &TcpListener, settings: &Settings, timeout: Duration, shown: impl FnOnce(&str)) -> Result<PeerId, PeerError>;
-#[non_exhaustive] pub enum PeerError { Identity(String), Store(String), Config(ConfigError), Write(String), NoLayer, NoSuchPeer, Pairing(String) }
+#[non_exhaustive] pub enum PeerError { Identity(String), Store(String), Config(ConfigError), Write(String), NoLayer, NoSuchPeer }
 ```
 
 A `Node` is made from what its caller supplies and reads no file or environment variable: settings (`NodeConfig`), an identity, `Keys` and `Grants`. An app
@@ -378,9 +389,8 @@ error when it cannot be written), else the last of `files` this account can writ
 the id's waiting entry and never changes an existing table unless a grant is given. `revoke` removes the table from every layer that holds it and its waiting entry,
 and names (in `Revoked::unwritable`) a layer it cannot write: the key stays accepted there. A running stream ends at the next re-check. A file is replaced
 atomically through a temporary sibling, keeping its mode on Unix and taking its directory's inherited access list on Windows; two commands run at the same
-instant can lose one change. `pair` shows one PIN, once (`shown` is called with it; it is never logged), and stores the one peer that joins with it; the command
-then calls `approve` (no grant), which moves the key into the configuration as a `[peer.<id>]` table. The joiner does the same with the host's key, so it trusts the
-host through its own `[peer.<host>]` table. A wrong PIN uses the PIN up.
+instant can lose one change. `LayeredPeers::paired` (`Keys::paired`) is how a node records a peer that paired: it calls `approve` (no grant), which writes a `[peer.<id>]` table (`LayeredPeers::with_create` names the file to make). The joiner does the
+same with the host's key, so it trusts the host through its own `[peer.<host>]` table.
 
 ## Listeners (`bohio::listen`)
 
@@ -414,13 +424,13 @@ impl Node {
     pub fn serve_local(&self, local: &Local, stop: &AtomicBool) -> io::Result<()>;   // accepts local clients until `stop`; a client that is not this user is closed unread unless the operator set socket_mode, socket_group or security_descriptor
     pub fn serve_local_channel<C: Channel>(&self, channel: &C, stop: Option<&AtomicBool>);   // one client on an unproven, framed channel, unsealed
 }
-pub struct LocalLink;                                              // Debug; Drop ends it. LocalLink::connect(&Endpoint, &Settings) -> Result<Self, Error>; links(wait: Duration) -> Result<bohio_proto::local::LinksReply, Error>
+pub struct LocalLink;                                              // Debug; Drop ends it. LocalLink::connect(&Endpoint, &Settings) -> Result<Self, Error>; pair(lifetime: Option<Duration>) -> Result<bohio::local::Pairing, Error> (pin(), lifetime(), wait(self) -> Result<PairReply, Error>; dropping it withdraws the PIN); links(wait: Duration) -> Result<bohio_proto::local::LinksReply, Error>
 pub struct Via;                                                    // Debug; bohio_client::Open. Via::connect(&Endpoint, &PeerId, &Settings) -> Result<Self, Error>; links(wait)
 pub fn since(entry: &LinkEntry) -> SystemTime;
 pub struct ControlConfig { pub enabled: Option<bool> /*true*/, pub endpoint: Option<String>, pub socket_mode: Option<String> /*"0o600"*/, pub socket_group: Option<String>, pub security_descriptor: Option<String> }   // `[control]`; endpoint_for(&PeerId) is `pipe://bohio-` and the first 16 hex digits of the id
 ```
 
-The node serves `bohio-via/1` and `bohio-links/1` (CDDL in `docs/protocol.md`, types in `bohio_proto::local`) on this endpoint only, never on a peer's link. `bohio-via/1`
+The node serves `bohio-via/1`, `bohio-links/1` and `bohio-pair/1` (CDDL in `docs/protocol.md`, types in `bohio_proto::local`) on this endpoint only, never on a peer's link. `bohio-via/1`
 opens the named protocol on the node's oldest up link to the peer (`Node::peer`) and passes messages both ways; the peer's refusal or revoke closes the local stream with the
 same reason and text (`bohio_client::connect::Opened::end`, `Relay::end`); no link is `refused` with "no link to that peer". The endpoint holds what every peer grants this node:
 it is as sensitive as the key file, and the same-user check is defence in depth, not a replacement for the socket's own access. `bohio serve` binds it unless `[control] enabled = false`
@@ -451,8 +461,8 @@ a person or a script reads is printed to standard output and flushed; diagnostic
 | `peer list` | `accepted <id> allow: ...` (then ` dial: <endpoint>` when the table has one) and `waiting <id> from <ip>` lines |
 | `peer approve <id> [--allow P,P] [--fs-root DIR]... [--program NAME]... [--env VAR]... [--endpoint ENDPOINT]` | `--endpoint` writes the table's `endpoint` (this node then dials the peer; a table that is replaced keeps its `endpoint` and `[dial]`); accepts a peer by id (waiting, paired or new): writes its `[peer.<id>]` table to a layer and prints `wrote <file>`; any of `--allow`, `--fs-root` and `--program` replaces its whole table, none leaves an existing one; `--env` (with `--program`) names the variables its requests may change |
 | `peer revoke <id>` | removes the table from every layer that holds it (naming any layer it cannot write) and its waiting entry; running streams end within `[link] recheck` |
-| `pair [--listen ENDPOINT] [--timeout TIME]` | prints `pairing on <endpoint>`, `host <id>`, `pin <PIN>` (default `tcp://127.0.0.1:0`, `5m`), waits for one peer, prints `paired <id>` and `wrote <file>`: the joiner's key is accepted as a `[peer.<id>]` table, holding nothing |
-| `join <endpoint> [--pin PIN]` | pairs with a host that shows a PIN (the PIN is read from standard input when absent); each side writes the other's key as a `[peer.<id>]` table into its layers; the joiner holds nothing until approved |
+| `pair [--timeout TIME] [--listen ENDPOINT]` | arms a PIN: on the running node through `[control]` (`bohio-pair/1`), or, when none runs, by serving pairing alone on the `[[listen]]` entries (the ports `serve` uses; the node accepts nobody else meanwhile). Prints `pairing on <endpoint>` for each entry, `host <id>` and `pin <PIN>`, waits for one peer, prints `paired <id>`: the joiner's key is accepted as a `[peer.<id>]` table, holding nothing. `--timeout` is the PIN's lifetime (default `[pairing] timeout`); `--listen` is only for a configuration with no `[[listen]]` entry, and is refused when it has some |
+| `join <endpoint> [--pin PIN] [--ca FILE]... [--cert-hash HASH]... [--clock-skew SPAN] [--fallback ENDPOINT]` | pairs with a host that shows a PIN over any endpoint `remote` takes (the PIN is read from standard input when absent; the TLS options are `remote`'s); each side writes the other's key as a `[peer.<id>]` table into its layers; the joiner holds nothing until approved |
 | `service install [--config FILE] [--name NAME] [--account ACCOUNT]` | Windows: registers the service `NAME` (default `bohio`), automatic start, as `ACCOUNT` (default `NT AUTHORITY\LocalService`), running `bohio service run --name NAME [--config ABSOLUTE FILE]`; needs an elevated prompt (`access denied: run this from an elevated prompt` otherwise); elsewhere an error naming the systemd unit |
 | `service uninstall [--name NAME]` | Windows: stops and deletes the service |
 | `service run [--config FILE] [--name NAME]` | Windows: the service's entry point, started by the service manager (a person running it gets a one-line explanation); serves the configured `[[listen]]` endpoints until the manager sends stop or shutdown, then reports stopped and the process exits, which closes the job objects that end every process it started |

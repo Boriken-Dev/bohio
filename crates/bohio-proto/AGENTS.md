@@ -156,7 +156,9 @@ directly and never through a shell; `Command::Shell` is only for a caller that c
 Spoken only on a running node's local endpoint, never on a peer's link (CDDL in `docs/protocol.md`, "Local control").
 
 ```rust
-pub const VIA: &str = "bohio-via/1";   pub const LINKS: &str = "bohio-links/1";
+pub const VIA: &str = "bohio-via/1";   pub const LINKS: &str = "bohio-links/1";   pub const PAIR: &str = "bohio-pair/1";
+pub struct PairRequest { lifetime_ms: Option<u64> }   // Default; to_metadata(), from_metadata (empty is the default)
+pub enum PairReply { Armed { pin: String, lifetime_ms: u64 }, Paired { peer: String }, Ended { reason: String } }   // encode(), decode(&[u8]); first Armed, then Paired or Ended
 pub struct ViaRequest { peer: String, protocol: String, metadata: Vec<u8> /* a CBOR byte string */ }   // to_metadata(), from_metadata(&[u8])
 pub struct LinksRequest { wait_ms: Option<u64> }   // Default; to_metadata(), from_metadata (empty is the default)
 pub struct LinkEntry { peer, side: String /* dialed|answered */, endpoint: Option<String>, source: Option<String>, since: u64, mine: Vec<String>, theirs: Option<Vec<String>> }

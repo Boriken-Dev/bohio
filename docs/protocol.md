@@ -263,10 +263,14 @@ A link has two ends and no fixed roles: either side may open streams on it, and 
 
 ## Local control
 
-A running node holds links, including links a peer dialed, and only the node can open streams on them. It therefore listens on a local endpoint (`[control] endpoint`, a `pipe://` one, by default `pipe://bohio-` and the first 16 hex digits of the node's id, this user alone) and serves two protocols there. They are never served on a peer's link and are not offered in a peer's `link/1` document. The link on this endpoint is a mux without the proof or the seal: who can connect is the boundary, as for the key file, and with no `socket_mode`, `socket_group` or `security_descriptor` set a client that the system does not say is this user is closed unread.
+A running node holds links, including links a peer dialed, and only the node can open streams on them. It therefore listens on a local endpoint (`[control] endpoint`, a `pipe://` one, by default `pipe://bohio-` and the first 16 hex digits of the node's id, this user alone) and serves two protocols there. `bohio-pair/1` (below) arms the node's pairing PIN. They are never served on a peer's link and are not offered in a peer's `link/1` document. The link on this endpoint is a mux without the proof or the seal: who can connect is the boundary, as for the key file, and with no `socket_mode`, `socket_group` or `security_descriptor` set a client that the system does not say is this user is closed unread.
 
 ```text
 via-request   = { peer: text, protocol: text, ? metadata: bstr }   ; metadata defaults to empty
+pair-request  = { ? lifetime_ms: opt<uint> }                       ; empty metadata is the same as {}
+pair-reply    = { armed: { pin: text, lifetime_ms: uint } }        ; first, always
+              / { paired: { peer: text } }                         ; then one of these two, then the end
+              / { ended: { reason: text } }
 links-request = { ? wait_ms: opt<uint> }                           ; empty metadata is the same as {}
 links-reply   = { links: [* link-entry] }                          ; oldest first
 link-entry    = { peer: text, side: "dialed" / "answered", ? endpoint: opt<text>, ? source: opt<text>,
@@ -276,6 +280,10 @@ link-entry    = { peer: text, side: "dialed" / "answered", ? endpoint: opt<text>
 `bohio-via/1`: the open's metadata is a `via-request`. The node opens `protocol` with `metadata` unchanged on its oldest link that is up to `peer` and passes every message both ways unchanged, so the local client speaks that protocol exactly as it would over a direct link. What the peer grants this node decides the stream: a refusal or a revoke by the peer closes the local stream with the same reason (`refused`, `revoked`, `superseded`) and text. A peer the node has no link to is `refused` with the text "no link to that peer".
 
 `bohio-links/1`: the open's metadata is a `links-request`; the node sends one `links-reply`, then finishes the stream. `mine` is what this node offers that peer now, `theirs` what the peer's `link/1` document offered when read just now (absent when it did not answer within `wait_ms`, default the node's `[link] proof_timeout`), `since` is in seconds since the Unix epoch, and `side` says which end dialed.
+
+`bohio-pair/1`: the open's metadata is a `pair-request`. The node arms one PIN, in memory, replacing the one armed before (that request then ends as `replaced`), and sends `armed` with the PIN and how long it lasts (`lifetime_ms` of the request, else `[pairing] timeout`). A joiner on any of the node's listeners may then try it; when a peer pairs the node writes its `[peer.<id>]` table, holding nothing, and sends `paired`; otherwise it sends `ended` with why (expired, used up by `max_attempts` wrong guesses, replaced, or withdrawn) and finishes the stream. A client that closes the stream withdraws the PIN. A node that cannot pair answers `ended` at once. The PIN is in no log or event.
+
+A joiner on a listener sends one message first, `coqui-link/pairing/1`, which is neither a Noise first message (32 bytes) nor a WebCrypto one (JSON): the node reads the first message of every connection and runs a pairing on that marker and a proof on anything else.
 
 ## Vectors
 

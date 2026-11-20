@@ -24,13 +24,13 @@ On the host:
 
 ```bash
 bohio serve --listen tcp://0.0.0.0:7620
-bohio pair --listen tcp://0.0.0.0:7621
+bohio pair
 ```
 
 On a peer, with the PIN `pair` shows:
 
 ```bash
-bohio join tcp://host.example:7621 --pin 123456
+bohio join tcp://host.example:7620 --pin 123456
 bohio id
 ```
 
