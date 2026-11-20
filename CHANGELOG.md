@@ -7,8 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `bohio::node::Node`, an embeddable host: it is made from a `NodeConfig`, an identity, `Keys` (who is accepted) and `Grants`
+  (what each may do) the caller supplies, and reads no file, environment variable or process-wide state, so an application runs
+  one from settings kept anywhere. `MemoryKeys` and `MemoryGrants` are in-memory implementations whose changes apply at the next
+  open or `[link] recheck`; `NodeEvents` (default `LogEvents`) reports link and stream events. `Config::node()` and
+  `NodeConfig::validate` give and check the settings a node runs on.
+
 ### Changed
 
+- `serve::Server` is replaced by `node::Node` (no alias), `serve::ServeError` by `node::NodeError`, `link::TrustPeers` by
+  `link::NodePeers`, and `link::admission` and `link::grant_of` take `Grants` where they took the path of `peers.cfg`. The command
+  keeps the trust store and `peers.cfg` behind the two traits (`peer::FilePeers`). `info::collect` takes a `NodeConfig` and the
+  host's `PATH`.
 - Choices the operator may make are no longer refusals; each keeps its strict default and says in the docs what it costs.
   `--fallback ENDPOINT` takes a `ws://` endpoint on any address (it used to be loopback only) and one on another host than the
   `webtransport://` endpoint; naming it is the choice. `tls_valid_days` takes any value from 1 (it was 1 to 14): a certificate valid

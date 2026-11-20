@@ -112,9 +112,9 @@ who may do what; `bohio pair` shows a PIN and accepts the one peer that joins wi
 | `policy` | `peers.cfg`: `Policies`, `Grant` and `Permission` |
 | `exec` | serves one `bohio-exec/1` stream |
 | `info` | this host's capabilities |
-| `link` | who may open which protocol: the trust store as a peer store, `peers.cfg` as admission |
+| `link` | who may open which protocol: the `Keys` and `Grants` a node asks, their in-memory forms, admission and `NodeEvents` |
 | `peer` | the data directory, the identity, `list`, `approve`, `revoke` and PIN pairing |
-| `serve` | `Server`: accepts links, proves peers and runs each stream's engine |
+| `node` | `Node`: an embeddable host made from settings, an identity, `Keys` and `Grants` the caller supplies; accepts links, proves peers and runs each stream's engine |
 | `limit` | a counted bound on concurrent work |
 | `cli` | the command line (feature `cli`) |
 

@@ -14,9 +14,9 @@ MSRV Rust 1.89. A library-only build (`default-features = false`) depends on `bo
 `win32job` (Windows). Version `0.0.0-alpha.0`, not published.
 
 Imports: the root holds `Config`, `ConfigError`, `Environment`, `Grant`, `Permission`, `Policies`, `PolicyError`. Public modules:
-`config`, `control`, `exec`, `fs`, `info`, `limit`, `link`, `listen`, `peer`, `policy`, `serve`, `shell`, `cli` (feature `cli`). No `unsafe` code
+`config`, `control`, `exec`, `fs`, `info`, `limit`, `link`, `listen`, `node`, `peer`, `policy`, `shell`, `cli` (feature `cli`). No `unsafe` code
 (`#![forbid(unsafe_code)]`). The library prints nothing, reads no environment variable and installs no logger; it starts threads only inside
-`exec::serve`, `shell::serve`, the transfer and control engines, `serve::Server` (a thread per connection, per stream and per relay) and
+`exec::serve`, `shell::serve`, the transfer and control engines, `node::Node` (a thread per connection, per stream and per relay) and
 `peer::pair`.
 
 ## Configuration (`bohio::config`)
@@ -29,7 +29,11 @@ impl Environment { pub fn config_candidates(&self) -> Vec<PathBuf>; pub fn defau
 
 pub struct Config { pub service: ServiceConfig, pub listen: Vec<ListenConfig>, pub link: LinkConfig, pub filesystem: FilesystemConfig,
                     pub execution: ExecutionConfig, pub shell: ShellConfig }     // Default; unknown keys refused
+pub struct NodeConfig { pub name: String, pub link: LinkConfig, pub filesystem: FilesystemConfig,
+                        pub execution: ExecutionConfig, pub shell: ShellConfig }   // Default, Deserialize, unknown keys refused: what a Node runs on, read by an app from any section of its own settings
+impl NodeConfig { pub fn validate(&self, label: &str) -> Result<(), ConfigError>; }   // every range check; `Node::new` calls it
 impl Config {
+    pub fn node(&self) -> NodeConfig;                                            // `[service] name`, `[link]`, `[filesystem]`, `[execution]`, `[shell]`
     pub fn from_toml(text: &str, path: &str) -> Result<Self, ConfigError>;       // `path` only labels errors
     pub fn load(path: &Path) -> Result<Self, ConfigError>;
     pub fn locate(explicit: Option<&Path>, environment: &Environment) -> Result<(Self, Option<PathBuf>), ConfigError>;
@@ -232,40 +236,57 @@ Serves one `bohio/1` stream until the peer closes it or it fails, answering each
 (version 0 is `bad_request`; the answer is the lower of the two versions), `info` needs `info`, filesystem calls as above. A request
 that cannot be read is answered with id `0` and `bad_request`; a reply too large for the stream is replaced by an `internal` error.
 With `current`, each call is decided by the grant it returns at that call (its error answers the call), so a grant narrowed while the
-stream is open applies to the next call; without it `filesystem.grant` is used throughout. `serve::Server` always passes `current`.
+stream is open applies to the next call; without it `filesystem.grant` is used throughout. `node::Node` always passes `current`.
 
 ## Capabilities (`bohio::info`)
 
 ```rust
-pub fn collect(config: &Config, environment: &Environment) -> bohio_proto::info::Info;
+pub fn collect(config: &NodeConfig, path: &OsStr) -> bohio_proto::info::Info;
 ```
 
-The operating system and architecture, the shells found on `environment.path` (`sh`, `bash`, `zsh`, `cmd`, `powershell`,
+The operating system and architecture, the shells found on `path` (`sh`, `bash`, `zsh`, `cmd`, `powershell`,
 `pwsh`), the filesystem features (`unix_modes` on Unix, `windows_attributes` on Windows, `case_sensitive` off on Windows and
 macOS, the native separator), whether execution and shells are enabled, and the configured bounds. `host_id` is `None`.
 
-## The link (`bohio::serve`, `bohio::link`, `bohio::peer`)
+## The node (`bohio::node`, `bohio::link`, `bohio::peer`)
 
 ```rust
 pub use bohio_client::dial::Endpoint;                              // the endpoint text of every transport: see bohio-client's header
-pub struct Server;                                                 // Debug
-impl Server {
-    pub fn new(config: &Config, environment: &Environment) -> Result<Self, ServeError>;   // opens or makes the identity and trust store in the data directory
+pub struct Node;                                                   // Debug; no path, CLI or process-wide state is needed
+impl Node {
+    pub fn new(config: NodeConfig, identity: Identity, keys: Arc<dyn Keys>, grants: Arc<dyn Grants>) -> Result<Self, NodeError>;   // validates `config`; the proof is built once over `keys`
+    pub fn with_events(self, events: Arc<dyn NodeEvents>) -> Self;  // default `LogEvents`
+    pub fn with_path(self, path: OsString) -> Self;                 // the host's own PATH: programs, shells and `info`; default empty
     pub const fn host(&self) -> coqui_peer::PeerId;
     pub fn serve_listening(&self, listening: &Listening, stop: &AtomicBool) -> io::Result<()>;   // accepts until `stop`; a thread per connection (a serial line: one link at a time, the port reopened after each)
     pub fn serve_stdio(&self) -> io::Result<()>;                   // the one link on standard input and output; nothing else may write to standard output
     pub fn serve_channel<C: Channel>(&self, channel: &C, source: Option<SocketAddr>);   // proves the peer on any unproven channel, serves its link to the end (at most max_links_per_peer per peer); the caller closes it
 }
-#[non_exhaustive] pub enum ServeError { Peer(PeerError), Proof(String), Listen { endpoint, reason } }
+#[non_exhaustive] pub enum NodeError { Config(ConfigError), Proof(String), Listen { endpoint, reason } }
+
+pub trait Keys: Send + Sync {
+    fn is_accepted(&self, peer: &PeerId) -> bool;                  // the proof, every stream decision and the link's check every `2 x recheck`
+    fn stranger(&self, peer: &PeerId, key: &KeyMaterial, source: Option<SocketAddr>) {}   // a proven key that was refused; default ignores
+}
+pub trait Grants: Send + Sync {
+    fn grant(&self, peer: &PeerId) -> Result<Grant, GrantsError>;  // asked at every open, every recheck and every `bohio/1` call; an error refuses
+}
+pub struct GrantsError;                                            // GrantsError::new(reason); Display is the reason
+pub struct MemoryKeys;                                             // new(), accept(PeerId), remove(&PeerId) -> bool; FromIterator<PeerId>
+pub struct MemoryGrants;                                           // new(), set(PeerId, Grant), remove(&PeerId) -> bool; FromIterator<(PeerId, Grant)>; no entry: Grant::none()
+
+pub trait NodeEvents: Send + Sync { fn event(&self, event: &NodeEvent); }   // runs on the link's thread: return quickly
+#[non_exhaustive] pub enum NodeEvent { LinkUp { peer, side }, LinkDown { peer }, Opened { peer, protocol }, Refused { peer, protocol }, Revoked { peer, protocol }, Stranger { peer, source } }   // an id, a protocol, an address: never a key, PIN or request
+pub struct LogEvents;                                              // the default: log lines
 
 pub const PROTOCOLS: [(&str, &[Permission]); 5];                   // each protocol with the permissions of which a peer needs one to open it
-pub struct TrustPeers;                                             // coqui_link::peers::PeerStore over the trust store: an accepted key may open every protocol
-pub fn admission(policy: PathBuf, protocol: &'static str) -> coqui_link::link::Admission;   // reads peers.cfg afresh each call
+pub struct NodePeers;                                              // coqui_link::peers::PeerStore over `Keys`: an accepted key may open every protocol
+pub fn admission(grants: Arc<dyn Grants>, protocol: &'static str) -> coqui_link::link::Admission;   // asks `grants` afresh each call
 pub fn covers(grant: &Grant, protocol: &str, metadata: &[u8]) -> bool;   // the grant still covers what the open asked for
-pub fn grant_of(policy: &Path, peer: &str) -> Result<Grant, String>;
-pub struct LogEvents;                                              // link events as log lines: a peer id and a protocol name, nothing else
+pub fn grant_of(grants: &dyn Grants, peer: &str) -> Result<Grant, GrantsError>;
 
 pub struct Data;                                                   // Data::new(dir): identity_path(), policy_path(), identity(), store(), policies()
+pub struct FilePeers;                                              // Keys + Grants over a Data directory's trust store and peers.cfg: FilePeers::open(&Data)
 pub fn list(data: &Data) -> Result<Listing, PeerError>;            // Listing { accepted: Vec<Accepted{id, grant}>, waiting: Vec<Waiting{id, source}>, orphaned: Vec<String> }
 pub fn approve(data: &Data, id: &PeerId, grant: Option<Grant>) -> Result<(), PeerError>;   // waiting or accepted -> accepted; Some(grant) replaces the grant
 pub fn revoke(data: &Data, id: &PeerId) -> Result<Revoked, PeerError>;   // the grant first, then the key; NoSuchPeer when neither existed
@@ -273,17 +294,18 @@ pub fn pair(data: &Data, listener: &TcpListener, settings: &Settings, timeout: D
 #[non_exhaustive] pub enum PeerError { Identity(String), Store(String), Policy(PolicyError), Write(String), NoSuchPeer, Pairing(String) }
 ```
 
-The data directory holds `identity` (this host's key, a Noise key made on first use, mode 0600 on Unix), `peers/{accepted,waiting}/` (the trust
-store) and `peers.cfg` (what each accepted peer may do). A connection proves itself first, within `[link] proof_timeout`, with an unproven peer held to
-one proof-sized message. A key that proves it holds the key it presents and is not accepted is recorded as waiting by the proof itself, under the
-connection's source address (bounded by coqui-peer's waiting limits), and the connection ends: the peer sees only that. An accepted peer's link is
-served by `coqui_link::link::serve`: each stream's open is decided by the trust store (`TrustPeers`, accepted keys only) and then by `admission`
-(`peers.cfg`: the peer must hold a permission the protocol needs, `bohio/1` needs one of `info`, `fs.read`, `fs.write`, and `covers` must hold: an
-exec's or a shell's explicit program is one the program list holds, a transfer's file lies under a root), and each running stream is decided again
-every `[link] recheck`, so removing a key or a grant, or narrowing a program list or the roots under a running stream, closes the stream with a
-revoke whose reason reaches the peer (a `Permission` failure). A `bohio/1` stream reads the grant again at every call. A store or `peers.cfg` that cannot be read refuses. The link itself checks that the key is still accepted every `2 x recheck`. The
-stream's engine then runs behind a `Relay` with the grant `peers.cfg` gives the peer at that moment.
+A `Node` is made from what its caller supplies and reads no file or environment variable: settings (`NodeConfig`), an identity, `Keys` and `Grants`. An app
+keeps them wherever it likes (its own settings, a database record, memory) and implements the two traits over them; `bohio serve` implements them over files.
+A connection proves itself first, within `[link] proof_timeout`, with an unproven peer held to one proof-sized message. A key that proves it holds the key it
+presents and that `Keys::is_accepted` refuses is passed to `Keys::stranger` (with the connection's source address) and the connection ends: the peer sees only
+that. An accepted peer's link is served by `coqui_link::link::serve`: each stream's open is decided by `Keys` (`NodePeers`, accepted keys only) and then by
+`admission` (the peer's `Grants` entry: it must hold a permission the protocol needs, `bohio/1` needs one of `info`, `fs.read`, `fs.write`, and `covers` must
+hold: an exec's or a shell's explicit program is one the program list holds, a transfer's file lies under a root), and each running stream is decided again
+every `[link] recheck`, so removing a key or a grant, or narrowing a program list or the roots under a running stream, closes the stream with a revoke whose
+reason reaches the peer (a `Permission` failure). A `bohio/1` stream reads the grant again at every call. A `Grants` that cannot be read refuses. The link itself
+checks that the key is still accepted every `2 x recheck`. The stream's engine then runs behind a `Relay` with the grant the peer has at that moment.
 
+`FilePeers` is the command's pair: the trust store of the data directory (`identity`, `peers/{accepted,waiting}/`) and `peers.cfg` (what each accepted peer may do).
 `approve` never changes a grant unless one is given; `revoke` removes the `peers.cfg` entry before the key, so a running stream ends at the next
 re-check even if the link still holds. `peers.cfg` is rewritten whole (comments are not kept) by `approve` and `revoke`, atomically; two commands run
 at the same instant can lose one change. `pair` shows one PIN, once (`shown` is called with it; it is never logged), accepts the one peer that joins
