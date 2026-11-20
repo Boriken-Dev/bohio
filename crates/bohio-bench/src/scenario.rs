@@ -53,6 +53,28 @@ pub enum Kind {
     /// One algorithm over memory, no I/O: the CPU control of `Hash`.
     #[cfg(feature = "hash")]
     CpuHash { algorithm: Algorithm, size: String },
+    /// A read of the `text` or `random` corpus file, compressed as the run says or as the name's algorithm says
+    /// (`read_text_1MiB_zstd3`), on a ready link.
+    #[cfg(feature = "compress")]
+    ReadCorpus {
+        corpus: String,
+        size: String,
+        algorithm: Option<String>,
+    },
+    /// A write of that much of a corpus kind, compressed likewise.
+    #[cfg(feature = "compress")]
+    WriteCorpus {
+        corpus: String,
+        size: String,
+        algorithm: Option<String>,
+    },
+    /// A program that writes that much text to standard output (and the same to standard error), the output
+    /// compressed likewise.
+    #[cfg(feature = "compress")]
+    ExecText {
+        size: String,
+        algorithm: Option<String>,
+    },
     /// `bohio remote ... read` as a child process.
     RemoteRead { size: String },
     /// `bohio remote ... info` as a child process.
@@ -123,6 +145,27 @@ impl Kind {
                 algorithm: known(algorithm, name)?,
                 size: size(s)?,
             },
+            #[cfg(feature = "compress")]
+            ["read", corpus @ ("text" | "random"), s, rest @ ..] if rest.len() <= 1 => {
+                Self::ReadCorpus {
+                    corpus: (*corpus).to_owned(),
+                    size: size(s)?,
+                    algorithm: rest.first().map(|text| (*text).to_owned()),
+                }
+            }
+            #[cfg(feature = "compress")]
+            ["write", corpus @ ("text" | "random"), s, rest @ ..] if rest.len() <= 1 => {
+                Self::WriteCorpus {
+                    corpus: (*corpus).to_owned(),
+                    size: size(s)?,
+                    algorithm: rest.first().map(|text| (*text).to_owned()),
+                }
+            }
+            #[cfg(feature = "compress")]
+            ["exec", "text", s, rest @ ..] if rest.len() <= 1 => Self::ExecText {
+                size: size(s)?,
+                algorithm: rest.first().map(|text| (*text).to_owned()),
+            },
             ["remote", "read", s] => Self::RemoteRead { size: size(s)? },
             ["remote", "info"] => Self::RemoteInfo,
             ["raw", "down", s] => Self::RawDown { size: size(s)? },
@@ -183,6 +226,12 @@ pub struct Env {
     pub samples: usize,
     /// The label that ends every metric name: `<transport>_<link>`.
     pub suffix: String,
+    /// What the compression scenarios ask for unless a name says: `ALG[:LEVEL]`, none when absent (`--set bench.compress=`).
+    #[cfg_attr(
+        not(feature = "compress"),
+        allow(dead_code, reason = "read only by the compression scenarios")
+    )]
+    pub compress: Option<String>,
 }
 
 /// What the scenarios produced.
@@ -265,6 +314,38 @@ impl Runner {
         let suffix = self.env.suffix.clone();
         if let Some(metric) = Metric::of(values, bytes) {
             self.out.metrics.insert(format!("{name}_{suffix}"), metric);
+        }
+    }
+
+    /// The compression a name asks for (`zstd3`, `lz4`, `deflate6`, `none`), else the run's `bench.compress`.
+    #[cfg(feature = "compress")]
+    fn compression_of(
+        &self,
+        named: Option<&str>,
+    ) -> Result<Option<bohio_proto::compress::Compression>, String> {
+        match named {
+            Some(text) => {
+                // `zstd3` is zstd at level 3; `lz4` and `none` carry no level.
+                let spelled = ["zstd", "deflate", "lz4", "none"]
+                    .iter()
+                    .find_map(|name| text.strip_prefix(name).map(|level| (*name, level)))
+                    .map_or_else(
+                        || text.to_owned(),
+                        |(name, level)| {
+                            if level.is_empty() {
+                                name.to_owned()
+                            } else {
+                                format!("{name}:{level}")
+                            }
+                        },
+                    );
+                compat::compression(&spelled)
+            }
+            None => self
+                .env
+                .compress
+                .as_deref()
+                .map_or(Ok(None), compat::compression),
         }
     }
 
@@ -380,6 +461,59 @@ impl Runner {
                     compat::exec(link, &argv).map(drop)
                 })?;
                 self.record(name, &taken, bytes);
+            }
+            #[cfg(feature = "compress")]
+            Kind::ReadCorpus {
+                corpus,
+                size,
+                algorithm,
+            } => {
+                let wanted = self.compression_of(algorithm.as_deref())?;
+                let file = self.path(&format!("{corpus}-{size}"));
+                let link = warm_link(&self.env, &mut self.warm)?;
+                // One read first: the link is past slow start, as `read_<size>_warm` has it.
+                compat::read_compressed(link, &file, None)?;
+                let mut wire = Vec::new();
+                let taken = timed(&mut self.env.cpu, samples, || {
+                    let (_, moved) = compat::read_compressed(link, &file, wanted.as_ref())?;
+                    wire.push(moved as f64);
+                    Ok(())
+                })?;
+                self.record(name, &taken, Some(parse_size(&size)?));
+                self.record_values(&format!("{name}_wire_bytes"), &wire, None);
+            }
+            #[cfg(feature = "compress")]
+            Kind::WriteCorpus {
+                corpus,
+                size,
+                algorithm,
+            } => {
+                let wanted = self.compression_of(algorithm.as_deref())?;
+                let bytes = parse_size(&size)?;
+                let target = self.path(&format!("written/write-{corpus}-{size}.bin"));
+                let link = warm_link(&self.env, &mut self.warm)?;
+                let fs = compat::fs(link)?;
+                let taken = timed(&mut self.env.cpu, samples, || {
+                    compat::write_compressed(link, &target, &corpus, bytes, wanted.as_ref())
+                })?;
+                compat::remove(&fs, &target);
+                self.record(name, &taken, Some(bytes));
+            }
+            #[cfg(feature = "compress")]
+            Kind::ExecText { size, algorithm } => {
+                let wanted = self.compression_of(algorithm.as_deref())?;
+                let program = self
+                    .env
+                    .program
+                    .clone()
+                    .ok_or("no --program: the exec scenarios are skipped")?;
+                let bytes = parse_size(&size)?;
+                let argv = vec![program, "text".to_owned(), bytes.to_string()];
+                let link = warm_link(&self.env, &mut self.warm)?;
+                let taken = timed(&mut self.env.cpu, samples, || {
+                    compat::exec_compressed(link, &argv, wanted.as_ref()).map(drop)
+                })?;
+                self.record(name, &taken, Some(bytes));
             }
             Kind::Checksum { size } => {
                 let file = self.path(&format!("random-{size}"));

@@ -47,6 +47,7 @@ Names are metric prefixes. Sizes are `1KiB`, `16MiB`, ...; a count is `x100`.
 | `exec_echo`, `exec_out_<size>` | a program that prints a word, or that many bytes |
 | `checksum_<size>` | the host's SHA-256 of a file, over a `bohio-hash/1` stream |
 | `hash_<algorithm>_<size>`, `hash_many_<n>` | (feature `hash`) the host's digest of a file by one algorithm; SHA-256 of `n` small files on one stream |
+| `read_<corpus>_<size>[_<algorithm>]`, `write_<corpus>_<size>[_<algorithm>]`, `exec_text_<size>[_<algorithm>]` | (feature `compress`) a read or a write of the `text` or `random` corpus, or a program's text output, with the compression the name gives (`zstd3`, `zstd19`, `lz4`, `deflate6`, `none`) or, with no algorithm in the name, the run's `--set bench.compress=ALG[:LEVEL]` (none when unset), on a ready link. `read_` also records `<name>_wire_bytes_...`: the bytes that travelled, in the `*_ms` fields (the ratio is that over the size) |
 | `cpu_hash_<algorithm>_<size>` | (feature `hash`) the control: the same algorithm over memory, no I/O |
 | `remote_read_<size>`, `remote_info` | `bohio remote ...` as a child process: process start counts |
 | `timeline_read_<size>`, `timeline_info` | the parts of one cold request: `_dial`, `_proof`, `_open` (to the header), `_first` (to the first byte), `_body`, `_total`; with the bytes received by time in `curves` |
@@ -94,7 +95,9 @@ on each end:
 or to measure one against the baseline's defaults.
 
 `features` builds A's harness with Cargo features (`hash`) and `extra_scenarios` adds scenario names to every link's set, for what a feature adds; B's
-harness is its own commit's, so it does not run a scenario it lacks (a warning).
+harness is its own commit's, so it does not run a scenario it lacks (a warning). `b_features` builds B's harness with features too, for a B that is
+the same ref as A: `ref=SHA baseline_ref=SHA features=compress b_features=compress a_settings=bench.compress=zstd:3
+extra_scenarios="read_text_1MiB read_random_1MiB"` measures compression off (B) against zstd level 3 (A) in one build, alternating rounds.
 
 A hosted runner cannot show a gain under about 10%. Read the controls (`raw_*`, `cpu_sha256_*`) before any
 change: a claim needs the same job on both commits, more than once, with the controls unchanged.

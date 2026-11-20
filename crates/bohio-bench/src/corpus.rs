@@ -68,36 +68,108 @@ fn random_file(path: &Path, size: u64) -> std::io::Result<()> {
     file.flush()
 }
 
-/// `size` bytes of words and numbers from a generated list: text that compresses.
-fn text_file(path: &Path, size: u64) -> std::io::Result<()> {
-    let mut generator = Xorshift::new(0xC0FF_EE00_D15E_A5E5);
-    let words: Vec<String> = (0..400)
+/// The generated word list the text corpus draws from.
+fn word_list(generator: &mut Xorshift) -> Vec<String> {
+    (0..400)
         .map(|_| {
             let length = 2 + (generator.next_u64() % 9) as usize;
             (0..length)
                 .map(|_| char::from(b'a' + (generator.next_u64() % 26) as u8))
                 .collect()
         })
-        .collect();
+        .collect()
+}
+
+/// One line of the text corpus.
+fn text_line(generator: &mut Xorshift, words: &[String]) -> String {
+    let mut line = String::new();
+    for _ in 0..12 {
+        let pick = generator.next_u64();
+        line.push_str(&words[(pick % words.len() as u64) as usize]);
+        line.push(' ');
+        if pick % 5 < 1 {
+            line.push_str(&format!("{} ", (pick >> 20) % 100_000));
+        }
+    }
+    line.push('\n');
+    line
+}
+
+/// `size` bytes of words and numbers from a generated list: text that compresses.
+fn text_file(path: &Path, size: u64) -> std::io::Result<()> {
+    let mut generator = Xorshift::new(0xC0FF_EE00_D15E_A5E5);
+    let words = word_list(&mut generator);
     let mut file = BufWriter::new(File::create(path)?);
     let mut written = 0_u64;
-    let mut line = String::new();
     while written < size {
-        line.clear();
-        for _ in 0..12 {
-            let pick = generator.next_u64();
-            line.push_str(&words[(pick % words.len() as u64) as usize]);
-            line.push(' ');
-            if pick % 5 < 1 {
-                line.push_str(&format!("{} ", (pick >> 20) % 100_000));
-            }
-        }
-        line.push('\n');
+        let line = text_line(&mut generator, &words);
         let take = usize::try_from(size - written).map_or(line.len(), |left| left.min(line.len()));
         file.write_all(&line.as_bytes()[..take])?;
         written += take as u64;
     }
     file.flush()
+}
+
+/// Endless bytes shaped like a corpus file (`text` or random), unique throughout: what a write scenario sends
+/// without holding it, so a repeat of a block does not hand the compressor a gift.
+#[cfg(feature = "compress")]
+pub struct Synthetic {
+    text: bool,
+    generator: Xorshift,
+    words: Vec<String>,
+    pending: Vec<u8>,
+    left: u64,
+}
+
+#[cfg(feature = "compress")]
+impl Synthetic {
+    /// `size` bytes of the corpus kind `kind` (`text` or `random`).
+    ///
+    /// # Errors
+    ///
+    /// A kind that is neither.
+    pub fn new(kind: &str, size: u64) -> Result<Self, String> {
+        let text = match kind {
+            "text" => true,
+            "random" => false,
+            other => return Err(format!("`{other}` is not a corpus kind (text, random)")),
+        };
+        let mut generator = Xorshift::new(0xC0FF_EE00_D15E_A5E5);
+        let words = if text {
+            word_list(&mut generator)
+        } else {
+            Vec::new()
+        };
+        Ok(Self {
+            text,
+            generator,
+            words,
+            pending: Vec::new(),
+            left: size,
+        })
+    }
+}
+
+#[cfg(feature = "compress")]
+impl std::io::Read for Synthetic {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        let want = usize::try_from(self.left).map_or(out.len(), |left| left.min(out.len()));
+        if want == 0 {
+            return Ok(0);
+        }
+        if self.text {
+            while self.pending.len() < want {
+                let line = text_line(&mut self.generator, &self.words);
+                self.pending.extend_from_slice(line.as_bytes());
+            }
+            out[..want].copy_from_slice(&self.pending[..want]);
+            self.pending.drain(..want);
+        } else {
+            self.generator.fill(&mut out[..want]);
+        }
+        self.left -= want as u64;
+        Ok(want)
+    }
 }
 
 /// Makes the corpus in `dir`: `random-<size>` and `text-<size>` for each size, and `small/<n>` of

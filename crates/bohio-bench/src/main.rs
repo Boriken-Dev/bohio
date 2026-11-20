@@ -182,10 +182,12 @@ fn run(cli: Cli) -> Result<bool, String> {
     }
 }
 
-/// The `[link]` and `[filesystem]` keys of `--set`, as TOML for the host, and this side's settings.
-fn apply_sets(sets: &[String]) -> Result<(Sections, Settings), String> {
+/// The `[link]` and `[filesystem]` keys of `--set`, as TOML for the host, this side's settings, and the one
+/// `bench.compress=ALG[:LEVEL]` key, which is the client's request in the compression scenarios.
+fn apply_sets(sets: &[String]) -> Result<(Sections, Settings, Option<String>), String> {
     let mut host: Sections = BTreeMap::new();
     let mut settings = Settings::default();
+    let mut compress = None;
     let mut max_window_set = false;
     for set in sets {
         let (key, value) = set
@@ -194,9 +196,13 @@ fn apply_sets(sets: &[String]) -> Result<(Sections, Settings), String> {
         let (section, name) = key
             .split_once('.')
             .ok_or_else(|| format!("`{key}` is not section.key"))?;
+        if key == "bench.compress" {
+            compress = Some(value.to_owned());
+            continue;
+        }
         if section != "link" && section != "filesystem" {
             return Err(format!(
-                "`{key}`: only [link] and [filesystem] keys are set here"
+                "`{key}`: only [link] and [filesystem] keys, and bench.compress, are set here"
             ));
         }
         let number = corpus::parse_size(value).ok();
@@ -246,7 +252,7 @@ fn apply_sets(sets: &[String]) -> Result<(Sections, Settings), String> {
     if !max_window_set {
         settings.max_window = settings.window.max(settings.bulk_window);
     }
-    Ok((host, settings))
+    Ok((host, settings, compress))
 }
 
 fn sibling(name: &str) -> PathBuf {
@@ -289,11 +295,15 @@ fn proof_of(data_dir: &Path, config: &Path, server: Option<&str>) -> Result<Proo
 fn finish(
     common: &Common,
     env_settings: &Sections,
+    compress: Option<&str>,
     runner: Runner,
     failed: bool,
 ) -> Result<bool, String> {
     let (processor, os) = report::machine();
     let mut settings = BTreeMap::new();
+    if let Some(wanted) = compress {
+        settings.insert("bench.compress".to_owned(), wanted.to_owned());
+    }
     for (section, keys) in env_settings {
         for (key, value) in keys {
             settings.insert(format!("{section}.{key}"), value.clone());
@@ -350,7 +360,7 @@ fn run_all(runner: &mut Runner, names: &[String]) -> bool {
 
 fn local(args: &LocalArgs) -> Result<bool, String> {
     let common = &args.common;
-    let (extra, settings) = apply_sets(&common.set)?;
+    let (extra, settings, compress) = apply_sets(&common.set)?;
     let bohio = common.bohio.clone().unwrap_or_else(|| sibling("bohio"));
     let helper = args.exec_helper.clone().unwrap_or_else(|| {
         sibling("bohio")
@@ -414,11 +424,12 @@ fn local(args: &LocalArgs) -> Result<bool, String> {
             cpu: Some(host::Cpu::of(local.host.id())),
             samples: common.samples,
             suffix: format!("{}_{}", common.transport, common.link),
+            compress: compress.clone(),
         });
         let ok = run_all(&mut runner, &common.scenario);
         drop(local);
         drop(raw_server);
-        finish(common, &extra, runner, !ok)
+        finish(common, &extra, compress.as_deref(), runner, !ok)
     })();
     let _ = std::fs::remove_dir_all(&dir);
     outcome
@@ -426,7 +437,7 @@ fn local(args: &LocalArgs) -> Result<bool, String> {
 
 fn remote(args: &RunArgs) -> Result<bool, String> {
     let common = &args.common;
-    let (extra, settings) = apply_sets(&common.set)?;
+    let (extra, settings, compress) = apply_sets(&common.set)?;
     let bohio = common.bohio.clone().unwrap_or_else(|| sibling("bohio"));
     let proof = proof_of(&args.data_dir, &args.client_config, args.server.as_deref())?;
     let mut runner = Runner::new(Env {
@@ -443,7 +454,8 @@ fn remote(args: &RunArgs) -> Result<bool, String> {
         cpu: args.host_pid.map(host::Cpu::of),
         samples: common.samples,
         suffix: format!("{}_{}", common.transport, common.link),
+        compress: compress.clone(),
     });
     let ok = run_all(&mut runner, &common.scenario);
-    finish(common, &extra, runner, !ok)
+    finish(common, &extra, compress.as_deref(), runner, !ok)
 }

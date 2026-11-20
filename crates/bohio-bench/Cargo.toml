@@ -12,7 +12,7 @@ publish = false
 [features]
 # Scenarios for features a later change adds; each is off until the feature exists.
 hash = ["dep:bohio-transfer"]
-compress = []
+compress = ["bohio/zstd", "bohio-client/zstd"]
 delta = []
 walk = []
 pipeline = []

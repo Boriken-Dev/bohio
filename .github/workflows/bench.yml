@@ -32,6 +32,10 @@ on:
         description: "Cargo features of bohio-bench, for the scenarios a feature adds (for example hash); built into A only"
         required: false
         default: ""
+      b_features:
+        description: "Cargo features of bohio-bench for B, when B is a commit that has them (the same ref as A, to compare settings of one build, for example compress)"
+        required: false
+        default: ""
       extra_scenarios:
         description: "Scenario names added to every link's set, space separated (for example hash_blake3_256MiB)"
         required: false
@@ -49,6 +53,7 @@ jobs:
       SAMPLES: ${{ inputs.samples }}
       A_SETTINGS: ${{ inputs.a_settings }}
       FEATURES: ${{ inputs.features }}
+      B_FEATURES: ${{ inputs.b_features }}
       EXTRA_SCENARIOS: ${{ inputs.extra_scenarios }}
     steps:
       - uses: actions/checkout@v4
@@ -88,6 +93,7 @@ jobs:
             [ -d "$side" ] || continue
             features=""
             if [ "$side" = a ] && [ -n "$FEATURES" ]; then features="--features $FEATURES"; fi
+            if [ "$side" = b ] && [ -n "$B_FEATURES" ]; then features="--features $B_FEATURES"; fi
             # shellcheck disable=SC2086
             (cd "$side" && cargo build --release -p bohio -p bohio-bench $features && cargo build --release -p bohio --example exec_helper)
           done

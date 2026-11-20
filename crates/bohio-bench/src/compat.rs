@@ -176,3 +176,69 @@ pub fn hash_batch(link: &dyn Open, paths: &[String]) -> Result<(), String> {
         None => Ok(()),
     }
 }
+
+/// The compression a scenario asks for, parsed from `ALG[:LEVEL]`.
+#[cfg(feature = "compress")]
+pub fn compression(text: &str) -> Result<Option<bohio_proto::compress::Compression>, String> {
+    let wanted = bohio_proto::compress::Compression::parse(text)?;
+    Ok(match wanted.algorithm {
+        bohio_proto::compress::Codec::None => None,
+        bohio_proto::compress::Codec::Other(name) => {
+            return Err(format!("`{name}` is not a compression algorithm"));
+        }
+        _ => Some(wanted),
+    })
+}
+
+/// A read of `path` with `compression`: the bytes delivered and the bytes that travelled.
+#[cfg(feature = "compress")]
+pub fn read_compressed(
+    link: &dyn Open,
+    path: &str,
+    compression: Option<&bohio_proto::compress::Compression>,
+) -> Result<(u64, u64), String> {
+    let request = ReadRequest {
+        compression: compression.cloned(),
+        ..ReadRequest::whole(path)
+    };
+    let reader = Reader::start(link, &request, Some(LIMIT)).map_err(|error| error.to_string())?;
+    let bytes = reader
+        .copy_to(&mut std::io::sink(), Some(LIMIT))
+        .map_err(|error| error.to_string())?;
+    Ok((bytes, reader.wire_bytes()))
+}
+
+/// `size` bytes of the corpus kind `kind` written to `path` with `compression`.
+#[cfg(feature = "compress")]
+pub fn write_compressed(
+    link: &dyn Open,
+    path: &str,
+    kind: &str,
+    size: u64,
+    compression: Option<&bohio_proto::compress::Compression>,
+) -> Result<(), String> {
+    let mut request = WriteRequest::replace(path);
+    request.parents = true;
+    let options = bohio_client::fs::PutOptions {
+        compression: compression.cloned(),
+        ..bohio_client::fs::PutOptions::default()
+    };
+    let mut source = crate::corpus::Synthetic::new(kind, size)?;
+    bohio_client::fs::put(link, &request, &mut source, &options, Some(LIMIT))
+        .map(drop)
+        .map_err(|error| error.to_string())
+}
+
+/// Runs `argv` with its output compressed; the bytes of standard output.
+#[cfg(feature = "compress")]
+pub fn exec_compressed(
+    link: &dyn Open,
+    argv: &[String],
+    compression: Option<&bohio_proto::compress::Compression>,
+) -> Result<u64, String> {
+    let mut request = Request::argv(argv.iter().cloned());
+    request.output_compression = compression.cloned();
+    let run = Exec::start(link, &request).map_err(|error| error.to_string())?;
+    let done = run.wait(Some(LIMIT)).map_err(|error| error.to_string())?;
+    Ok(done.stdout.len() as u64)
+}
