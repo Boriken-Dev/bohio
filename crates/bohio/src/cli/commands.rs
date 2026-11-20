@@ -83,7 +83,10 @@ fn config_check(args: &CheckArgs, environment: &Environment) -> Result<(), Strin
 
 fn info_command(args: &InfoArgs, environment: &Environment) -> Result<(), String> {
     let (config, _) = load(args.config.as_deref(), environment)?;
-    let info = info::collect(&config, environment);
+    let info = info::collect(
+        &config.node(),
+        &environment.path.clone().unwrap_or_default(),
+    );
     match args.format {
         Format::Text => print_info(&info),
         Format::Json => {

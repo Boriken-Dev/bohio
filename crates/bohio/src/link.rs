@@ -1,20 +1,26 @@
-//! Who may open which protocol: the trust store says who is proven, `peers.cfg` says what each may do.
+//! Who may open which protocol, and what a node tells its owner: the traits a node asks, the provided
+//! in-memory implementations and the events.
 //!
-//! [`TrustPeers`] answers a link's question "who is this?" from the trust store: an accepted key is a
-//! peer, and a removed or retired one is not. [`admission`] answers "may it do this?" from `peers.cfg`,
-//! read afresh at every open and at every re-check of a running stream, so a revoke ends what it
-//! covers within `[link] recheck`.
+//! [`Keys`] says who a peer is (an accepted key); [`Grants`] says what it may do. A node asks them
+//! at every decision, so a change by their owner applies at the next open or [`recheck`] without a
+//! restart: [`admission`] decides each stream when it opens and every `[link] recheck` while it
+//! runs, and the link itself checks the key every second recheck.
+//!
+//! [`recheck`]: crate::config::LinkConfig::recheck
 
-use std::path::{Path, PathBuf};
+use std::collections::{BTreeMap, BTreeSet};
+use std::net::SocketAddr;
+use std::sync::{Arc, PoisonError, RwLock};
 
 use coqui_link::Error;
 use coqui_link::link::Admission;
+use coqui_link::mux::Side;
 use coqui_link::peers::{Event, Events, PeerRecord, PeerStore};
-use coqui_peer::{PeerId, TrustStore};
+use coqui_peer::{KeyMaterial, PeerId};
 
 use bohio_proto::protocol;
 
-use crate::policy::{Grant, Permission, Policies};
+use crate::policy::{Grant, Permission};
 
 /// The protocols a host serves, each with the permissions of which a peer needs at least one to open it.
 pub const PROTOCOLS: [(&str, &[Permission]); 5] = [
@@ -28,26 +34,284 @@ pub const PROTOCOLS: [(&str, &[Permission]); 5] = [
     (protocol::WRITE, &[Permission::FsWrite]),
 ];
 
-/// The trust store as a link's peer store: an accepted key is a peer that may open every protocol the
-/// host serves, and [`admission`] narrows that to what `peers.cfg` grants.
-#[derive(Debug, Clone)]
-pub struct TrustPeers {
-    store: TrustStore,
+/// Which keys a node accepts.
+///
+/// It is asked when a peer's proof holds (a key it does not accept ends the connection), at every
+/// stream decision and by the link every second `[link] recheck`, so an implementation answers from
+/// where its owner keeps the list, and answers quickly.
+pub trait Keys: Send + Sync {
+    /// Whether `peer` is accepted now. A question that cannot be answered is `false`.
+    fn is_accepted(&self, peer: &PeerId) -> bool;
+
+    /// Hears a key that proved itself and was refused, on either side of a link. `source` is where the
+    /// connection came from, when the node knows. The key is proven, so it is safe to queue for an
+    /// operator; the default ignores it.
+    fn stranger(&self, _peer: &PeerId, _key: &KeyMaterial, _source: Option<SocketAddr>) {}
 }
 
-impl TrustPeers {
-    /// The peers `store` accepts.
-    pub const fn new(store: TrustStore) -> Self {
-        Self { store }
+/// Why a peer's grant could not be read.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
+pub struct GrantsError(String);
+
+impl GrantsError {
+    /// An error with `reason`, which holds no key, PIN or request.
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self(reason.into())
     }
 }
 
-impl PeerStore for TrustPeers {
+/// What each accepted peer may do.
+///
+/// It is asked at every stream's open, at every `[link] recheck` of a running stream and at every
+/// `bohio/1` call, so a narrowed grant ends what it no longer covers. An error refuses.
+pub trait Grants: Send + Sync {
+    /// The grant of `peer` as it is now: [`Grant::none`] for a peer the owner lists nothing for.
+    ///
+    /// # Errors
+    ///
+    /// [`GrantsError`] when the owner's source cannot be read; the node then refuses.
+    fn grant(&self, peer: &PeerId) -> Result<Grant, GrantsError>;
+}
+
+/// The accepted keys, in memory: [`MemoryKeys::accept`] and [`MemoryKeys::remove`] apply at the next
+/// decision. A stranger is ignored.
+#[derive(Debug, Default)]
+pub struct MemoryKeys {
+    accepted: RwLock<BTreeSet<PeerId>>,
+}
+
+impl MemoryKeys {
+    /// No key accepted.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Accepts `peer`.
+    pub fn accept(&self, peer: PeerId) {
+        self.accepted
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(peer);
+    }
+
+    /// Stops accepting `peer`; `true` when it was accepted.
+    pub fn remove(&self, peer: &PeerId) -> bool {
+        self.accepted
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(peer)
+    }
+}
+
+impl FromIterator<PeerId> for MemoryKeys {
+    fn from_iter<I: IntoIterator<Item = PeerId>>(peers: I) -> Self {
+        Self {
+            accepted: RwLock::new(peers.into_iter().collect()),
+        }
+    }
+}
+
+impl Keys for MemoryKeys {
+    fn is_accepted(&self, peer: &PeerId) -> bool {
+        self.accepted
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(peer)
+    }
+}
+
+/// The grants, in memory: [`MemoryGrants::set`] and [`MemoryGrants::remove`] apply at the next decision,
+/// and a peer with no entry holds nothing. Collected from pairs it is a fixed map.
+#[derive(Debug, Default)]
+pub struct MemoryGrants {
+    grants: RwLock<BTreeMap<PeerId, Grant>>,
+}
+
+impl MemoryGrants {
+    /// No peer granted anything.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Gives `peer` exactly `grant`, replacing any it had.
+    pub fn set(&self, peer: PeerId, grant: Grant) {
+        self.grants
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(peer, grant);
+    }
+
+    /// Takes away `peer`'s grant; `true` when it had one.
+    pub fn remove(&self, peer: &PeerId) -> bool {
+        self.grants
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(peer)
+            .is_some()
+    }
+}
+
+impl FromIterator<(PeerId, Grant)> for MemoryGrants {
+    fn from_iter<I: IntoIterator<Item = (PeerId, Grant)>>(grants: I) -> Self {
+        Self {
+            grants: RwLock::new(grants.into_iter().collect()),
+        }
+    }
+}
+
+impl Grants for MemoryGrants {
+    fn grant(&self, peer: &PeerId) -> Result<Grant, GrantsError> {
+        Ok(self
+            .grants
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(peer)
+            .cloned()
+            .unwrap_or_default())
+    }
+}
+
+/// Something that happened on a node's links: an id, a protocol name or an address, never a key, a PIN
+/// or a request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum NodeEvent {
+    /// A peer proved itself and its link came up; `side` says whether this node answered or dialed.
+    LinkUp {
+        /// The peer.
+        peer: PeerId,
+        /// This node's side of the link.
+        side: Side,
+    },
+    /// A link ended.
+    LinkDown {
+        /// The peer.
+        peer: PeerId,
+    },
+    /// A stream was opened and served.
+    Opened {
+        /// The peer.
+        peer: PeerId,
+        /// The protocol.
+        protocol: String,
+    },
+    /// A stream was refused.
+    Refused {
+        /// The peer.
+        peer: PeerId,
+        /// The protocol.
+        protocol: String,
+    },
+    /// A running stream ended because the peer lost its grant.
+    Revoked {
+        /// The peer.
+        peer: PeerId,
+        /// The protocol.
+        protocol: String,
+    },
+    /// A key proved itself and [`Keys`] did not accept it.
+    Stranger {
+        /// The key's id.
+        peer: PeerId,
+        /// Where it connected from, when known.
+        source: Option<SocketAddr>,
+    },
+}
+
+/// Where a node's events go.
+pub trait NodeEvents: Send + Sync {
+    /// Hears one event. It runs on the link's own thread: it returns quickly and never blocks on the node.
+    fn event(&self, event: &NodeEvent);
+}
+
+/// Events as log lines: the default of a node.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LogEvents;
+
+impl NodeEvents for LogEvents {
+    fn event(&self, event: &NodeEvent) {
+        match event {
+            NodeEvent::LinkUp { peer, side } => tracing::info!(%peer, ?side, "link up"),
+            NodeEvent::LinkDown { peer } => tracing::info!(%peer, "link down"),
+            NodeEvent::Opened { peer, protocol } => {
+                tracing::debug!(%peer, %protocol, "stream opened");
+            }
+            NodeEvent::Refused { peer, protocol } => {
+                tracing::info!(%peer, %protocol, "stream refused");
+            }
+            NodeEvent::Revoked { peer, protocol } => {
+                tracing::info!(%peer, %protocol, "stream ended: the peer lost its grant");
+            }
+            NodeEvent::Stranger { peer, source } => {
+                tracing::info!(%peer, ?source, "a key proved itself and is not accepted");
+            }
+        }
+    }
+}
+
+/// Link events, as a node's events: the link names a peer by its text.
+pub(crate) struct Bridge<'a> {
+    pub(crate) events: &'a dyn NodeEvents,
+    pub(crate) side: Side,
+}
+
+impl Events for Bridge<'_> {
+    fn event(&self, event: &Event) {
+        let named = |peer: &str, make: &dyn Fn(PeerId) -> NodeEvent| {
+            if let Ok(peer) = peer.parse::<PeerId>() {
+                self.events.event(&make(peer));
+            }
+        };
+        match event {
+            Event::LinkUp { peer } => named(peer, &|peer| NodeEvent::LinkUp {
+                peer,
+                side: self.side,
+            }),
+            Event::LinkDown { peer } => named(peer, &|peer| NodeEvent::LinkDown { peer }),
+            Event::Opened { peer, protocol } => named(peer, &|peer| NodeEvent::Opened {
+                peer,
+                protocol: protocol.clone(),
+            }),
+            Event::Refused { peer, protocol } => named(peer, &|peer| NodeEvent::Refused {
+                peer,
+                protocol: protocol.clone(),
+            }),
+            Event::Revoked { peer, protocol } => named(peer, &|peer| NodeEvent::Revoked {
+                peer,
+                protocol: protocol.clone(),
+            }),
+            _ => {}
+        }
+    }
+}
+
+/// The accepted keys as a link's peer store: an accepted key is a peer that may open every protocol the
+/// host serves, and [`admission`] narrows that to what [`Grants`] gives it.
+#[derive(Clone)]
+pub struct NodePeers {
+    keys: Arc<dyn Keys>,
+}
+
+impl core::fmt::Debug for NodePeers {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("NodePeers").finish_non_exhaustive()
+    }
+}
+
+impl NodePeers {
+    /// The peers `keys` accepts.
+    pub fn new(keys: Arc<dyn Keys>) -> Self {
+        Self { keys }
+    }
+}
+
+impl PeerStore for NodePeers {
     fn get(&self, peer: &str) -> Result<Option<PeerRecord>, Error> {
         let Ok(id) = peer.parse::<PeerId>() else {
             return Ok(None);
         };
-        if !self.store.is_accepted(&id) {
+        if !self.keys.is_accepted(&id) {
             return Ok(None);
         }
         Ok(Some(
@@ -61,29 +325,28 @@ impl PeerStore for TrustPeers {
 
     fn put(&self, _record: &PeerRecord) -> Result<(), Error> {
         Err(Error::Identity(
-            "this host's peers are changed with `bohio peer`".to_owned(),
+            "this node's peers are changed where its owner keeps them".to_owned(),
         ))
     }
 
     fn remove(&self, _peer: &str) -> Result<(), Error> {
         Err(Error::Identity(
-            "this host's peers are changed with `bohio peer`".to_owned(),
+            "this node's peers are changed where its owner keeps them".to_owned(),
         ))
     }
 }
 
-/// The admission of `protocol`: the peer's grant in the `peers.cfg` at `policy`, read now, must hold at
-/// least one of the permissions [`PROTOCOLS`] names for it and must still cover what the stream's open
-/// asked for ([`covers`]). A file that cannot be read refuses.
-pub fn admission(policy: PathBuf, protocol: &'static str) -> Admission {
+/// The admission of `protocol`: the peer's grant, asked of `grants` now, must hold at least one of the
+/// permissions [`PROTOCOLS`] names for it and must still cover what the stream's open asked for
+/// ([`covers`]). A grant that cannot be read refuses.
+pub fn admission(grants: Arc<dyn Grants>, protocol: &'static str) -> Admission {
     let needs = PROTOCOLS
         .iter()
         .find(|(token, _)| *token == protocol)
         .map_or(&[][..], |(_, needs)| *needs);
     Box::new(move |record: &PeerRecord, metadata: &[u8]| {
-        let policies =
-            Policies::load(&policy).map_err(|_| "the host cannot read its peer grants")?;
-        let grant = policies.grant_for(&record.peer);
+        let grant = grant_of(grants.as_ref(), &record.peer)
+            .map_err(|_| "the host cannot read its peer grants")?;
         if !needs.iter().any(|permission| grant.allows(*permission)) {
             return Err("this peer may not do that");
         }
@@ -109,34 +372,14 @@ pub fn covers(grant: &Grant, protocol: &str, metadata: &[u8]) -> bool {
     }
 }
 
-/// The grant of `peer` in the `peers.cfg` at `policy`.
+/// The grant `grants` gives `peer`, named by its text.
 ///
 /// # Errors
 ///
-/// The text of the error when the file cannot be read or is not valid.
-pub fn grant_of(policy: &Path, peer: &str) -> Result<Grant, String> {
-    Policies::load(policy)
-        .map(|policies| policies.grant_for(peer))
-        .map_err(|error| error.to_string())
-}
-
-/// Link events as log lines: a peer's id and a protocol name, never a key, a PIN or a request.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct LogEvents;
-
-impl Events for LogEvents {
-    fn event(&self, event: &Event) {
-        match event {
-            Event::LinkUp { peer } => tracing::info!(%peer, "link up"),
-            Event::LinkDown { peer } => tracing::info!(%peer, "link down"),
-            Event::Opened { peer, protocol } => tracing::debug!(%peer, %protocol, "stream opened"),
-            Event::Refused { peer, protocol } => {
-                tracing::info!(%peer, %protocol, "stream refused");
-            }
-            Event::Revoked { peer, protocol } => {
-                tracing::info!(%peer, %protocol, "stream ended: the peer lost its grant");
-            }
-            _ => {}
-        }
-    }
+/// [`GrantsError`] when `peer` is not an id or `grants` cannot be read.
+pub fn grant_of(grants: &dyn Grants, peer: &str) -> Result<Grant, GrantsError> {
+    let id = peer
+        .parse::<PeerId>()
+        .map_err(|_| GrantsError::new("that is not a peer id"))?;
+    grants.grant(&id)
 }

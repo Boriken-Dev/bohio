@@ -1,24 +1,24 @@
 //! This host's capabilities, as `info` reports them.
 
+use std::ffi::OsStr;
 use std::path::Path;
 
 use bohio_proto::PROTOCOL_VERSION;
 use bohio_proto::info::{ExecInfo, FilesystemInfo, Info, Limits, Service, SessionInfo, ShellInfo};
 use bohio_proto::shell::ShellKind;
 
-use crate::config::{Config, Environment};
+use crate::config::NodeConfig;
 use crate::platform::find_program;
 
-/// What this host offers under `config`: the operating system, the shells found on
-/// `environment.path`, what the filesystem supports and the configured bounds.
+/// What this host offers under `config`: the operating system, the shells found on `path` (the host's
+/// own `PATH`), what the filesystem supports and the configured bounds.
 ///
 /// `host_id` stays empty: a link fills it once it has proven an identity.
-pub fn collect(config: &Config, environment: &Environment) -> Info {
-    let path = environment.path.clone().unwrap_or_default();
+pub fn collect(config: &NodeConfig, path: &OsStr) -> Info {
     let shells = ShellKind::KNOWN
         .into_iter()
         .filter_map(|kind| {
-            find_program(kind.program(), &path).map(|found| ShellInfo {
+            find_program(kind.program(), path).map(|found| ShellInfo {
                 kind,
                 path: display(&found),
             })
@@ -27,7 +27,7 @@ pub fn collect(config: &Config, environment: &Environment) -> Info {
     Info {
         protocol: PROTOCOL_VERSION,
         service: Service {
-            name: config.service.name.clone(),
+            name: config.name.clone(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
         },
         host_id: None,

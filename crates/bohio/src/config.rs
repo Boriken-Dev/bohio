@@ -513,79 +513,45 @@ impl<'de> Deserialize<'de> for Span {
     }
 }
 
-impl Config {
-    /// Reads a configuration from TOML. `path` only labels errors.
-    ///
-    /// # Errors
-    ///
-    /// [`ConfigError::Parse`] for bad TOML, an unknown key or a wrong type;
-    /// [`ConfigError::Invalid`] for a value out of range.
-    pub fn from_toml(text: &str, path: &str) -> Result<Self, ConfigError> {
-        let config: Self = toml::from_str(text).map_err(|error| {
-            let (line, column) = error
-                .span()
-                .map_or((1, 1), |span| position(text, span.start));
-            ConfigError::Parse {
-                path: path.to_owned(),
-                line,
-                column,
-                message: error.message().to_owned(),
-            }
-        })?;
-        config.validate(path)?;
-        Ok(config)
-    }
+/// What a [`Node`](crate::node::Node) runs on: its name, the link bounds and the three engines'
+/// settings. An embedding application reads it from any section of its own settings; `bohio.cfg`'s
+/// `[service] name`, `[link]`, `[filesystem]`, `[execution]` and `[shell]` are one.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct NodeConfig {
+    /// A name shown in `info` and logs. Default `bohio`.
+    pub name: String,
+    /// `[link]`.
+    pub link: LinkConfig,
+    /// `[filesystem]`.
+    pub filesystem: FilesystemConfig,
+    /// `[execution]`.
+    pub execution: ExecutionConfig,
+    /// `[shell]`.
+    pub shell: ShellConfig,
+}
 
-    /// Reads the configuration file at `path`.
-    ///
-    /// # Errors
-    ///
-    /// [`ConfigError::Read`] when the file cannot be read, else as [`Config::from_toml`].
-    pub fn load(path: &Path) -> Result<Self, ConfigError> {
-        let label = path.display().to_string();
-        let text = std::fs::read_to_string(path).map_err(|error| ConfigError::Read {
-            path: label.clone(),
-            reason: error.kind().to_string(),
-        })?;
-        Self::from_toml(&text, &label)
-    }
-
-    /// The first configuration file `environment` names that exists, or the defaults when none
-    /// does. `explicit` (a `--config` argument) is used alone and must exist.
-    ///
-    /// Returns the configuration and the file it came from.
-    ///
-    /// # Errors
-    ///
-    /// [`ConfigError::Read`] when `explicit` or `BOHIO_CONFIG` names a file that cannot be read,
-    /// else as [`Config::from_toml`].
-    pub fn locate(
-        explicit: Option<&Path>,
-        environment: &Environment,
-    ) -> Result<(Self, Option<PathBuf>), ConfigError> {
-        if let Some(path) = explicit {
-            return Self::load(path).map(|config| (config, Some(path.to_owned())));
+impl Default for NodeConfig {
+    fn default() -> Self {
+        Self {
+            name: ServiceConfig::default().name,
+            link: LinkConfig::default(),
+            filesystem: FilesystemConfig::default(),
+            execution: ExecutionConfig::default(),
+            shell: ShellConfig::default(),
         }
-        for (index, candidate) in environment.config_candidates().into_iter().enumerate() {
-            let named = index == 0 && environment.config.is_some();
-            if named || candidate.is_file() {
-                return Self::load(&candidate).map(|config| (config, Some(candidate)));
-            }
-        }
-        Ok((Self::default(), None))
     }
+}
 
-    /// The data directory: the configured one, else the environment's default.
-    pub fn data_dir(&self, environment: &Environment) -> PathBuf {
-        self.service
-            .data_dir
-            .clone()
-            .unwrap_or_else(|| environment.default_data_dir())
-    }
-
-    fn validate(&self, path: &str) -> Result<(), ConfigError> {
+impl NodeConfig {
+    /// Checks every bound: `label` names where the settings came from in the error.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::Invalid`] naming the key, for a value out of range.
+    pub fn validate(&self, label: &str) -> Result<(), ConfigError> {
         let invalid = |key: &str, message: &str| ConfigError::Invalid {
-            path: path.to_owned(),
+            path: label.to_owned(),
             key: key.to_owned(),
             message: message.to_owned(),
         };
@@ -670,6 +636,99 @@ impl Config {
         if self.shell.poll_interval.0.is_zero() {
             return Err(invalid("shell.poll_interval", "must not be zero"));
         }
+        Ok(())
+    }
+}
+
+impl Config {
+    /// Reads a configuration from TOML. `path` only labels errors.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::Parse`] for bad TOML, an unknown key or a wrong type;
+    /// [`ConfigError::Invalid`] for a value out of range.
+    pub fn from_toml(text: &str, path: &str) -> Result<Self, ConfigError> {
+        let config: Self = toml::from_str(text).map_err(|error| {
+            let (line, column) = error
+                .span()
+                .map_or((1, 1), |span| position(text, span.start));
+            ConfigError::Parse {
+                path: path.to_owned(),
+                line,
+                column,
+                message: error.message().to_owned(),
+            }
+        })?;
+        config.validate(path)?;
+        Ok(config)
+    }
+
+    /// Reads the configuration file at `path`.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::Read`] when the file cannot be read, else as [`Config::from_toml`].
+    pub fn load(path: &Path) -> Result<Self, ConfigError> {
+        let label = path.display().to_string();
+        let text = std::fs::read_to_string(path).map_err(|error| ConfigError::Read {
+            path: label.clone(),
+            reason: error.kind().to_string(),
+        })?;
+        Self::from_toml(&text, &label)
+    }
+
+    /// The first configuration file `environment` names that exists, or the defaults when none
+    /// does. `explicit` (a `--config` argument) is used alone and must exist.
+    ///
+    /// Returns the configuration and the file it came from.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::Read`] when `explicit` or `BOHIO_CONFIG` names a file that cannot be read,
+    /// else as [`Config::from_toml`].
+    pub fn locate(
+        explicit: Option<&Path>,
+        environment: &Environment,
+    ) -> Result<(Self, Option<PathBuf>), ConfigError> {
+        if let Some(path) = explicit {
+            return Self::load(path).map(|config| (config, Some(path.to_owned())));
+        }
+        for (index, candidate) in environment.config_candidates().into_iter().enumerate() {
+            let named = index == 0 && environment.config.is_some();
+            if named || candidate.is_file() {
+                return Self::load(&candidate).map(|config| (config, Some(candidate)));
+            }
+        }
+        Ok((Self::default(), None))
+    }
+
+    /// The data directory: the configured one, else the environment's default.
+    pub fn data_dir(&self, environment: &Environment) -> PathBuf {
+        self.service
+            .data_dir
+            .clone()
+            .unwrap_or_else(|| environment.default_data_dir())
+    }
+
+    /// What a node runs on, from this file's `[service] name`, `[link]`, `[filesystem]`, `[execution]`
+    /// and `[shell]`.
+    pub fn node(&self) -> NodeConfig {
+        NodeConfig {
+            name: self.service.name.clone(),
+            link: self.link.clone(),
+            filesystem: self.filesystem.clone(),
+            execution: self.execution.clone(),
+            shell: self.shell.clone(),
+        }
+    }
+
+    fn validate(&self, path: &str) -> Result<(), ConfigError> {
+        let invalid = |key: &str, message: &str| ConfigError::Invalid {
+            path: path.to_owned(),
+            key: key.to_owned(),
+            message: message.to_owned(),
+        };
+        self.node().validate(path)?;
         for listen in &self.listen {
             let shaped = listen
                 .endpoint

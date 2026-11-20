@@ -1,15 +1,21 @@
-//! Serving links: accepting connections, proving each peer and dispatching its streams to the engines.
+//! The node: one embeddable host that proves each peer, decides what it may do and runs its streams.
+//!
+//! A [`Node`] is made from what its caller supplies: a [`NodeConfig`], an identity, the accepted
+//! [`Keys`] and the [`Grants`], and optionally [`NodeEvents`] and the host's `PATH`. It reads no file,
+//! no environment variable and no process-wide state, so an application builds one from settings kept
+//! wherever it likes; `bohio serve` is one such application.
 //!
 //! A connection proves itself first, within `[link] proof_timeout`, holding an unproven peer to one
-//! small message. A key that proves itself and is not accepted is recorded as waiting by the proof
-//! (see `bohio peer list`) and the connection ends. An accepted peer's link is then served: each
-//! stream it opens is decided by [`crate::link`] at open and at every `[link] recheck`, and runs one
-//! engine behind a bounded [`Relay`](bohio_client::relay::Relay).
+//! small message. A key that proves itself and that [`Keys`] does not accept is offered to
+//! [`Keys::stranger`] and the connection ends. An accepted peer's link is then served: each stream
+//! it opens is decided by [`crate::link`] at open and at every `[link] recheck`, and runs one engine
+//! behind a bounded [`Relay`](bohio_client::relay::Relay).
 
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::hash::Hash;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
@@ -21,17 +27,20 @@ use bohio_client::link::Settings;
 use bohio_client::relay::relay;
 use bohio_proto::info::Info;
 use bohio_proto::{ErrorBody, ErrorCode, protocol};
-use coqui_link::auth::{Proof, Sealed, Trust, prove};
+use coqui_link::auth::{Identity, Proof, Sealed, Trust, prove};
 use coqui_link::link::{Accepted as Open, Host, Options, Services, serve as serve_link};
 use coqui_link::mux::{CloseReason, LinkStream, Side};
-use coqui_peer::{Handshake, Method as ProofMethod, PeerId};
+use coqui_peer::{Handshake, KeyMaterial, Method as ProofMethod, PeerId};
 use coqui_transport::Channel;
 
-use crate::config::{Config, Environment};
+use crate::config::ConfigError;
+pub use crate::config::NodeConfig;
 use crate::limit::Slots;
-use crate::link::{LogEvents, PROTOCOLS, TrustPeers, admission, grant_of};
+use crate::link::{Bridge, NodePeers, PROTOCOLS, admission, grant_of};
+pub use crate::link::{
+    Grants, GrantsError, Keys, LogEvents, MemoryGrants, MemoryKeys, NodeEvent, NodeEvents,
+};
 use crate::listen::Listening;
-use crate::peer::{Data, PeerError};
 use crate::policy::Grant;
 use crate::{control, exec, fs, info, shell};
 
@@ -41,13 +50,13 @@ const ACCEPT_WAIT: Duration = Duration::from_millis(200);
 /// How long a serial host leaves the port closed between links.
 const SERIAL_REOPEN: Duration = Duration::from_millis(250);
 
-/// Why a host could not start.
+/// Why a node could not start.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
-pub enum ServeError {
-    /// The identity, the trust store or `peers.cfg` could not be used.
+pub enum NodeError {
+    /// The settings are out of range.
     #[error("{0}")]
-    Peer(PeerError),
+    Config(ConfigError),
     /// The proof could not be set up.
     #[error("the proof cannot be set up: {0}")]
     Proof(String),
@@ -61,17 +70,17 @@ pub enum ServeError {
     },
 }
 
-impl From<PeerError> for ServeError {
-    fn from(error: PeerError) -> Self {
-        Self::Peer(error)
+impl From<ConfigError> for NodeError {
+    fn from(error: ConfigError) -> Self {
+        Self::Config(error)
     }
 }
 
 /// What every connection shares.
 struct Shared {
-    config: Config,
+    config: NodeConfig,
     settings: Settings,
-    policy: std::path::PathBuf,
+    grants: Arc<dyn Grants>,
     path: OsString,
     info: Info,
     processes: Slots,
@@ -79,13 +88,46 @@ struct Shared {
     sessions: Slots,
 }
 
-/// A running host: its identity, its trust store and the engines it serves.
-pub struct Server {
+impl Shared {
+    fn new(
+        config: &NodeConfig,
+        grants: &Arc<dyn Grants>,
+        host: PeerId,
+        path: OsString,
+    ) -> Arc<Self> {
+        let mut capabilities = info::collect(config, &path);
+        capabilities.host_id = Some(host.to_string());
+        Arc::new(Self {
+            settings: config.link.settings(),
+            grants: Arc::clone(grants),
+            path,
+            info: capabilities,
+            processes: Slots::new(config.execution.max_processes),
+            transfers: Slots::new(config.filesystem.max_transfers),
+            sessions: Slots::new(config.shell.max_sessions),
+            config: config.clone(),
+        })
+    }
+}
+
+/// Where a node's events go, changeable until it serves: the proof holds the cell, not one sink.
+struct EventCell(RwLock<Arc<dyn NodeEvents>>);
+
+impl NodeEvents for EventCell {
+    fn event(&self, event: &NodeEvent) {
+        let sink = Arc::clone(&self.0.read().unwrap_or_else(PoisonError::into_inner));
+        sink.event(event);
+    }
+}
+
+/// An embeddable host: its identity, the keys and grants its caller supplies and the engines it serves.
+pub struct Node {
     shared: Arc<Shared>,
+    grants: Arc<dyn Grants>,
+    keys: Arc<dyn Keys>,
+    events: Arc<EventCell>,
     proof: Proof,
-    peers: TrustPeers,
-    store: coqui_peer::TrustStore,
-    services: Services,
+    peers: NodePeers,
     host: PeerId,
     connections: AtomicUsize,
     /// Connections still proving themselves, by source: `[link] max_unproven_per_source` each.
@@ -157,9 +199,9 @@ fn source_key(source: SocketAddr) -> IpAddr {
     }
 }
 
-impl core::fmt::Debug for Server {
+impl core::fmt::Debug for Node {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Server")
+        f.debug_struct("Node")
             .field("host", &self.host)
             .finish_non_exhaustive()
     }
@@ -191,57 +233,86 @@ impl ProofMethod for Sourced<'_> {
     }
 }
 
-impl Server {
-    /// Opens (or makes) the host's identity and trust store under the data directory `config` names and
-    /// prepares one service per protocol.
+impl Node {
+    /// A node that proves peers with `identity`, accepts the keys `keys` says and lets each do what
+    /// `grants` says, under `config`. Its events are logged and its programs are looked for on an empty
+    /// `PATH` until [`Node::with_events`] and [`Node::with_path`] say otherwise.
     ///
     /// # Errors
     ///
-    /// [`ServeError::Peer`] when the identity or the trust store cannot be used, [`ServeError::Proof`]
-    /// when the proof cannot be built.
-    pub fn new(config: &Config, environment: &Environment) -> Result<Self, ServeError> {
-        let data = Data::new(config.data_dir(environment));
-        let identity = data.identity()?;
-        let store = data.store()?;
-        let proof = Proof::builder(identity.clone())
-            .initiators(Trust::Store(store.clone()))
-            .build()
-            .map_err(|error| ServeError::Proof(error.to_string()))?;
+    /// [`NodeError::Config`] when `config` is out of range, [`NodeError::Proof`] when the proof cannot
+    /// be built.
+    pub fn new(
+        config: NodeConfig,
+        identity: Identity,
+        keys: Arc<dyn Keys>,
+        grants: Arc<dyn Grants>,
+    ) -> Result<Self, NodeError> {
+        config.validate("the node settings")?;
         let host = identity.peer_id();
-        let mut capabilities = info::collect(config, environment);
-        capabilities.host_id = Some(host.to_string());
-        let shared = Arc::new(Shared {
-            settings: config.link.settings(),
-            policy: data.policy_path(),
-            path: environment.path.clone().unwrap_or_default(),
-            info: capabilities,
-            processes: Slots::new(config.execution.max_processes),
-            transfers: Slots::new(config.filesystem.max_transfers),
-            sessions: Slots::new(config.shell.max_sessions),
-            config: config.clone(),
-        });
-        let mut services = Services::default();
-        for (token, _) in PROTOCOLS {
-            let shared = Arc::clone(&shared);
-            services = services.with_admission(
-                token,
-                Box::new(move |stream: &dyn LinkStream, accepted: &Open| {
-                    stream_served(&shared, stream, accepted);
-                }),
-                admission(data.policy_path(), token),
-            );
-        }
+        let events = Arc::new(EventCell(RwLock::new(Arc::new(LogEvents))));
+        let asked = {
+            let (keys, events) = (Arc::clone(&keys), Arc::clone(&events));
+            Trust::asked(move |key: &KeyMaterial, _answering, source| {
+                let peer = key.id();
+                if keys.is_accepted(&peer) {
+                    return true;
+                }
+                keys.stranger(&peer, key, source);
+                events.event(&NodeEvent::Stranger { peer, source });
+                false
+            })
+        };
+        let proof = Proof::builder(identity)
+            .initiators(asked)
+            .build()
+            .map_err(|error| NodeError::Proof(error.to_string()))?;
         Ok(Self {
-            shared,
+            shared: Shared::new(&config, &grants, host, OsString::new()),
+            peers: NodePeers::new(Arc::clone(&keys)),
+            grants,
+            keys,
+            events,
             proof,
-            peers: TrustPeers::new(store.clone()),
-            store,
-            services,
             host,
             connections: AtomicUsize::new(0),
             unproven: Counted::new(config.link.max_unproven_per_source),
             links: Counted::new(config.link.max_links_per_peer),
         })
+    }
+
+    /// Sends the node's events to `events` instead of the log.
+    #[must_use]
+    pub fn with_events(self, events: Arc<dyn NodeEvents>) -> Self {
+        *self
+            .events
+            .0
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = events;
+        self
+    }
+
+    /// The host's own `PATH`: where programs and shells are looked for, and what `info` reports.
+    #[must_use]
+    pub fn with_path(mut self, path: OsString) -> Self {
+        self.shared = Shared::new(&self.shared.config, &self.grants, self.host, path);
+        self
+    }
+
+    /// One service per protocol, each admitted by the grants as they are at the time.
+    fn services(&self) -> Services {
+        let mut services = Services::default();
+        for (token, _) in PROTOCOLS {
+            let shared = Arc::clone(&self.shared);
+            services = services.with_admission(
+                token,
+                Box::new(move |stream: &dyn LinkStream, accepted: &Open| {
+                    stream_served(&shared, stream, accepted);
+                }),
+                admission(Arc::clone(&self.grants), token),
+            );
+        }
+        services
     }
 
     /// This host's id.
@@ -337,7 +408,7 @@ impl Server {
         self.serve_proving(channel, source, None);
     }
 
-    /// As [`Server::serve_channel`], giving `proving` back once the proof has ended either way.
+    /// As [`Node::serve_channel`], giving `proving` back once the proof has ended either way.
     fn serve_proving<C: Channel>(
         &self,
         channel: &C,
@@ -370,18 +441,23 @@ impl Server {
         };
         let _ = channel.set_pending(settings.read_ahead);
         let recheck = self.shared.config.link.recheck.0;
-        let store = self.store.clone();
+        let keys = Arc::clone(&self.keys);
         // A revoked key's streams end at the next re-check; the link itself ends at the second.
         let sealed = Sealed::new(channel, established.session)
-            .with_check(move || store.is_accepted(&peer))
+            .with_check(move || keys.is_accepted(&peer))
             .with_check_every(recheck.saturating_mul(2));
         let mut options = Options::default();
         options.limits = settings.limits();
         options.recheck = recheck;
+        let services = self.services();
+        let bridge = Bridge {
+            events: self.events.as_ref(),
+            side: Side::Answered,
+        };
         let host = Host {
             store: &self.peers,
-            services: &self.services,
-            events: &LogEvents,
+            services: &services,
+            events: &bridge,
         };
         serve_link(
             &sealed,
@@ -395,9 +471,9 @@ impl Server {
     }
 }
 
-/// Runs one stream's engine behind a relay, under the grant `peers.cfg` gives the peer now.
+/// Runs one stream's engine behind a relay, under the grant the peer has now.
 fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
-    let grant: Grant = match grant_of(&shared.policy, &accepted.peer) {
+    let grant: Grant = match grant_of(shared.grants.as_ref(), &accepted.peer) {
         Ok(grant) => grant,
         Err(error) => {
             tracing::warn!("the peer grants cannot be read: {error}");
@@ -453,7 +529,7 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
             protocol::CONTROL => {
                 // Each call is decided by the grant as it is then, not as it was when the stream opened.
                 let now = || {
-                    grant_of(&shared.policy, &accepted.peer).map_err(|_| {
+                    grant_of(shared.grants.as_ref(), &accepted.peer).map_err(|_| {
                         ErrorBody::new(ErrorCode::Internal, "the host cannot read its peer grants")
                     })
                 };

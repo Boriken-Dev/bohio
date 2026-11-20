@@ -21,7 +21,7 @@ use coqui_transport_web::webtransport::{
 };
 
 use crate::config::ListenConfig;
-use crate::serve::ServeError;
+use crate::node::NodeError;
 
 /// How many days a certificate the host makes for WebTransport is valid when the entry says nothing:
 /// a browser pinning it by hash accepts at most 14, and a day short of that leaves room for a slow clock.
@@ -271,13 +271,10 @@ impl Listening {
     ///
     /// # Errors
     ///
-    /// [`ServeError::Listen`] for an endpoint that does not parse, is not one to listen on, or cannot
+    /// [`NodeError::Listen`] for an endpoint that does not parse, is not one to listen on, or cannot
     /// be bound.
-    pub fn bind(
-        config: &ListenConfig,
-        settings: &Settings,
-    ) -> Result<(Self, Endpoint), ServeError> {
-        let fail = |reason: String| ServeError::Listen {
+    pub fn bind(config: &ListenConfig, settings: &Settings) -> Result<(Self, Endpoint), NodeError> {
+        let fail = |reason: String| NodeError::Listen {
             endpoint: config.endpoint.clone(),
             reason,
         };

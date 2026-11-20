@@ -21,7 +21,7 @@ use coqui_peer::PeerId;
 use super::commands::{print_info, source};
 use super::{Format, RemoteAction, RemoteArgs, RemoteExecArgs, RemoteShellArgs};
 use crate::config::Environment;
-use crate::serve::Endpoint;
+use crate::node::Endpoint;
 
 /// What a person is told when the host will not do what was asked.
 fn explain(error: &Error) -> String {

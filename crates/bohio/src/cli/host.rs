@@ -3,6 +3,7 @@
 use std::io::{BufRead, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::thread;
 use std::time::Duration;
@@ -21,9 +22,9 @@ use super::{
 };
 use crate::config::{Config, Environment, ListenConfig, Span};
 use crate::listen::Listening;
-use crate::peer;
+use crate::node::{Endpoint, Node};
+use crate::peer::{self, Data, FilePeers};
 use crate::policy::{Grant, Permission};
-use crate::serve::{Endpoint, Server};
 
 /// Standard output, flushed: a person or a test reads these lines as they happen.
 macro_rules! say {
@@ -43,6 +44,16 @@ fn parse_id(text: &str) -> Result<PeerId, String> {
         .map_err(|_| "that is not a peer id: use the form `bohio peer list` prints".to_owned())
 }
 
+/// The node `config` describes, with the identity and the peers of its data directory.
+fn node(config: &Config, environment: &Environment) -> Result<Node, String> {
+    let data = Data::new(config.data_dir(environment));
+    let identity = data.identity().map_err(|error| error.to_string())?;
+    let peers = Arc::new(FilePeers::open(&data).map_err(|error| error.to_string())?);
+    let node = Node::new(config.node(), identity, peers.clone(), peers)
+        .map_err(|error| error.to_string())?;
+    Ok(node.with_path(environment.path.clone().unwrap_or_default()))
+}
+
 /// `bohio serve`.
 pub(super) fn serve(args: &ServeArgs, environment: &Environment) -> Result<(), String> {
     let (config, from) = load(args.config.config.as_deref(), environment)?;
@@ -51,7 +62,7 @@ pub(super) fn serve(args: &ServeArgs, environment: &Environment) -> Result<(), S
             return Err("--stdio serves standard input and output alone: drop --listen".to_owned());
         }
         // Standard output is the link: nothing else is written to it, and [[listen]] entries are not bound.
-        let server = Server::new(&config, environment).map_err(|error| error.to_string())?;
+        let server = node(&config, environment)?;
         guard(from.as_deref(), &config, environment)?;
         tracing::info!(host = %server.host(), "serving standard input and output");
         return server.serve_stdio().map_err(|error| error.to_string());
@@ -105,7 +116,7 @@ pub(super) fn serve_endpoints(
             "nothing to listen on: add a [[listen]] entry to bohio.cfg or pass --listen".to_owned(),
         );
     }
-    let server = Server::new(config, environment).map_err(|error| error.to_string())?;
+    let server = node(config, environment)?;
     guard(from, config, environment)?;
     let settings = config.link.settings();
     let mut listeners = Vec::new();

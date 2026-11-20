@@ -71,6 +71,10 @@ name = "cli"
 required-features = ["cli"]
 
 [[test]]
+name = "embed"
+required-features = ["cli"]
+
+[[test]]
 name = "link"
 required-features = ["cli"]
 

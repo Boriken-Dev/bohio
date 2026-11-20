@@ -13,9 +13,10 @@ use std::time::{Duration, Instant};
 use bohio_client::link::{Settings, socket};
 use coqui_link::auth::{Identity, Method};
 use coqui_link::pairing;
-use coqui_peer::{PeerId, TrustStore};
+use coqui_peer::{KeyMaterial, PeerId, TrustStore};
 use coqui_transport::Channel;
 
+use crate::link::{Grants, GrantsError, Keys};
 use crate::policy::{Grant, Policies, PolicyError};
 
 /// Why a key or peer operation failed. Never holds a key, a PIN or a secret.
@@ -332,4 +333,44 @@ pub fn pair(
             }
         }
     })
+}
+
+/// The data directory's trust store and `peers.cfg` as a node's [`Keys`] and [`Grants`], read afresh at
+/// every question so an edit applies at the next open or re-check.
+#[derive(Debug, Clone)]
+pub struct FilePeers {
+    store: TrustStore,
+    policy: PathBuf,
+}
+
+impl FilePeers {
+    /// The peers `data` holds.
+    ///
+    /// # Errors
+    ///
+    /// [`PeerError::Store`] when the trust store cannot be opened.
+    pub fn open(data: &Data) -> Result<Self, PeerError> {
+        Ok(Self {
+            store: data.store()?,
+            policy: data.policy_path(),
+        })
+    }
+}
+
+impl Keys for FilePeers {
+    fn is_accepted(&self, peer: &PeerId) -> bool {
+        self.store.is_accepted(peer)
+    }
+
+    fn stranger(&self, _peer: &PeerId, key: &KeyMaterial, source: Option<SocketAddr>) {
+        self.store.record_waiting(key, source);
+    }
+}
+
+impl Grants for FilePeers {
+    fn grant(&self, peer: &PeerId) -> Result<Grant, GrantsError> {
+        Policies::load(&self.policy)
+            .map(|policies| policies.grant_for(&peer.to_string()))
+            .map_err(|error| GrantsError::new(error.to_string()))
+    }
 }
