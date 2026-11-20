@@ -183,7 +183,8 @@ pub struct ApproveArgs {
     #[arg(long, value_name = "NAME")]
     pub program: Vec<String>,
     /// With `--program`: an environment variable the peer's requests may set or remove (repeat);
-    /// with none, they may change none. PATH is refused even when named.
+    /// with none, they may change none. A request may change PATH only when it is named here: a program that
+    /// starts others then runs what the peer's PATH finds.
     #[arg(long, value_name = "NAME", requires = "program")]
     pub env: Vec<String>,
 }

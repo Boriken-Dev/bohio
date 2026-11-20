@@ -97,8 +97,9 @@ pub struct ExecGrant {
     /// starts, not what it does.
     programs: Vec<String>,
     /// Under a program list, the environment variables a request may set or remove, each named
-    /// exactly (without case on Windows); any other is refused, as is `PATH` whether listed or
-    /// not. A variable is as strong as an argument: `LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`,
+    /// exactly (without case on Windows); any other is refused. `PATH` is refused like any other
+    /// unless it is listed, and then a listed program that starts others runs what the peer's
+    /// `PATH` finds. A variable is as strong as an argument: `LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`,
     /// `BASH_ENV` or `GIT_SSH_COMMAND` make a listed program run code the peer chose. Without a
     /// program list a peer may set any.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -177,19 +178,17 @@ impl Grant {
     }
 
     /// Whether a request may make the environment changes `env`: always without a program list;
-    /// under one, only variables the grant names, never `PATH`, and never from an empty
-    /// environment.
+    /// under one, only variables the grant names (`PATH` too, when it names it), and never from an
+    /// empty environment.
     pub fn permits_env(&self, env: &bohio_proto::exec::Env) -> bool {
         if self.exec.programs.is_empty() {
             return true;
         }
         let allowed = |name: &String| {
-            !same_variable(name, "PATH")
-                && self
-                    .exec
-                    .env
-                    .iter()
-                    .any(|listed| same_variable(listed, name))
+            self.exec
+                .env
+                .iter()
+                .any(|listed| same_variable(listed, name))
         };
         !env.clear && env.set.keys().all(allowed) && env.remove.iter().all(allowed)
     }

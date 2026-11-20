@@ -496,7 +496,7 @@ fn under_a_program_list_a_peer_changes_only_the_variables_its_grant_names() {
     assert_eq!(whoami(&link, removing, None), Err(ErrorCode::Denied));
     assert_eq!(link.slots.in_use(), 0);
 
-    // What the grant names may be changed, and nothing else; PATH stays refused even when named.
+    // What the grant names may be changed, and nothing else; PATH is refused unless the grant names it.
     let mut named = Link::new(
         Grant::allowing([Permission::Exec])
             .with_programs(["git"])
@@ -512,8 +512,20 @@ fn under_a_program_list_a_peer_changes_only_the_variables_its_grant_names() {
         whoami(&named, setting("LD_PRELOAD"), None),
         Err(ErrorCode::Denied)
     );
+    // Naming PATH is the operator's choice; the program still starts from the host's own path.
+    assert!(whoami(&named, setting_path(scratch.path()), None).is_ok());
+    let unnamed = {
+        let mut other = Link::new(
+            Grant::allowing([Permission::Exec])
+                .with_programs(["git"])
+                .with_env(["LANG"]),
+            ExecutionConfig::default(),
+        );
+        other.path = std::sync::Arc::new(good.as_os_str().to_owned());
+        other
+    };
     assert_eq!(
-        whoami(&named, setting_path(scratch.path()), None),
+        whoami(&unnamed, setting_path(scratch.path()), None),
         Err(ErrorCode::Denied)
     );
     if cfg!(windows) {

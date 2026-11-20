@@ -15,8 +15,8 @@ use crate::policy::Grant;
 /// # Errors
 ///
 /// `bad_request` for an empty argument vector or an unknown shell, `denied` for a program the
-/// grant does not list, for a request that changes a variable the grant does not name (or `PATH`,
-/// or clears the environment) under a program list, or for a shell script when the grant lists
+/// grant does not list, for a request that changes a variable the grant does not name (`PATH`
+/// too, unless it is named), or clears the environment under a program list, or for a shell script when the grant lists
 /// any. Under a list the program that
 /// starts is the one the host finds at the listed name on its own `path`, never one the request
 /// can point elsewhere.
@@ -106,7 +106,7 @@ pub(super) fn permitted(request: &Request, grant: &Grant) -> bool {
 fn env_refused() -> ErrorBody {
     ErrorBody::new(
         ErrorCode::Denied,
-        "under a program list a peer may change only the variables its grant names, never PATH, and may not clear the environment",
+        "under a program list a peer may change only the variables its grant names, and may not clear the environment",
     )
 }
 

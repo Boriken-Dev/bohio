@@ -327,7 +327,7 @@ fn resolve(
                 if !context.grant.permits_env(env) {
                     return Err(refuse(
                         ErrorCode::Denied,
-                        "under a program list a peer may change only the variables its grant names, never PATH, and may not clear the environment",
+                        "under a program list a peer may change only the variables its grant names, and may not clear the environment",
                     ));
                 }
                 resolve_listed(first, context.path)
