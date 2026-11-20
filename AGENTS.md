@@ -17,6 +17,8 @@ One Cargo workspace (`Cargo.toml`, one committed `Cargo.lock`: the repository bu
 | `crates/bohio-proto/` | wire types and codec, no I/O, for any client |
 | `crates/bohio-client/` | Rust client over a `coqui_transport::Channel`; the link is an `Open`, a caller's or `connect::Connection` |
 | `crates/bohio/` | host library (engines, `platform`, configuration, grants, `link`, `peer`, `serve`) and the `bohio` binary behind feature `cli` |
+| `crates/bohio-bench/` | the benchmark harness (`publish = false`): scenarios over a link, a raw TCP control, result files |
+| `benchmarks/` | `README.md` (schema, scenarios, reproduce), `netem.sh` (emulated links), `scenarios.sh`, `summarize.py`, committed `results/` |
 | `examples/bohio.cfg` | every setting with its default |
 | `docs/`, `mkdocs.yml` | the narrative site: the protocol (the wire, in CDDL), security and the hostctl mapping; the Rust API reference is published under `/rust/` |
 | `vectors/` | the wire's messages as hex, written and checked by `crates/bohio-proto/tests/vectors.rs`; a clean tree after `cargo test` means they are current |
@@ -60,6 +62,7 @@ built `bohio` binary (cargo builds it for the test): `bohio serve` runs as a chi
 
 - `.github/workflows/test.yml` runs fmt, clippy, the workspace tests, a check that `vectors/` is unchanged and strict rustdoc on Linux,
   Windows and macOS, on stable and 1.89, on demand and on `ci-*` tags. Linux installs `socat` so the serial test runs.
+- `.github/workflows/bench.yml` is on demand only (`workflow_dispatch`: `ref`, `baseline_ref`, `samples`, `links`): it measures on emulated links, alternating two refs, with a raw TCP control; never per push.
 - `.github/workflows/docs.yml` builds the narrative site strictly with the Rust API reference and deploys Pages.
 
 Nothing is published to a registry. The workspace depends on git revisions of the Coqui crates; a `v*` tag needs the maintainer's go-ahead.
