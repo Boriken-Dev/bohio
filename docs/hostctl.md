@@ -15,8 +15,8 @@ BohioConfig(endpoint, *, server=None, data_dir=None, command=None, shell="auto",
 | Field | Meaning |
 | --- | --- |
 | `endpoint` | any [carrier](protocol.md#carriers): `tcp://host:port`, `pipe://name`, `ws://host:port`, `wss://host:port`, `webtransport://host:port`, `serial://port?baud=N` |
-| `server` | the host's peer id to trust, instead of the keys `bohio join` stored |
-| `data_dir` | where this client keeps its own identity and the host keys it trusts (the same layout `bohio` uses) |
+| `server` | the host's peer id to trust, instead of the `[peer.<id>]` tables `bohio join` wrote |
+| `data_dir` | where this client keeps its own identity (the same layout `bohio` uses); the hosts it trusts are the `[peer.<id>]` tables of the `bohio.cfg` layers, or `server` |
 | `command` | instead of an endpoint, a program whose standard input and output are the link |
 | `shell`, `pathname` | as every hostctl config; `auto` reads them from `info` |
 

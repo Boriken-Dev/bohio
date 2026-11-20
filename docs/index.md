@@ -4,7 +4,7 @@
 
 Three rules hold the design together:
 
-- **A proof admits, a grant allows.** Each side holds a key and proves it to the other. Being proven opens nothing: `peers.cfg` says what each peer may do, and every stream is decided again while it runs, so a revoke ends it.
+- **A proof admits, a grant allows.** Each side holds a key and proves it to the other. Being proven opens nothing: the peer's `[peer.<id>]` table in `bohio.cfg` says what it may do, and every stream is decided again while it runs, so a revoke ends it.
 - **One stream per operation.** A client opens a stream, names a protocol and sends the request as the open's metadata. Control messages are CBOR and file or process bytes travel raw, behind a one-byte tag, so a client in any language can speak it.
 - **No hard-coded limits.** Every bound is a setting in `bohio.cfg` with a documented default, and nothing buffers without bound.
 

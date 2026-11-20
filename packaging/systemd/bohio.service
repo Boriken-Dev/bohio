@@ -5,9 +5,15 @@
 #   install -d /etc/bohio && install -m 0644 examples/bohio.cfg /etc/bohio/bohio.cfg   # then edit [[listen]]
 #   install -m 0644 packaging/systemd/bohio.service /etc/systemd/system/bohio.service
 #   systemctl daemon-reload && systemctl enable --now bohio
-#   sudo -u bohio bohio peer list        # waiting keys; approve one with `bohio peer approve`
+#   sudo bohio peer list --config /etc/bohio/bohio.cfg      # waiting keys
+#   sudo bohio peer approve ID --allow info --config /etc/bohio/bohio.cfg
 #
-# The service writes only /var/lib/bohio (its identity, trust store and peers.cfg). A peer that may
+# The peers are [peer.<id>] tables in /etc/bohio/bohio.cfg, which stays root-owned and not writable by
+# the group or others (the service refuses it otherwise); the service reads it again at every decision.
+# Set `data_dir = "/var/lib/bohio"` under [service] in that file so the commands above, run as root,
+# read the same waiting list the service writes.
+#
+# The service writes only /var/lib/bohio (its identity and the keys waiting for approval). A peer that may
 # write files outside it needs that directory added to ReadWritePaths, and a peer whose root is under
 # /home needs ProtectHome=read-only (or false). A serial listener needs PrivateDevices=false, which
 # is the default here, and the user in the group that owns the device (for example dialout).

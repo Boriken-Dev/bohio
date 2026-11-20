@@ -22,7 +22,7 @@ Documentation: <https://docs.rs/bohio>.
   so list only programs that are safe with every argument.
 - An authenticated link over TCP (`bohio serve`, `bohio pair`, `bohio join`, `bohio remote`): each side proves a key to the
   other with [`coqui-link`](https://github.com/Boriken-Dev/coqui-link) (Noise by default); a key the host has not accepted is
-  refused and waits for `bohio peer approve`; each stream a peer opens is decided from `peers.cfg` when it opens and every
+  refused and waits for `bohio peer approve`; each stream a peer opens is decided from the peer's `[peer.<id>]` table in `bohio.cfg` when it opens and every
   `[link] recheck` while it runs, so a revoke ends running processes, shells and transfers.
 - Memory per link is bounded by `[link]` settings (a credit window per stream, a queue per direction, a read-ahead), never by
   the size of a file.
@@ -30,7 +30,7 @@ Documentation: <https://docs.rs/bohio>.
   terminal can be resized, and a closed stream ends the shell and everything it started.
 - Filesystem access confined to the peer's granted roots: a `..` or a symbolic link that leaves a root is refused,
   every path component is resolved against a directory handle, and files stream in chunks with atomic replace.
-- Per-peer grants (`peers.cfg`): an approved peer with no `allow` gets nothing.
+- Per-peer grants (`[peer.<id>]` in `bohio.cfg`, layered: the system file, then the user's): an accepted peer with no `allow` gets nothing.
 - Threads, not an async runtime: one thread per stream, bounded by configuration.
 - Every bound is a setting with a documented default; nothing is hard-coded.
 
@@ -108,12 +108,12 @@ who may do what; `bohio pair` shows a PIN and accepts the one peer that joins wi
 
 | Module | Purpose |
 | --- | --- |
-| `config` | `bohio.cfg`: `Config`, its sections and the `Environment` searches read |
-| `policy` | `peers.cfg`: `Policies`, `Grant` and `Permission` |
+| `config` | `bohio.cfg`: `Config`, its sections, `Layers` (the system file and the user's merged) and the `Environment` the data directory is found in |
+| `policy` | `[peer.<id>]`: `Peers`, `Grant` and `Permission` |
 | `exec` | serves one `bohio-exec/1` stream |
 | `info` | this host's capabilities |
 | `link` | who may open which protocol: the `Keys` and `Grants` a node asks, their in-memory forms, admission and `NodeEvents` |
-| `peer` | the data directory, the identity, `list`, `approve`, `revoke` and PIN pairing |
+| `peer` | the data directory, the identity, `LayeredPeers`, `list`, `approve`, `revoke` (they edit the layers in place) and PIN pairing |
 | `node` | `Node`: an embeddable host made from settings, an identity, `Keys` and `Grants` the caller supplies; accepts links, proves peers and runs each stream's engine |
 | `limit` | a counted bound on concurrent work |
 | `cli` | the command line (feature `cli`) |

@@ -16,9 +16,10 @@ machines and containers. It is an application: the `coqui-*` names are reserved 
   names one; output streams as it is written; a deadline, a kill request or a closed stream ends
   the whole process tree.
   A program list limits which program starts, not what it does: a listed `git` can still run any alias it is told.
-- **Per-peer grants**: who a peer is comes from the trust store; what it may do (`info`,
-  `fs.read`, `fs.write`, `exec`, `shell`, `admin`, filesystem roots, a program list) comes from
-  `peers.cfg`. A peer with no grant gets nothing.
+- **Per-peer grants**: a peer is a `[peer.<id>]` table in `bohio.cfg`, which accepts its key; what it may do
+  (`info`, `fs.read`, `fs.write`, `exec`, `shell`, `admin`, filesystem roots, a program list) is the table's
+  `allow` and its keys. A peer with no `allow` gets nothing. `bohio.cfg` is layered: the system file, then the
+  user's merged over it.
 - **One stream per operation** with a versioned, language-independent protocol: control messages
   are CBOR; bulk bytes travel raw behind a one-byte tag.
 - **Threads, not an async runtime**: one thread per stream, bounded by configuration.

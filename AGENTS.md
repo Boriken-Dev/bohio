@@ -45,8 +45,10 @@ built `bohio` binary (cargo builds it for the test): `bohio serve` runs as a chi
   in-process over `coqui_transport::memory` channels. Nothing in an engine names a transport.
 - One stream per operation; the open's metadata is the request. Control messages are CBOR with string keys, bulk bytes raw
   behind a one-byte tag. A client ignores fields it does not know.
-- The trust store says who a peer is; `peers.cfg` says what it may do. A peer with no `allow` gets nothing. Each stream is decided from
-  `peers.cfg` when it opens and every `[link] recheck` while it runs (`link::admission`); a revoke ends what is running.
+- A peer is a `[peer.<id>]` table in `bohio.cfg` (layered: the system file, then the user's, merged by `config::Layers`); the table
+  accepts the key and `allow` says what it may do. A peer with no `allow` gets nothing. Each stream is decided from the layers when it
+  opens and every `[link] recheck` while it runs (`link::admission`, over the `Keys` and `Grants` a `node::Node` is given); a revoke ends
+  what is running. The data directory holds state only: the identity and the waiting list.
 - No hard-coded limits: every bound is a `bohio.cfg` setting with a documented default; the protocol's own constants are named
   and documented where they are defined.
 - Threads, not Tokio: one thread per stream. Nothing buffers without bound; a full stream makes the sender wait. A link stream borrows

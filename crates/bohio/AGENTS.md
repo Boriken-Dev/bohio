@@ -10,10 +10,10 @@ with the source at <https://github.com/Boriken-Dev/bohio>.
 
 MSRV Rust 1.89. A library-only build (`default-features = false`) depends on `bohio-proto`, `bohio-client` (the link and its relay),
 `coqui-transport`, `coqui-link` (with `sealed`), `coqui-peer`, `coqui-transport-pipe` and `coqui-transport-web` (each a git revision; one copy of each builds), `serde`, `toml`,
-`thiserror`, `tracing`, `portable-pty` (terminals), `cap-std` and `cap-fs-ext` (confined file access), `sha2`, and `rustix` (Unix) or
+`thiserror`, `tracing`, `anycfg` (the layers) and `toml_edit` (in-place edits of a peer table), `portable-pty` (terminals), `cap-std` and `cap-fs-ext` (confined file access), `sha2`, and `rustix` (Unix) or
 `win32job` (Windows). Version `0.0.0-alpha.0`, not published.
 
-Imports: the root holds `Config`, `ConfigError`, `Environment`, `Grant`, `Permission`, `Policies`, `PolicyError`. Public modules:
+Imports: the root holds `Config`, `ConfigError`, `Environment`, `Grant`, `Peers`, `Permission`. Public modules:
 `config`, `control`, `exec`, `fs`, `info`, `limit`, `link`, `listen`, `node`, `peer`, `policy`, `shell`, `cli` (feature `cli`). No `unsafe` code
 (`#![forbid(unsafe_code)]`). The library prints nothing, reads no environment variable and installs no logger; it starts threads only inside
 `exec::serve`, `shell::serve`, the transfer and control engines, `node::Node` (a thread per connection, per stream and per relay) and
@@ -22,35 +22,41 @@ Imports: the root holds `Config`, `ConfigError`, `Environment`, `Grant`, `Permis
 ## Configuration (`bohio::config`)
 
 ```rust
-pub struct Environment { pub windows: bool, pub config: Option<PathBuf>, pub app_data: Option<PathBuf>, pub local_app_data: Option<PathBuf>,
-    pub program_data: Option<PathBuf>, pub xdg_config_home: Option<PathBuf>, pub xdg_data_home: Option<PathBuf>, pub home: Option<PathBuf>,
+pub struct Environment { pub windows: bool, pub local_app_data: Option<PathBuf>, pub xdg_data_home: Option<PathBuf>, pub home: Option<PathBuf>,
     pub path: Option<OsString> }                                  // Default; the binary fills it from the process (cli::capture_environment)
-impl Environment { pub fn config_candidates(&self) -> Vec<PathBuf>; pub fn default_data_dir(&self) -> PathBuf; }
+impl Environment { pub fn default_data_dir(&self) -> PathBuf; }
 
 pub struct Config { pub service: ServiceConfig, pub listen: Vec<ListenConfig>, pub link: LinkConfig, pub filesystem: FilesystemConfig,
-                    pub execution: ExecutionConfig, pub shell: ShellConfig }     // Default; unknown keys refused
+                    pub execution: ExecutionConfig, pub shell: ShellConfig, pub peer: Peers }     // Default; unknown keys refused; `peer` is `[peer.<id>]`
 pub struct NodeConfig { pub name: String, pub link: LinkConfig, pub filesystem: FilesystemConfig,
                         pub execution: ExecutionConfig, pub shell: ShellConfig }   // Default, Deserialize, unknown keys refused: what a Node runs on, read by an app from any section of its own settings
 impl NodeConfig { pub fn validate(&self, label: &str) -> Result<(), ConfigError>; }   // every range check; `Node::new` calls it
 impl Config {
     pub fn node(&self) -> NodeConfig;                                            // `[service] name`, `[link]`, `[filesystem]`, `[execution]`, `[shell]`
-    pub fn from_toml(text: &str, path: &str) -> Result<Self, ConfigError>;       // `path` only labels errors
-    pub fn load(path: &Path) -> Result<Self, ConfigError>;
-    pub fn locate(explicit: Option<&Path>, environment: &Environment) -> Result<(Self, Option<PathBuf>), ConfigError>;
+    pub fn from_toml(text: &str, path: &str) -> Result<Self, ConfigError>;       // one layer of text; `path` only labels errors
+    pub fn load(path: &Path) -> Result<Self, ConfigError>;                       // one layer, a file
     pub fn data_dir(&self, environment: &Environment) -> PathBuf;
 }
+pub struct Layers;                                                // the library reads the files it is given and nothing else; the command finds them
+impl Layers {
+    pub fn load(paths: &[PathBuf]) -> Result<Layered, ConfigError>;             // lowest first, every file must exist; none: the defaults
+    pub fn parse(text: &str, label: &str) -> Result<Layered, ConfigError>;      // one layer of text
+    pub fn peers(paths: &[PathBuf]) -> Result<Peers, ConfigError>;              // the live check: a missing file is skipped, only `[peer.*]` is read
+}
+pub struct Layered { pub config: Config, pub peers: Peers, pub files: Vec<PathBuf> }   // `peers` is `config.peer`; `files` the layers read
 pub struct Span(pub Duration);                                    // a number of seconds, or text: 250ms, 5s, 2m, 1h; Span::parse(&str) -> Option<Span>
-#[non_exhaustive] pub enum ConfigError { Read { path, reason }, Parse { path, line, column, message }, Invalid { path, key, message } }
+#[non_exhaustive] pub enum ConfigError { Read { path, reason }, Parse { path, line, column, key: Option<String>, message }, Invalid { path, key, message } }
 ```
 
-`bohio.cfg` is TOML; every key is optional and an unknown key or section is `ConfigError::Parse` naming it, with line and column
-(the line's content is never quoted). Defaults:
+`bohio.cfg` is TOML (a `.cfg` first line `#!...` is a comment); every key is optional and an unknown key or section is `ConfigError::Parse` naming it,
+with file, line, column and key (a value of the file is never quoted). Defaults:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `[service] name` | `"bohio"` | name shown in `info` |
-| `[service] check_access` | `true` | Windows: refuse to start when another account may change the configuration file or data directory; `false` logs it and serves |
-| `[service] data_dir` | `bohio` under `%LOCALAPPDATA%` / `$XDG_DATA_HOME` (else `~/.local/share`) | identity, trust store, `peers.cfg` |
+| `[service] check_access` | `true` | refuse to start when another account may change a layer, the directory that holds it or (Windows) the data directory; `false` logs it and serves; lowest layer only |
+| `[service] user_layer` | `true` | whether the user's file is read over the system's when no layers are named; lowest layer only |
+| `[service] data_dir` | `bohio` under `%LOCALAPPDATA%` / `$XDG_DATA_HOME` (else `~/.local/share`) | identity and the waiting list |
 | `[[listen]] endpoint` | none | `tcp://host:port`, `pipe://name` or `pipe:///path.sock`, `ws://host:port`, `wss://host:port`, `webtransport://host:port`, `serial://port?baud=N`; required in each entry |
 | `[[listen]] socket_mode` | `"0o600"` | `pipe`, Unix: the socket's mode, octal text with the `0o` prefix |
 | `[[listen]] remote_clients` | `false` | `pipe`, Windows: clients on other hosts through file sharing |
@@ -92,10 +98,14 @@ pub struct Span(pub Duration);                                    // a number of
 | `[shell] drain_quiet` | `200ms` | how long the terminal must stay quiet after the program exited before the session ends |
 | `[shell] kill_wait` | `2s` | how long the host waits for the output reader after the tree was ended before it reports the exit regardless |
 
-`locate`: `explicit` alone when given (must exist); else the first existing of `BOHIO_CONFIG` (must exist when set), the user's file
-(`%APPDATA%\bohio\bohio.cfg`, `$XDG_CONFIG_HOME/bohio/bohio.cfg`, else `~/.config/bohio/bohio.cfg`), the system's
-(`%ProgramData%\bohio\bohio.cfg`, `/etc/bohio/bohio.cfg`); with none, the defaults and `None`. Out-of-range values are
-`ConfigError::Invalid` naming the key (`link.max_streams`, ...).
+**Layers.** `Layers::load` reads each file alone (syntax, unknown keys, types: the error names the file, line, column and key) and then merges them with
+`anycfg` over `toml::Value`: tables merge by key, arrays and scalars replace (an array is one setting, so a higher layer can narrow a root list or `[[listen]]`;
+merging elements would only widen). Out-of-range values, checked on the merged value, are `ConfigError::Invalid` naming the key (`link.max_streams`, ...) and the
+highest layer that sets it, as are a `[peer.<name>]` whose name is not a peer id and `[service] check_access` or `user_layer` set above the lowest layer. The command
+finds the layers (the library reads no environment variable): `--config FILE` (repeatable, lowest first) or else `BOHIO_CONFIG` name them, alone; else the system
+file (`%ProgramData%\bohio\bohio.cfg`, `/etc/bohio/bohio.cfg`) then the user's (`%APPDATA%\bohio\bohio.cfg`, `$XDG_CONFIG_HOME/bohio/bohio.cfg`, else
+`~/.config/bohio/bohio.cfg`), each if it exists; none: the defaults. The `[peer.*]` tables are read again from the files at every question (`peer::LayeredPeers`);
+every other section is read when the host starts.
 
 ## Peer grants (`bohio::policy`)
 
@@ -107,14 +117,14 @@ impl Grant { pub fn none() -> Self; pub fn allowing(permissions) -> Self; pub fn
              pub fn allows(&self, Permission) -> bool; pub fn permissions(&self) -> impl Iterator<Item = Permission>; pub fn fs_roots(&self) -> &[PathBuf];
              pub fn permits_program(&self, program: &str) -> bool; pub fn permits_shell_script(&self) -> bool;
              pub fn with_env(self, names) -> Self; pub fn env_names(&self) -> &[String]; pub fn permits_env(&self, env: &bohio_proto::exec::Env) -> bool; }
-pub struct Policies;                                             // Default = no peer
-impl Policies { pub fn from_toml(text, path: &str) -> Result<Self, PolicyError>; pub fn load(path: &Path) -> Result<Self, PolicyError>;   // missing file: empty
-                pub fn grant_for(&self, peer: &str) -> Grant; pub fn peers(&self) -> impl Iterator<Item = &str>; }
-#[non_exhaustive] pub enum PolicyError { Read { path, reason }, Parse { path, line, column, message } }
+pub struct Peers;                                                // Default = no peer; Deserialize (the `[peer]` table of `bohio.cfg`)
+impl Peers { pub fn grant_for(&self, peer: &str) -> Grant; pub fn has(&self, peer: &str) -> bool; pub fn ids(&self) -> impl Iterator<Item = &str>;
+             pub fn len(&self) -> usize; pub fn is_empty(&self) -> bool; pub fn set(&mut self, peer: &str, grant: Grant); pub fn remove(&mut self, peer: &str) -> bool; }
 ```
 
-`peers.cfg`: `[peer.<id>]` with `allow = [..]`, `fs_roots = [..]`, and `[peer.<id>.exec]` with `programs = [..]` and `env = [..]`. An unknown key or
-permission is `PolicyError::Parse`. A peer with no entry, or no `allow`, holds nothing. `programs` empty means any program and
+`[peer."<id>"]` (the id is `sha256:` and 64 hex digits, so it is quoted as a key) with `allow = [..]`, `fs_roots = [..]`, and `[peer."<id>".exec]` with
+`programs = [..]` and `env = [..]`. A table, even an empty one, accepts the key. An unknown key or permission is `ConfigError::Parse`. A peer with no table, or
+no `allow`, holds nothing. `programs` empty means any program and
 explicit shell scripts; non-empty means only those programs, each named exactly as the peer asks for it, and no shell script
 (a shell runs anything). Under a non-empty list each name is resolved on the host's own `PATH` (a name with a directory
 must be absolute; a relative one is `not_found`) and that absolute path is started, never what the request's `PATH` or working
@@ -285,13 +295,13 @@ pub fn admission(grants: Arc<dyn Grants>, protocol: &'static str) -> coqui_link:
 pub fn covers(grant: &Grant, protocol: &str, metadata: &[u8]) -> bool;   // the grant still covers what the open asked for
 pub fn grant_of(grants: &dyn Grants, peer: &str) -> Result<Grant, GrantsError>;
 
-pub struct Data;                                                   // Data::new(dir): identity_path(), policy_path(), identity(), store(), policies()
-pub struct FilePeers;                                              // Keys + Grants over a Data directory's trust store and peers.cfg: FilePeers::open(&Data)
-pub fn list(data: &Data) -> Result<Listing, PeerError>;            // Listing { accepted: Vec<Accepted{id, grant}>, waiting: Vec<Waiting{id, source}>, orphaned: Vec<String> }
-pub fn approve(data: &Data, id: &PeerId, grant: Option<Grant>) -> Result<(), PeerError>;   // waiting or accepted -> accepted; Some(grant) replaces the grant
-pub fn revoke(data: &Data, id: &PeerId) -> Result<Revoked, PeerError>;   // the grant first, then the key; NoSuchPeer when neither existed
+pub struct Data;                                                   // Data::new(dir): dir(), identity_path(), identity(), store() (the waiting list)
+pub struct LayeredPeers;                                           // Keys + Grants over config layers read again at every question: LayeredPeers::new(files: Vec<PathBuf>, &Data) -> Result<Self, PeerError>; a stranger is recorded as waiting in the Data directory
+pub fn list(files: &[PathBuf], data: &Data) -> Result<Listing, PeerError>;   // Listing { accepted: Vec<Accepted{id, grant}>, waiting: Vec<Waiting{id, source}> }
+pub fn approve(files: &[PathBuf], create: Option<&Path>, data: &Data, id: &PeerId, grant: Option<&Grant>) -> Result<Approved, PeerError>;   // Approved { file, made }
+pub fn revoke(files: &[PathBuf], data: &Data, id: &PeerId) -> Result<Revoked, PeerError>;   // Revoked { files, unwritable, key }; NoSuchPeer when nothing was removed and no layer holds it
 pub fn pair(data: &Data, listener: &TcpListener, settings: &Settings, timeout: Duration, shown: impl FnOnce(&str)) -> Result<PeerId, PeerError>;
-#[non_exhaustive] pub enum PeerError { Identity(String), Store(String), Policy(PolicyError), Write(String), NoSuchPeer, Pairing(String) }
+#[non_exhaustive] pub enum PeerError { Identity(String), Store(String), Config(ConfigError), Write(String), NoLayer, NoSuchPeer, Pairing(String) }
 ```
 
 A `Node` is made from what its caller supplies and reads no file or environment variable: settings (`NodeConfig`), an identity, `Keys` and `Grants`. An app
@@ -305,11 +315,16 @@ every `[link] recheck`, so removing a key or a grant, or narrowing a program lis
 reason reaches the peer (a `Permission` failure). A `bohio/1` stream reads the grant again at every call. A `Grants` that cannot be read refuses. The link itself
 checks that the key is still accepted every `2 x recheck`. The stream's engine then runs behind a `Relay` with the grant the peer has at that moment.
 
-`FilePeers` is the command's pair: the trust store of the data directory (`identity`, `peers/{accepted,waiting}/`) and `peers.cfg` (what each accepted peer may do).
-`approve` never changes a grant unless one is given; `revoke` removes the `peers.cfg` entry before the key, so a running stream ends at the next
-re-check even if the link still holds. `peers.cfg` is rewritten whole (comments are not kept) by `approve` and `revoke`, atomically; two commands run
-at the same instant can lose one change. `pair` shows one PIN, once (`shown` is called with it; it is never logged), accepts the one peer that joins
-with it, and gives it no grant; the joiner stores the host's key, so it then trusts the host with `Trust::Store`. A wrong PIN uses the PIN up.
+`LayeredPeers` is the command's pair: `[peer.<id>]` of the layer files (what accepts a key and what it may do) and, in the data directory, the waiting list
+(`peers/waiting/`; `peers/accepted/` is no longer read). A layer that cannot be read or parsed refuses everything, logged once per distinct error.
+`approve` writes the peer's table with `toml_edit`, keeping every other byte of the file (comments, layout): into the layer that already holds the table (an
+error when it cannot be written), else the last of `files` this account can write, else `create` (made with its parents, readable by its owner alone); it removes
+the id's waiting entry and never changes an existing table unless a grant is given. `revoke` removes the table from every layer that holds it and its waiting entry,
+and names (in `Revoked::unwritable`) a layer it cannot write: the key stays accepted there. A running stream ends at the next re-check. A file is replaced
+atomically through a temporary sibling, keeping its mode on Unix and taking its directory's inherited access list on Windows; two commands run at the same
+instant can lose one change. `pair` shows one PIN, once (`shown` is called with it; it is never logged), and stores the one peer that joins with it; the command
+then calls `approve` (no grant), which moves the key into the configuration as a `[peer.<id>]` table. The joiner does the same with the host's key, so it trusts the
+host through its own `[peer.<host>]` table. A wrong PIN uses the PIN up.
 
 ## Listeners (`bohio::listen`)
 
@@ -344,7 +359,8 @@ pub fn capture_environment() -> Environment;
 pub struct Cli { pub command: Command }                          // clap Parser; Command: Config, Info, Serve, Status, Id, Peer, Pair, Join, Remote
 ```
 
-Every command takes `--config FILE` (otherwise `BOHIO_CONFIG`, the user's, the system's; the data directory is the configuration's). A line that
+Every command takes `--config FILE`, repeatable, lowest layer first (otherwise `BOHIO_CONFIG`, one file; otherwise the system file with the user's merged over it, unless the
+system file sets `[service] user_layer = false`); the layers named are the only ones read, and the data directory is the merged configuration's. A line that
 a person or a script reads is printed to standard output and flushed; diagnostics go to standard error.
 
 | Command | What it does |
@@ -353,13 +369,13 @@ a person or a script reads is printed to standard output and flushed; diagnostic
 | `info [--format text\|json]` | prints this host's capabilities (`json` is `bohio_proto::info::Info`) |
 | `serve [--listen ENDPOINT]...` | serves each `[[listen]]` endpoint and `--listen` (`tcp://host:port`, port 0 picks one; `pipe://name`, `ws://host:port`, `wss://host:port` (needs a `[[listen]]` entry with `tls_cert` and `tls_key`), `webtransport://host:port`, `serial://port?baud=N`) until killed; prints `listening <endpoint>` for each, then `host <id>` |
 | `serve --stdio` | serves one link on standard input and output until it ends; prints nothing to standard output, logs to standard error; excludes `--listen` and binds no `[[listen]]` |
-| `status` | the host's id, key method, data directory, counts of accepted and waiting peers, and one `listen: <endpoint> <state>` line per configured endpoint: `reachable` / `not reachable` (a connect is made; a TCP, WebSocket or pipe host sees it), `device present` / `device missing` (serial, Unix) or `device not checked` (Windows), `UDP not checked` (WebTransport), `not served by this build` |
+| `status` | the host's id, key method, data directory, one `config: <file>` line per layer read, counts of accepted and waiting peers, and one `listen: <endpoint> <state>` line per configured endpoint: `reachable` / `not reachable` (a connect is made; a TCP, WebSocket or pipe host sees it), `device present` / `device missing` (serial, Unix) or `device not checked` (Windows), `UDP not checked` (WebTransport), `not served by this build` |
 | `id` | the id of this machine's key, made on first use |
-| `peer list` | `accepted <id> allow: ...`, `waiting <id> from <ip>` and `grant-only <id>` lines |
-| `peer approve <id> [--allow P,P] [--fs-root DIR]... [--program NAME]... [--env VAR]...` | accepts a waiting or paired peer; any of `--allow`, `--fs-root` and `--program` replaces its whole grant, none leaves it; `--env` (with `--program`) names the variables its requests may change |
-| `peer revoke <id>` | removes the grant and the key; running streams end within `[link] recheck` |
-| `pair [--listen ENDPOINT] [--timeout TIME]` | prints `pairing on <endpoint>`, `host <id>`, `pin <PIN>` (default `tcp://127.0.0.1:0`, `5m`), waits for one peer, prints `paired <id>` |
-| `join <endpoint> [--pin PIN]` | pairs with a host that shows a PIN (the PIN is read from standard input when absent); both sides keep the other's key; the joiner holds nothing until approved |
+| `peer list` | `accepted <id> allow: ...` and `waiting <id> from <ip>` lines |
+| `peer approve <id> [--allow P,P] [--fs-root DIR]... [--program NAME]... [--env VAR]...` | accepts a peer by id (waiting, paired or new): writes its `[peer.<id>]` table to a layer and prints `wrote <file>`; any of `--allow`, `--fs-root` and `--program` replaces its whole table, none leaves an existing one; `--env` (with `--program`) names the variables its requests may change |
+| `peer revoke <id>` | removes the table from every layer that holds it (naming any layer it cannot write) and its waiting entry; running streams end within `[link] recheck` |
+| `pair [--listen ENDPOINT] [--timeout TIME]` | prints `pairing on <endpoint>`, `host <id>`, `pin <PIN>` (default `tcp://127.0.0.1:0`, `5m`), waits for one peer, prints `paired <id>` and `wrote <file>`: the joiner's key is accepted as a `[peer.<id>]` table, holding nothing |
+| `join <endpoint> [--pin PIN]` | pairs with a host that shows a PIN (the PIN is read from standard input when absent); each side writes the other's key as a `[peer.<id>]` table into its layers; the joiner holds nothing until approved |
 | `service install [--config FILE] [--name NAME] [--account ACCOUNT]` | Windows: registers the service `NAME` (default `bohio`), automatic start, as `ACCOUNT` (default `NT AUTHORITY\LocalService`), running `bohio service run --name NAME [--config ABSOLUTE FILE]`; needs an elevated prompt (`access denied: run this from an elevated prompt` otherwise); elsewhere an error naming the systemd unit |
 | `service uninstall [--name NAME]` | Windows: stops and deletes the service |
 | `service run [--config FILE] [--name NAME]` | Windows: the service's entry point, started by the service manager (a person running it gets a one-line explanation); serves the configured `[[listen]]` endpoints until the manager sends stop or shutdown, then reports stopped and the process exits, which closes the job objects that end every process it started |
@@ -369,14 +385,16 @@ a person or a script reads is printed to standard output and flushed; diagnostic
 | `remote <endpoint> read <path>` | writes the host's file to standard output |
 | `remote <endpoint> shell [--kind sh\|bash\|zsh\|cmd\|powershell\|pwsh] [--cwd D]` | an interactive shell; the local terminal is put in raw mode when standard input is one, and its size is followed |
 
-On Windows `serve`, `serve --stdio` and the service refuse to start (exit 1, one line naming the path and the security id) when the
-configuration file they read is owned by another account than the one running `bohio`, SYSTEM or the administrators, or when Everyone,
+`serve`, `serve --stdio` and the service check every layer file and its directory, and the data directory (Windows only). On Unix a layer or its directory owned by an
+account other than the running one or root, or writable by its group or others, is refused (exit 1, one line naming the path); `[service] check_access = false`
+in the lowest layer logs each finding and starts. On Windows they refuse to start (exit 1, one line naming the path and the security id) when a
+configuration layer they read is owned by another account than the one running `bohio`, SYSTEM or the administrators, or when Everyone,
 Authenticated Users, Users, INTERACTIVE, Guests, ANONYMOUS LOGON or Domain Users may change it; and when the data directory is so owned or
 any of those may change it or read what is made in it. A folder made under `%ProgramData%` is open to Users that way unless its access list
 is narrowed. The check reads the access list through Windows PowerShell (`%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`); a
-host that cannot run it does not start. Elsewhere nothing is checked: the system locations are the administrator's and the user ones private.
+host that cannot run it does not start.
 
-`remote` trusts the keys `join` stored, or only `--server ID`. A host that ends the link before the proof is reported as "may not be listening, may not
+`remote` trusts the `[peer.<id>]` tables of the layers (the keys `join` and `peer approve` wrote), or only `--server ID`. A host that ends the link before the proof is reported as "may not be listening, may not
 trust this key yet, or this side does not trust the host"; a stream the host refuses or ends for lost access is "the host refused or ended the stream".
 Exit status: 0 success, 1 the operation failed (one line on standard error), 2 the invocation was wrong; `remote exec` exits with the program's.
 
@@ -384,11 +402,11 @@ Exit status: 0 success, 1 the operation failed (one line on standard error), 2 t
 
 | Name | Effect |
 | --- | --- |
-| `BOHIO_CONFIG` | the configuration file when `--config` is not given; must exist when set |
+| `BOHIO_CONFIG` | the one configuration layer when `--config` is not given; must exist when set |
 | `BOHIO_LOG` | log level or filter for standard error, default `warn` (`trace` shows every link event; none holds a secret) |
 | `NO_COLOR` | set: no colour in log lines |
 | `PATH` | where shells are looked for in `info`, and the programs a grant lists by `exec` and `shell` |
-| `APPDATA`, `LOCALAPPDATA`, `ProgramData` (Windows); `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `HOME` (Unix) | where the configuration and data directory are looked for |
+| `APPDATA`, `LOCALAPPDATA`, `ProgramData` (Windows); `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `HOME` (Unix) | where the user's and the system's configuration files and the data directory are looked for |
 
 ## Gotchas
 

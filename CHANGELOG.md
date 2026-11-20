@@ -17,9 +17,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- One layered `bohio.cfg` holds the peers; `peers.cfg` is gone (no reader kept). A peer is a `[peer."<id>"]` table, which
+  accepts its key (even an empty one); `allow`, `fs_roots` and `[peer."<id>".exec]` say what it may do, and a table name that
+  is not a peer id is refused. Without `--config` the system file is read and the user's merged over it, through `anycfg`
+  (tables merge by key; arrays and scalars replace, so a higher layer can narrow a list); `--config FILE` (repeatable) or
+  `BOHIO_CONFIG` name the layers instead, alone. `[service] check_access` and the new `user_layer` are read from the lowest
+  layer only. Each layer is checked alone (an error names the file, line, column and key, never a value) and the merged value
+  for ranges, naming the highest layer that sets the key. The `[peer.*]` tables are read again at every decision, so a hand edit
+  of any layer applies at the next open or `[link] recheck`; a layer that cannot be read refuses every peer until it is fixed.
+  The data directory keeps only the identity and the waiting list; the trust store's `accepted/` is no longer read.
+  `bohio peer approve` takes any id and writes its table in place with `toml_edit` (the file's comments and layout stay) into the
+  layer that holds it, else the last layer it can write, else a new user file; `peer revoke` removes it from every layer and names
+  one it cannot write; `bohio pair` and `bohio join` write the other side's key into the configuration. `bohio remote` trusts the
+  `[peer.<id>]` tables (or `--server`). On Unix a layer or its directory owned by another account than the running one or root, or
+  writable by its group or others, is refused (`check_access = false` starts anyway); on Windows each layer and its directory get the
+  rule the file and the data directory did. `config::Layers`, `Layered` and `policy::Peers` replace `Config::locate`,
+  `Environment::config_candidates` and its configuration fields, and `Policies` and `PolicyError`; `ConfigError::Parse` gains `key`.
 - `serve::Server` is replaced by `node::Node` (no alias), `serve::ServeError` by `node::NodeError`, `link::TrustPeers` by
   `link::NodePeers`, and `link::admission` and `link::grant_of` take `Grants` where they took the path of `peers.cfg`. The command
-  keeps the trust store and `peers.cfg` behind the two traits (`peer::FilePeers`). `info::collect` takes a `NodeConfig` and the
+  supplies the two traits from its configuration layers (`peer::LayeredPeers`). `info::collect` takes a `NodeConfig` and the
   host's `PATH`.
 - Choices the operator may make are no longer refusals; each keeps its strict default and says in the docs what it costs.
   `--fallback ENDPOINT` takes a `ws://` endpoint on any address (it used to be loopback only) and one on another host than the
