@@ -1123,11 +1123,13 @@ fn a_shell_session_runs_a_command_through_the_command_line() {
     );
     let done = process.finish();
     assert_eq!(done.code, Some(0), "{}", done.stderr);
-    // The terminal echoes what was typed, which holds `20 + 22`; only a shell that ran it prints 42 alone.
+    // The terminal echoes what was typed, which holds `20 + 22`; only a shell that ran it prints 42, alone or after its prompt.
     assert!(
         done.stdout
             .lines()
-            .any(|line| line.split('\r').any(|part| part.trim() == "42")),
+            .any(|line| line
+                .split('\r')
+                .any(|part| part.trim().trim_start_matches('$').trim() == "42")),
         "{}",
         done.stdout
     );
