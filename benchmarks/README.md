@@ -116,3 +116,21 @@ rounds at different times, measured on the same code:
 Known gaps in these files: `open_close_x100` and `open_close_x50` fail on a fast Linux link (the host's
 stream limit; the metric is missing from the `lan` files made on Linux); the first
 cross-site round predates the warm raw control, so `raw_warm_*` there come from two rounds.
+
+## Per-stream windows
+
+`results/link-windows-1ecb486-fat.json` (before) and `results/link-windows-e757886-fat.json` (after, `link.bulk_window=8MiB` on
+A's runs alone through `a_settings`): the `fat` link, three alternating rounds of three samples each (run 44725071216). The window
+is what limits one stream there (1 MiB per 267 ms round trip, about 3.9 MB/s), so a bulk read widened to 8 MiB moves about 14 MB/s,
+and the controls do not move:
+
+| Metric | Before (ms) | After (ms) | Change |
+| --- | --- | --- | --- |
+| `read_64MiB_warm` | 17492 | 4851 | -72.3% (3.84 to 13.83 MB/s) |
+| `write_16MiB` | 4892 | 1711 | -65.0% |
+| `raw_down_64MiB` (control) | 7627 | 7627 | +0.0% |
+| `raw_warm_down_64MiB` (control) | 5385 | 5385 | +0.0% |
+| `cpu_sha256_256MiB` (control) | 154.5 | 154.4 | -0.1% |
+
+`connect` moves between about 1000 and 1300 ms from one round to the next on both builds (a round trip, one way or the other):
+read it as noise.
