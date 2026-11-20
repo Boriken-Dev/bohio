@@ -16,21 +16,24 @@ use std::ffi::OsString;
 use std::hash::Hash;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::RwLock;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
+use bohio_client::Open as OpenStreams;
+use bohio_client::connect::Opener;
 pub use bohio_client::dial::Endpoint;
-use bohio_client::dial::{SerialOptions, serial};
+use bohio_client::dial::{SerialOptions, ServerTrust, serial};
 use bohio_client::link::Settings;
 use bohio_client::relay::relay;
 use bohio_proto::info::Info;
 use bohio_proto::{ErrorBody, ErrorCode, protocol};
-use coqui_link::auth::{Identity, Proof, Sealed, Trust, prove};
-use coqui_link::link::{Accepted as Open, Host, Options, Services, serve as serve_link};
-use coqui_link::mux::{CloseReason, LinkStream, Side};
-use coqui_peer::{Handshake, KeyMaterial, Method as ProofMethod, PeerId};
+use coqui_link::auth::{Identity, Proof, Sealed, Session, Trust, prove, prove_out};
+use coqui_link::link::{Accepted as Open, Host, Options, Services, serve_with};
+pub use coqui_link::mux::Side;
+use coqui_link::mux::{CloseReason, LinkStream};
+use coqui_peer::{Established, Handshake, KeyMaterial, Method as ProofMethod, PeerId};
 use coqui_transport::Channel;
 
 use crate::config::ConfigError;
@@ -67,6 +70,22 @@ pub enum NodeError {
         endpoint: String,
         /// The operating system's reason.
         reason: String,
+    },
+    /// A dial did not reach a proven link: the path could not be opened, or the peer did not prove
+    /// itself as the key expected.
+    #[error("cannot link to {endpoint}: {reason}")]
+    Dial {
+        /// The endpoint, or `channel` for a dial over a channel the caller opened.
+        endpoint: String,
+        /// Why, with no key, PIN or request in it.
+        reason: String,
+    },
+    /// The peer proved itself as the key expected, and the node's [`Keys`] do not accept that key, so
+    /// no stream was served; [`Keys::stranger`] heard it.
+    #[error("the key {peer} proved itself and is not accepted")]
+    Stranger {
+        /// The proven key.
+        peer: PeerId,
     },
 }
 
@@ -120,6 +139,102 @@ impl NodeEvents for EventCell {
     }
 }
 
+/// One link a node serves, as [`Node::links`] reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct LinkInfo {
+    /// The peer, proven.
+    pub peer: PeerId,
+    /// Whether this node answered or dialed the link. It decides nothing: either side opens streams
+    /// and each decides what the other may do by its own grant.
+    pub side: Side,
+    /// The endpoint this node dialed, for a link it dialed through [`Node::connect`].
+    pub endpoint: Option<String>,
+    /// The peer's network address, when the node knows it: where it connected from, or the address dialed.
+    pub source: Option<SocketAddr>,
+    /// When the link came up.
+    pub since: SystemTime,
+}
+
+/// A way to open streams on a peer's link: an [`Open`](bohio_client::Open) that is cheap to clone, from
+/// [`Node::peer`]. It fails with [`bohio_client::Error::Closed`] once that link has ended.
+#[derive(Clone)]
+pub struct PeerLink {
+    peer: PeerId,
+    opener: Opener,
+}
+
+impl PeerLink {
+    /// The peer this link reaches.
+    pub const fn peer(&self) -> PeerId {
+        self.peer
+    }
+
+    /// Whether the link can still open streams.
+    pub fn is_up(&self) -> bool {
+        self.opener.is_up()
+    }
+}
+
+impl core::fmt::Debug for PeerLink {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PeerLink")
+            .field("peer", &self.peer)
+            .field("up", &self.opener.is_up())
+            .finish()
+    }
+}
+
+impl OpenStreams for PeerLink {
+    fn open(
+        &self,
+        protocol: &str,
+        metadata: &[u8],
+    ) -> Result<Box<dyn Channel>, bohio_client::Error> {
+        self.opener.open(protocol, metadata)
+    }
+}
+
+/// The links a node serves, in the order they came up.
+#[derive(Default)]
+struct Registry {
+    next: AtomicU64,
+    entries: Mutex<Vec<Entry>>,
+}
+
+struct Entry {
+    id: u64,
+    info: LinkInfo,
+    opener: Opener,
+}
+
+/// A link's place in the registry, taken out when the link ends.
+struct Listed<'a> {
+    registry: &'a Registry,
+    id: u64,
+}
+
+impl Registry {
+    fn add(&self, info: LinkInfo, opener: Opener) -> Listed<'_> {
+        let id = self.next.fetch_add(1, Ordering::SeqCst);
+        self.entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Entry { id, info, opener });
+        Listed { registry: self, id }
+    }
+}
+
+impl Drop for Listed<'_> {
+    fn drop(&mut self) {
+        self.registry
+            .entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|entry| entry.id != self.id);
+    }
+}
+
 /// An embeddable host: its identity, the keys and grants its caller supplies and the engines it serves.
 pub struct Node {
     shared: Arc<Shared>,
@@ -127,6 +242,8 @@ pub struct Node {
     keys: Arc<dyn Keys>,
     events: Arc<EventCell>,
     proof: Proof,
+    identity: Identity,
+    registry: Registry,
     peers: NodePeers,
     host: PeerId,
     connections: AtomicUsize,
@@ -263,11 +380,13 @@ impl Node {
                 false
             })
         };
-        let proof = Proof::builder(identity)
+        let proof = Proof::builder(identity.clone())
             .initiators(asked)
             .build()
             .map_err(|error| NodeError::Proof(error.to_string()))?;
         Ok(Self {
+            identity,
+            registry: Registry::default(),
             shared: Shared::new(&config, &grants, host, OsString::new()),
             peers: NodePeers::new(Arc::clone(&keys)),
             grants,
@@ -435,9 +554,112 @@ impl Node {
             Err(error) => return tracing::info!("a connection ended before its proof: {error}"),
         };
         drop(proving);
+        let _ = self.serve_proven(channel, established, Side::Answered, source, None);
+    }
+
+    /// Dials a peer over `channel`, an unproven channel the caller opened (framed as
+    /// [`bohio_client::link::framed`] holds it), proves this node to `expect` and `expect` to this node,
+    /// and serves the link until it ends, as an answered link is served: this node opens streams as
+    /// well as answers them. `source` is the address the channel reaches, when the caller knows it.
+    ///
+    /// The peer must prove itself as `expect` before this node sends its own key, so a path that leads
+    /// somewhere else learns nothing. The caller closes `channel`.
+    ///
+    /// # Errors
+    ///
+    /// [`NodeError::Dial`] when the peer does not prove itself as `expect` within `[link]
+    /// proof_timeout`, [`NodeError::Stranger`] when it does and [`Keys`] do not accept it (the link is
+    /// closed before it serves anything), [`NodeError::Proof`] when the proof cannot be built.
+    /// An `Ok` means a link was served and has ended.
+    pub fn connect_channel<C: Channel>(
+        &self,
+        channel: &C,
+        expect: &PeerId,
+        source: Option<SocketAddr>,
+    ) -> Result<(), NodeError> {
+        self.dial(channel, expect, source, None)
+    }
+
+    /// Opens `endpoint`, within `timeout`, and links to it as [`Node::connect_channel`] does, with
+    /// `trust` checking a TLS endpoint's certificate. The link is listed with `endpoint` in
+    /// [`LinkInfo::endpoint`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Node::connect_channel`], and [`NodeError::Dial`] when the path cannot be opened.
+    pub fn connect(
+        &self,
+        endpoint: &Endpoint,
+        expect: &PeerId,
+        trust: &ServerTrust,
+        timeout: Duration,
+    ) -> Result<(), NodeError> {
+        let named = endpoint.to_string();
+        let channel = endpoint
+            .dial_with(timeout, &self.shared.settings, trust)
+            .map_err(|error| NodeError::Dial {
+                endpoint: named.clone(),
+                reason: error.to_string(),
+            })?;
+        let source = endpoint_source(endpoint);
+        let linked = self.dial(&channel, expect, source, Some(named));
+        channel.close();
+        linked
+    }
+
+    fn dial<C: Channel>(
+        &self,
+        channel: &C,
+        expect: &PeerId,
+        source: Option<SocketAddr>,
+        endpoint: Option<String>,
+    ) -> Result<(), NodeError> {
+        let settings = &self.shared.settings;
+        let proof = Proof::builder(self.identity.clone())
+            .responders(Trust::pinned([*expect]))
+            .build()
+            .map_err(|error| NodeError::Proof(error.to_string()))?;
+        let established = prove_out(
+            &proof,
+            channel,
+            settings.proof_timeout,
+            settings.record_length(proof.method()),
+        )
+        .map_err(|error| NodeError::Dial {
+            endpoint: endpoint.clone().unwrap_or_else(|| "channel".to_owned()),
+            reason: match error {
+                coqui_link::Error::Proof(_) => {
+                    "the peer did not prove itself as the key expected".to_owned()
+                }
+                other => other.to_string(),
+            },
+        })?;
+        self.serve_proven(channel, established, Side::Dialed, source, endpoint)
+    }
+
+    /// Serves the link of a peer that has proved itself, on whichever side it was made: the same
+    /// admission, the same re-checks and a registered opener for this node's own streams.
+    fn serve_proven<C: Channel>(
+        &self,
+        channel: &C,
+        established: Established<Session>,
+        side: Side,
+        source: Option<SocketAddr>,
+        endpoint: Option<String>,
+    ) -> Result<(), NodeError> {
+        let settings = &self.shared.settings;
         let peer = established.peer;
+        if !self.keys.is_accepted(&peer) {
+            if let Some(key) = &established.key {
+                self.keys.stranger(&peer, key, source);
+            }
+            self.events.event(&NodeEvent::Stranger { peer, source });
+            tracing::info!(%peer, "a link was closed: the key proved itself and is not accepted");
+            return Err(NodeError::Stranger { peer });
+        }
         let Some(_link) = self.links.take(peer.to_string()) else {
-            return tracing::info!(%peer, "a link was closed: the peer has max_links_per_peer links open");
+            tracing::info!(%peer, "a link was closed: the peer has max_links_per_peer links open");
+            return Ok(());
         };
         let _ = channel.set_pending(settings.read_ahead);
         let recheck = self.shared.config.link.recheck.0;
@@ -452,22 +674,70 @@ impl Node {
         let services = self.services();
         let bridge = Bridge {
             events: self.events.as_ref(),
-            side: Side::Answered,
+            side,
         };
         let host = Host {
             store: &self.peers,
             services: &services,
             events: &bridge,
         };
-        serve_link(
+        let (opener, opens) = Opener::pair();
+        let _listed = self.registry.add(
+            LinkInfo {
+                peer,
+                side,
+                endpoint,
+                source,
+                since: SystemTime::now(),
+            },
+            opener.clone(),
+        );
+        serve_with(
             &sealed,
-            Side::Answered,
+            side,
             options,
             None,
             &peer.to_string(),
             &host,
+            |mux| opens.run(mux, settings),
         );
+        opener.close();
         sealed.close();
+        Ok(())
+    }
+
+    /// The oldest link that is up to `peer`, to open streams on whichever side made it.
+    pub fn peer(&self, peer: &PeerId) -> Option<PeerLink> {
+        self.registry
+            .entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .find(|entry| entry.info.peer == *peer && entry.opener.is_up())
+            .map(|entry| PeerLink {
+                peer: *peer,
+                opener: entry.opener.clone(),
+            })
+    }
+
+    /// Every link that is up, oldest first.
+    pub fn links(&self) -> Vec<LinkInfo> {
+        self.registry
+            .entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter(|entry| entry.opener.is_up())
+            .map(|entry| entry.info.clone())
+            .collect()
+    }
+}
+
+/// The address a network endpoint names, when it names one.
+fn endpoint_source(endpoint: &Endpoint) -> Option<SocketAddr> {
+    match endpoint {
+        Endpoint::Tcp(address) => Some(*address),
+        _ => None,
     }
 }
 

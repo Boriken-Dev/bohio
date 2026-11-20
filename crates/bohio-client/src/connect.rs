@@ -27,25 +27,149 @@ struct Request {
     reply: Sender<Result<Box<dyn Channel>, Error>>,
 }
 
+/// What an [`Opener`] and its [`Opens`] share.
+#[derive(Debug)]
+struct Shared {
+    relays: Mutex<Vec<Weak<Relay>>>,
+    /// Set by [`Opener::close`], or when the link ends.
+    ended: AtomicBool,
+}
+
+impl Shared {
+    fn close_relays(&self) {
+        for open in self
+            .relays
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter_map(Weak::upgrade)
+        {
+            open.close();
+        }
+    }
+}
+
+/// Opens streams on a link whose [`Opens`] is being run: an [`Open`] that is cheap to clone and hand to
+/// other threads. It is made with [`Opener::pair`].
+///
+/// An open waits for the link's thread to make the stream, so it fails with [`Error::Closed`] once the
+/// link has ended or the opener was closed.
+#[derive(Debug, Clone)]
+pub struct Opener {
+    requests: Sender<Request>,
+    shared: Arc<Shared>,
+}
+
+/// The serving half of an [`Opener`]: [`Opens::run`] answers the open requests on a link.
+#[derive(Debug)]
+pub struct Opens {
+    requests: Receiver<Request>,
+    shared: Arc<Shared>,
+}
+
+impl Opener {
+    /// A new opener and the [`Opens`] that serves it. Nothing opens until `Opens::run` runs on a link.
+    pub fn pair() -> (Self, Opens) {
+        let (requests, receiver) = mpsc::channel();
+        let shared = Arc::new(Shared {
+            relays: Mutex::new(Vec::new()),
+            ended: AtomicBool::new(false),
+        });
+        (
+            Self {
+                requests,
+                shared: Arc::clone(&shared),
+            },
+            Opens {
+                requests: receiver,
+                shared,
+            },
+        )
+    }
+
+    /// Whether the link can still open streams: `false` once it ended or [`Opener::close`] was called.
+    pub fn is_up(&self) -> bool {
+        !self.shared.ended.load(Ordering::SeqCst)
+    }
+
+    /// Closes every stream this opener opened and makes [`Opens::run`] return, which ends a link made
+    /// only to serve it.
+    pub fn close(&self) {
+        self.shared.ended.store(true, Ordering::SeqCst);
+        self.shared.close_relays();
+    }
+}
+
+impl Open for Opener {
+    fn open(&self, protocol: &str, metadata: &[u8]) -> Result<Box<dyn Channel>, Error> {
+        if !self.is_up() {
+            return Err(Error::Closed);
+        }
+        let (reply, answer) = mpsc::channel();
+        self.requests
+            .send(Request {
+                protocol: protocol.to_owned(),
+                metadata: metadata.to_vec(),
+                reply,
+            })
+            .map_err(|_| Error::Closed)?;
+        answer.recv().map_err(|_| Error::Closed)?
+    }
+}
+
+impl Opens {
+    /// Serves open requests on `mux` until the link leaves `Up`, [`Opener::close`] is called or every
+    /// [`Opener`] is gone. Each stream is handed back through a bounded [`relay`], two threads that live
+    /// as long as the stream does; whatever is still open when this returns is closed.
+    pub fn run<C: Channel>(self, mux: &Mux<'_, C>, settings: &Settings) {
+        let poll = settings.poll_interval.max(Duration::from_millis(1));
+        thread::scope(|scope| {
+            loop {
+                if self.shared.ended.load(Ordering::SeqCst) {
+                    break;
+                }
+                match self.requests.recv_timeout(poll) {
+                    Ok(request) => {
+                        let opened = mux
+                            .open_with(&request.protocol, &request.metadata)
+                            .map_err(Error::from);
+                        let answer = opened.map(|stream| {
+                            let relay = relay(scope, Arc::new(stream), settings);
+                            let mut relays = self
+                                .shared
+                                .relays
+                                .lock()
+                                .unwrap_or_else(PoisonError::into_inner);
+                            relays.retain(|known| known.strong_count() > 0);
+                            relays.push(Arc::downgrade(&relay));
+                            Box::new(Handle(relay)) as Box<dyn Channel>
+                        });
+                        let _ = request.reply.send(answer);
+                    }
+                    Err(RecvTimeoutError::Timeout) => {
+                        if !matches!(mux.link_state(), LinkState::Up) {
+                            break;
+                        }
+                    }
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
+            }
+            self.shared.ended.store(true, Ordering::SeqCst);
+            // The link is over: whatever is still open is closed, so the scope can end.
+            self.shared.close_relays();
+        });
+    }
+}
+
 /// A proven connection to a host, owned: it ends when it is dropped. Streams are opened with the
 /// [`Open`] trait, from any thread.
 ///
 /// A thread runs the link; two more run for each open stream (see [`relay`](crate::relay)).
 #[derive(Debug)]
 pub struct Connection {
-    requests: Mutex<Option<Sender<Request>>>,
-    relays: Arc<Mutex<Vec<Weak<Relay>>>>,
-    up: Arc<AtomicBool>,
+    opener: Opener,
     thread: Mutex<Option<JoinHandle<()>>>,
     host: PeerId,
-}
-
-/// What reaches the connection's own thread once the link is up.
-struct Link {
-    settings: Settings,
-    requests: Receiver<Request>,
-    relays: Arc<Mutex<Vec<Weak<Relay>>>>,
-    up: Arc<AtomicBool>,
 }
 
 impl Connection {
@@ -107,20 +231,12 @@ impl Connection {
         proof: &Proof,
         settings: &Settings,
     ) -> Result<Self, Error> {
-        let (requests, receiver) = mpsc::channel();
-        let relays = Arc::new(Mutex::new(Vec::new()));
-        let up = Arc::new(AtomicBool::new(false));
+        let (opener, opens) = Opener::pair();
         let (ready, ready_rx) = mpsc::channel();
-        let link = Link {
-            settings: *settings,
-            requests: receiver,
-            relays: Arc::clone(&relays),
-            up: Arc::clone(&up),
-        };
-        let proof = proof.clone();
+        let (settings, proof) = (*settings, proof.clone());
         let thread = thread::Builder::new()
             .name("bohio-link".to_owned())
-            .spawn(move || run(channel, &proof, link, &ready))
+            .spawn(move || run(channel, &proof, opens, &settings, &ready))
             .map_err(|_| Error::Transport(Failure::Cancelled))?;
         let host = match ready_rx.recv() {
             Ok(Ok(host)) => host,
@@ -134,9 +250,7 @@ impl Connection {
             }
         };
         Ok(Self {
-            requests: Mutex::new(Some(requests)),
-            relays,
-            up,
+            opener,
             thread: Mutex::new(Some(thread)),
             host,
         })
@@ -149,26 +263,18 @@ impl Connection {
 
     /// Whether the link is up: `false` once the host or the network ended it.
     pub fn is_up(&self) -> bool {
-        self.up.load(Ordering::SeqCst)
+        self.opener.is_up()
+    }
+
+    /// An [`Opener`] for this connection's link, to hand to other threads. It does not keep the
+    /// connection alive: the link ends when the connection is closed or dropped.
+    pub fn opener(&self) -> Opener {
+        self.opener.clone()
     }
 
     /// Ends the connection: every stream is closed, and the link ends.
     pub fn close(&self) {
-        drop(
-            self.requests
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take(),
-        );
-        for open in self
-            .relays
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .iter()
-            .filter_map(Weak::upgrade)
-        {
-            open.close();
-        }
+        self.opener.close();
         let thread = self
             .thread
             .lock()
@@ -188,21 +294,7 @@ impl Drop for Connection {
 
 impl Open for Connection {
     fn open(&self, protocol: &str, metadata: &[u8]) -> Result<Box<dyn Channel>, Error> {
-        let (reply, answer) = mpsc::channel();
-        {
-            let requests = self.requests.lock().unwrap_or_else(PoisonError::into_inner);
-            let Some(requests) = requests.as_ref() else {
-                return Err(Error::Closed);
-            };
-            requests
-                .send(Request {
-                    protocol: protocol.to_owned(),
-                    metadata: metadata.to_vec(),
-                    reply,
-                })
-                .map_err(|_| Error::Closed)?;
-        }
-        answer.recv().map_err(|_| Error::Closed)?
+        self.opener.open(protocol, metadata)
     }
 }
 
@@ -243,8 +335,13 @@ impl Drop for Handle {
 
 /// The connection's own thread: proves, then serves open requests until the connection is dropped
 /// or the link ends.
-fn run<C: Channel>(channel: C, proof: &Proof, link: Link, ready: &Sender<Result<PeerId, Error>>) {
-    let settings = link.settings;
+fn run<C: Channel>(
+    channel: C,
+    proof: &Proof,
+    opens: Opens,
+    settings: &Settings,
+    ready: &Sender<Result<PeerId, Error>>,
+) {
     let proved = prove_out(
         proof,
         &channel,
@@ -266,48 +363,8 @@ fn run<C: Channel>(channel: C, proof: &Proof, link: Link, ready: &Sender<Result<
     let host = established.peer;
     let sealed = Sealed::new(&channel, established.session);
     Mux::run(&sealed, Side::Dialed, settings.limits(), None, |mux| {
-        link.up.store(true, Ordering::SeqCst);
         let _ = ready.send(Ok(host));
-        thread::scope(|scope| {
-            loop {
-                match link
-                    .requests
-                    .recv_timeout(settings.poll_interval.max(Duration::from_millis(1)))
-                {
-                    Ok(request) => {
-                        let opened = mux
-                            .open_with(&request.protocol, &request.metadata)
-                            .map_err(Error::from);
-                        let answer = opened.map(|stream| {
-                            let relay = relay(scope, Arc::new(stream), &settings);
-                            let mut relays =
-                                link.relays.lock().unwrap_or_else(PoisonError::into_inner);
-                            relays.retain(|known| known.strong_count() > 0);
-                            relays.push(Arc::downgrade(&relay));
-                            Box::new(Handle(relay)) as Box<dyn Channel>
-                        });
-                        let _ = request.reply.send(answer);
-                    }
-                    Err(RecvTimeoutError::Timeout) => {
-                        if !matches!(mux.link_state(), LinkState::Up) {
-                            break;
-                        }
-                    }
-                    Err(RecvTimeoutError::Disconnected) => break,
-                }
-            }
-            link.up.store(false, Ordering::SeqCst);
-            // The connection is over: whatever is still open is closed, so the scope can end.
-            for open in link
-                .relays
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .iter()
-                .filter_map(Weak::upgrade)
-            {
-                open.close();
-            }
-        });
+        opens.run(mux, settings);
     });
     channel.close();
 }
