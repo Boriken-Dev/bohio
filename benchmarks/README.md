@@ -97,7 +97,7 @@ change: a claim needs the same job on both commits, more than once, with the con
 
 ## Baseline
 
-The state before any transfer optimisation: Bohío's code at `1248e07` plus the harness (`615c626`, the
+The state before any transfer optimisation: BohÃ­o's code at `1248e07` plus the harness (`615c626`, the
 bench workflow's `ref`). Each emulated-link file is the merge of three alternating rounds of three samples
 (`workflow_dispatch`, run 44683809202):
 
