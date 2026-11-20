@@ -446,8 +446,12 @@ fn revoking_the_controller_on_the_host_ends_its_running_exec_within_a_recheck() 
     let took = began.elapsed();
     assert!(
         long.stderr().contains("revoked"),
-        "the controller was not told: {}",
-        long.stderr()
+        "the controller was not told: {}
+host log: {}
+controller log: {}",
+        long.stderr(),
+        up.host.stderr(),
+        up.pair.controller_proc.stderr()
     );
     // `recheck` is one second here.
     assert!(took < Duration::from_secs(5), "took {took:?}");
