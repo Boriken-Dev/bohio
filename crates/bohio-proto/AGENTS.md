@@ -7,7 +7,7 @@ with the source at <https://github.com/Boriken-Dev/bohio>.
 No Cargo features. MSRV Rust 1.89. Depends on `serde`, `ciborium` and `thiserror`. Version `0.0.0-alpha.0`, not published.
 
 Imports: the root holds `decode`, `decode_with_depth`, `encode`, `DEFAULT_DEPTH`, `Error`, `ErrorBody`, `ErrorCode` and
-`PROTOCOL_VERSION`. Public modules: `codec`, `control`, `error`, `exec`, `fs`, `hash`, `info`, `local`, `protocol`, `shell`. No `unsafe` code
+`PROTOCOL_VERSION`. Public modules: `codec`, `control`, `error`, `exec`, `forward`, `fs`, `hash`, `info`, `local`, `protocol`, `shell`. No `unsafe` code
 (`#![forbid(unsafe_code)]`); no I/O; no process-wide state.
 
 ## Protocols (`bohio_proto::protocol`)
@@ -15,6 +15,7 @@ Imports: the root holds `decode`, `decode_with_depth`, `encode`, `DEFAULT_DEPTH`
 ```rust
 pub const CONTROL: &str = "bohio/1";   pub const EXEC: &str = "bohio-exec/1";   pub const SHELL: &str = "bohio-shell/1";
 pub const READ: &str = "bohio-read/1"; pub const WRITE: &str = "bohio-write/1"; pub const HASH: &str = "bohio-hash/1";
+pub const CONNECT: &str = "bohio-connect/1"; pub const TCP: &str = "tcp/1";   // `tcp/1` is coqui-link's: metadata is the text HOST:PORT, raw bytes at once, no answer
 ```
 
 One stream per operation; the stream's open metadata is the request (CBOR). `PROTOCOL_VERSION` is `1`.
@@ -35,7 +36,7 @@ does not name, refuses trailing bytes and nesting past `depth` (`Error::Decode`)
 
 ```rust
 #[non_exhaustive] pub enum Error { Encode, Decode, Tag(u8), Short }        // Copy, std::error::Error; never quotes input
-#[non_exhaustive] pub enum ErrorCode { BadRequest, Denied, NotFound, Exists, Unsupported, Busy, OutsideRoot, Io, Internal, Other }
+#[non_exhaustive] pub enum ErrorCode { BadRequest, Denied, NotFound, Exists, Unsupported, Busy, OutsideRoot, Io, Refused, Unreachable, Timeout, Internal, Other }   // `Refused`, `Unreachable` and `Timeout` are a forward's connect failing
 pub struct ErrorBody { pub code: ErrorCode, pub message: String }          // Error; ErrorBody::new(code, message)
 ```
 
@@ -104,6 +105,21 @@ pub struct HashDone { pub items: u64 }
 
 `bohio-hash/1`: one stream of items, answered in order; an item that fails is an `ItemError` and the stream goes on. See `docs/protocol.md`.
 
+## Forward (`bohio_proto::forward`)
+
+```rust
+#[non_exhaustive] pub enum Target { Tcp { host: String, port: u16 }, Unix { path: String }, Pipe { name: String } }   // tagged by "type", snake_case; Hash, Display, FromStr (BadTarget): HOST:PORT (an IPv6 address in brackets), unix:PATH, pipe:NAME
+impl Target { pub const fn kind(&self) -> &'static str }                                // "tcp", "unix" or "pipe"
+pub struct BadTarget;                                                                   // Display, Error
+pub struct ConnectRequest { pub target: Target }                                        // the open's metadata of `bohio-connect/1`
+impl ConnectRequest { pub const fn new(Target) -> Self; pub fn to_metadata(&self) -> Result<Vec<u8>, Error>; pub fn from_metadata(&[u8]) -> Result<Self, Error> }   // an unknown kind is Error::Decode
+pub struct Connected { pub address: Option<String> }                                    // Default; the address a TCP connection reached
+#[non_exhaustive] pub enum Answer { Connected(Connected), Error(ErrorBody) }            // tags 0x01 and 0x05, the host's first frame; encode() -> Result<Vec<u8>, Error>, decode(&[u8])
+pub struct ForwardInfo { pub enabled: bool, pub connect: Vec<String>, pub listen: Vec<String> }   // `info.forward`: the target kinds the host connects to ("tcp", "unix" or "pipe")
+```
+
+`bohio-connect/1`: after `Connected` the stream is raw bytes both ways, untagged, a `finish` a half-close; an `Error` is the last frame. See `docs/protocol.md`.
+
 ## Info (`bohio_proto::info`)
 
 ```rust
@@ -111,7 +127,8 @@ pub const PROTOCOL_VERSION: u32 = 1;
 pub struct Info { protocol, service: Service{name, version}, host_id: Option<String>, os, arch, shells: Vec<ShellInfo{kind, path}>,
                   filesystem: FilesystemInfo{enabled, symlinks, unix_modes, windows_attributes, case_sensitive, separator},
                   exec: ExecInfo{enabled}, shell: SessionInfo{enabled}, limits: Limits{max_streams, max_processes, max_sessions: Option<u64>},
-                  transfer: TransferInfo{hashes: Vec<Algorithm>, hash_limits: HashLimits{max_streams: u64, rate: u64 /* 0 unlimited */}} }
+                  transfer: TransferInfo{hashes: Vec<Algorithm>, hash_limits: HashLimits{max_streams: u64, rate: u64 /* 0 unlimited */}},
+                  forward: ForwardInfo{enabled, connect, listen} }
 ```
 
 Every field has a default and unknown keys are ignored: a client works with a host that reports less or more. `os` and `arch` are

@@ -77,6 +77,26 @@ bohio remote --via <host id> exec -- hostname
 
 Who dialed decides nothing: each side's tables say what the other may do there. [Security](security.md#links-in-both-directions) has the rest.
 
+## Reaching a service through a host
+
+A host can connect to a target for a peer, from its own network position: a database on its network, a container engine's socket, another machine's `ssh`. The host grants it by target, not by "network access": `forward.connect` and a rule for each target.
+
+```bash
+bohio peer approve <id> --connect db.example:5432 --connect 192.0.2.0/24:22 --connect unix:/run/docker.sock
+```
+
+From the peer, `-L` listens on this machine and has the host connect for each connection (the local side is `127.0.0.1` unless another address is named), and `connect` bridges the target to standard input and output, so it is `netcat` and `ssh`'s `ProxyCommand`:
+
+```bash
+bohio remote tcp://host.example:7620 forward -L 5433=db.example:5432 -L unix:/tmp/docker.sock=unix:/run/docker.sock
+psql -h 127.0.0.1 -p 5433 app
+
+ssh -o ProxyCommand="bohio remote tcp://host.example:7620 connect %h:%p" ops@192.0.2.20
+bohio remote tcp://host.example:7620 connect --check db.example:5432   # connected 192.0.2.30:5432
+```
+
+A target the grant does not cover is refused before the host connects to anything. [The protocol](protocol.md#forwarding-bohio-connect1-and-tcp1) has the wire and the rules, and [Security](security.md#what-a-forward-gives-a-peer) what a forward gives a peer.
+
 ## Configuration
 
 `bohio.cfg` is read as layers: the system file (`/etc/bohio/bohio.cfg`, `%ProgramData%\bohio\bohio.cfg`) and then the user's (`~/.config/bohio/bohio.cfg`, `%APPDATA%\bohio\bohio.cfg`) merged over it, or the files `--config` names, alone. Tables merge by key and lists and values replace, so a higher layer can narrow a list. Every setting, with its default, is in [`examples/bohio.cfg`](https://github.com/Boriken-Dev/bohio/blob/main/examples/bohio.cfg); the `[peer.*]` tables are read again at every decision, the rest when the node starts.

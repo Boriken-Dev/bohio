@@ -8,7 +8,7 @@ No Cargo features. MSRV Rust 1.89. Depends on `bohio-proto`, `coqui-transport` (
 `coqui-transport-serial` (each a git revision, one copy), `url`, `socket2`, `serde_json`, `tracing` and `thiserror`. Version
 `0.0.0-alpha.0`, not published.
 
-Imports: the root holds `Open` and `Error`. Public modules: `connect`, `control`, `dial`, `exec`, `fs`, `link`, `relay`, `shell`. No `unsafe` code
+Imports: the root holds `Open` and `Error`. Public modules: `connect`, `control`, `dial`, `exec`, `forward`, `fs`, `link`, `relay`, `shell`. No `unsafe` code
 (`#![forbid(unsafe_code)]`). The operations start no threads and do no I/O of their own: every call blocks on the channel it was given
 (only `connect` and `relay` start threads, and `connect` opens a socket).
 
@@ -16,17 +16,48 @@ Imports: the root holds `Open` and `Error`. Public modules: `connect`, `control`
 
 ```rust
 pub trait Open: Send + Sync {
-    fn open(&self, protocol: &str, metadata: &[u8]) -> Result<Box<dyn Channel>, Error>;   // a stream named `protocol` whose open carries `metadata`
-    fn open_with(&self, protocol: &str, metadata: &[u8], options: &OpenOptions) -> Result<Box<dyn Channel>, Error>;   // provided: `open`, ignoring the options
+    fn open(&self, protocol: &str, metadata: &[u8]) -> Result<Box<dyn LinkStream>, Error>;   // a stream named `protocol` whose open carries `metadata`; coqui_link::mux::LinkStream is a Channel that can also `finish` (half-close), say how much of it is left (`life`) and `close_with` a reason
+    fn open_with(&self, protocol: &str, metadata: &[u8], options: &OpenOptions) -> Result<Box<dyn LinkStream>, Error>;   // provided: `open`, ignoring the options
     fn bulk_window(&self) -> Option<u32>;                          // provided: None; what `Reader::start` asks for, `Some` only when above the link's `window`
+    fn is_up(&self) -> bool;                                       // provided: true; whether the link can still open streams (a local listener of a forward ends when it cannot)
 }
 #[derive(Default)] #[non_exhaustive] pub struct OpenOptions { pub receive_window: Option<u32> }   // None: the link's window; `OpenOptions::receive_window(bytes)`. A link grants the difference on the new stream, up to its `max_window`
 #[non_exhaustive] pub enum Error { Remote(ErrorBody), Transport(Failure), Protocol(bohio_proto::Error), Link(String), Timeout, Closed }   // Clone, Eq, std::error::Error
 ```
 
 `Open` is the link: the caller implements it over its authenticated connection (or uses `connect::Connection`) (the protocol names are `bohio_proto::protocol::*`).
+An implementation over plain channels (a test's memory pair) wraps each in `relay::Plain`, which is open until closed and cannot finish.
 `Failure::Timeout` converts to `Error::Timeout`; every other `Failure` is `Error::Transport`. `Remote` is the host's structured
 `{code, message}`.
+
+## Forward (`bohio_client::forward`)
+
+```rust
+pub use bohio_proto::forward::{ConnectRequest, Connected, Target};   pub use coqui_link::forward::Options;   // Options: chunk, stalled, idle_min/idle_max, watch, listen_poll, connect_timeout (the host's); validate() refuses zeros
+#[non_exhaustive] pub struct ForwardSettings { pub options: Options, pub answer_timeout: Duration /*30 s*/, pub max_connections: usize /*64, a local listener's*/ }   // Default, Copy
+pub struct Tunnel;                                                                      // Debug; one connected `bohio-connect/1`; dropping it closes the stream
+pub fn connect(link: &dyn Open, target: &Target, settings: &ForwardSettings) -> Result<Tunnel, Error>;   // waits `answer_timeout` for the host's answer
+impl Tunnel {
+    pub fn address(&self) -> Option<&str>;                      // the address the host's TCP connection reached
+    pub fn stream(&self) -> &dyn LinkStream;                    // raw messages both ways; finish() half-closes; finished_by_peer() tells the target's end from a cut
+    pub fn into_stream(self) -> Box<dyn LinkStream>;
+    pub fn pump_tcp(self, connection: &TcpStream);              // coqui_link::forward::pump_with over the stream, until both directions end
+    pub fn pump_ipc(self, connection: coqui_transport_pipe::Stream);   // forward::ipc::pump
+    pub fn bridge(self, input: impl Read + Send + 'static, output: &mut dyn Write) -> Result<(), Error>;   // netcat: input's end is a half-close; ends when the host's direction does; Ok only for a finish; input is read on a thread that may outlive the call
+}
+#[non_exhaustive] pub enum Ended { Stopped, LinkLost }
+pub fn listen_tcp(link: &dyn Open, listener: &TcpListener, target: &Target, settings: &ForwardSettings, stop: &AtomicBool, report: &(dyn Fn(&Error) + Sync)) -> io::Result<Ended>;
+pub fn listen_ipc(link: &dyn Open, listener: &coqui_transport_pipe::Listener, target: &Target, settings: &ForwardSettings, stop: &AtomicBool, report: &(dyn Fn(&Error) + Sync)) -> io::Result<Ended>;   // one connect and pump per accepted connection, until `stop` or the link ends; bind loopback
+pub mod ipc {   // a Unix socket or Windows pipe on one end
+    pub fn connect(name: &PipeName, timeout: Duration, options: &Options) -> Result<Stream, coqui_transport_pipe::Error>;   // reads wake every `watch`, a write may take `stalled`
+    pub fn listener(name: &PipeName, options: &Options) -> Result<Listener, coqui_transport_pipe::Error>;                 // this user alone, mode 0o600
+    pub fn pump<S: LinkStream + ?Sized>(stream: &S, ipc: Stream, options: &Options);   // two threads; a Windows pipe has no half-close, so a finish ends both directions
+}
+```
+
+An error from `connect`: `Error::Remote(body)` when the host did not connect (`refused`, `unreachable`, `timeout`, `not_found`, `busy`, `unsupported`, `bad_request`),
+`Error::Transport(Failure::Permission)` when the peer's grant does not cover the target (refused before the host connects) or was revoked, `Error::Timeout` and
+`Error::Closed`. A stream that ends any way but in order resets the host's connection.
 
 ## Execution (`bohio_client::exec`)
 
@@ -218,11 +249,12 @@ pub fn connect(address: &SocketAddr, timeout: Duration, settings: &Settings) -> 
 pub fn tune_listener(listener: &TcpListener, settings: &Settings) -> io::Result<()>;   // the buffers on a listening socket
 pub fn stdio(settings: &Settings) -> io::Result<StreamChannel>;                       // stream() over this process's standard input and output
 
-pub struct Relay;                                                 // Debug; Channel: an owned, bounded channel over one stream of a link
+pub struct Relay;                                                 // Debug; Channel and LinkStream: an owned, bounded channel over one stream of a link; `finish` is queued behind what is sent, `finished_by_peer` and `life` follow the stream (a peer that finished leaves this side's direction open), `close_with` closes the stream with a reason once what is queued is delivered
+#[derive(Debug)] pub struct Plain<C>(pub C);                      // a Channel as a LinkStream with no half-close: open until closed, finish is Unsupported, close_with closes
 pub fn relay<'scope, 'env, P: Deref + Clone + Send + 'scope>(scope: &'scope thread::Scope<'scope, 'env>, stream: P, settings: &Settings) -> Arc<Relay>
 pub fn relay_with<'scope, 'env, P: Deref + Clone + Send + 'scope, E: Fn(&P::Target) -> Option<coqui_link::mux::StreamEnd> + Send + 'scope>(scope: &'scope thread::Scope<'scope, 'env>, stream: P, settings: &Settings, ended: E) -> Arc<Relay>;   // relay, asking `ended` why the stream ended; Relay::end() -> Option<StreamEnd> gives it
-#[derive(Debug)] pub struct Opened;                                // an Open'ed stream: Channel; end() -> Option<coqui_link::mux::StreamEnd> (a refusal or revoke with the peer's text)
-    where P::Target: Channel;
+#[derive(Debug)] pub struct Opened;                                // an Open'ed stream: Channel and LinkStream; end() -> Option<coqui_link::mux::StreamEnd> (a refusal or revoke with the peer's text)
+    where P::Target: LinkStream;
 ```
 
 `connect_tcp` and `over` prove this side to the host and the host to this side inside `settings.proof_timeout`, with the keys `proof` holds

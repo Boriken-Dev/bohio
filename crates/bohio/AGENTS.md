@@ -14,7 +14,7 @@ MSRV Rust 1.89. A library-only build (`default-features = false`) depends on `bo
 `win32job` (Windows). Version `0.0.0-alpha.0`, not published.
 
 Imports: the root holds `Config`, `ConfigError`, `Environment`, `Grant`, `Peers`, `Permission`. Public modules:
-`config`, `control`, `exec`, `fs`, `info`, `limit`, `link`, `listen`, `node`, `peer`, `policy`, `shell`, `cli` (feature `cli`). No `unsafe` code
+`config`, `control`, `exec`, `forward`, `fs`, `info`, `limit`, `link`, `listen`, `node`, `peer`, `policy`, `shell`, `cli` (feature `cli`). No `unsafe` code
 (`#![forbid(unsafe_code)]`). The library prints nothing, reads no environment variable and installs no logger; it starts threads only inside
 `exec::serve`, `shell::serve`, the transfer and control engines, `node::Node` (a thread per connection, per stream and per relay) and
 `pair::Armed` waits and the pairing a node answers.
@@ -27,9 +27,9 @@ pub struct Environment { pub windows: bool, pub local_app_data: Option<PathBuf>,
 impl Environment { pub fn default_data_dir(&self) -> PathBuf; }
 
 pub struct Config { pub service: ServiceConfig, pub listen: Vec<ListenConfig>, pub link: LinkConfig, pub filesystem: FilesystemConfig, pub hash: HashConfig,
-                    pub execution: ExecutionConfig, pub shell: ShellConfig, pub pairing: PairingConfig, pub control: ControlConfig, pub peer: Peers }     // Default; unknown keys refused; `peer` is `[peer.<id>]`
+                    pub execution: ExecutionConfig, pub shell: ShellConfig, pub forward: ForwardConfig, pub pairing: PairingConfig, pub control: ControlConfig, pub peer: Peers }     // Default; unknown keys refused; `peer` is `[peer.<id>]`
 pub struct NodeConfig { pub name: String, pub link: LinkConfig, pub filesystem: FilesystemConfig, pub hash: HashConfig,
-                        pub execution: ExecutionConfig, pub shell: ShellConfig, pub pairing: PairingConfig }   // Default, Deserialize, unknown keys refused: what a Node runs on, read by an app from any section of its own settings
+                        pub execution: ExecutionConfig, pub shell: ShellConfig, pub forward: ForwardConfig, pub pairing: PairingConfig }   // Default, Deserialize, unknown keys refused: what a Node runs on, read by an app from any section of its own settings
 impl NodeConfig { pub fn validate(&self, label: &str) -> Result<(), ConfigError>; }   // every range check; `Node::new` calls it
 impl Config {
     pub fn node(&self) -> NodeConfig;                                            // `[service] name`, `[link]`, `[filesystem]`, `[execution]`, `[shell]`
@@ -133,21 +133,23 @@ checks the system file when it exists, as `serve` checks every layer.
 ## Peer grants (`bohio::policy`)
 
 ```rust
-#[non_exhaustive] pub enum Permission { Info, FsRead, FsWrite, Exec, Shell, Admin }   // Ord; names "info","fs.read","fs.write","exec","shell","admin"
+#[non_exhaustive] pub enum Permission { Info, FsRead, FsWrite, Exec, Shell, Admin, ForwardConnect }   // Ord; names "info","fs.read","fs.write","exec","shell","admin","forward.connect"
 impl Permission { pub const fn name(self) -> &'static str; }
 pub struct Grant;                                                // Default = nothing
 impl Grant { pub fn none() -> Self; pub fn allowing(permissions) -> Self; pub fn with_fs_roots(self, roots) -> Self; pub fn with_programs(self, programs) -> Self; pub fn restricts_programs(&self) -> bool;
              pub fn allows(&self, Permission) -> bool; pub fn permissions(&self) -> impl Iterator<Item = Permission>; pub fn fs_roots(&self) -> &[PathBuf];
              pub fn permits_program(&self, program: &str) -> bool; pub fn permits_shell_script(&self) -> bool;
-             pub fn with_env(self, names) -> Self; pub fn env_names(&self) -> &[String]; pub fn permits_env(&self, env: &bohio_proto::exec::Env) -> bool; }
+             pub fn with_env(self, names) -> Self; pub fn env_names(&self) -> &[String]; pub fn permits_env(&self, env: &bohio_proto::exec::Env) -> bool;
+             pub fn with_connect(self, rules) -> Self; pub fn forward(&self) -> &ForwardGrant; pub fn permits_connect(&self, target: &bohio_proto::forward::Target) -> bool; }   // permits_connect: `forward.connect` and a rule that matches
+pub struct ForwardGrant;                                         // `[peer.<id>.forward]`: connect() -> &[String], the rule texts; an empty list allows nothing
 pub struct Peers;                                                // Default = no peer; Deserialize (the `[peer]` table of `bohio.cfg`)
 pub struct PeerTable;                                            // one `[peer.<id>]`: grant(), endpoint() -> Option<&str>, dial() -> &DialConfig
 impl Peers { pub fn grant_for(&self, peer: &str) -> Grant; pub fn table(&self, peer: &str) -> Option<&PeerTable>; pub fn dials(&self) -> impl Iterator<Item = (&str, &str, &DialConfig)>; pub fn has(&self, peer: &str) -> bool; pub fn ids(&self) -> impl Iterator<Item = &str>;
              pub fn len(&self) -> usize; pub fn is_empty(&self) -> bool; }
 ```
 
-`[peer."<id>"]` (the id is `sha256:` and 64 hex digits, so it is quoted as a key) with `allow = [..]`, `fs_roots = [..]`, and `[peer."<id>".exec]` with
-`programs = [..]` and `env = [..]`. A table, even an empty one, accepts the key. An unknown key or permission is `ConfigError::Parse`. A peer with no table, or
+`[peer."<id>"]` (the id is `sha256:` and 64 hex digits, so it is quoted as a key) with `allow = [..]`, `fs_roots = [..]`, `[peer."<id>".exec]` with
+`programs = [..]` and `env = [..]`, and `[peer."<id>".forward]` with `connect = [RULE..]`. A table, even an empty one, accepts the key. An unknown key or permission is `ConfigError::Parse`. A peer with no table, or
 no `allow`, holds nothing. `programs` empty means any program and
 explicit shell scripts; non-empty means only those programs, each named exactly as the peer asks for it, and no shell script
 (a shell runs anything). Under a non-empty list each name is resolved on the host's own `PATH` (a name with a directory
@@ -291,6 +293,27 @@ that cannot be read is answered with id `0` and `bad_request`; a reply too large
 With `current`, each call is decided by the grant it returns at that call (its error answers the call), so a grant narrowed while the
 stream is open applies to the next call; without it `filesystem.grant` is used throughout. `node::Node` always passes `current`.
 
+## Forwarding (`bohio::forward`, `[forward]`)
+
+```rust
+pub struct ForwardConfig { pub enabled: bool, pub connect_timeout: Span /*10s*/, pub max_connections: usize /*64*/, pub max_connections_per_peer: usize /*16*/, pub chunk_size: usize /*16384*/,
+    pub stalled: Span /*30s*/, pub idle_min: Span /*1ms*/, pub idle_max: Span /*10ms*/, pub watch: Span /*50ms*/, pub listen_poll: Span /*50ms*/,
+    pub answer_timeout: Span /*30s*/, pub max_local_connections: usize /*64*/ }   // `[forward]`; Default; options() -> coqui_link::forward::Options; client() -> bohio_client::forward::ForwardSettings; zeros are errors naming the key
+pub enum ConnectRule { Tcp(coqui_link::forward::Rule), Unix(String), Pipe(String) }   // FromStr (BadRule), Display, matches(&Target): HOST:PORT with a name, *.suffix, *, an address or a CIDR network and a port, A-B or *; unix:PATH and pipe:NAME exactly or with `*` and `?` (never across a separator; a `..` part or NUL never matches; pipes without case)
+pub struct Context<'a> { pub grant: &'a Grant, pub config: &'a ForwardConfig, pub slots: &'a Slots, pub per_peer: &'a Counted<String>, pub peer: PeerId, pub events: &'a dyn NodeEvents }
+pub fn serve_connect(stream: &dyn LinkStream, metadata: &[u8], context: &Context<'_>);   // `bohio-connect/1`: decide, connect, answer once, pump raw bytes; not closed
+pub fn serve_tcp(stream: &dyn LinkStream, metadata: &[u8], context: &Context<'_>);       // `tcp/1` as coqui-link defines it: the connect first, a refusal is a close
+pub fn covers(grant: &Grant, metadata: &[u8]) -> bool;   pub fn covers_tcp(grant: &Grant, metadata: &[u8]) -> bool;   // what `link::covers` asks at an open and at every recheck
+pub fn connect_kinds() -> Vec<String>;                                                    // "tcp" and "unix" (Unix) or "pipe" (Windows): `info.forward.connect`
+pub fn tcp_target(target: &bohio_proto::forward::Target) -> Option<coqui_link::forward::Target>;
+```
+
+Both protocols need `forward.connect` and a matching rule, decided as the stream opens (nothing connects for a target the grant does not cover: the client sees a `Permission`
+failure) and again at every `[link] recheck`, when a lost grant resets the connection. A refused connect is one `error` frame with `refused`, `unreachable`, `timeout`,
+`not_found`, `busy` (a `[forward]` bound), `unsupported` (`enabled = false`, or `unix` on Windows or `pipe` on Unix) or `denied`. TCP is pumped by `coqui_link::forward::pump_with` and a
+Unix socket or Windows pipe by `bohio_client::forward::ipc::pump`, both on the link stream itself with no relay. `NodeEvent::Forwarded { peer, kind: ForwardKind::Connect, target, outcome: ForwardOutcome::{Connected, Failed(code)} }`
+tells the owner each connect (the target's text, never a byte). `limit::Counted<K>` is the per-key bound (`take(key) -> Option<Hold>`).
+
 ## Capabilities (`bohio::info`)
 
 ```rust
@@ -299,7 +322,7 @@ pub fn collect(config: &NodeConfig, path: &OsStr) -> bohio_proto::info::Info;
 
 The operating system and architecture, the shells found on `path` (`sh`, `bash`, `zsh`, `cmd`, `powershell`,
 `pwsh`), the filesystem features (`unix_modes` on Unix, `windows_attributes` on Windows, `case_sensitive` off on Windows and
-macOS, the native separator), whether execution and shells are enabled, and the configured bounds. `host_id` is `None`.
+macOS, the native separator), whether execution and shells are enabled, the configured bounds, and `forward` (`enabled`, and the target kinds `connect` reaches). `host_id` is `None`.
 
 ## The node (`bohio::node`, `bohio::link`, `bohio::peer`)
 
@@ -340,13 +363,13 @@ pub struct MemoryKeys;                                             // new(), acc
 pub struct MemoryGrants;                                           // new(), set(PeerId, Grant), remove(&PeerId) -> bool; FromIterator<(PeerId, Grant)>; no entry: Grant::none()
 
 pub trait NodeEvents: Send + Sync { fn event(&self, event: &NodeEvent); }   // runs on the link's thread: return quickly
-#[non_exhaustive] pub enum NodeEvent { LinkUp { peer, side }, LinkDown { peer }, Opened { peer, protocol }, Refused { peer, protocol }, Revoked { peer, protocol }, Dialing { peer, endpoint }, DialFailed { peer, endpoint, reason, retry_in }, Paired { peer }, PairingRefused { source, attempts, reason }, Stranger { peer, source } }   // an id, a protocol, an address: never a key, PIN or request
+#[non_exhaustive] pub enum NodeEvent { LinkUp { peer, side }, LinkDown { peer }, Opened { peer, protocol }, Refused { peer, protocol }, Revoked { peer, protocol }, Dialing { peer, endpoint }, DialFailed { peer, endpoint, reason, retry_in }, Paired { peer }, PairingRefused { source, attempts, reason }, Stranger { peer, source }, Forwarded { peer, kind, target, outcome } }   // an id, a protocol, an address: never a key, PIN or request
 pub struct LogEvents;                                              // the default: log lines
 
 pub mod pair;   // Armed { pin(), lifetime(), wait(up_to) -> Option<PairEnd>, withdraw() } (Debug hides the PIN); #[non_exhaustive] PairEnd { Paired(PeerId), Expired, UsedUp, Replaced, Withdrawn, Failed(String) }
 // PairingConfig { timeout, max_attempts, attempt_delay, attempt_delay_max, pin_length } is `[pairing]`; one PIN at a time, in memory; a connection's first message `coqui_link::pairing::MARKER` makes it a pairing (else a proof)
 
-pub const PROTOCOLS: [(&str, &[Permission]); 5];                   // each protocol with the permissions of which a peer needs one to open it
+pub const PROTOCOLS: [(&str, &[Permission]); 8];                   // each protocol with the permissions of which a peer needs one to open it (`bohio-connect/1` and `tcp/1` need `forward.connect`)
 pub struct NodePeers;                                              // coqui_link::peers::PeerStore over `Keys` and `Grants`: NodePeers::new(keys, grants); an accepted key may open each protocol its grant holds a permission for, which is what `link/1` offers it
 pub fn offered(grant: &Grant) -> Vec<&'static str>;                       // the PROTOCOLS tokens `grant` holds a permission for: what a node offers that peer
 pub fn admission(grants: Arc<dyn Grants>, protocol: &'static str) -> coqui_link::link::Admission;   // asks `grants` afresh each call
@@ -472,7 +495,7 @@ a person or a script reads is printed to standard output and flushed; diagnostic
 | `status` | the host's id, key method, data directory, one `config: <file>` line per layer read, counts of accepted and waiting peers, one `dial: <endpoint> peer <id>` line per peer dialed, and one `listen: <endpoint> <state>` line per configured endpoint: `reachable` / `not reachable` (a connect is made; a TCP, WebSocket or pipe host sees it), `device present` / `device missing` (serial, Unix) or `device not checked` (Windows), `UDP not checked` (WebTransport), `not served by this build` |
 | `id` | the id of this machine's key, made on first use |
 | `peer list` | `accepted <id> allow: ...` (then ` dial: <endpoint>` when the table has one) and `waiting <id> from <ip>` lines |
-| `peer approve <id> [--allow P,P] [--fs-root DIR]... [--program NAME]... [--env VAR]... [--endpoint ENDPOINT]` | `--endpoint` writes the table's `endpoint` (this node then dials the peer; a table that is replaced keeps its `endpoint` and `[dial]`); accepts a peer by id (waiting, paired or new): writes its `[peer.<id>]` table to a layer and prints `wrote <file>`; any of `--allow`, `--fs-root` and `--program` replaces its whole table, none leaves an existing one; `--env` (with `--program`) names the variables its requests may change |
+| `peer approve <id> [--allow P,P] [--fs-root DIR]... [--program NAME]... [--env VAR]... [--connect RULE]... [--endpoint ENDPOINT]` | `--endpoint` writes the table's `endpoint` (this node then dials the peer; a table that is replaced keeps its `endpoint` and `[dial]`); accepts a peer by id (waiting, paired or new): writes its `[peer.<id>]` table to a layer and prints `wrote <file>`; any of `--allow`, `--fs-root`, `--program` and `--connect` replaces its whole table, none leaves an existing one; `--env` (with `--program`) names the variables its requests may change; `--connect` writes `[peer.<id>.forward] connect` (a rule that does not parse is refused) and adds `forward.connect` to `allow`, which a rule needs |
 | `peer revoke <id>` | removes the table from every layer that holds it (naming any layer it cannot write) and its waiting entry; running streams end within `[link] recheck` |
 | `pair [--timeout TIME] [--listen ENDPOINT]` | arms a PIN: on the running node through `[control]` (`bohio-pair/1`), or, when none runs, by serving pairing alone on the `[[listen]]` entries (the ports `serve` uses; the node accepts nobody else meanwhile). Prints `pairing on <endpoint>` for each entry, `host <id>` and `pin <PIN>`, waits for one peer, prints `paired <id>`: the joiner's key is accepted as a `[peer.<id>]` table, holding nothing. `--timeout` is the PIN's lifetime (default `[pairing] timeout`); `--listen` is only for a configuration with no `[[listen]]` entry, and is refused when it has some |
 | `join <endpoint> [--pin PIN] [--ca FILE]... [--cert-hash HASH]... [--clock-skew SPAN] [--fallback ENDPOINT]` | pairs with a host that shows a PIN over any endpoint `remote` takes (the PIN is read from standard input when absent; the TLS options are `remote`'s); each side writes the other's key as a `[peer.<id>]` table into its layers; the joiner holds nothing until approved |
@@ -484,6 +507,8 @@ a person or a script reads is printed to standard output and flushed; diagnostic
 | `remote --command "program args" [--server ID] info` | the same over a program the command starts, its standard streams the link (for example `docker exec -i NAME bohio serve --stdio`); the program is run directly, never through a shell, and its tree ends when the command does |
 | `remote <endpoint> exec [--cwd D] [--timeout-ms N] [--env K=V]... [--stdin] -- <argv>` | runs the program, streams its output, and exits with its status (124 on a deadline, `128+signal` when signalled) |
 | `remote <endpoint> read <path>` | writes the host's file to standard output |
+| `remote <endpoint> connect [--check] <target>` | the host connects to `HOST:PORT` (an IPv6 address in brackets), `unix:PATH` or `pipe:NAME` and the connection's bytes meet standard input and output (netcat; `ssh -o ProxyCommand="bohio remote ENDPOINT connect %h:%p"`): the end of standard input is a half-close and the reply is still read; exit 0 when the host's direction ended in order, 1 with the reason (`the host did not connect (Refused): ...`, or that the peer holds no `forward.connect` rule for the target). `--check` connects, prints `connected ADDRESS` and exits |
+| `remote <endpoint> forward -L SPEC...` | listens here and has the host connect for each connection: `[BIND:]PORT=TARGET`, `unix:PATH=TARGET` or `pipe:NAME=TARGET` (`BIND` an address, default `127.0.0.1`; another is printed as `non-default: bind ADDRESS`; port 0 picks one; a socket or pipe is for this user, `0o600`); prints `local BOUND -> TARGET` per entry, then runs until the link ends (exit 1) or the process is interrupted; the `[forward]` bounds come from the client's own file. Works over `--via` |
 | `remote <endpoint> shell [--kind sh\|bash\|zsh\|cmd\|powershell\|pwsh] [--cwd D]` | an interactive shell; the local terminal is put in raw mode when standard input is one, and its size is followed |
 
 `serve`, `serve --stdio` and the service check every layer file and its directory, and the data directory (Windows only). On Unix a layer or its directory owned by an
