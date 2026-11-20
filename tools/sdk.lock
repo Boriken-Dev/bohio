@@ -24,7 +24,7 @@ core rust-component rustfmt any - -
 core llvm 22.1.8 windows-arm64 de718c58ebbc5f61d58c17b90457fcf42983bc2c4a4aba3e010d108713bfd7f1 https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/clang+llvm-22.1.8-aarch64-pc-windows-msvc.tar.xz
 
 # The deps branch's commit holding crates/ for Cargo.lock. Its own group, so `sdk install` never clones it.
-deps crates c6813eb972cec6bda269a2ad0d56db99e77ebcf2 any - https://github.com/Boriken-Dev/bohio.git
+deps crates c1a0ea8e5b6fb2ae8abd682b5c0ad7f211e72bb2 any - https://github.com/Boriken-Dev/bohio.git
 
 # Release builds: each runner builds its own targets natively, so a runner lists the standard libraries it needs.
 release rust-target x86_64-pc-windows-msvc windows-x64 - -
