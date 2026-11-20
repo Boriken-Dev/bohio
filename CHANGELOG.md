@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   one from settings kept anywhere. `MemoryKeys` and `MemoryGrants` are in-memory implementations whose changes apply at the next
   open or `[link] recheck`; `NodeEvents` (default `LogEvents`) reports link and stream events. `Config::node()` and
   `NodeConfig::validate` give and check the settings a node runs on.
+- Either side may open streams on any link. `Node::connect` and `Node::connect_channel` dial a peer (its key pinned and proven before this
+  node sends its own) and serve the link as an answered one is; every link a node serves runs with an opener, so `Node::peer(&id)` gives a
+  `PeerLink` (an `Open`, cheap to clone) and `Node::links()` lists each link's peer, side, endpoint, source and start. `bohio_client::connect::{Opener, Opens}`
+  are the open loop `Connection` already ran, now reusable, and `Connection::opener()` hands one out. Who dialed decides nothing: each side's own grants
+  decide what the other may open, and a dialed key the node does not accept ends the link after the proof and is reported as a stranger.
 
 ### Changed
 

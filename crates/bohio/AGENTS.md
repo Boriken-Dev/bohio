@@ -271,8 +271,14 @@ impl Node {
     pub fn serve_listening(&self, listening: &Listening, stop: &AtomicBool) -> io::Result<()>;   // accepts until `stop`; a thread per connection (a serial line: one link at a time, the port reopened after each)
     pub fn serve_stdio(&self) -> io::Result<()>;                   // the one link on standard input and output; nothing else may write to standard output
     pub fn serve_channel<C: Channel>(&self, channel: &C, source: Option<SocketAddr>);   // proves the peer on any unproven channel, serves its link to the end (at most max_links_per_peer per peer); the caller closes it
+    pub fn connect_channel<C: Channel>(&self, channel: &C, expect: &PeerId, source: Option<SocketAddr>) -> Result<(), NodeError>;   // dials over an unproven channel (framed as `bohio_client::link::framed`): proves `expect` before sending its own key, serves the link as an answered one is, returns when it ends
+    pub fn connect(&self, endpoint: &Endpoint, expect: &PeerId, trust: &ServerTrust, timeout: Duration) -> Result<(), NodeError>;   // dials any endpoint, then connect_channel; the link lists `endpoint`
+    pub fn peer(&self, peer: &PeerId) -> Option<PeerLink>;          // the oldest link that is up to `peer`, whichever side made it
+    pub fn links(&self) -> Vec<LinkInfo>;                           // every link that is up, oldest first
 }
-#[non_exhaustive] pub enum NodeError { Config(ConfigError), Proof(String), Listen { endpoint, reason } }
+#[non_exhaustive] pub enum NodeError { Config(ConfigError), Proof(String), Listen { endpoint, reason }, Dial { endpoint, reason }, Stranger { peer } }   // Dial: the path or the proof failed; Stranger: the dialed key proved itself and Keys do not accept it
+#[non_exhaustive] pub struct LinkInfo { pub peer: PeerId, pub side: Side, pub endpoint: Option<String>, pub source: Option<SocketAddr>, pub since: SystemTime }   // `side` (Dialed or Answered) decides nothing
+#[derive(Clone)] pub struct PeerLink;                              // Debug; bohio_client::Open (Error::Closed once the link ended); peer(), is_up()
 
 pub trait Keys: Send + Sync {
     fn is_accepted(&self, peer: &PeerId) -> bool;                  // the proof, every stream decision and the link's check every `2 x recheck`
@@ -314,6 +320,13 @@ hold: an exec's or a shell's explicit program is one the program list holds, a t
 every `[link] recheck`, so removing a key or a grant, or narrowing a program list or the roots under a running stream, closes the stream with a revoke whose
 reason reaches the peer (a `Permission` failure). A `bohio/1` stream reads the grant again at every call. A `Grants` that cannot be read refuses. The link itself
 checks that the key is still accepted every `2 x recheck`. The stream's engine then runs behind a `Relay` with the grant the peer has at that moment.
+
+Either side opens streams on any link. `serve_channel` and `serve_listening` answer a link; `connect` and `connect_channel` dial one (`prove_out` with the
+responder's key pinned to `expect`, so a path that leads elsewhere gets nothing, then served exactly as an answered link, `Side::Dialed`). Every link, whichever
+side made it, runs `coqui_link::link::serve_with` with a `bohio_client::connect::Opens` as the node's opener, so the node answers the peer's streams under the
+peer's grants and `Node::peer(&id)` opens its own under the peer's grants for this node. Who dialed decides nothing: `Side` reaches neither `Keys` nor `Grants`, and
+a link serves only a key whose `Keys` accept it, so a dialed key that proved itself and is not accepted ends the link after the proof (`NodeError::Stranger`,
+`Keys::stranger`, `NodeEvent::Stranger`). A dialed link counts against `[link] max_links_per_peer`. Both sides dialing at once make two links; both serve.
 
 `LayeredPeers` is the command's pair: `[peer.<id>]` of the layer files (what accepts a key and what it may do) and, in the data directory, the waiting list
 (`peers/waiting/`; `peers/accepted/` is no longer read). A layer that cannot be read or parsed refuses everything, logged once per distinct error.

@@ -172,6 +172,18 @@ impl Connection {
     pub const fn host(&self) -> coqui_peer::PeerId;                // the host's proven id
     pub fn is_up(&self) -> bool;                                   // false once the host or the network ended the link
     pub fn close(&self);                                           // closes every stream and joins the link's thread
+    pub fn opener(&self) -> Opener;                                // an Open that is Clone and does not keep the connection alive
+}
+
+#[derive(Clone)] pub struct Opener;                               // Debug; Open (Error::Closed once the link ended or `close` was called)
+pub struct Opens;                                                 // Debug; the serving half of an Opener
+impl Opener {
+    pub fn pair() -> (Opener, Opens);                              // nothing opens until `Opens::run` runs on a link
+    pub fn is_up(&self) -> bool;                                   // false once the link ended or `close` was called
+    pub fn close(&self);                                           // closes every stream this opener opened and makes `Opens::run` return
+}
+impl Opens {
+    pub fn run<C: Channel>(self, mux: &coqui_link::mux::Mux<'_, C>, settings: &Settings);   // serves open requests, each stream through a bounded relay, until the link leaves Up, `close`, or every Opener is gone
 }
 
 #[non_exhaustive] pub struct Settings { pub max_streams: usize /*64*/, pub proof_timeout: Duration /*10 s*/, pub window: u32 /*1 MiB*/, pub max_frame: usize /*64 KiB*/,
