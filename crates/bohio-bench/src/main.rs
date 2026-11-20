@@ -80,7 +80,7 @@ struct Common {
     #[arg(long)]
     name: Option<String>,
     /// A `[link]` or `[filesystem]` key for the host, and for this side's link bounds where there is one:
-    /// `link.window=4MiB`. Both sides' windows and frames must agree, so set them here.
+    /// `link.window=4MiB`. Both sides' windows and frames must agree, so set them here; `link.bulk_window` is the receiver's own and may differ.
     #[arg(long = "set", value_name = "KEY=VALUE")]
     set: Vec<String>,
     /// The path between the two sides, as the result names it.
@@ -186,6 +186,7 @@ fn run(cli: Cli) -> Result<bool, String> {
 fn apply_sets(sets: &[String]) -> Result<(Sections, Settings), String> {
     let mut host: Sections = BTreeMap::new();
     let mut settings = Settings::default();
+    let mut max_window_set = false;
     for set in sets {
         let (key, value) = set
             .split_once('=')
@@ -213,6 +214,24 @@ fn apply_sets(sets: &[String]) -> Result<(Sections, Settings), String> {
                     settings.window =
                         u32::try_from(count?).map_err(|_| "window too large".to_owned())?;
                 }
+                "max_window" => {
+                    settings.max_window =
+                        u32::try_from(count?).map_err(|_| "max_window too large".to_owned())?;
+                    max_window_set = true;
+                }
+                "bulk_window" => {
+                    settings.bulk_window =
+                        u32::try_from(count?).map_err(|_| "bulk_window too large".to_owned())?;
+                }
+                "auto_window" => settings.auto_window = value == "true",
+                "max_metadata" => settings.max_metadata = usize_of(count)?,
+                "max_pending_opens" => settings.max_pending_opens = usize_of(count)?,
+                "max_opens_per_minute" => {
+                    settings.max_opens_per_minute = u32::try_from(count?)
+                        .map_err(|_| "max_opens_per_minute too large".to_owned())?;
+                }
+                "tcp_send_buffer" => settings.tcp_send_buffer = Some(usize_of(count)?),
+                "tcp_receive_buffer" => settings.tcp_receive_buffer = Some(usize_of(count)?),
                 "max_frame" => settings.max_frame = usize_of(count)?,
                 "max_message" => settings.max_message = usize_of(count)?,
                 "queue_bytes" => settings.queue_bytes = usize_of(count)?,
@@ -222,6 +241,10 @@ fn apply_sets(sets: &[String]) -> Result<(Sections, Settings), String> {
                 _ => {}
             }
         }
+    }
+    // As the host's own file does: a bulk window raises the most a window may grow to unless that was set.
+    if !max_window_set {
+        settings.max_window = settings.window.max(settings.bulk_window);
     }
     Ok((host, settings))
 }

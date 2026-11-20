@@ -74,7 +74,7 @@ name, or `site-vpn` for the cross-site pair. No result names a host or an addres
 
 ## Emulated links in CI
 
-`.github/workflows/bench.yml` (`workflow_dispatch`: `ref`, `baseline_ref`, `samples`, `links`) builds the
+`.github/workflows/bench.yml` (`workflow_dispatch`: `ref`, `baseline_ref`, `samples`, `links`, `a_settings`) builds the
 refs, and on each link runs the scenario set (`scenarios.sh`) three rounds, alternating A (`ref`) and B
 (`baseline_ref`). `netem.sh up <link>` makes two network namespaces joined by a veth pair, with `tc netem`
 on each end:
@@ -87,6 +87,9 @@ on each end:
 | `lossy` | 50 ms each way, 1% loss |
 | `slow` | 300 ms each way, 1 mbit down, 256 kbit up |
 | `weak` | `wan`, the host under a 25% CPU quota |
+
+`a_settings` (`link.bulk_window=8MiB`) puts `--set` keys on A's runs alone, for a setting the baseline does not know
+or to measure one against the baseline's defaults.
 
 A hosted runner cannot show a gain under about 10%. Read the controls (`raw_*`, `cpu_sha256_*`) before any
 change: a claim needs the same job on both commits, more than once, with the controls unchanged.

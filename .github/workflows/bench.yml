@@ -24,6 +24,10 @@ on:
         description: "Emulated links, space separated"
         required: false
         default: "lan wan fat lossy slow weak"
+      a_settings:
+        description: "KEY=VALUE settings for A only, space separated (for example link.bulk_window=8MiB), so a setting B does not know can be measured against B's defaults"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -35,6 +39,7 @@ jobs:
     env:
       LINKS: ${{ inputs.links }}
       SAMPLES: ${{ inputs.samples }}
+      A_SETTINGS: ${{ inputs.a_settings }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -98,13 +103,17 @@ jobs:
                 [ -d "$side" ] || continue
                 label=$(echo "$side" | tr a-z A-Z)
                 commit=$(git -C "$side" rev-parse --short HEAD)
+                sets=""
+                if [ "$side" = a ]; then
+                  for pair in $A_SETTINGS; do sets="$sets --set $pair"; done
+                fi
                 echo "::group::$link round $round $label"
                 # shellcheck disable=SC2086
                 sudo -n ip netns exec bh-client setpriv --reuid="$uid" --regid="$gid" --clear-groups \
                   "$side/target/release/bohio-bench" local --corpus "$corpus" \
                   --host-prefix "$prefix" --listen-ip 192.0.2.1 --samples "$SAMPLES" \
                   --link "$link" --label "$label" --commit "$commit" \
-                  --save "$out/$label-$link-r$round.json" $args                   || echo "::warning::$label $link round $round: a scenario failed ($?)"
+                  --save "$out/$label-$link-r$round.json" $sets $args                   || echo "::warning::$label $link round $round: a scenario failed ($?)"
                 echo "::endgroup::"
               done
             done
