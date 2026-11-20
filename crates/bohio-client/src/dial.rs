@@ -14,7 +14,7 @@
 //! | `stdio://PROGRAM ARG...` | a program started with its standard streams as the channel |
 
 use std::io;
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -358,7 +358,7 @@ impl Endpoint {
     ) -> Result<Box<dyn Channel>, Error> {
         match self {
             Self::Tcp(address) => {
-                let stream = TcpStream::connect_timeout(address, timeout)
+                let stream = crate::link::connect(address, timeout, settings)
                     .map_err(|error| io_failure(&error))?;
                 // A loopback connect to a closed port in the ephemeral range can connect a socket to itself.
                 if stream.local_addr().ok() == stream.peer_addr().ok() {

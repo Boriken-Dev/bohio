@@ -294,9 +294,36 @@ pub struct LinkConfig {
     /// Bytes a peer may send on one stream ahead of what the host has read from it (the stream's
     /// credit window): the most a sender gets ahead of a slow reader. At least 1. Default `1048576`.
     pub window: u32,
+    /// The most a stream's receive window may grow to, by `bulk_window` or `auto_window`: the memory one stream whose
+    /// reader falls behind can cost. At least `window` and `bulk_window`. Unset: the larger of the two, so nothing is
+    /// held beyond what was asked for.
+    pub max_window: Option<u32>,
+    /// Grows a stream's receive window by itself while data arrives (a `ping` per round trip), up to `max_window`, so a
+    /// long path is filled without knowing its bandwidth-delay product; it never shrinks. Needs a `max_window` above
+    /// `window` to do anything. Default `false`.
+    pub auto_window: bool,
+    /// The receive window this side grants a bulk stream it receives: a client's `bohio-read/1`, a host's
+    /// `bohio-write/1`. One stream moves at most its window per round trip, so on a path with a round trip of 250 ms a
+    /// 1 MiB window caps one transfer near 4 MB/s, and a larger value lifts it, at that much memory for each bulk stream
+    /// whose reader falls behind. At most `max_window`; a value below `window` changes nothing, since a window is only ever
+    /// widened. Unset: `window`.
+    pub bulk_window: Option<u32>,
     /// The most bytes of one message in one frame (a longer message is sent in parts), so a long
     /// message cannot hold other streams up. At least 1. Default `65536`.
     pub max_frame: usize,
+    /// The most metadata one open may carry; an open with more is refused. At least 1. Default `4096`.
+    pub max_metadata: usize,
+    /// Streams a peer may have opened that nothing has accepted yet. At least 1. Default `8`.
+    pub max_pending_opens: usize,
+    /// Streams a peer may open in a minute; ten a second by default, which caps a sync that opens one stream for each
+    /// small file, so raise it for one. At least 1. Default `600`.
+    pub max_opens_per_minute: u32,
+    /// The TCP socket's send buffer in bytes, set before connecting and on accept; at least 1. Unset: the system's
+    /// automatic sizing, which is the right choice unless a path's bandwidth-delay product exceeds what it reaches. The
+    /// system may clamp it.
+    pub tcp_send_buffer: Option<usize>,
+    /// The TCP socket's receive buffer in bytes: see `tcp_send_buffer`. At least 1. Unset: the system's automatic sizing.
+    pub tcp_receive_buffer: Option<usize>,
     /// The largest message on a stream: more than the largest `chunk_size` (a frame carries a tag
     /// byte besides the chunk). Default `1048576`.
     pub max_message: usize,
@@ -335,7 +362,15 @@ impl Default for LinkConfig {
             max_links_per_peer: 16,
             proof_timeout: Span(link.proof_timeout),
             window: link.window,
+            max_window: None,
+            auto_window: link.auto_window,
+            bulk_window: None,
             max_frame: link.max_frame,
+            max_metadata: link.max_metadata,
+            max_pending_opens: link.max_pending_opens,
+            max_opens_per_minute: link.max_opens_per_minute,
+            tcp_send_buffer: link.tcp_send_buffer,
+            tcp_receive_buffer: link.tcp_receive_buffer,
             max_message: link.max_message,
             queue_bytes: link.queue_bytes,
             read_ahead: link.read_ahead,
@@ -356,7 +391,17 @@ impl LinkConfig {
         settings.max_streams = self.max_streams;
         settings.proof_timeout = self.proof_timeout.0;
         settings.window = self.window;
+        settings.bulk_window = self.bulk_window.unwrap_or(self.window);
+        settings.max_window = self
+            .max_window
+            .unwrap_or_else(|| self.window.max(settings.bulk_window));
+        settings.auto_window = self.auto_window;
         settings.max_frame = self.max_frame;
+        settings.max_metadata = self.max_metadata;
+        settings.max_pending_opens = self.max_pending_opens;
+        settings.max_opens_per_minute = self.max_opens_per_minute;
+        settings.tcp_send_buffer = self.tcp_send_buffer;
+        settings.tcp_receive_buffer = self.tcp_receive_buffer;
         settings.max_message = self.max_message;
         settings.queue_bytes = self.queue_bytes;
         settings.read_ahead = self.read_ahead;
@@ -723,6 +768,16 @@ impl NodeConfig {
             ),
             ("link.max_links_per_peer", link.max_links_per_peer == 0),
             ("link.window", link.window == 0),
+            ("link.max_window", link.max_window == Some(0)),
+            ("link.bulk_window", link.bulk_window == Some(0)),
+            ("link.max_metadata", link.max_metadata == 0),
+            ("link.max_pending_opens", link.max_pending_opens == 0),
+            ("link.max_opens_per_minute", link.max_opens_per_minute == 0),
+            ("link.tcp_send_buffer", link.tcp_send_buffer == Some(0)),
+            (
+                "link.tcp_receive_buffer",
+                link.tcp_receive_buffer == Some(0),
+            ),
             ("link.max_message", link.max_message == 0),
             ("link.queue_bytes", link.queue_bytes == 0),
             ("link.read_ahead", link.read_ahead == 0),
@@ -756,6 +811,17 @@ impl NodeConfig {
         }
         if link.max_frame == 0 {
             return Err(invalid("link.max_frame", "must be at least 1"));
+        }
+        if let Some(max) = link.max_window {
+            if link.window > max {
+                return Err(invalid("link.window", "must be at most link.max_window"));
+            }
+            if link.bulk_window.is_some_and(|bulk| bulk > max) {
+                return Err(invalid(
+                    "link.bulk_window",
+                    "must be at most link.max_window",
+                ));
+            }
         }
         if self.execution.max_processes == 0 {
             return Err(invalid("execution.max_processes", "must be at least 1"));

@@ -357,17 +357,16 @@ fn remote(client: &Client, host: &Host, action: &[&str]) -> Finished {
 
 /// A library connection of `client` to `host`.
 fn connect(client: &Client, host: &Host) -> Result<Connection, Error> {
+    connect_with(client, host, &Settings::default())
+}
+
+fn connect_with(client: &Client, host: &Host, settings: &Settings) -> Result<Connection, Error> {
     // The hosts a peer trusts are the `[peer.<id>]` tables `join` wrote into its configuration.
     let proof = Proof::builder(client.data.identity().expect("an identity"))
         .responders(Trust::pinned([host.id.parse().expect("a peer id")]))
         .build()
         .expect("a proof");
-    Connection::connect_tcp(
-        host.address,
-        Duration::from_secs(10),
-        &proof,
-        &Settings::default(),
-    )
+    Connection::connect_tcp(host.address, Duration::from_secs(10), &proof, settings)
 }
 
 /// A file with `size` bytes of a fixed pseudo-random sequence, and its SHA-256.
@@ -1217,4 +1216,98 @@ fn holds_number(log: &str, number: &str) -> bool {
         !before.is_some_and(|b| b.is_ascii_alphanumeric() || b == b'.')
             && !after.is_some_and(|b| b.is_ascii_alphanumeric())
     })
+}
+
+/// The settings of a client that wants `bulk` bytes of receive window on a stream that carries a file to it.
+fn bulk_settings(bulk: u32) -> Settings {
+    let mut settings = Settings::default();
+    settings.bulk_window = bulk;
+    settings.max_window = bulk;
+    settings
+}
+
+/// Reads `name` whole and returns its length and SHA-256.
+fn read_hash(link: &Connection, name: &str, wait: Option<Duration>) -> (u64, String) {
+    let reader = Reader::start(link, &ReadRequest::whole(name), wait).unwrap();
+    let mut hash = Sha256::new();
+    let mut total = 0_u64;
+    while let Some(chunk) = reader.next_chunk(wait).unwrap() {
+        hash.update(&chunk);
+        total += chunk.len() as u64;
+    }
+    (total, format!("{:x}", hash.finalize()))
+}
+
+/// Writes the file `from` to `name` on the host and returns what the host says it wrote.
+fn write_file(link: &Connection, from: &Path, name: &str, wait: Option<Duration>) -> (u64, String) {
+    let writer = Writer::start(link, &WriteRequest::replace(name), wait).unwrap();
+    let mut file = std::fs::File::open(from).unwrap();
+    let mut chunk = vec![0_u8; 1024 * 1024];
+    loop {
+        let count = file.read(&mut chunk).unwrap();
+        if count == 0 {
+            break;
+        }
+        writer.write(&chunk[..count]).unwrap();
+    }
+    let done = writer.finish(wait).unwrap();
+    (done.written, done.sha256)
+}
+
+#[test]
+fn a_read_and_a_write_with_an_8_mib_bulk_window_on_both_sides_end_without_a_broken_close() {
+    const SIZE: u64 = 32 * 1024 * 1024;
+    const BULK: u32 = 8 * 1024 * 1024;
+    let world = World::new("bulk_window = 8388608\n");
+    let root = world.path("files");
+    std::fs::create_dir_all(&root).unwrap();
+    let want = big_file(&root.join("big.bin"), SIZE);
+    let host = world.serve("warn");
+    let root_text = root.to_string_lossy().into_owned();
+    let client = approved(
+        &world,
+        "mover",
+        &["--allow", "fs.read,fs.write", "--fs-root", &root_text],
+    );
+    let link = connect_with(&client, &host, &bulk_settings(BULK)).expect("the link is up");
+    let wait = Some(Duration::from_secs(60));
+    assert_eq!(read_hash(&link, "big.bin", wait), (SIZE, want.clone()));
+    assert_eq!(
+        write_file(&link, &root.join("big.bin"), "copy.bin", wait),
+        (SIZE, want.clone())
+    );
+    assert_eq!(read_hash(&link, "copy.bin", wait), (SIZE, want));
+    // The host announces the window and frame it starts streams with, equal to this side's.
+    let told = link.opener().capabilities(Duration::from_secs(60)).unwrap();
+    assert_eq!(told.window, Some(Settings::default().window));
+    assert_eq!(told.max_frame, Some(Settings::default().max_frame));
+}
+
+#[test]
+fn a_host_with_a_small_window_and_a_wide_bulk_window_serves_a_client_with_the_defaults() {
+    const SIZE: u64 = 8 * 1024 * 1024;
+    // The host starts its streams at 64 KiB and widens a bulk stream it receives to 4 MiB; the client has the
+    // defaults and starts at 1 MiB, so a write sends more ahead than the host's own window until it is widened.
+    let world = World::new("window = 65536\nbulk_window = 4194304\n");
+    let root = world.path("files");
+    std::fs::create_dir_all(&root).unwrap();
+    let want = big_file(&root.join("big.bin"), SIZE);
+    let host = world.serve("warn");
+    let root_text = root.to_string_lossy().into_owned();
+    let client = approved(
+        &world,
+        "mover",
+        &["--allow", "fs.read,fs.write", "--fs-root", &root_text],
+    );
+    let link = connect(&client, &host).expect("the link is up");
+    let wait = Some(Duration::from_secs(60));
+    assert_eq!(
+        write_file(&link, &root.join("big.bin"), "copy.bin", wait),
+        (SIZE, want.clone())
+    );
+    assert_eq!(read_hash(&link, "copy.bin", wait), (SIZE, want));
+    // The host announces its own, smaller window, which is what lets a side see the difference.
+    let told = link.opener().capabilities(Duration::from_secs(60)).unwrap();
+    assert_eq!(told.window, Some(65536));
+    assert_eq!(told.max_frame, Some(Settings::default().max_frame));
 }

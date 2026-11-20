@@ -622,3 +622,97 @@ fn a_dial_setting_that_means_nothing_is_refused_naming_its_key() {
         Err(ConfigError::Parse { .. })
     ));
 }
+
+#[test]
+fn the_window_and_open_limits_have_their_defaults_and_reach_the_link() {
+    let config = parse("").unwrap();
+    let link = &config.link;
+    assert_eq!((link.max_window, link.bulk_window), (None, None));
+    assert!(!link.auto_window);
+    assert_eq!(link.max_metadata, 4096);
+    assert_eq!(link.max_pending_opens, 8);
+    assert_eq!(link.max_opens_per_minute, 600);
+    assert_eq!(
+        (link.tcp_send_buffer, link.tcp_receive_buffer),
+        (None, None)
+    );
+
+    let settings = link.settings();
+    assert_eq!(settings.max_window, settings.window);
+    assert_eq!(settings.bulk_window, settings.window);
+    assert!(!settings.auto_window);
+    let limits = settings.limits();
+    assert_eq!(limits.window, 1024 * 1024);
+    assert_eq!(limits.max_window, limits.window);
+    assert!(!limits.auto_window);
+    assert_eq!(limits.max_metadata, 4096);
+    assert_eq!(limits.max_pending_opens, 8);
+    assert_eq!(limits.max_opens_per_minute, 600);
+}
+
+#[test]
+fn every_window_and_open_limit_is_read_and_reaches_the_limits() {
+    let config = parse(
+        "[link]\nwindow = 65536\nmax_window = 16777216\nbulk_window = 8388608\nauto_window = true\n\
+         max_metadata = 65536\nmax_pending_opens = 32\nmax_opens_per_minute = 6000\n\
+         tcp_send_buffer = 4194304\ntcp_receive_buffer = 2097152\n",
+    )
+    .unwrap();
+    let settings = config.link.settings();
+    assert_eq!(settings.bulk_window, 8 * 1024 * 1024);
+    assert_eq!(settings.tcp_send_buffer, Some(4 * 1024 * 1024));
+    assert_eq!(settings.tcp_receive_buffer, Some(2 * 1024 * 1024));
+    let limits = settings.limits();
+    assert_eq!(limits.window, 65536);
+    assert_eq!(limits.max_window, 16 * 1024 * 1024);
+    assert!(limits.auto_window);
+    assert_eq!(limits.max_metadata, 65536);
+    assert_eq!(limits.max_pending_opens, 32);
+    assert_eq!(limits.max_opens_per_minute, 6000);
+}
+
+#[test]
+fn a_bulk_window_alone_raises_the_most_a_window_may_grow_to_and_a_smaller_one_is_allowed() {
+    let settings = parse("[link]\nbulk_window = 8388608\n")
+        .unwrap()
+        .link
+        .settings();
+    assert_eq!(settings.max_window, 8 * 1024 * 1024);
+    // A window is only widened, so a bulk window below `window` changes nothing and is not an error.
+    let settings = parse("[link]\nbulk_window = 4096\n")
+        .unwrap()
+        .link
+        .settings();
+    assert_eq!(settings.bulk_window, 4096);
+    assert_eq!(settings.max_window, settings.window);
+}
+
+#[test]
+fn a_window_limit_that_means_nothing_is_refused_naming_its_key() {
+    for (text, key) in [
+        ("[link]\nmax_window = 0\n", "link.max_window"),
+        ("[link]\nbulk_window = 0\n", "link.bulk_window"),
+        ("[link]\nmax_metadata = 0\n", "link.max_metadata"),
+        ("[link]\nmax_pending_opens = 0\n", "link.max_pending_opens"),
+        (
+            "[link]\nmax_opens_per_minute = 0\n",
+            "link.max_opens_per_minute",
+        ),
+        ("[link]\ntcp_send_buffer = 0\n", "link.tcp_send_buffer"),
+        (
+            "[link]\ntcp_receive_buffer = 0\n",
+            "link.tcp_receive_buffer",
+        ),
+        // The window and the bulk window are at most the most a window may grow to.
+        ("[link]\nmax_window = 524288\n", "link.window"),
+        (
+            "[link]\nmax_window = 2097152\nbulk_window = 4194304\n",
+            "link.bulk_window",
+        ),
+    ] {
+        match parse(text) {
+            Err(ConfigError::Invalid { key: found, .. }) => assert_eq!(found, key, "{text}"),
+            other => panic!("{text}: expected Invalid, got {other:?}"),
+        }
+    }
+}

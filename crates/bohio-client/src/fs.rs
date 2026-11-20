@@ -13,7 +13,7 @@ use bohio_proto::protocol;
 use coqui_transport::Channel;
 
 use crate::control::Control;
-use crate::{Error, Open};
+use crate::{Error, Open, OpenOptions};
 
 /// The filesystem calls of one host, over a control stream.
 #[derive(Debug)]
@@ -298,7 +298,10 @@ impl Reader {
         request: &ReadRequest,
         timeout: Option<Duration>,
     ) -> Result<Self, Error> {
-        let channel = link.open(protocol::READ, &request.to_metadata()?)?;
+        let options = OpenOptions {
+            receive_window: link.bulk_window(),
+        };
+        let channel = link.open_with(protocol::READ, &request.to_metadata()?, &options)?;
         let deadline = timeout.map(|limit| Instant::now() + limit);
         loop {
             let left = deadline.map(|at| at.saturating_duration_since(Instant::now()));

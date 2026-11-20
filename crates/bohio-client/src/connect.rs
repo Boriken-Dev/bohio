@@ -19,13 +19,14 @@ use coqui_transport::{Channel, Failure};
 use crate::dial::{Endpoint, ServerTrust};
 use crate::link::Settings;
 use crate::relay::{Relay, relay_with};
-use crate::{Error, Open};
+use crate::{Error, Open, OpenOptions};
 
 /// One request of the link's thread: open a stream, or read the peer's capability document.
 enum Request {
     Open {
         protocol: String,
         metadata: Vec<u8>,
+        options: OpenOptions,
         reply: Sender<Result<Opened, Error>>,
     },
     Capabilities {
@@ -40,6 +41,8 @@ struct Shared {
     relays: Mutex<Vec<Weak<Relay>>>,
     /// Set by [`Opener::close`], or when the link ends.
     ended: AtomicBool,
+    /// What a read asks for ([`Open::bulk_window`]).
+    bulk_window: Option<u32>,
 }
 
 impl Shared {
@@ -76,11 +79,14 @@ pub struct Opens {
 
 impl Opener {
     /// A new opener and the [`Opens`] that serves it. Nothing opens until `Opens::run` runs on a link.
-    pub fn pair() -> (Self, Opens) {
+    ///
+    /// `settings` say what a stream that carries a file to this side asks for: [`Open::bulk_window`].
+    pub fn pair(settings: &Settings) -> (Self, Opens) {
         let (requests, receiver) = mpsc::channel();
         let shared = Arc::new(Shared {
             relays: Mutex::new(Vec::new()),
             ended: AtomicBool::new(false),
+            bulk_window: (settings.bulk_window > settings.window).then_some(settings.bulk_window),
         });
         (
             Self {
@@ -133,6 +139,21 @@ impl Opener {
     ///
     /// [`Error::Closed`] when the link has ended, else whatever the open reports.
     pub fn open_stream(&self, protocol: &str, metadata: &[u8]) -> Result<Opened, Error> {
+        self.open_stream_with(protocol, metadata, &OpenOptions::default())
+    }
+
+    /// As [`Opener::open_stream`], with `options`: a `receive_window` is granted on the new stream before it is returned, up to
+    /// the link's `max_window`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Opener::open_stream`].
+    pub fn open_stream_with(
+        &self,
+        protocol: &str,
+        metadata: &[u8],
+        options: &OpenOptions,
+    ) -> Result<Opened, Error> {
         if !self.is_up() {
             return Err(Error::Closed);
         }
@@ -141,6 +162,7 @@ impl Opener {
             .send(Request::Open {
                 protocol: protocol.to_owned(),
                 metadata: metadata.to_vec(),
+                options: *options,
                 reply,
             })
             .map_err(|_| Error::Closed)?;
@@ -153,6 +175,20 @@ impl Open for Opener {
         self.open_stream(protocol, metadata)
             .map(|opened| Box::new(opened) as Box<dyn Channel>)
     }
+
+    fn open_with(
+        &self,
+        protocol: &str,
+        metadata: &[u8],
+        options: &OpenOptions,
+    ) -> Result<Box<dyn Channel>, Error> {
+        self.open_stream_with(protocol, metadata, options)
+            .map(|opened| Box::new(opened) as Box<dyn Channel>)
+    }
+
+    fn bulk_window(&self) -> Option<u32> {
+        self.shared.bulk_window
+    }
 }
 
 impl Opens {
@@ -162,6 +198,11 @@ impl Opens {
     pub fn run<C: Channel>(self, mux: &Mux<'_, C>, settings: &Settings) {
         let poll = settings.poll_interval.max(Duration::from_millis(1));
         thread::scope(|scope| {
+            // The peer's `link/1` says its own window and frame: a difference from this side's is worth one line.
+            scope.spawn(move || match capabilities(mux, settings.proof_timeout) {
+                Ok(told) => report_difference(settings, &told),
+                Err(error) => tracing::debug!(%error, "the peer's link/1 document was not read"),
+            });
             loop {
                 if self.shared.ended.load(Ordering::SeqCst) {
                     break;
@@ -176,10 +217,14 @@ impl Opens {
                     Ok(Request::Open {
                         protocol,
                         metadata,
+                        options,
                         reply,
                     }) => {
                         let opened = mux.open_with(&protocol, &metadata).map_err(Error::from);
                         let answer = opened.map(|stream| {
+                            if let Some(wanted) = options.receive_window {
+                                widen(&stream, wanted);
+                            }
                             let relay = relay_with(
                                 scope,
                                 Arc::new(stream),
@@ -282,7 +327,7 @@ impl Connection {
         proof: &Proof,
         settings: &Settings,
     ) -> Result<Self, Error> {
-        let (opener, opens) = Opener::pair();
+        let (opener, opens) = Opener::pair(settings);
         let (ready, ready_rx) = mpsc::channel();
         let (settings, proof) = (*settings, proof.clone());
         let thread = thread::Builder::new()
@@ -346,6 +391,64 @@ impl Drop for Connection {
 impl Open for Connection {
     fn open(&self, protocol: &str, metadata: &[u8]) -> Result<Box<dyn Channel>, Error> {
         self.opener.open(protocol, metadata)
+    }
+
+    fn open_with(
+        &self,
+        protocol: &str,
+        metadata: &[u8],
+        options: &OpenOptions,
+    ) -> Result<Box<dyn Channel>, Error> {
+        self.opener.open_with(protocol, metadata, options)
+    }
+
+    fn bulk_window(&self) -> Option<u32> {
+        self.opener.bulk_window()
+    }
+}
+
+/// Grants what `stream`'s receive window lacks of `wanted`; the link caps it at its `max_window`.
+fn widen<C: Channel>(stream: &Stream<'_, C>, wanted: u32) {
+    let have = stream.window();
+    if wanted <= have {
+        return;
+    }
+    // A stream that ended before it was widened tells its owner so itself.
+    if let Ok(now) = stream.grant(wanted - have)
+        && now < wanted
+    {
+        tracing::debug!(wanted, now, "a stream's window was capped at max_window");
+    }
+}
+
+/// Logs, as an event and not a refusal, that the peer's initial window or frame differs from this side's.
+///
+/// The initial window is not negotiated: each sender starts a stream with its own as credit, and a receiver
+/// ends a stream whose sender is ahead of its own. A peer with the larger window can therefore break the other's
+/// streams, and one with the larger frame is refused; the safe way to widen one stream is `bulk_window`.
+fn report_difference(settings: &Settings, told: &Capabilities) {
+    if let Some(window) = told.window.filter(|window| *window != settings.window) {
+        if window > settings.window {
+            tracing::warn!(
+                peer = window,
+                ours = settings.window,
+                "the peer's [link] window is larger than ours: a stream it fills before this side grants more ends as broken; \
+                 keep `window` equal on both sides and widen a bulk stream with `bulk_window`"
+            );
+        } else {
+            tracing::warn!(
+                peer = window,
+                ours = settings.window,
+                "the peer's [link] window is smaller than ours: its streams carry that much until this side grants more"
+            );
+        }
+    }
+    if let Some(frame) = told.max_frame.filter(|frame| *frame != settings.max_frame) {
+        tracing::warn!(
+            peer = frame,
+            ours = settings.max_frame,
+            "the peer's [link] max_frame differs from ours: a frame larger than the receiver's is refused, so keep it equal"
+        );
     }
 }
 

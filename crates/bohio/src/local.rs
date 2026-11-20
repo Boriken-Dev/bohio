@@ -353,7 +353,7 @@ impl LocalLink {
         let channel = endpoint.dial(settings.proof_timeout, settings)?;
         channel.set_max_message(settings.max_frame.saturating_add(5));
         let _ = channel.set_pending(settings.read_ahead);
-        let (opener, opens) = Opener::pair();
+        let (opener, opens) = Opener::pair(settings);
         let settings = *settings;
         let (ready, ready_rx) = std::sync::mpsc::channel();
         let thread = thread::Builder::new()

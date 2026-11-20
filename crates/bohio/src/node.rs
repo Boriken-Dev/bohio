@@ -225,6 +225,19 @@ impl OpenStreams for PeerLink {
     ) -> Result<Box<dyn Channel>, bohio_client::Error> {
         self.opener.open(protocol, metadata)
     }
+
+    fn open_with(
+        &self,
+        protocol: &str,
+        metadata: &[u8],
+        options: &bohio_client::OpenOptions,
+    ) -> Result<Box<dyn Channel>, bohio_client::Error> {
+        self.opener.open_with(protocol, metadata, options)
+    }
+
+    fn bulk_window(&self) -> Option<u32> {
+        self.opener.bulk_window()
+    }
 }
 
 /// The links a node serves, in the order they came up.
@@ -869,7 +882,7 @@ impl Node {
             services: &services,
             events: &bridge,
         };
-        let (opener, opens) = Opener::pair();
+        let (opener, opens) = Opener::pair(settings);
         let _listed = self.registry.add(
             LinkInfo {
                 peer,
@@ -928,6 +941,12 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
             return;
         }
     };
+    // A write is the bulk stream this side receives: it is widened to `bulk_window` as soon as it is accepted. The
+    // link caps the grant at its `max_window`; a stream that already ended says so to the engine.
+    if accepted.protocol == protocol::WRITE && shared.settings.bulk_window > shared.settings.window
+    {
+        let _ = stream.grant(shared.settings.bulk_window - shared.settings.window);
+    }
     thread::scope(|scope| {
         let relay = relay(scope, stream, &shared.settings);
         let channel: Arc<dyn Channel> = relay.clone();

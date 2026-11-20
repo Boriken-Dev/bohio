@@ -286,6 +286,7 @@ impl Listening {
             Endpoint::Tcp(address) => {
                 let listener = TcpListener::bind(address).map_err(|e| fail(e.to_string()))?;
                 listener.set_nonblocking(true).map_err(|e| fail(e.to_string()))?;
+                bohio_client::link::tune_listener(&listener, settings).map_err(|e| fail(e.to_string()))?;
                 let bound = listener.local_addr().map_err(|e| fail(e.to_string()))?;
                 Ok((Self::Tcp(listener), Endpoint::Tcp(bound)))
             }
