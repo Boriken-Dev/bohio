@@ -263,7 +263,7 @@ fn item_result(
         };
         hasher.update(&buffer[..count]);
         remaining -= count as u64;
-        pace.spent(channel, count as u64, files.config.poll_interval.0);
+        pace.spent(channel, count as u64);
     }
     Ok(HashResult {
         index,
@@ -276,11 +276,15 @@ fn item_result(
 }
 
 /// Holds a stream to `[hash] rate` bytes a second: each read is followed by a wait until its share of
-/// time has passed, and time a stream spent idle earns no credit.
+/// time has passed. A wait that overshoots is made up by the next ones, up to a twentieth of a second, and
+/// time a stream spent idle earns no more credit than that.
 struct Pace {
     rate: u64,
     due: Instant,
 }
+
+/// The granularity of the limit: a read is at most this much of the rate, and this much lag is caught up.
+const SLICE: Duration = Duration::from_millis(50);
 
 impl Pace {
     fn new(rate: u64) -> Self {
@@ -300,20 +304,20 @@ impl Pace {
             .max(1)
     }
 
-    /// Accounts for `count` bytes just read and waits until the rate allows the next read, looking at the
-    /// stream every `poll` so a closed one is not waited out.
-    fn spent(&mut self, channel: &dyn Channel, count: u64, poll: Duration) {
+    /// Accounts for `count` bytes just read and waits until the rate allows the next read. The wait is at most a
+    /// `SLICE`, so a stream that closes meanwhile is noticed at the next read.
+    fn spent(&mut self, channel: &dyn Channel, count: u64) {
         if self.rate == 0 {
             return;
         }
         let now = Instant::now();
         let cost = Duration::from_secs_f64(count as f64 / self.rate as f64);
-        self.due = self.due.max(now) + cost;
-        while let Some(left) = self.due.checked_duration_since(Instant::now()) {
-            if left.is_zero() || channel.is_closed() {
-                break;
-            }
-            std::thread::sleep(left.min(poll));
+        let floor = now.checked_sub(SLICE).unwrap_or(now);
+        self.due = self.due.max(floor) + cost;
+        if let Some(left) = self.due.checked_duration_since(Instant::now())
+            && !channel.is_closed()
+        {
+            std::thread::sleep(left);
         }
     }
 }
