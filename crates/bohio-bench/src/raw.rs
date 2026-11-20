@@ -3,7 +3,8 @@
 //!
 //! A client sends one byte (`D` the server sends, `U` the server reads) and the size as 8 big-endian
 //! bytes. For `D` the server sends that many bytes and the client reads them; for `U` the client sends
-//! them and the server answers one byte once it has read them all. A sample includes the connect.
+//! them and the server answers one byte once it has read them all. A cold sample includes the connect;
+//! a warm one reuses a connection that has already carried a transfer.
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -38,39 +39,39 @@ fn block() -> Vec<u8> {
 
 fn handle(mut stream: TcpStream) -> std::io::Result<()> {
     stream.set_nodelay(true)?;
-    let mut head = [0_u8; 9];
-    stream.read_exact(&mut head)?;
-    let size = u64::from_be_bytes(head[1..].try_into().unwrap_or([0; 8]));
     let block = block();
-    match head[0] {
-        b'D' => {
-            let mut left = size;
-            while left > 0 {
-                let take = usize::try_from(left.min(block.len() as u64)).unwrap_or(block.len());
-                stream.write_all(&block[..take])?;
-                left -= take as u64;
-            }
-            stream.flush()?;
-            // Wait for the client to be done, so no byte is lost to a reset.
-            let mut end = [0_u8; 1];
-            let _ = stream.read(&mut end);
+    let mut sink = vec![0_u8; 1 << 16];
+    // One request after another until the client closes: a warm control reuses its connection.
+    loop {
+        let mut head = [0_u8; 9];
+        if stream.read_exact(&mut head).is_err() {
+            return Ok(());
         }
-        b'U' => {
-            let mut left = size;
-            let mut sink = vec![0_u8; 1 << 16];
-            while left > 0 {
-                let take = usize::try_from(left.min(sink.len() as u64)).unwrap_or(sink.len());
-                let count = stream.read(&mut sink[..take])?;
-                if count == 0 {
-                    return Ok(());
+        let size = u64::from_be_bytes(head[1..].try_into().unwrap_or([0; 8]));
+        let mut left = size;
+        match head[0] {
+            b'D' => {
+                while left > 0 {
+                    let take = usize::try_from(left.min(block.len() as u64)).unwrap_or(block.len());
+                    stream.write_all(&block[..take])?;
+                    left -= take as u64;
                 }
-                left -= count as u64;
+                stream.flush()?;
             }
-            stream.write_all(&[1])?;
+            b'U' => {
+                while left > 0 {
+                    let take = usize::try_from(left.min(sink.len() as u64)).unwrap_or(sink.len());
+                    let count = stream.read(&mut sink[..take])?;
+                    if count == 0 {
+                        return Ok(());
+                    }
+                    left -= count as u64;
+                }
+                stream.write_all(&[1])?;
+            }
+            _ => return Ok(()),
         }
-        _ => {}
     }
-    Ok(())
 }
 
 /// Connects to `address` within `timeout` and returns the stream, with `TCP_NODELAY` as Bohío sets it.
@@ -84,47 +85,76 @@ pub fn connect(address: SocketAddr, timeout: Duration) -> std::io::Result<TcpStr
     Ok(stream)
 }
 
-/// Downloads `size` bytes.
-///
-/// # Errors
-///
-/// The error of connecting or reading, or `UnexpectedEof` when the server sent less.
-pub fn download(address: SocketAddr, size: u64, timeout: Duration) -> std::io::Result<()> {
-    let mut stream = connect(address, timeout)?;
-    let mut head = vec![b'D'];
-    head.extend_from_slice(&size.to_be_bytes());
-    stream.write_all(&head)?;
-    let mut left = size;
-    let mut sink = vec![0_u8; 1 << 16];
-    while left > 0 {
-        let count = stream.read(&mut sink)?;
-        if count == 0 {
-            return Err(std::io::ErrorKind::UnexpectedEof.into());
-        }
-        left = left.saturating_sub(count as u64);
+/// A connection that carries one transfer after another.
+pub struct Link(TcpStream);
+
+impl Link {
+    /// Connects to `address` within `timeout`.
+    ///
+    /// # Errors
+    ///
+    /// The error of connecting.
+    pub fn open(address: SocketAddr, timeout: Duration) -> std::io::Result<Self> {
+        connect(address, timeout).map(Self)
     }
-    let _ = stream.write_all(&[1]);
-    Ok(())
+
+    /// Downloads `size` bytes.
+    ///
+    /// # Errors
+    ///
+    /// The error of writing the request or reading, or `UnexpectedEof` when the server sent less.
+    pub fn download(&mut self, size: u64) -> std::io::Result<()> {
+        let mut head = vec![b'D'];
+        head.extend_from_slice(&size.to_be_bytes());
+        self.0.write_all(&head)?;
+        let mut left = size;
+        let mut sink = vec![0_u8; 1 << 16];
+        while left > 0 {
+            let count = self.0.read(&mut sink)?;
+            if count == 0 {
+                return Err(std::io::ErrorKind::UnexpectedEof.into());
+            }
+            left = left.saturating_sub(count as u64);
+        }
+        Ok(())
+    }
+
+    /// Uploads `size` bytes and waits for the server to say it has them all.
+    ///
+    /// # Errors
+    ///
+    /// The error of writing or waiting for the answer.
+    pub fn upload(&mut self, size: u64) -> std::io::Result<()> {
+        let mut head = vec![b'U'];
+        head.extend_from_slice(&size.to_be_bytes());
+        self.0.write_all(&head)?;
+        let block = block();
+        let mut left = size;
+        while left > 0 {
+            let take = usize::try_from(left.min(block.len() as u64)).unwrap_or(block.len());
+            self.0.write_all(&block[..take])?;
+            left -= take as u64;
+        }
+        self.0.flush()?;
+        let mut answer = [0_u8; 1];
+        self.0.read_exact(&mut answer)
+    }
 }
 
-/// Uploads `size` bytes and waits for the server to say it has them all.
+/// Connects and downloads `size` bytes: a cold transfer.
 ///
 /// # Errors
 ///
-/// The error of connecting, writing or waiting for the answer.
+/// As [`Link::open`] and [`Link::download`].
+pub fn download(address: SocketAddr, size: u64, timeout: Duration) -> std::io::Result<()> {
+    Link::open(address, timeout)?.download(size)
+}
+
+/// Connects and uploads `size` bytes: a cold transfer.
+///
+/// # Errors
+///
+/// As [`Link::open`] and [`Link::upload`].
 pub fn upload(address: SocketAddr, size: u64, timeout: Duration) -> std::io::Result<()> {
-    let mut stream = connect(address, timeout)?;
-    let mut head = vec![b'U'];
-    head.extend_from_slice(&size.to_be_bytes());
-    stream.write_all(&head)?;
-    let block = block();
-    let mut left = size;
-    while left > 0 {
-        let take = usize::try_from(left.min(block.len() as u64)).unwrap_or(block.len());
-        stream.write_all(&block[..take])?;
-        left -= take as u64;
-    }
-    stream.flush()?;
-    let mut answer = [0_u8; 1];
-    stream.read_exact(&mut answer)
+    Link::open(address, timeout)?.upload(size)
 }

@@ -104,7 +104,7 @@ jobs:
                   "$side/target/release/bohio-bench" local --corpus "$corpus" \
                   --host-prefix "$prefix" --listen-ip 192.0.2.1 --samples "$SAMPLES" \
                   --link "$link" --label "$label" --commit "$commit" \
-                  --save "$out/$label-$link-r$round.json" $args
+                  --save "$out/$label-$link-r$round.json" $args                   || echo "::warning::$label $link round $round: a scenario failed ($?)"
                 echo "::endgroup::"
               done
             done

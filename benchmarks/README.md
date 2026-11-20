@@ -49,6 +49,7 @@ Names are metric prefixes. Sizes are `1KiB`, `16MiB`, ...; a count is `x100`.
 | `remote_read_<size>`, `remote_info` | `bohio remote ...` as a child process: process start counts |
 | `timeline_read_<size>`, `timeline_info` | the parts of one cold request: `_dial`, `_proof`, `_open` (to the header), `_first` (to the first byte), `_body`, `_total`; with the bytes received by time in `curves` |
 | `raw_connect`, `raw_down_<size>`, `raw_up_<size>` | the control: a plain TCP socket, no proof, no mux, with the connect included | 
+| `raw_warm_down_<size>`, `raw_warm_up_<size>` | the control on a connection that already carried a transfer: the counterpart of `read_<size>_warm` |
 | `raw_par_xN_down_<size>` | N raw downloads at once: separates a per-flow limit from the path's capacity |
 | `cpu_sha256_<size>` | the control: SHA-256 of memory, no I/O |
 

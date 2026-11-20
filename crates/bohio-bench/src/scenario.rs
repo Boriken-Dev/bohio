@@ -44,6 +44,8 @@ pub enum Kind {
     RemoteInfo,
     /// A raw TCP download.
     RawDown { size: String },
+    /// A raw TCP download or upload on a connection that has already carried one (`up` is the upload).
+    RawWarm { up: bool, size: String },
     /// `n` raw TCP downloads at the same time: what the path carries across flows.
     RawParDown { n: u64, size: String },
     /// A raw TCP upload.
@@ -92,6 +94,10 @@ impl Kind {
             ["remote", "info"] => Self::RemoteInfo,
             ["raw", "down", s] => Self::RawDown { size: size(s)? },
             ["raw", "up", s] => Self::RawUp { size: size(s)? },
+            ["raw", "warm", dir @ ("down" | "up"), s] => Self::RawWarm {
+                up: *dir == "up",
+                size: size(s)?,
+            },
             ["raw", "par", n, "down", s] => Self::RawParDown {
                 n: count(n)?,
                 size: size(s)?,
@@ -378,6 +384,23 @@ impl Runner {
                 })?;
                 self.record(name, &taken, Some(bytes));
             }
+            Kind::RawWarm { up, size } => {
+                let address = self.env.raw.ok_or("no raw control address")?;
+                let bytes = parse_size(&size)?;
+                let mut link =
+                    raw::Link::open(address, compat::LIMIT).map_err(|error| error.to_string())?;
+                let one = |link: &mut raw::Link| {
+                    if up {
+                        link.upload(bytes)
+                    } else {
+                        link.download(bytes)
+                    }
+                    .map_err(|error| error.to_string())
+                };
+                one(&mut link)?;
+                let taken = timed(&mut self.env.cpu, samples, || one(&mut link))?;
+                self.record(name, &taken, Some(bytes));
+            }
             Kind::RawParDown { n, size } => {
                 let address = self.env.raw.ok_or("no raw control address")?;
                 let bytes = parse_size(&size)?;
@@ -416,6 +439,9 @@ impl Runner {
             Kind::TimelineRead { size } => self.timeline_read(name, &size)?,
             Kind::TimelineInfo => self.timeline_info(name)?,
         }
+        // Each scenario gets its own link: the host limits how fast streams may be opened per link, and
+        // one scenario's opens must not count against the next.
+        self.warm = None;
         Ok(())
     }
 
