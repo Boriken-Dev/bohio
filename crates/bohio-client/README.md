@@ -14,7 +14,7 @@ so a theater provider, a command line and the host's own tests share one client.
 ## Features
 
 - `exec::Exec`: run one process, stream its output, write its input, kill it, wait for its exit.
-- `fs::Fs`, `fs::Reader`, `fs::Writer`: stat, list, create, remove, rename, copy and checksum files on the host, and
+- `fs::Fs`, `fs::Reader`, `fs::Writer`: stat, list, create, remove, rename, copy files on the host, and `hash` for digests computed there, and
   stream a file in either direction in chunks.
 - `shell::Shell`: an interactive shell on a terminal: type, read output, resize, kill.
 - `control::Control`: the control stream the small calls share.

@@ -10,7 +10,7 @@ with the source at <https://github.com/Boriken-Dev/bohio>.
 
 MSRV Rust 1.89. A library-only build (`default-features = false`) depends on `bohio-proto`, `bohio-client` (the link and its relay),
 `coqui-transport`, `coqui-link` (with `sealed`), `coqui-peer`, `coqui-transport-pipe` and `coqui-transport-web` (each a git revision; one copy of each builds), `serde`, `toml`,
-`thiserror`, `tracing`, `anycfg` (the layers) and `toml_edit` (in-place edits of a peer table), `portable-pty` (terminals), `cap-std` and `cap-fs-ext` (confined file access), `sha2`, and `rustix` (Unix) or
+`thiserror`, `tracing`, `anycfg` (the layers) and `toml_edit` (in-place edits of a peer table), `portable-pty` (terminals), `cap-std` and `cap-fs-ext` (confined file access), `bohio-transfer` (digests), and `rustix` (Unix) or
 `win32job` (Windows). Version `0.0.0-alpha.0`, not published.
 
 Imports: the root holds `Config`, `ConfigError`, `Environment`, `Grant`, `Peers`, `Permission`. Public modules:
@@ -26,9 +26,9 @@ pub struct Environment { pub windows: bool, pub local_app_data: Option<PathBuf>,
     pub path: Option<OsString> }                                  // Default; the binary fills it from the process (cli::capture_environment)
 impl Environment { pub fn default_data_dir(&self) -> PathBuf; }
 
-pub struct Config { pub service: ServiceConfig, pub listen: Vec<ListenConfig>, pub link: LinkConfig, pub filesystem: FilesystemConfig,
+pub struct Config { pub service: ServiceConfig, pub listen: Vec<ListenConfig>, pub link: LinkConfig, pub filesystem: FilesystemConfig, pub hash: HashConfig,
                     pub execution: ExecutionConfig, pub shell: ShellConfig, pub pairing: PairingConfig, pub control: ControlConfig, pub peer: Peers }     // Default; unknown keys refused; `peer` is `[peer.<id>]`
-pub struct NodeConfig { pub name: String, pub link: LinkConfig, pub filesystem: FilesystemConfig,
+pub struct NodeConfig { pub name: String, pub link: LinkConfig, pub filesystem: FilesystemConfig, pub hash: HashConfig,
                         pub execution: ExecutionConfig, pub shell: ShellConfig, pub pairing: PairingConfig }   // Default, Deserialize, unknown keys refused: what a Node runs on, read by an app from any section of its own settings
 impl NodeConfig { pub fn validate(&self, label: &str) -> Result<(), ConfigError>; }   // every range check; `Node::new` calls it
 impl Config {
@@ -97,7 +97,12 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[link] heartbeat_misses` | `3` | heartbeat intervals with nothing heard after which the link is lost; at least 1 |
 | `[filesystem] enabled` | `true` | whether filesystem calls are served |
 | `[filesystem] max_transfers` | `16` | concurrent `bohio-read/1` and `bohio-write/1` streams across peers; at least 1 |
-| `[filesystem] chunk_size` | `65536` | most file bytes in one frame, and the buffer a copy or checksum reads with; at least 1; a smaller message bound of the stream wins |
+| `[filesystem] chunk_size` | `65536` | most file bytes in one frame, and the buffer a copy reads with; at least 1; a smaller message bound of the stream wins |
+| `[filesystem] write_hashes` | `["sha256"]` | the digests a write answers when its request names none; each must be in `[hash] algorithms`; empty answers none |
+| `[hash] max_streams` | `4` | concurrent `bohio-hash/1` streams across peers (`busy` past it); at least 1 |
+| `[hash] rate` | `0` | most bytes a second one hash stream reads; `0` is unlimited |
+| `[hash] read_size` | `1048576` | the buffer a hash reads with; at least 1 (a `rate` below twenty times it reads smaller pieces) |
+| `[hash] algorithms` | every one | the digests the host computes, for hash streams, reads and writes; at least one, each known to this build |
 | `[filesystem] list_page` | `1000` | most entries in one listing page, whatever the client asks for; at least 1 |
 | `[filesystem] idle_timeout` | `5m` | how long a transfer may make no progress before the host abandons it; not zero |
 | `[filesystem] poll_interval` | `20ms` | how often a transfer looks at its stream while it waits; not zero |
@@ -230,10 +235,10 @@ pub fn serve_write(channel: Arc<dyn Channel>, metadata: &[u8], context: &Context
 ```
 
 `call` answers one filesystem call of the control stream; `budget` is the largest reply the stream carries (a listing page is cut
-to fit it). `serve_read` and `serve_write` serve one `bohio-read/1` and `bohio-write/1` stream whose open carried `metadata`. A
+to fit it). `serve_read` and `serve_write` serve one `bohio-read/1` and `bohio-write/1` stream whose open carried `metadata`; `serve_hash(channel, metadata, &HashContext)` serves one `bohio-hash/1` stream (`HashContext { files: Context, slots: &Slots, current: Option<control::Current> }`: `current` is read before each item, so a narrowed grant refuses the next one; `Context` carries `hash: &HashConfig`). A
 refused request gets one `error` frame, the same error is returned, and the stream stays open for the caller to close. Order of
 checks: decode (`bad_request`), `[filesystem] enabled` (`unsupported`), the permission (`denied`: `fs.read` for `stat`, `list`,
-`readlink`, `checksum` and reads; `fs.write` for `mkdir`, `remove`, `rename`, `symlink`, `set_*` and writes; both for `copy`), at
+`readlink`, hashes and reads; `fs.write` for `mkdir`, `remove`, `rename`, `symlink`, `set_*` and writes; both for `copy`), at
 least one root in the grant (`denied`), a free transfer slot (`busy`, transfers only), the path (`bad_request`, `outside_root`),
 then the operation (`not_found`, `exists`, `denied`, `unsupported`, `io`). Messages name what failed, never a path. A mode a peer
 names (`set_mode`, `mkdir`, a write's `file_mode`) above `0o7777` is `bad_request` and one with the set-user-ID or set-group-ID bit
@@ -258,7 +263,7 @@ as stored. The target is judged by its words, so on Unix a chain of links can st
 | --- | --- | --- |
 | Linux | every lookup: one `openat2` with `RESOLVE_BENEATH` (kernel 5.6+), else `openat` + `O_NOFOLLOW` per component; changes and removals are `*at` calls on the parent's handle | the configured root itself is opened by its path once per call |
 | macOS and other Unix | the same `openat` + `O_NOFOLLOW` walk, `*at` calls on the parent's handle | the root's own path |
-| Windows | `stat`, `checksum`, reads and the opens of writes: relative to the root's handle, reparse points not followed | `list`, `readlink`, `mkdir`, `remove`, `rename`, `symlink` and `set_mode` or `set_attributes`: the parent's handle becomes its current path and the name is joined to it, so a user who can rename a directory inside the root during the call can redirect it; also the root's own path |
+| Windows | `stat`, hashes, reads and the opens of writes: relative to the root's handle, reparse points not followed | `list`, `readlink`, `mkdir`, `remove`, `rename`, `symlink` and `set_mode` or `set_attributes`: the parent's handle becomes its current path and the name is joined to it, so a user who can rename a directory inside the root during the call can redirect it; also the root's own path |
 
 On every OS the root's owner is trusted: a hard link another local user makes to a file outside a root exposes that file, and a
 bind mount or junction an administrator places inside a root is part of the root. Windows has no POSIX modes (`set_mode` and a
@@ -267,9 +272,9 @@ elsewhere.
 
 **Transfers.** Reads send `header`, `data` frames of at most `chunk_size` bytes, `done`; sending waits while the stream has no room.
 A `replace` write goes to a temporary sibling (`.bohio-<pid>-<n>.tmp`) and is renamed over the target after `end` (and a matching
-`expect_sha256`), keeping the target's mode on Unix; a stream that closes, fails or stays idle for `idle_timeout` leaves the
+`expect` digest matched), keeping the target's mode on Unix; a stream that closes, fails or stays idle for `idle_timeout` leaves the
 target as it was and removes the temporary file. `create` removes the file it made when abandoned; `append` and `at` write in
-place and keep what was written. A transfer holds one `max_transfers` slot until it ends. Memory is one chunk plus what the
+place and keep what was written. A read and a write hash the bytes they move for `hashes` and `expect` (a write: the union, one pass; only `hashes`, else `[filesystem] write_hashes`, is answered). A hash stream holds one `[hash] max_streams` slot, a transfer one `max_transfers` slot, until it ends; a hash stream reads at most `[hash] rate` bytes a second. Memory is one chunk plus what the
 link's channel queues and reads ahead: a channel that queues `n` bytes can hold `n` more.
 
 ## Control stream (`bohio::control`)

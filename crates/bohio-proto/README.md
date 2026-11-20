@@ -51,6 +51,7 @@ assert_eq!(frame[0], 0x01);
 | `control` | `bohio/1` requests, responses and replies |
 | `error` | the codec's `Error` and the structured `ErrorBody` with its `ErrorCode` |
 | `exec` | `bohio-exec/1`: the request, and the frames in both directions |
+| `hash` | `bohio-hash/1`: the algorithm names, the request, items, results and frames |
 | `info` | the host's capabilities |
 | `protocol` | the protocol names a stream is opened with |
 | `shell` | shell kinds |

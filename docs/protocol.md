@@ -2,7 +2,7 @@
 
 This page is the wire, for an implementer in any language. Nothing here needs Rust. `vectors/*.json` in the repository holds every message below as the hex of its bytes, and each implementation decodes them.
 
-A Bohío host serves five protocols over one proven, sealed link. A client opens one stream per operation, names the protocol, and sends the request as the stream's open metadata.
+A Bohío host serves six protocols over one proven, sealed link. A client opens one stream per operation, names the protocol, and sends the request as the stream's open metadata.
 
 ## Layers
 
@@ -11,7 +11,7 @@ A Bohío host serves five protocols over one proven, sealed link. A client opens
 | Carrier | moves whole messages between two endpoints | [Carriers](#carriers) |
 | Proof | shows who holds a key, then seals every message after it | the proof's method, by [`coqui-link`'s page](https://github.com/Boriken-Dev/coqui-link/blob/main/docs/link.md) |
 | Link | named streams over the proven connection, with credit | [`docs/link.md` of coqui-link](https://github.com/Boriken-Dev/coqui-link/blob/main/docs/link.md) |
-| Bohío | five protocols, each its own messages | this page |
+| Bohío | six protocols, each its own messages | this page |
 
 The proof and the link are not repeated here. An implementation takes them from coqui-link's page, which has the proof's methods (`noise` by default, `webcrypto` for a browser), the frame format (`open`, `data`, `more`, `credit`, `finish`, `close`, `ping`, `pong`), stream ids, flow control and limits, and its own vectors in `vectors/mux.json`. Everything below starts after a stream is open.
 
@@ -49,6 +49,7 @@ A stream's `open` carries a protocol token and metadata. A client ignores a toke
 | `bohio-shell/1` | one interactive shell on a terminal | CBOR [`shell-request`](#shells) | `shell` |
 | `bohio-read/1` | one file read, streamed | CBOR [`read-request`](#reading-a-file) | `fs.read` |
 | `bohio-write/1` | one file written, streamed | CBOR [`write-request`](#writing-a-file) | `fs.write` |
+| `bohio-hash/1` | digests of many files, computed on the host | CBOR [`hash-request`](#hashing-bohio-hash1) | `fs.read` |
 
 Each `open` is decided against the peer's grant, and each running stream again at the host's recheck interval. Removing a grant closes the stream with reason `revoked`; the reason text reaches the peer.
 
@@ -98,7 +99,7 @@ request  = { id: uint, call: call }
 response = { id: uint, ? reply: opt<reply>, ? error: opt<error-body> }   ; exactly one of reply, error is not null
 
 call = hello / info / stat / list / mkdir / remove / rename / copy / symlink
-     / readlink / set-times / set-mode / set-attributes / checksum
+     / readlink / set-times / set-mode / set-attributes
 
 hello          = { type: "hello", ? version: uint, ? client: text }       ; version at least 1
 info           = { type: "info" }
@@ -113,15 +114,14 @@ readlink       = { type: "readlink", path: text }
 set-times      = { type: "set_times", path: text, ? accessed: opt<timestamp>, ? modified: opt<timestamp> }
 set-mode       = { type: "set_mode", path: text, mode: uint }
 set-attributes = { type: "set_attributes", path: text, ? readonly: opt<bool> }
-checksum       = { type: "checksum", path: text, ? offset: uint, ? length: opt<uint> }
 
-reply = { type: "hello", version: uint }
+reply = { type: "hello", version: uint, ? transfer: transfer-info }   ; transfer-info as in info
+
       / { type: "info", * info-field }          ; the keys of info, beside type
       / { type: "stat", * metadata-field }      ; the keys of metadata, beside type
       / { type: "list", * listing-field }       ; the keys of listing, beside type
       / { type: "done" }                        ; every call that returns nothing
       / { type: "link", target: text }
-      / { type: "checksum", sha256: text, length: uint }   ; sha256 is 64 lowercase hex digits
 
 timestamp = { secs: int, ? nanos: uint }        ; seconds since 1970-01-01T00:00:00Z, nanos below 10^9
 file-kind = "file" / "directory" / "symlink" / "other"
@@ -132,11 +132,11 @@ listing   = { ? entries: [* entry], ? next: opt<text>, ? skipped: uint }
 entry     = { name: text, metadata: metadata }                  ; a link is described, not followed
 ```
 
-What each call needs: `info` needs `info`; `hello` needs nothing; `stat`, `list`, `readlink` and `checksum` need `fs.read`; `mkdir`, `remove`, `rename`, `symlink`, `set_times`, `set_mode` and `set_attributes` need `fs.write`; `copy` needs both. Each needs the peer to hold a filesystem root, and resolves every path against the roots.
+What each call needs: `info` needs `info`; `hello` needs nothing; `stat`, `list` and `readlink` need `fs.read`; `mkdir`, `remove`, `rename`, `symlink`, `set_times`, `set_mode` and `set_attributes` need `fs.write`; `copy` needs both. Each needs the peer to hold a filesystem root, and resolves every path against the roots.
 
 - `hello`: the host answers with `min(version, its own)`. Both sides then speak that version. A `version` of 0 is `bad_request`.
 - `list`: entries are in ascending order by name. A reply holds as many entries as fit the stream's message size; `next` is then the name to send as `after`, and `skipped` counts names that are not valid text and so are left out. `limit` caps the count.
-- `checksum`: SHA-256 of `length` bytes from `offset` (to the end when `length` is `null`), computed on the host.
+- Digests are not a control call: a long hash would hold every later call on the stream, so they have their own stream, [`bohio-hash/1`](#hashing-bohio-hash1).
 - `mkdir` with `parents` creates what is missing; `remove` of a link removes the link; `rename` and `copy` without `overwrite` answer `exists` for an existing target.
 - Calls a platform lacks answer `unsupported`: `set_mode` and `mode` on Windows, `set_attributes` anywhere else.
 - A mode (`set_mode`, `mkdir`'s `mode`, a write's `file_mode`) above `0o7777` is `bad_request`, and one with the set-user-ID or set-group-ID bit (`0o6000`) is `denied`: such a file would run as the host's account for whoever starts it. A `copy`, and a `replace` write over an existing file, keep the source's or the target's mode without those two bits.
@@ -148,7 +148,10 @@ info = { ? protocol: uint, ? service: { ? name: text, ? version: text }, ? host_
          ? filesystem: { ? enabled: bool, ? symlinks: bool, ? unix_modes: bool, ? windows_attributes: bool,
                          ? case_sensitive: bool, ? separator: text },
          ? exec: { ? enabled: bool }, ? shell: { ? enabled: bool },
-         ? limits: { ? max_streams: opt<uint>, ? max_processes: opt<uint>, ? max_sessions: opt<uint> } }
+         ? limits: { ? max_streams: opt<uint>, ? max_processes: opt<uint>, ? max_sessions: opt<uint> },
+         ? transfer: transfer-info }
+transfer-info = { ? hashes: [* text],                        ; the algorithms the host computes, empty when none
+                  ? hash_limits: { ? max_streams: uint, ? rate: uint } }   ; hash streams at once; bytes a second one stream reads, 0 unlimited
 shell-kind = "sh" / "bash" / "zsh" / "cmd" / "powershell" / "pwsh" / "other"
 ```
 
@@ -157,15 +160,16 @@ shell-kind = "sh" / "bash" / "zsh" / "cmd" / "powershell" / "pwsh" / "other"
 `bohio-read/1`. The open's metadata is a CBOR `read-request`; the client sends nothing more on the stream.
 
 ```text
-read-request = { path: text, ? offset: uint, ? length: opt<uint> }     ; length null: to the end
+read-request = { path: text, ? offset: uint, ? length: opt<uint>, ? hashes: [* text] }   ; length null: to the end; hashes: algorithm names
 read-header  = { size: uint, length: uint }                              ; the file's size; the bytes that follow
+read-done    = { ? hashes: { * text => text } }                          ; the digests asked for, of the bytes sent
 ```
 
 | Direction | Tag | Body |
 | --- | --- | --- |
 | host to client | `0x01` | CBOR `read-header` |
 | host to client | `0x02` | raw file bytes, in order |
-| host to client | `0x04` | empty: all `length` bytes were sent |
+| host to client | `0x04` | CBOR `read-done`: all `length` bytes were sent |
 | host to client | `0x05` | CBOR `error-body`: the last frame |
 
 The host sends the header first, then data frames whose bytes add up to `header.length`, then `0x04`. A stream that ends with no `0x04` and no `0x05` is a read cut short. A refused request is one `0x05` frame. A client closing the stream stops the read.
@@ -175,9 +179,11 @@ The host sends the header first, then data frames whose bytes add up to `header.
 `bohio-write/1`. The open's metadata is a CBOR `write-request`.
 
 ```text
-write-request = { path: text, ? mode: write-mode, ? parents: bool, ? file_mode: opt<uint>, ? expect_sha256: opt<text> }
+write-request = { path: text, ? mode: write-mode, ? parents: bool, ? file_mode: opt<uint>,
+                  ? expect: { * text => text },          ; algorithm name => the digest the data must have, in hex
+                  ? hashes: opt<[* text]> }               ; digests to answer; null: the host's [filesystem] write_hashes (sha256 by default)
 write-mode    = { type: "replace" } / { type: "create" } / { type: "append" } / { type: "at", offset: uint }   ; replace by default
-write-done    = { written: uint, sha256: text }                          ; the bytes written, and their SHA-256 in hex
+write-done    = { written: uint, ? hashes: { * text => text } }            ; the bytes written, and the digests `hashes` asked for
 ```
 
 | Direction | Tag | Body |
@@ -188,7 +194,37 @@ write-done    = { written: uint, sha256: text }                          ; the b
 | client to host | `0x10` | raw file bytes, in order |
 | client to host | `0x11` | empty: the end of the data |
 
-The client waits for `0x01`, sends `0x10` frames, then `0x11`, then waits for `0x04`. A `replace` write goes to a temporary sibling and is renamed over the target after `0x11` and a matching `expect_sha256` (a mismatch is `io`, and nothing is replaced); until the host's `0x04` the target is as it was. `create` fails with `exists` when the file is there. `append` and `at` write in place, and what was written stays when the stream is abandoned. `parents` creates missing directories; `file_mode` sets Unix permission bits on a new file. A write the client abandons (closing the stream) leaves no temporary file.
+The client waits for `0x01`, sends `0x10` frames, then `0x11`, then waits for `0x04`. A `replace` write goes to a temporary sibling and is renamed over the target after `0x11` and a matching `expect` (every named digest is checked, a mismatch is `io`, and nothing is replaced; `expect` is for `replace` and `create` only, and a value that is not the algorithm's lowercase hex is `bad_request`); until the host's `0x04` the target is as it was. `create` fails with `exists` when the file is there. `append` and `at` write in place, and what was written stays when the stream is abandoned. `parents` creates missing directories; `file_mode` sets Unix permission bits on a new file. A write the client abandons (closing the stream) leaves no temporary file.
+
+A host computes the union of `hashes` and `expect` in one pass and answers only `hashes`. An algorithm the host does not offer (`[hash] algorithms`), in a read, a write or a hash stream, is `unsupported` before any data moves.
+
+## Hashing: `bohio-hash/1`
+
+Digests of many files on one stream, computed on the host, so a client compares files without downloading them and a long hash never holds the control stream. The open's metadata is a CBOR `hash-request`; the client then sends one `0x10` frame per file and a `0x11`, and the host answers each item, in order, on one thread.
+
+```text
+hash-request = { algorithms: [+ text], ? blocks: opt<block-options> }
+block-options = { ? size: opt<uint>, ? weak: opt<text>, ? strong_len: opt<uint> }   ; `unsupported` for now
+hash-item    = { path: text, ? offset: uint, ? length: opt<uint>, ? if_size: opt<uint>, ? if_modified: opt<timestamp> }
+hash-result  = { index: uint, size: uint, ? modified: opt<timestamp>, length: uint, ? unchanged: bool, hashes: { * text => text } }
+hash-blocks  = { index: uint, first: uint, size: uint, ? weak: [* uint], strong: bstr }
+item-error   = { index: uint, code: error-code, ? message: text }
+hash-done    = { items: uint }
+```
+
+| Direction | Tag | Body |
+| --- | --- | --- |
+| client to host | `0x10` | CBOR `hash-item` |
+| client to host | `0x11` | empty: no more items |
+| host to client | `0x01` | CBOR `hash-result` |
+| host to client | `0x02` | CBOR `hash-blocks` (reserved for block signatures; the host sends none yet) |
+| host to client | `0x03` | CBOR `item-error`: that item failed, the stream goes on |
+| host to client | `0x04` | CBOR `hash-done`: every item was answered |
+| host to client | `0x05` | CBOR `error-body`: the stream failed or was refused; the last frame |
+
+`index` is the item's position among the client's items, from 0. `length` bytes from `offset` are hashed (to the end of the file when `length` is `null`; an `offset` past the end is that item's `bad_request`), and `size` and `modified` describe the file as it was opened. With `if_size` and `if_modified` both equal to the file's, nothing is read: the result has `unchanged` true, `length` 0 and no `hashes`. Each item's path is resolved against the peer's grant as it is when the item is reached, so a grant narrowed while the stream is open refuses the next item (`outside_root`, `denied`), and a missing file, a directory or a path outside the roots is that item's error, not the stream's. A request with no algorithm is `bad_request`; an algorithm the host does not offer, or `blocks`, is `unsupported`; a peer without `fs.read` or a root is `denied`; past the host's hash-stream limit the stream is `busy` (`[hash] max_streams`, default 4). A stream that gets no item for `[filesystem] idle_timeout` ends with `io`. The host may hold one stream to `[hash] rate` bytes a second.
+
+Names and digests. An algorithm is one of `md5`, `sha1`, `sha256`, `sha384`, `sha512`, `blake3`, `xxh3` (XXH3 with 64 bits), `xxh128`, `xxh64` (seed 0) and `crc32c`; an unknown name is `other` to a reader and `unsupported` to a host. A digest is lowercase hex in the byte order the reference tool prints (`md5sum`, `sha256sum`, `b3sum`, `xxhsum`): the digest's bytes for the cryptographic ones, and the value in big-endian for the others, `xxh128` high half first and `crc32c` as 8 digits. So the digest has 32 (`md5`, `xxh128`), 40, 64 (`sha256`, `blake3`), 96, 128, 16 (`xxh3`, `xxh64`) or 8 hex digits. Test vectors of the empty input and `abc` are in `crates/bohio-transfer/tests/vectors.rs`; `crc32c` of `123456789` is `e3069283`. `md5` and `sha1` are for comparing with sums that still use them, not for trust.
 
 ## Exec: `bohio-exec/1`
 
@@ -256,7 +292,7 @@ A client reads `info` and adapts: it takes the path separator from `filesystem.s
 
 A link has two ends and no fixed roles: either side may open streams on it, and either may answer them. Which side dialed (the carrier's direction) decides nothing; a firewalled host can dial out and be controlled over the link it made. Each side hosts what it offers and controls what it opens:
 
-- **What a side offers a peer** is the `offers` of the `link/1` document that side answers: the protocol tokens for which that peer's current grant holds a permission (`bohio/1` for `info`, `fs.read` or `fs.write`; `bohio-exec/1` for `exec`; `bohio-shell/1` for `shell`; `bohio-read/1` for `fs.read`; `bohio-write/1` for `fs.write`). A node that grants a peer nothing offers it nothing, and may still open streams on that peer.
+- **What a side offers a peer** is the `offers` of the `link/1` document that side answers: the protocol tokens for which that peer's current grant holds a permission (`bohio/1` for `info`, `fs.read` or `fs.write`; `bohio-exec/1` for `exec`; `bohio-shell/1` for `shell`; `bohio-read/1` and `bohio-hash/1` for `fs.read`; `bohio-write/1` for `fs.write`). A node that grants a peer nothing offers it nothing, and may still open streams on that peer.
 - **How a side learns its role** is by opening `link/1` on the link and reading the peer's `offers`. The intersection of those tokens and what the side wants to do is what it can do on that link; opening a token that is not offered is refused (a `Permission` failure), as it always was.
 - **Re-evaluation**: `offers` is computed each time the document is read, and admission is decided at every open and every `[link] recheck`, both from the peer's grants as they are then, so a grant added or removed on a live link changes the next document and ends what it no longer covers. Nothing is pushed to the peer.
 - **Nothing is stated on the wire** beyond `link/1`: there is no request for a role, and what a side asks for is only what it opens. A peer that is only a controller offers nothing and opens streams; a peer that is only a host offers its tokens and opens none; either can do both on one link.
@@ -287,7 +323,7 @@ A joiner on a listener sends one message first, `coqui-link/pairing/1`, which is
 
 ## Vectors
 
-`vectors/control.json`, `exec.json`, `shell.json`, `read.json` and `write.json` hold one entry per message. Each file is:
+`vectors/control.json`, `exec.json`, `shell.json`, `read.json`, `write.json` and `hash.json` hold one entry per message. Each file is:
 
 ```json
 { "protocol": "bohio-exec/1", "encoding": "...", "vectors": [ { "name": "stdout", "direction": "host_to_client", "kind": "frame",
@@ -299,7 +335,7 @@ A joiner on a listener sends one message first, `coqui-link/pairing/1`, which is
 | `name` | what the vector shows |
 | `direction` | `client_to_host` or `host_to_client`; an open's metadata is `client_to_host` |
 | `kind` | `open` (the open's metadata), `message` (a control message) or `frame` (a tag byte, then the body) |
-| `type` | the message's name in this page: `control.Request`, `control.Response`, `exec.Request`, `exec.Output`, `exec.Input`, `shell.Request`, `shell.Output`, `shell.Input`, `fs.ReadRequest`, `fs.ReadOutput`, `fs.WriteRequest`, `fs.WriteOutput`, `fs.WriteInput` |
+| `type` | the message's name in this page: `control.Request`, `control.Response`, `exec.Request`, `exec.Output`, `exec.Input`, `shell.Request`, `shell.Output`, `shell.Input`, `fs.ReadRequest`, `fs.ReadOutput`, `fs.WriteRequest`, `fs.WriteOutput`, `fs.WriteInput`, `hash.Request`, `hash.Output`, `hash.Input` |
 | `hex` | the stream message exactly as it travels |
 | `value` | its meaning: the decoded CBOR as JSON for a message; for a frame, `tag`, and `message` (the CBOR body as JSON) or `data_hex` (the raw body) |
 | `decode_only` | the bytes are not what a writer produces (a message with a key this version does not know): a decoder accepts them and finds `value`, and a test does not compare a re-encoding |

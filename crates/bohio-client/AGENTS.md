@@ -88,6 +88,18 @@ impl Control {
 `call` returns the host's `{code, message}` as `Error::Remote`, `Error::Timeout` when no answer came in time (a late answer is
 skipped by the next call), `Error::Closed` when the host closed the stream.
 
+## Hash (`bohio_client::hash`)
+
+```rust
+pub fn hash_file(link: &dyn Open, path: &str, algorithms: &[Algorithm]) -> Result<Digests, Error>;
+pub fn hash_range(link: &dyn Open, item: HashItem, algorithms: &[Algorithm]) -> Result<Digests, Error>;
+pub fn hash_many(link: &dyn Open, items: &[HashItem], algorithms: &[Algorithm]) -> Result<Vec<Result<Digests, ErrorBody>>, Error>;   // one stream; a file that fails fails alone
+pub fn hash_items(link: &dyn Open, request: &HashRequest, items: &[HashItem]) -> Result<Vec<Result<HashResult, ErrorBody>>, Error>;   // keeps size, modified, unchanged
+```
+
+One `bohio-hash/1` stream each. Items are sent on one scoped thread and results read on another, so a long batch cannot stop on a full stream. A refusal of
+the stream (`unsupported`, `busy`, `denied`) is `Error::Remote`; for `hash_file` and `hash_range` a failed item is too. Calls wait without limit.
+
 ## Files (`bohio_client::fs`)
 
 ```rust
@@ -102,12 +114,12 @@ impl Fs {
     pub fn symlink(&self, target: &str, link: &str) -> Result<(), Error>;     pub fn readlink(&self, path: &str) -> Result<String, Error>;
     pub fn set_times(&self, path: &str, accessed: Option<Timestamp>, modified: Option<Timestamp>) -> Result<(), Error>;
     pub fn set_mode(&self, path: &str, mode: u32) -> Result<(), Error>;       pub fn set_readonly(&self, path: &str, readonly: bool) -> Result<(), Error>;
-    pub fn checksum(&self, path: &str, offset: u64, length: Option<u64>) -> Result<Checksum, Error>;       // Checksum { sha256, length }
 }
 pub struct Reader;                                                // Debug; Drop closes the stream: the host stops reading
 impl Reader {
     pub fn start(link: &dyn Open, request: &ReadRequest, timeout: Option<Duration>) -> Result<Self, Error>;   // waits for the host to open the file
     pub fn header(&self) -> ReadHeader;                           // size, and how many bytes will arrive
+    pub fn digests(&self) -> Option<Digests>;                     // the request's `hashes` of what was sent; Some once the last chunk was read
     pub fn next_chunk(&self, timeout: Option<Duration>) -> Result<Option<Vec<u8>>, Error>;                  // Ok(None): all arrived
     pub fn copy_to(&self, out: &mut impl Write, timeout: Option<Duration>) -> Result<u64, Error>;           // one chunk in memory
     pub fn read_to_end(&self, timeout: Option<Duration>) -> Result<Vec<u8>, Error>;     pub fn close(&self);

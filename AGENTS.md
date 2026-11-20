@@ -5,6 +5,7 @@ Contributor guidance for this checkout. Each crate has an `AGENTS.md` API header
 | Header | Covers |
 | --- | --- |
 | `crates/bohio-proto/AGENTS.md` | the wire types and the CBOR codec |
+| `crates/bohio-transfer/AGENTS.md` | the digests, computed in one pass (no I/O of its own) |
 | `crates/bohio-client/AGENTS.md` | the Rust client, the `Open` trait, the proven `Connection` and the bounded `Relay` |
 | `crates/bohio/AGENTS.md` | the host library, configuration, peer grants and the `bohio` command |
 
@@ -15,6 +16,7 @@ One Cargo workspace (`Cargo.toml`, one committed `Cargo.lock`: the repository bu
 | Path | What |
 | --- | --- |
 | `crates/bohio-proto/` | wire types and codec, no I/O, for any client |
+| `crates/bohio-transfer/` | byte-level work with no I/O: digests of ten algorithms in one pass |
 | `crates/bohio-client/` | Rust client over a `coqui_transport::Channel`; the link is an `Open`, a caller's or `connect::Connection` |
 | `crates/bohio/` | host library (engines, `platform`, configuration, grants, `link`, `peer`, `serve`) and the `bohio` binary behind feature `cli` |
 | `crates/bohio-bench/` | the benchmark harness (`publish = false`): scenarios over a link, a raw TCP control, result files |

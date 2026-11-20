@@ -72,7 +72,8 @@ A refusal arrives as one `error` frame before `started`: `denied` (the peer lack
 | `symlink_to`, `readlink` | `symlink`, `readlink` |
 | `touch`, `utime` | `set_times` |
 | `chmod` | `set_mode` when `info.filesystem.unix_modes`; on Windows `set_attributes` with `readonly` |
-| native checksum | `checksum`, which hashes on the host and needs no transfer |
+| `NativeChecksum.checksum(algorithm)`, `host_checksum` | `bohio-hash/1`, which hashes on the host and needs no transfer: one stream of items, several algorithms in one pass, a result per file, and `unchanged` when size and time match |
+| `NativeChecksum.supported_checksums()` | `info.transfer.hashes`, advisory; an algorithm not listed raises `NotImplementedError` without opening a stream |
 | same-host copy | `copy` |
 
 Not in Bohío, so `supports()` answers false and hostctl falls through to the next provider or raises: `hardlink_to`, `chown`, `owner` and `group`, and resolving a path on the host.

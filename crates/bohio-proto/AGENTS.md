@@ -7,14 +7,14 @@ with the source at <https://github.com/Boriken-Dev/bohio>.
 No Cargo features. MSRV Rust 1.89. Depends on `serde`, `ciborium` and `thiserror`. Version `0.0.0-alpha.0`, not published.
 
 Imports: the root holds `decode`, `decode_with_depth`, `encode`, `DEFAULT_DEPTH`, `Error`, `ErrorBody`, `ErrorCode` and
-`PROTOCOL_VERSION`. Public modules: `codec`, `control`, `error`, `exec`, `fs`, `info`, `local`, `protocol`, `shell`. No `unsafe` code
+`PROTOCOL_VERSION`. Public modules: `codec`, `control`, `error`, `exec`, `fs`, `hash`, `info`, `local`, `protocol`, `shell`. No `unsafe` code
 (`#![forbid(unsafe_code)]`); no I/O; no process-wide state.
 
 ## Protocols (`bohio_proto::protocol`)
 
 ```rust
 pub const CONTROL: &str = "bohio/1";   pub const EXEC: &str = "bohio-exec/1";   pub const SHELL: &str = "bohio-shell/1";
-pub const READ: &str = "bohio-read/1"; pub const WRITE: &str = "bohio-write/1";
+pub const READ: &str = "bohio-read/1"; pub const WRITE: &str = "bohio-write/1"; pub const HASH: &str = "bohio-hash/1";
 ```
 
 One stream per operation; the stream's open metadata is the request (CBOR). `PROTOCOL_VERSION` is `1`.
@@ -50,11 +50,11 @@ pub struct Request { pub id: u64, pub call: Call }
     Stat { path, follow }, List { path, after: Option<String>, limit: Option<u64> }, Mkdir { path, parents, mode: Option<u32> },
     Remove { path, recursive }, Rename { from, to, overwrite }, Copy { from, to, overwrite }, Symlink { target, link }, Readlink { path },
     SetTimes { path, accessed: Option<Timestamp>, modified: Option<Timestamp> }, SetMode { path, mode: u32 },
-    SetAttributes { path, readonly: Option<bool> }, Checksum { path, offset: u64, length: Option<u64> } }   // `bool`s default false
+    SetAttributes { path, readonly: Option<bool> } }   // `bool`s default false
 pub struct Response { pub id: u64, pub reply: Option<Reply>, pub error: Option<ErrorBody> }   // exactly one is present
 impl Response { pub const fn ok(id, reply) -> Self; pub const fn failed(id, error) -> Self; pub fn into_result(self) -> Result<Reply, ErrorBody>; }
-#[non_exhaustive] pub enum Reply { Hello { version: u32 }, Info(Box<Info>), Stat(Box<Metadata>), List(Listing), Done,
-                                    Link { target: String }, Checksum { sha256: String, length: u64 } }
+#[non_exhaustive] pub enum Reply { Hello { version: u32, transfer: TransferInfo }, Info(Box<Info>), Stat(Box<Metadata>), List(Listing), Done,
+                                    Link { target: String } }
 ```
 
 The control stream's messages are bare CBOR, one request or response per stream message (no tag byte). `Done` answers every call
@@ -69,21 +69,40 @@ pub struct Metadata { kind, size: u64, modified/accessed/created: Option<Timesta
                       readonly: bool, attributes: Option<u32> /* windows */ }
 pub struct Entry { pub name: String, pub metadata: Metadata }                            // not following a link
 pub struct Listing { pub entries: Vec<Entry>, pub next: Option<String>, pub skipped: u64 }   // ascending by name; `next` = pass as `after`
-pub struct ReadRequest { path, offset: u64 /* 0 */, length: Option<u64> }               // open metadata of bohio-read/1; ReadRequest::whole(path)
+pub struct ReadRequest { path, offset: u64 /* 0 */, length: Option<u64>, hashes: Vec<Algorithm> }   // open metadata of bohio-read/1; ReadRequest::whole(path)
 pub struct ReadHeader { pub size: u64, pub length: u64 }
-#[non_exhaustive] pub enum ReadOutput { Header(ReadHeader), Data(Vec<u8>), Done, Error(ErrorBody) }
+#[non_exhaustive] pub struct ReadDone { pub hashes: Digests }                        // the digests the request named, of the bytes sent
+#[non_exhaustive] pub enum ReadOutput { Header(ReadHeader), Data(Vec<u8>), Done(ReadDone), Error(ErrorBody) }
 #[non_exhaustive] pub enum WriteMode { Replace /* default */, Create, Append, At { offset: u64 } }   // tagged by "type"
-pub struct WriteRequest { path, mode: WriteMode, parents: bool, file_mode: Option<u32>, expect_sha256: Option<String> }   // WriteRequest::replace(path)
-pub struct WriteDone { pub written: u64, pub sha256: String }
+pub struct WriteRequest { path, mode: WriteMode, parents: bool, file_mode: Option<u32>, expect: Digests, hashes: Option<Vec<Algorithm>> }   // WriteRequest::replace(path); hashes None: the host's write_hashes
+pub struct WriteDone { pub written: u64, pub hashes: Digests }
 #[non_exhaustive] pub enum WriteOutput { Ready, Done(WriteDone), Error(ErrorBody) }
 #[non_exhaustive] pub enum WriteInput { Data(Vec<u8>), End }
 // each Request: to_metadata() / from_metadata(&[u8]); each frame enum: encode() / decode(&[u8]) (Error::Tag for an unknown tag)
 ```
 
 Paths are the host's native text (`info.filesystem.separator`); a Windows host also accepts `/`. A relative path starts at the
-host's first granted root. `bohio-read/1` frames: host to client `0x01` header (CBOR), `0x02` data (raw), `0x04` done, `0x05` error
+host's first granted root. `bohio-read/1` frames: host to client `0x01` header (CBOR), `0x02` data (raw), `0x04` done (CBOR `ReadDone`), `0x05` error
 (CBOR); `done` follows exactly `header.length` data bytes. `bohio-write/1`: host to client `0x01` ready, `0x04` done (CBOR
 `WriteDone`), `0x05` error; client to host `0x10` data (raw), `0x11` end. A write is in place only after the host's `done`.
+
+## Hash (`bohio_proto::hash`)
+
+```rust
+#[non_exhaustive] pub enum Algorithm { Md5, Sha1, Sha256, Sha384, Sha512, Blake3, Xxh3, Xxh128, Xxh64, Crc32c, Other(String) }   // Ord; a string on the wire
+impl Algorithm { pub const KNOWN: [Algorithm; 10]; pub fn name(&self) -> &str; pub fn from_name(&str) -> Self; pub const fn is_known(&self) -> bool; pub const fn hex_len(&self) -> Option<usize>; }
+pub type Digests = BTreeMap<Algorithm, String>;                // lowercase hex in the byte order md5sum, b3sum, xxhsum print
+pub struct HashRequest { algorithms: Vec<Algorithm>, blocks: Option<BlockOptions> }   // open metadata of bohio-hash/1; HashRequest::new(algorithms)
+pub struct HashItem { path, offset: u64, length: Option<u64>, if_size: Option<u64>, if_modified: Option<Timestamp> }   // HashItem::whole(path)
+pub struct HashResult { index: u64, size: u64, modified: Option<Timestamp>, length: u64, unchanged: bool, hashes: Digests }
+pub struct HashBlocks { index, first, size: u64, weak: Vec<u32>, strong: Vec<u8> }   // reserved: the host sends none yet
+pub struct ItemError { index: u64, code: ErrorCode, message: String }               // ItemError::new(index, body), .body()
+pub struct HashDone { pub items: u64 }
+#[non_exhaustive] pub enum HashOutput { Result(HashResult), Blocks(HashBlocks), ItemError(ItemError), Done(HashDone), Error(ErrorBody) }   // tags 0x01..0x05
+#[non_exhaustive] pub enum HashInput { Item(HashItem), End }                         // tags 0x10, 0x11
+```
+
+`bohio-hash/1`: one stream of items, answered in order; an item that fails is an `ItemError` and the stream goes on. See `docs/protocol.md`.
 
 ## Info (`bohio_proto::info`)
 
@@ -91,7 +110,8 @@ host's first granted root. `bohio-read/1` frames: host to client `0x01` header (
 pub const PROTOCOL_VERSION: u32 = 1;
 pub struct Info { protocol, service: Service{name, version}, host_id: Option<String>, os, arch, shells: Vec<ShellInfo{kind, path}>,
                   filesystem: FilesystemInfo{enabled, symlinks, unix_modes, windows_attributes, case_sensitive, separator},
-                  exec: ExecInfo{enabled}, shell: SessionInfo{enabled}, limits: Limits{max_streams, max_processes, max_sessions: Option<u64>} }
+                  exec: ExecInfo{enabled}, shell: SessionInfo{enabled}, limits: Limits{max_streams, max_processes, max_sessions: Option<u64>},
+                  transfer: TransferInfo{hashes: Vec<Algorithm>, hash_limits: HashLimits{max_streams: u64, rate: u64 /* 0 unlimited */}} }
 ```
 
 Every field has a default and unknown keys are ignored: a client works with a host that reports less or more. `os` and `arch` are

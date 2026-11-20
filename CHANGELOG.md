@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Hashing on the host, for pathapi's compare (its default is MD5) and any other sync. `bohio-hash/1` (needs `fs.read`) takes a request of algorithms in its open
+  and a stream of items (`path`, `offset`, `length`, and `if_size` with `if_modified` to skip a file that has not changed), and answers each in order with its
+  digests, or with an item error that does not end the stream; a long hash no longer holds the control stream and a batch is not held to `max_metadata`.
+  Ten algorithms, chosen per call and several in one pass: `md5`, `sha1`, `sha256`, `sha384`, `sha512`, `blake3`, `xxh3`, `xxh128`, `xxh64` and `crc32c`, written
+  as the reference tools print them. New crate `bohio-transfer` (`hash::{available, Hasher, digest_reader}`, no I/O of its own). `[hash]` has `max_streams` (`4`),
+  `rate` (`0`, unlimited), `read_size` (`1048576`) and `algorithms` (every one); `[filesystem] write_hashes` (`["sha256"]`) is what a write answers. A write
+  takes `expect` (a digest per algorithm, all checked) and `hashes`; a read takes `hashes` and its closing frame carries the digests of what it sent. `info`
+  and `hello` report `transfer` (`hashes`, `hash_limits`). `bohio_client::hash::{hash_file, hash_range, hash_many, hash_items}` (items and results on two
+  threads, so a long batch cannot stop on a full stream), `bohio remote ... hash [--algorithm NAME]... PATH...` and the bench's `hash_*` scenarios
+  (feature `hash`). `docs/protocol.md` has the CDDL and `vectors/hash.json` the messages.
 - `[link] key_recheck` (unset: `2 x recheck`) is how often the link itself asks whether the peer's key is still accepted; it was always twice `recheck`. A stream whose link ended before its reader took what it held (a bulk read behind a slow reader) lost that and read as ended in order, not revoked: the opener now lets the reader take the rest and the stream's own end for at most `[link] send_limit`. A revoke found by that check, and not by the stream recheck, now reaches a running stream as a revoke: coqui-link 50c768d closes every open stream revoked before it ends the link. A `remote --via` read or exec that the check found first used to end with `the channel failed: the peer broke the wire format`.
 - `tools/build.py` (a copy of the release overlay's build tool), `tools/build.cfg` and `tools/sdk.lock`: a `deps` branch of vendored
   crates kept equal to `Cargo.lock`, the lock of the toolchains and base images a release is built with, offline builds from the
@@ -54,6 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Breaking, in place:** the control call `checksum` and its reply are gone (use `bohio-hash/1`); `write-request.expect_sha256` is `expect: {algorithm: hex}`
+  and `write-done.sha256` is `hashes`; a read's closing frame (`0x04`) carries a body; `Fs::checksum` and `Checksum` are gone; `sha2` is 0.11.
 - One layered `bohio.cfg` holds the peers; `peers.cfg` is gone (no reader kept). A peer is a `[peer."<id>"]` table, which
   accepts its key (even an empty one); `allow`, `fs_roots` and `[peer."<id>".exec]` say what it may do, and a table name that
   is not a peer id is refused. Without `--config` the system file is read and the user's merged over it, through `anycfg`
