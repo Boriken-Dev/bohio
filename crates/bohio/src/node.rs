@@ -842,7 +842,8 @@ impl Node {
     /// resolved again after the peer moved. A failure waits `dial.retry_min`, then that times `dial.retry_factor`
     /// for each further one up to `dial.retry_max`, each wait moved by up to `dial.retry_jitter` of itself; a link
     /// that stayed up at least `retry_min` starts the sequence again. No dial is made while an up link to `peer`
-    /// exists, whichever side made it. Two links made at once (the peer dialing this node as this node dials it)
+    /// exists, whichever side made it, nor while [`Keys`] do not accept `peer` (asked again every `retry_min`), so a
+    /// revoked peer is not reached again. Two links made at once (the peer dialing this node as this node dials it)
     /// both serve.
     ///
     /// The peer must prove itself as `peer` before this node sends its own key. This node reports
@@ -866,9 +867,28 @@ impl Node {
         let mut failures = 0u32;
         let mut told: Option<String> = None;
         let mut jitter = Jitter::new();
+        let not_accepted = "the peer's key is not accepted: no dial until it is".to_owned();
         while !stop.load(Ordering::SeqCst) {
             if self.peer(peer).is_some() {
                 thread::sleep(poll);
+                continue;
+            }
+            // A dial proves this node to whoever answers, so a peer revoked since the dialer started is not
+            // reached again; its keys are asked again every `retry_min`.
+            if !self.keys.is_accepted(peer) {
+                if told.as_ref() != Some(&not_accepted) {
+                    self.events.event(&NodeEvent::DialFailed {
+                        peer: *peer,
+                        endpoint: endpoint.to_owned(),
+                        reason: not_accepted.clone(),
+                        retry_in: dial.retry_min.0,
+                    });
+                    told = Some(not_accepted.clone());
+                }
+                let until = Instant::now() + dial.retry_min.0;
+                while Instant::now() < until && !stop.load(Ordering::SeqCst) {
+                    thread::sleep(poll.min(until.saturating_duration_since(Instant::now())));
+                }
                 continue;
             }
             self.events.event(&NodeEvent::Dialing {

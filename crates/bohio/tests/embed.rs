@@ -299,3 +299,70 @@ fn removing_a_grant_from_memory_ends_a_running_exec_within_two_rechecks() {
         done.stderr
     );
 }
+
+/// A dialer reaches its peer only while its keys accept it: every attempt proves this node to whoever answers, so
+/// a peer revoked while the dialer runs learns nothing more of it, neither that it is up nor where.
+#[test]
+fn a_dialer_stops_dialing_a_peer_its_keys_no_longer_accept() {
+    use std::net::TcpListener;
+    use std::sync::atomic::AtomicUsize;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
+    listener
+        .set_nonblocking(true)
+        .expect("a non-blocking listener");
+    let endpoint = format!("tcp://{}", listener.local_addr().expect("an address"));
+    let arrivals = AtomicUsize::new(0);
+    let peer = Identity::generate(Method::DEFAULT)
+        .expect("an identity")
+        .peer_id();
+    let keys = Arc::new(MemoryKeys::new());
+    keys.accept(peer);
+    let node = Node::new(
+        NodeConfig::default(),
+        Identity::generate(Method::DEFAULT).expect("an identity"),
+        keys.clone(),
+        Arc::new(MemoryGrants::new()),
+    )
+    .expect("a node");
+    let dial = bohio::config::DialConfig {
+        retry_min: Span(Duration::from_millis(50)),
+        retry_max: Span(Duration::from_millis(100)),
+        ..bohio::config::DialConfig::default()
+    };
+    let stop = AtomicBool::new(false);
+    let count = || arrivals.load(Ordering::SeqCst);
+    thread::scope(|scope| {
+        // Each attempt is accepted and closed at once, so it fails quickly and the dialer tries again.
+        scope.spawn(|| {
+            while !stop.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        arrivals.fetch_add(1, Ordering::SeqCst);
+                        drop(stream);
+                    }
+                    Err(_) => thread::sleep(Duration::from_millis(10)),
+                }
+            }
+        });
+        scope.spawn(|| node.run_dial(&peer, &endpoint, &dial, &stop));
+        let until = Instant::now() + DEADLINE;
+        while count() < 3 {
+            assert!(Instant::now() < until, "the dialer did not try three times");
+            thread::sleep(Duration::from_millis(20));
+        }
+        keys.remove(&peer);
+        // An attempt that began before the key went may still arrive.
+        thread::sleep(Duration::from_millis(500));
+        let revoked = count();
+        thread::sleep(Duration::from_secs(2));
+        let later = count();
+        stop.store(true, Ordering::SeqCst);
+        assert_eq!(
+            later,
+            revoked,
+            "the dialer reached a peer its keys no longer accept {} more times",
+            later - revoked
+        );
+    });
+}
