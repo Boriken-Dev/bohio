@@ -410,3 +410,83 @@ fn a_link_ends_when_its_channel_closes() {
         Some(Error::Closed | Error::Transport(_))
     ));
 }
+
+fn sorted(mut offers: Vec<String>) -> Vec<String> {
+    offers.sort();
+    offers
+}
+
+#[test]
+fn offers_follow_the_grants_on_a_live_link() {
+    let (host, controller) = (Peer::new(), Peer::new());
+    host.trust(&controller, Grant::none());
+    controller.trust(&host, Grant::none());
+    let _wire = Wire::make(&controller, &host);
+    let link = controller.link_to(&host);
+
+    assert_eq!(
+        link.offers(WAIT).expect("the document"),
+        Vec::<String>::new()
+    );
+    host.grants.set(
+        controller.id,
+        Grant::allowing([Permission::Info, Permission::Exec]),
+    );
+    assert_eq!(
+        sorted(link.offers(WAIT).expect("the document")),
+        ["bohio-exec/1", "bohio/1"]
+    );
+    assert_eq!(
+        sorted(host.node.links()[0].mine.clone()),
+        ["bohio-exec/1", "bohio/1"]
+    );
+    host.grants.remove(&controller.id);
+    assert_eq!(
+        link.offers(WAIT).expect("the document"),
+        Vec::<String>::new()
+    );
+    assert!(host.node.links()[0].mine.is_empty());
+}
+
+#[test]
+fn a_node_granting_nothing_offers_nothing_and_still_controls() {
+    let (controller, host) = (Peer::new(), Peer::new());
+    host.trust(&controller, Grant::allowing([Permission::Exec]));
+    controller.trust(&host, Grant::none());
+    let _wire = Wire::make(&host, &controller);
+
+    let to_host = controller.link_to(&host);
+    let to_controller = host.link_to(&controller);
+    assert_eq!(
+        to_host.offers(WAIT).expect("the document"),
+        ["bohio-exec/1"]
+    );
+    assert_eq!(
+        to_controller.offers(WAIT).expect("the document"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        exec_all(&to_host, &["echo", "still", "controls"]),
+        "still controls"
+    );
+    assert!(controller.node.links()[0].mine.is_empty());
+}
+
+#[test]
+fn an_unoffered_open_fails_with_a_permission_failure() {
+    let (host, controller) = (Peer::new(), Peer::new());
+    host.trust(&controller, Grant::allowing([Permission::Info]));
+    controller.trust(&host, Grant::none());
+    let _wire = Wire::make(&controller, &host);
+    let link = controller.link_to(&host);
+
+    assert_eq!(link.offers(WAIT).expect("the document"), ["bohio/1"]);
+    let refused = match Exec::start(&link, &Request::argv([helper().as_str(), "echo", "no"])) {
+        Err(error) => error,
+        Ok(exec) => exec.wait(Some(WAIT)).expect_err("the exec ran"),
+    };
+    assert!(
+        matches!(refused, Error::Transport(Failure::Permission)),
+        "{refused:?}"
+    );
+}

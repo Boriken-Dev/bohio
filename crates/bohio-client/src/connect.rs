@@ -11,6 +11,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use coqui_link::auth::{Proof, Sealed, prove_out};
+use coqui_link::link::{Capabilities, capabilities};
 use coqui_link::mux::{LinkState, Mux, Side};
 use coqui_peer::PeerId;
 use coqui_transport::{Channel, Failure};
@@ -20,11 +21,17 @@ use crate::link::Settings;
 use crate::relay::{Relay, relay};
 use crate::{Error, Open};
 
-/// One request to open a stream, answered on `reply`.
-struct Request {
-    protocol: String,
-    metadata: Vec<u8>,
-    reply: Sender<Result<Box<dyn Channel>, Error>>,
+/// One request of the link's thread: open a stream, or read the peer's capability document.
+enum Request {
+    Open {
+        protocol: String,
+        metadata: Vec<u8>,
+        reply: Sender<Result<Box<dyn Channel>, Error>>,
+    },
+    Capabilities {
+        wait: Duration,
+        reply: Sender<Result<Capabilities, Error>>,
+    },
 }
 
 /// What an [`Opener`] and its [`Opens`] share.
@@ -98,6 +105,24 @@ impl Opener {
         self.shared.ended.store(true, Ordering::SeqCst);
         self.shared.close_relays();
     }
+
+    /// Reads the peer's `link/1` document now: what it offers this side at this moment. The link's
+    /// thread opens the stream and waits up to `wait` for the document.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Closed`] when the link has ended, [`Error::Transport`] when the document does not come
+    /// within `wait` or is not one.
+    pub fn capabilities(&self, wait: Duration) -> Result<Capabilities, Error> {
+        if !self.is_up() {
+            return Err(Error::Closed);
+        }
+        let (reply, answer) = mpsc::channel();
+        self.requests
+            .send(Request::Capabilities { wait, reply })
+            .map_err(|_| Error::Closed)?;
+        answer.recv().map_err(|_| Error::Closed)?
+    }
 }
 
 impl Open for Opener {
@@ -107,7 +132,7 @@ impl Open for Opener {
         }
         let (reply, answer) = mpsc::channel();
         self.requests
-            .send(Request {
+            .send(Request::Open {
                 protocol: protocol.to_owned(),
                 metadata: metadata.to_vec(),
                 reply,
@@ -129,10 +154,18 @@ impl Opens {
                     break;
                 }
                 match self.requests.recv_timeout(poll) {
-                    Ok(request) => {
-                        let opened = mux
-                            .open_with(&request.protocol, &request.metadata)
-                            .map_err(Error::from);
+                    Ok(Request::Capabilities { wait, reply }) => {
+                        // A slow peer holds up no open: the read has a thread of its own.
+                        scope.spawn(move || {
+                            let _ = reply.send(capabilities(mux, wait).map_err(Error::from));
+                        });
+                    }
+                    Ok(Request::Open {
+                        protocol,
+                        metadata,
+                        reply,
+                    }) => {
+                        let opened = mux.open_with(&protocol, &metadata).map_err(Error::from);
                         let answer = opened.map(|stream| {
                             let relay = relay(scope, Arc::new(stream), settings);
                             let mut relays = self
@@ -144,7 +177,7 @@ impl Opens {
                             relays.push(Arc::downgrade(&relay));
                             Box::new(Handle(relay)) as Box<dyn Channel>
                         });
-                        let _ = request.reply.send(answer);
+                        let _ = reply.send(answer);
                     }
                     Err(RecvTimeoutError::Timeout) => {
                         if !matches!(mux.link_state(), LinkState::Up) {

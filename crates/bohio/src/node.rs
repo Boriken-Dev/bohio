@@ -39,7 +39,7 @@ use coqui_transport::Channel;
 use crate::config::ConfigError;
 pub use crate::config::NodeConfig;
 use crate::limit::Slots;
-use crate::link::{Bridge, NodePeers, PROTOCOLS, admission, grant_of};
+use crate::link::{Bridge, NodePeers, PROTOCOLS, admission, grant_of, offered};
 pub use crate::link::{
     Grants, GrantsError, Keys, LogEvents, MemoryGrants, MemoryKeys, NodeEvent, NodeEvents,
 };
@@ -154,6 +154,9 @@ pub struct LinkInfo {
     pub source: Option<SocketAddr>,
     /// When the link came up.
     pub since: SystemTime,
+    /// The protocol tokens this node offers the peer now: those its grant for the peer holds a permission
+    /// for. Computed when asked, so it follows the grants; `offers` on the peer's side is what it reads.
+    pub mine: Vec<String>,
 }
 
 /// A way to open streams on a peer's link: an [`Open`](bohio_client::Open) that is cheap to clone, from
@@ -173,6 +176,21 @@ impl PeerLink {
     /// Whether the link can still open streams.
     pub fn is_up(&self) -> bool {
         self.opener.is_up()
+    }
+
+    /// What the peer offers this node now: the tokens of its `link/1` document, read at this moment, so
+    /// it follows the peer's grants for this node. A side hosts what it offers and controls what it
+    /// opens; the result of a negotiation is the intersection of these offers and what a side asks for.
+    /// Opening a token that is not offered is refused as it always is.
+    ///
+    /// # Errors
+    ///
+    /// [`bohio_client::Error::Closed`] when the link has ended, [`bohio_client::Error::Transport`] when
+    /// the document does not come within `wait`.
+    pub fn offers(&self, wait: Duration) -> Result<Vec<String>, bohio_client::Error> {
+        self.opener
+            .capabilities(wait)
+            .map(|document| document.offers)
     }
 }
 
@@ -388,7 +406,7 @@ impl Node {
             identity,
             registry: Registry::default(),
             shared: Shared::new(&config, &grants, host, OsString::new()),
-            peers: NodePeers::new(Arc::clone(&keys)),
+            peers: NodePeers::new(Arc::clone(&keys), Arc::clone(&grants)),
             grants,
             keys,
             events,
@@ -689,6 +707,7 @@ impl Node {
                 endpoint,
                 source,
                 since: SystemTime::now(),
+                mine: Vec::new(),
             },
             opener.clone(),
         );
@@ -728,7 +747,13 @@ impl Node {
             .unwrap_or_else(PoisonError::into_inner)
             .iter()
             .filter(|entry| entry.opener.is_up())
-            .map(|entry| entry.info.clone())
+            .map(|entry| {
+                let mut info = entry.info.clone();
+                info.mine = grant_of(self.grants.as_ref(), &info.peer.to_string())
+                    .map(|grant| offered(&grant).into_iter().map(str::to_owned).collect())
+                    .unwrap_or_default();
+                info
+            })
             .collect()
     }
 }

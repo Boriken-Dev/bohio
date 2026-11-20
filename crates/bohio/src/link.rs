@@ -286,11 +286,14 @@ impl Events for Bridge<'_> {
     }
 }
 
-/// The accepted keys as a link's peer store: an accepted key is a peer that may open every protocol the
-/// host serves, and [`admission`] narrows that to what [`Grants`] gives it.
+/// The accepted keys as a link's peer store: an accepted key is a peer, and it may open each protocol the
+/// host serves for which its [`Grants`] entry holds a permission ([`PROTOCOLS`]). That is what the link's
+/// `link/1` document offers the peer, so the document says what this node would serve it now; [`admission`]
+/// still decides every open and every re-check, narrowing further by what the open asks for.
 #[derive(Clone)]
 pub struct NodePeers {
     keys: Arc<dyn Keys>,
+    grants: Arc<dyn Grants>,
 }
 
 impl core::fmt::Debug for NodePeers {
@@ -300,10 +303,19 @@ impl core::fmt::Debug for NodePeers {
 }
 
 impl NodePeers {
-    /// The peers `keys` accepts.
-    pub fn new(keys: Arc<dyn Keys>) -> Self {
-        Self { keys }
+    /// The peers `keys` accepts, each offered what `grants` gives it.
+    pub fn new(keys: Arc<dyn Keys>, grants: Arc<dyn Grants>) -> Self {
+        Self { keys, grants }
     }
+}
+
+/// The protocol tokens `grant` holds a permission for: what a node offers a peer with that grant.
+pub fn offered(grant: &Grant) -> Vec<&'static str> {
+    PROTOCOLS
+        .iter()
+        .filter(|(_, needs)| needs.iter().any(|permission| grant.allows(*permission)))
+        .map(|(token, _)| *token)
+        .collect()
 }
 
 impl PeerStore for NodePeers {
@@ -314,10 +326,14 @@ impl PeerStore for NodePeers {
         if !self.keys.is_accepted(&id) {
             return Ok(None);
         }
+        let grant = self
+            .grants
+            .grant(&id)
+            .map_err(|error| Error::Identity(error.to_string()))?;
         Ok(Some(
-            PROTOCOLS
-                .iter()
-                .fold(PeerRecord::new(peer), |record, (token, _)| {
+            offered(&grant)
+                .into_iter()
+                .fold(PeerRecord::new(peer), |record, token| {
                     record.granting(token)
                 }),
         ))
