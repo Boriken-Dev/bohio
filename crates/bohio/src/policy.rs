@@ -1,19 +1,19 @@
-//! What each proven peer may do: the grants in `peers.cfg`.
+//! What each peer may do: the `[peer.<id>]` tables of `bohio.cfg`.
 //!
-//! The trust store says who a peer is; this file says what it may do. A peer with no entry, or an
-//! entry with no `allow`, gets nothing.
+//! A table, even an empty one, is what accepts a key; `allow` says what the key may do. A peer with
+//! no `allow` gets nothing.
 //!
 //! ```toml
-//! [peer.laptop]
+//! [peer.<id>]
 //! allow = ["info", "fs.read", "exec"]
 //! fs_roots = ["/srv/data"]
 //!
-//! [peer.laptop.exec]
+//! [peer.<id>.exec]
 //! programs = ["git", "make"]
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -52,14 +52,14 @@ impl Permission {
         Self::Admin,
     ];
 
-    /// The permission named `name` as `peers.cfg` writes it.
+    /// The permission named `name` as `bohio.cfg` writes it.
     pub fn from_name(name: &str) -> Option<Self> {
         Self::ALL
             .into_iter()
             .find(|permission| permission.name() == name)
     }
 
-    /// The name `peers.cfg` uses.
+    /// The name `bohio.cfg` uses.
     pub const fn name(self) -> &'static str {
         match self {
             Self::Info => "info",
@@ -211,104 +211,45 @@ impl Grant {
     }
 }
 
-/// Why `peers.cfg` could not be used.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
-pub enum PolicyError {
-    /// The file could not be read.
-    #[error("{path}: cannot be read: {reason}")]
-    Read {
-        /// The file.
-        path: String,
-        /// The operating system's reason.
-        reason: String,
-    },
-    /// Bad TOML, an unknown key or an unknown permission.
-    #[error("{path}:{line}:{column}: {message}")]
-    Parse {
-        /// The file, or `<text>`.
-        path: String,
-        /// The line of the error, from 1.
-        line: usize,
-        /// The column of the error, from 1.
-        column: usize,
-        /// What is wrong, without the line's content.
-        message: String,
-    },
-}
-
-/// Every peer's grant, by the peer's id.
+/// The peers a configuration lists, by the peer's id: `[peer.<id>]` in `bohio.cfg`. A key is accepted
+/// when its table is here, even an empty one, and what it may do is the table's grant.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields, default)]
-pub struct Policies {
-    peer: BTreeMap<String, Grant>,
-}
+#[serde(transparent)]
+pub struct Peers(BTreeMap<String, Grant>);
 
-impl Policies {
-    /// Reads `peers.cfg` text. `path` only labels errors.
-    ///
-    /// # Errors
-    ///
-    /// [`PolicyError::Parse`] for bad TOML, an unknown key or an unknown permission.
-    pub fn from_toml(text: &str, path: &str) -> Result<Self, PolicyError> {
-        toml::from_str(text).map_err(|error| {
-            let (line, column) = error
-                .span()
-                .map_or((1, 1), |span| crate::config::position(text, span.start));
-            PolicyError::Parse {
-                path: path.to_owned(),
-                line,
-                column,
-                message: error.message().to_owned(),
-            }
-        })
-    }
-
-    /// Reads the policy file at `path`; a missing file is an empty policy.
-    ///
-    /// # Errors
-    ///
-    /// [`PolicyError::Read`] when the file exists and cannot be read, else as
-    /// [`Policies::from_toml`].
-    pub fn load(path: &Path) -> Result<Self, PolicyError> {
-        let label = path.display().to_string();
-        match std::fs::read_to_string(path) {
-            Ok(text) => Self::from_toml(&text, &label),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(error) => Err(PolicyError::Read {
-                path: label,
-                reason: error.kind().to_string(),
-            }),
-        }
-    }
-
+impl Peers {
     /// What `peer` may do: its grant, or nothing.
     pub fn grant_for(&self, peer: &str) -> Grant {
-        self.peer.get(peer).cloned().unwrap_or_default()
+        self.0.get(peer).cloned().unwrap_or_default()
     }
 
-    /// Gives `peer` exactly `grant`, replacing any entry it had.
-    pub fn set(&mut self, peer: &str, grant: Grant) {
-        self.peer.insert(peer.to_owned(), grant);
-    }
-
-    /// Removes `peer`'s entry; `true` when it had one.
-    pub fn remove(&mut self, peer: &str) -> bool {
-        self.peer.remove(peer).is_some()
-    }
-
-    /// Whether `peer` has an entry, even one that grants nothing.
+    /// Whether `peer` has a table, even one that grants nothing: whether its key is accepted.
     pub fn has(&self, peer: &str) -> bool {
-        self.peer.contains_key(peer)
+        self.0.contains_key(peer)
     }
 
-    /// The file's text: what [`Policies::from_toml`] reads back.
-    pub fn to_toml(&self) -> String {
-        toml::to_string(self).unwrap_or_default()
+    /// The ids with a table, in order.
+    pub fn ids(&self) -> impl Iterator<Item = &str> {
+        self.0.keys().map(String::as_str)
     }
 
-    /// The ids with an entry, in order.
-    pub fn peers(&self) -> impl Iterator<Item = &str> {
-        self.peer.keys().map(String::as_str)
+    /// How many peers there are.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether there is no peer.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Gives `peer` exactly `grant`, replacing any table it had.
+    pub fn set(&mut self, peer: &str, grant: Grant) {
+        self.0.insert(peer.to_owned(), grant);
+    }
+
+    /// Removes `peer`'s table; `true` when it had one.
+    pub fn remove(&mut self, peer: &str) -> bool {
+        self.0.remove(peer).is_some()
     }
 }

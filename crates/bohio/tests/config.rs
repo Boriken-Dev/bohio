@@ -1,10 +1,11 @@
-//! `bohio.cfg` and `peers.cfg`: defaults, refusals, the search order, and the bounds.
+//! `bohio.cfg`: defaults, refusals, the layers and the peers they hold, and the bounds.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use bohio::config::{Config, ConfigError, Environment, Span};
-use bohio::policy::{Permission, Policies, PolicyError};
+use bohio::config::{Config, ConfigError, Environment, Layers, Span};
+use bohio::policy::Permission;
+use coqui_link::auth::{Identity, Method};
 
 fn example() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/bohio.cfg")
@@ -12,6 +13,26 @@ fn example() -> PathBuf {
 
 fn parse(text: &str) -> Result<Config, ConfigError> {
     Config::from_toml(text, "bohio.cfg")
+}
+
+/// A peer id, as `bohio id` prints one.
+fn peer_id() -> String {
+    Identity::generate(Method::DEFAULT)
+        .expect("an identity")
+        .peer_id()
+        .to_string()
+}
+
+/// A scratch directory with `files` written in it, in order; returns their paths.
+fn layers(dir: &Path, files: &[(&str, &str)]) -> Vec<PathBuf> {
+    files
+        .iter()
+        .map(|(name, text)| {
+            let path = dir.join(name);
+            std::fs::write(&path, text).unwrap();
+            path
+        })
+        .collect()
 }
 
 #[test]
@@ -137,38 +158,11 @@ fn an_error_never_quotes_the_line_it_found() {
 fn environment(windows: bool) -> Environment {
     Environment {
         windows,
-        app_data: Some("A".into()),
         local_app_data: Some("L".into()),
-        program_data: Some("P".into()),
-        xdg_config_home: Some("X".into()),
         xdg_data_home: Some("D".into()),
         home: Some("H".into()),
         ..Environment::default()
     }
-}
-
-#[test]
-fn the_search_order_is_the_variable_then_the_user_then_the_system() {
-    let mut unix = environment(false);
-    unix.config = Some("/named.cfg".into());
-    let found = unix.config_candidates();
-    assert_eq!(found[0], Path::new("/named.cfg"));
-    assert_eq!(found[1], Path::new("X").join("bohio").join("bohio.cfg"));
-    assert_eq!(found[2], Path::new("/etc/bohio/bohio.cfg"));
-
-    let mut no_xdg = environment(false);
-    no_xdg.xdg_config_home = None;
-    assert_eq!(
-        no_xdg.config_candidates()[0],
-        Path::new("H")
-            .join(".config")
-            .join("bohio")
-            .join("bohio.cfg")
-    );
-
-    let windows = environment(true).config_candidates();
-    assert_eq!(windows[0], Path::new("A").join("bohio").join("bohio.cfg"));
-    assert_eq!(windows[1], Path::new("P").join("bohio").join("bohio.cfg"));
 }
 
 #[test]
@@ -194,79 +188,25 @@ fn the_data_directory_defaults_under_the_users_data_directory() {
 }
 
 #[test]
-fn locate_uses_an_explicit_file_then_the_environment_then_the_defaults() {
-    let directory = std::env::temp_dir().join(format!("bohio-config-test-{}", std::process::id()));
-    std::fs::create_dir_all(&directory).unwrap();
-    let named = directory.join("named.cfg");
-    std::fs::write(&named, "[service]\nname = \"named\"\n").unwrap();
-    let user = directory.join("bohio").join("bohio.cfg");
-    std::fs::create_dir_all(user.parent().unwrap()).unwrap();
-    std::fs::write(&user, "[service]\nname = \"user\"\n").unwrap();
-
-    // The only file read is the explicit one.
-    let none = Environment::default();
-    let (config, from) = Config::locate(Some(&named), &none).unwrap();
-    assert_eq!(
-        (config.service.name.as_str(), from.as_deref()),
-        ("named", Some(named.as_path()))
-    );
-
-    // BOHIO_CONFIG beats the user's file.
-    let by_variable = Environment {
-        config: Some(named.clone()),
-        xdg_config_home: Some(directory.clone()),
-        ..Environment::default()
-    };
-    assert_eq!(
-        Config::locate(None, &by_variable).unwrap().0.service.name,
-        "named"
-    );
-
-    // Without it, the user's file.
-    let by_user = Environment {
-        xdg_config_home: Some(directory.clone()),
-        ..Environment::default()
-    };
-    assert_eq!(
-        Config::locate(None, &by_user).unwrap().0.service.name,
-        "user"
-    );
-
-    // A named file that is missing is an error; no file at all is the defaults.
-    let missing = Environment {
-        config: Some(directory.join("missing.cfg")),
-        ..Environment::default()
-    };
-    assert!(matches!(
-        Config::locate(None, &missing),
-        Err(ConfigError::Read { .. })
-    ));
-    let (config, from) = Config::locate(None, &Environment::default()).unwrap();
-    assert!(from.is_none() || from.as_deref() == Some(Path::new("/etc/bohio/bohio.cfg")));
-    let _ = config;
-
-    std::fs::remove_dir_all(&directory).unwrap();
-}
-
-#[test]
-fn peers_cfg_reads_each_peers_grant() {
-    let policies = Policies::from_toml(
+fn each_peer_table_reads_as_that_peers_grant() {
+    let (laptop, guest) = (peer_id(), peer_id());
+    let config = parse(&format!(
         r#"
-[peer.laptop]
+[peer."{laptop}"]
 allow = ["info", "fs.read", "exec"]
 fs_roots = ["/srv/data"]
 
-[peer.laptop.exec]
+[peer."{laptop}".exec]
 programs = ["git", "make"]
 env = ["LANG"]
 
-[peer.guest]
+[peer."{guest}"]
 allow = ["info"]
-"#,
-        "peers.cfg",
-    )
+"#
+    ))
     .unwrap();
-    let laptop = policies.grant_for("laptop");
+    let policies = config.peer;
+    let laptop = policies.grant_for(&laptop);
     assert!(laptop.allows(Permission::Exec) && laptop.allows(Permission::FsRead));
     assert!(!laptop.allows(Permission::FsWrite) && !laptop.allows(Permission::Shell));
     assert_eq!(laptop.fs_roots(), [PathBuf::from("/srv/data")]);
@@ -278,54 +218,71 @@ allow = ["info"]
     assert!(laptop.permits_env(&lang));
     lang.set.insert("LD_PRELOAD".to_owned(), "x".to_owned());
     assert!(!laptop.permits_env(&lang));
-    let guest = policies.grant_for("guest");
+    let guest = policies.grant_for(&guest);
     assert!(guest.allows(Permission::Info) && !guest.allows(Permission::Exec));
     assert!(guest.permits_program("anything") && guest.permits_shell_script());
     assert!(
         guest.permits_env(&lang),
         "without a program list any variable may be set"
     );
-    assert_eq!(policies.peers().collect::<Vec<_>>(), ["guest", "laptop"]);
+    assert_eq!(policies.len(), 2);
 }
 
 #[test]
-fn an_unknown_peer_and_an_approved_peer_with_no_allow_get_nothing() {
-    let policies = Policies::from_toml("[peer.quiet]\n", "peers.cfg").unwrap();
-    for id in ["quiet", "stranger"] {
-        let grant = policies.grant_for(id);
+fn an_empty_table_accepts_a_key_and_an_unlisted_key_gets_nothing() {
+    let quiet = peer_id();
+    let config = parse(&format!("[peer.\"{quiet}\"]\n")).unwrap();
+    assert!(config.peer.has(&quiet));
+    assert!(!config.peer.has("stranger"));
+    for id in [quiet.as_str(), "stranger"] {
+        let grant = config.peer.grant_for(id);
         assert_eq!(grant.permissions().count(), 0, "{id}");
         assert!(grant.fs_roots().is_empty());
     }
 }
 
 #[test]
-fn peers_cfg_refuses_an_unknown_permission_naming_it() {
+fn an_unknown_permission_is_refused_naming_its_line() {
+    let id = peer_id();
     for permission in ["root", "fs.rw", "Exec", ""] {
-        let text = format!("[peer.x]\nallow = [\"{permission}\"]\n");
-        let error = Policies::from_toml(&text, "peers.cfg").unwrap_err();
-        let PolicyError::Parse { line, .. } = &error else {
+        let text = format!("[peer.\"{id}\"]\nallow = [\"{permission}\"]\n");
+        let error = parse(&text).unwrap_err();
+        let ConfigError::Parse { line, key, .. } = &error else {
             panic!("expected a parse error for {permission:?}, got {error:?}");
         };
         assert_eq!(*line, 2, "{error}");
+        assert!(key.is_some(), "{error}");
         assert!(error.to_string().contains("unknown variant"), "{error}");
     }
 }
 
 #[test]
-fn peers_cfg_refuses_unknown_keys() {
-    assert!(Policies::from_toml("[peer.x]\nallow = []\nfs_root = []\n", "p").is_err());
-    assert!(Policies::from_toml("[peer.x.exec]\nprogram = []\n", "p").is_err());
-    assert!(Policies::from_toml("[peers]\n", "p").is_err());
+fn a_peer_table_refuses_unknown_keys() {
+    let id = peer_id();
+    for body in [
+        "allow = []\nfs_root = []\n",
+        "[peer.\"ID\".exec]\nprogram = []\n",
+    ] {
+        let text = format!("[peer.\"{id}\"]\n{}", body.replace("ID", &id));
+        assert!(parse(&text).is_err(), "{text}");
+    }
+    assert!(parse("[peers]\n").is_err());
 }
 
 #[test]
-fn a_missing_peers_file_is_an_empty_policy() {
-    let path = std::env::temp_dir().join("bohio-no-such-peers.cfg");
-    assert_eq!(Policies::load(&path).unwrap(), Policies::default());
+fn a_table_name_that_is_not_a_peer_id_is_refused_naming_the_key() {
+    match parse("[peer.laptop]\nallow = [\"info\"]\n") {
+        Err(ConfigError::Invalid { key, path, .. }) => {
+            assert_eq!(key, "peer.laptop");
+            assert_eq!(path, "bohio.cfg");
+        }
+        other => panic!("expected Invalid, got {other:?}"),
+    }
 }
 
 #[test]
 fn every_permission_name_round_trips_through_the_file() {
+    let id = peer_id();
     for permission in [
         Permission::Info,
         Permission::FsRead,
@@ -334,12 +291,223 @@ fn every_permission_name_round_trips_through_the_file() {
         Permission::Shell,
         Permission::Admin,
     ] {
-        let text = format!("[peer.p]\nallow = [\"{}\"]\n", permission.name());
-        assert!(
-            Policies::from_toml(&text, "p")
-                .unwrap()
-                .grant_for("p")
-                .allows(permission)
-        );
+        let text = format!("[peer.\"{id}\"]\nallow = [\"{}\"]\n", permission.name());
+        assert!(parse(&text).unwrap().peer.grant_for(&id).allows(permission));
     }
+}
+
+#[test]
+fn layers_merge_tables_by_key_and_replace_arrays() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = peer_id();
+    let files = layers(
+        dir.path(),
+        &[
+            (
+                "system.cfg",
+                &format!(
+                    "[link]\nrecheck = \"7s\"\nmax_streams = 10\n\n[[listen]]\nendpoint = \"tcp://127.0.0.1:1\"\n\n[[listen]]\nendpoint = \"tcp://127.0.0.1:2\"\n\n[peer.\"{id}\"]\nallow = [\"info\", \"exec\"]\nfs_roots = [\"/a\", \"/b\"]\n"
+                ),
+            ),
+            (
+                "user.cfg",
+                &format!(
+                    "[link]\nmax_streams = 20\n\n[[listen]]\nendpoint = \"tcp://127.0.0.1:3\"\n\n[peer.\"{id}\"]\nfs_roots = [\"/c\"]\n"
+                ),
+            ),
+        ],
+    );
+    let layered = Layers::load(&files).unwrap();
+    let config = &layered.config;
+    assert_eq!(
+        config.link.recheck,
+        Span(Duration::from_secs(7)),
+        "a table's other keys stay"
+    );
+    assert_eq!(config.link.max_streams, 20, "a scalar is replaced");
+    let listen: Vec<&str> = config.listen.iter().map(|l| l.endpoint.as_str()).collect();
+    assert_eq!(
+        listen,
+        ["tcp://127.0.0.1:3"],
+        "an array is replaced, not merged"
+    );
+    let grant = layered.peers.grant_for(&id);
+    assert!(grant.allows(Permission::Info) && grant.allows(Permission::Exec));
+    assert_eq!(
+        grant.fs_roots(),
+        [PathBuf::from("/c")],
+        "a higher layer narrows a root list"
+    );
+    assert_eq!(layered.files, files);
+}
+
+#[test]
+fn a_peer_is_accepted_while_any_layer_holds_its_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let (low, high) = (peer_id(), peer_id());
+    let files = layers(
+        dir.path(),
+        &[
+            ("a.cfg", &format!("[peer.\"{low}\"]\n")),
+            ("b.cfg", &format!("[peer.\"{high}\"]\nallow = [\"info\"]\n")),
+            ("missing.cfg", ""),
+        ],
+    );
+    std::fs::remove_file(&files[2]).unwrap();
+    let peers = Layers::peers(&files).unwrap();
+    assert!(peers.has(&low) && peers.has(&high));
+    assert!(peers.grant_for(&high).allows(Permission::Info));
+    assert!(
+        Layers::peers(&[dir.path().join("nope.cfg")])
+            .unwrap()
+            .is_empty(),
+        "a layer that does not exist yet is skipped"
+    );
+}
+
+#[test]
+fn a_governing_key_set_above_the_lowest_layer_is_refused_naming_the_layer() {
+    let dir = tempfile::tempdir().unwrap();
+    for key in ["check_access = false", "user_layer = false"] {
+        let files = layers(
+            dir.path(),
+            &[
+                ("system.cfg", "[service]\nname = \"s\"\n"),
+                ("user.cfg", &format!("[service]\n{key}\n")),
+            ],
+        );
+        match Layers::load(&files) {
+            Err(ConfigError::Invalid {
+                path, key: found, ..
+            }) => {
+                assert!(path.ends_with("user.cfg"), "{path}");
+                assert_eq!(found, format!("service.{}", key.split(' ').next().unwrap()));
+            }
+            other => panic!("{key}: expected Invalid, got {other:?}"),
+        }
+    }
+    // The lowest layer may set them.
+    let files = layers(
+        dir.path(),
+        &[(
+            "low.cfg",
+            "[service]\ncheck_access = false\nuser_layer = false\n",
+        )],
+    );
+    let layered = Layers::load(&files).unwrap();
+    assert!(!layered.config.service.check_access && !layered.config.service.user_layer);
+}
+
+#[test]
+fn an_error_names_the_file_line_column_and_key_and_never_the_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let files = layers(
+        dir.path(),
+        &[
+            ("system.cfg", "[link]\nmax_streams = 8\n"),
+            (
+                "user.cfg",
+                "# a comment\n[link]\nrecheck = \"5s\"\nmax_streams = \"MARKER-VALUE-1234\"\n",
+            ),
+        ],
+    );
+    let error = Layers::load(&files).unwrap_err();
+    let ConfigError::Parse {
+        path,
+        line,
+        column,
+        key,
+        ..
+    } = &error
+    else {
+        panic!("expected a parse error, got {error:?}");
+    };
+    assert!(path.ends_with("user.cfg"), "{path}");
+    assert_eq!((*line, *column), (4, 1), "{error}");
+    assert_eq!(key.as_deref(), Some("link.max_streams"));
+    let shown = format!("{error} {error:?}");
+    assert!(!shown.contains("MARKER-VALUE"), "{shown}");
+
+    // An unknown key is named where it is written, and a syntax error where the parser stopped.
+    let files = layers(
+        dir.path(),
+        &[
+            ("a.cfg", "[execution]\nfast = true\n"),
+            ("b.cfg", "[link\n"),
+        ],
+    );
+    let error = Layers::load(&files[..1]).unwrap_err();
+    let ConfigError::Parse {
+        line, key, message, ..
+    } = &error
+    else {
+        panic!("{error:?}");
+    };
+    assert_eq!(*line, 2);
+    assert_eq!(key.as_deref(), Some("execution.fast"));
+    assert!(message.contains("unknown field"), "{message}");
+    let error = Layers::load(&files[1..]).unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            ConfigError::Parse {
+                line: 1,
+                key: None,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn a_range_error_names_the_highest_layer_that_sets_the_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let files = layers(
+        dir.path(),
+        &[
+            ("system.cfg", "[link]\nmax_streams = 0\n"),
+            ("user.cfg", "[link]\nrecheck = \"3s\"\n"),
+        ],
+    );
+    match Layers::load(&files) {
+        Err(ConfigError::Invalid { path, key, .. }) => {
+            assert_eq!(key, "link.max_streams");
+            assert!(
+                path.ends_with("system.cfg"),
+                "the layer that set the zero: {path}"
+            );
+        }
+        other => panic!("expected Invalid, got {other:?}"),
+    }
+    let files = layers(
+        dir.path(),
+        &[
+            ("system.cfg", "[link]\nmax_streams = 4\n"),
+            ("user.cfg", "[link]\nmax_streams = 0\n"),
+        ],
+    );
+    match Layers::load(&files) {
+        Err(ConfigError::Invalid { path, .. }) => assert!(path.ends_with("user.cfg"), "{path}"),
+        other => panic!("expected Invalid, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_format_line_is_a_comment_and_a_missing_layer_is_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let files = layers(
+        dir.path(),
+        &[("a.cfg", "#!/usr/bin/env bohio\n[service]\nname = \"x\"\n")],
+    );
+    assert_eq!(Layers::load(&files).unwrap().config.service.name, "x");
+    assert!(matches!(
+        Layers::load(&[dir.path().join("missing.cfg")]),
+        Err(ConfigError::Read { .. })
+    ));
+    assert_eq!(
+        Layers::load(&[]).unwrap().config,
+        Config::default(),
+        "no layer is the defaults"
+    );
 }

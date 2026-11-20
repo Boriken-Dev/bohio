@@ -1,12 +1,13 @@
-//! The host's keys and peers: its identity, the trust store, `peers.cfg`, and the commands that change them.
+//! The host's keys and peers: its identity, the waiting list, the peers of `bohio.cfg` and the commands
+//! that change them.
 //!
-//! The data directory holds `identity` (this host's key), `peers/` (the trust store: `accepted/` and
-//! `waiting/`) and `peers.cfg` (what each accepted peer may do). A key that proved itself and is not
-//! accepted waits in `peers/waiting/` until [`approve`] or [`revoke`] decides it.
+//! A peer is a `[peer.<id>]` table in `bohio.cfg`, which is what accepts its key; `allow` says what it may
+//! do. The data directory holds what is state, not configuration: `identity` (this host's key) and
+//! `peers/waiting/`, the proven keys that were not accepted, until [`approve`] or [`revoke`] decides them.
 
 use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{Mutex, PoisonError, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -15,9 +16,11 @@ use coqui_link::auth::{Identity, Method};
 use coqui_link::pairing;
 use coqui_peer::{KeyMaterial, PeerId, TrustStore};
 use coqui_transport::Channel;
+use toml_edit::{DocumentMut, Item, Table};
 
+use crate::config::{ConfigError, Layers};
 use crate::link::{Grants, GrantsError, Keys};
-use crate::policy::{Grant, Policies, PolicyError};
+use crate::policy::{Grant, Peers};
 
 /// Why a key or peer operation failed. Never holds a key, a PIN or a secret.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -26,16 +29,19 @@ pub enum PeerError {
     /// The identity could not be read or made.
     #[error("the identity cannot be used: {0}")]
     Identity(String),
-    /// The trust store could not be opened or changed.
+    /// The waiting list could not be opened or changed.
     #[error("the trust store cannot be used: {0}")]
     Store(String),
-    /// `peers.cfg` could not be read, written or understood.
+    /// A configuration layer could not be read or understood.
     #[error("{0}")]
-    Policy(PolicyError),
-    /// `peers.cfg` could not be written.
-    #[error("peers.cfg cannot be written: {0}")]
+    Config(ConfigError),
+    /// A configuration file could not be written.
+    #[error("{0}")]
     Write(String),
-    /// No such peer is accepted or waiting.
+    /// No configuration file can be written, and none was named to make.
+    #[error("no configuration file can be written: name one with --config")]
+    NoLayer,
+    /// No accepted or waiting peer has that id.
     #[error("no accepted or waiting peer has that id")]
     NoSuchPeer,
     /// Pairing did not finish.
@@ -43,9 +49,9 @@ pub enum PeerError {
     Pairing(String),
 }
 
-impl From<PolicyError> for PeerError {
-    fn from(error: PolicyError) -> Self {
-        Self::Policy(error)
+impl From<ConfigError> for PeerError {
+    fn from(error: ConfigError) -> Self {
+        Self::Config(error)
     }
 }
 
@@ -71,11 +77,6 @@ impl Data {
         self.dir.join("identity")
     }
 
-    /// Where the per-peer grants are kept.
-    pub fn policy_path(&self) -> PathBuf {
-        self.dir.join("peers.cfg")
-    }
-
     /// This host's identity, made (a Noise key) when none exists yet.
     ///
     /// # Errors
@@ -88,7 +89,7 @@ impl Data {
             .map_err(|error| PeerError::Identity(error.to_string()))
     }
 
-    /// The trust store, made when none exists yet.
+    /// The waiting list (the trust store; its `accepted/` is not read), made when none exists yet.
     ///
     /// # Errors
     ///
@@ -97,24 +98,6 @@ impl Data {
         std::fs::create_dir_all(&self.dir).map_err(|error| PeerError::Store(error.to_string()))?;
         TrustStore::open(&self.dir).map_err(|error| PeerError::Store(error.to_string()))
     }
-
-    /// The grants in `peers.cfg`; none when the file is missing.
-    ///
-    /// # Errors
-    ///
-    /// [`PeerError::Policy`] when the file is not valid.
-    pub fn policies(&self) -> Result<Policies, PeerError> {
-        Ok(Policies::load(&self.policy_path())?)
-    }
-
-    fn save(&self, policies: &Policies) -> Result<(), PeerError> {
-        coqui_peer::file::replace(
-            &self.policy_path(),
-            policies.to_toml().as_bytes(),
-            coqui_peer::file::Access::OwnerOnly,
-        )
-        .map_err(|error| PeerError::Write(error.kind().to_string()))
-    }
 }
 
 /// An accepted peer and what it may do.
@@ -122,7 +105,7 @@ impl Data {
 pub struct Accepted {
     /// The peer's id.
     pub id: PeerId,
-    /// Its grant: nothing when `peers.cfg` has no entry for it.
+    /// Its grant: nothing when its table has no `allow`.
     pub grant: Grant,
 }
 
@@ -142,28 +125,26 @@ pub struct Listing {
     pub accepted: Vec<Accepted>,
     /// The proven keys waiting to be approved.
     pub waiting: Vec<Waiting>,
-    /// Ids with a grant in `peers.cfg` that the trust store does not accept: they hold nothing.
-    pub orphaned: Vec<String>,
 }
 
-/// The accepted and waiting peers.
+/// The accepted peers of the layers `files` and the keys waiting in `data`.
 ///
 /// # Errors
 ///
-/// [`PeerError::Store`] or [`PeerError::Policy`].
-pub fn list(data: &Data) -> Result<Listing, PeerError> {
-    let store = data.store()?;
-    let policies = data.policies()?;
-    let accepted: Vec<Accepted> = store
-        .accepted()
-        .map_err(|error| PeerError::Store(error.to_string()))?
-        .into_iter()
-        .map(|id| Accepted {
-            grant: policies.grant_for(&id.to_string()),
-            id,
+/// [`PeerError::Config`] for a layer that cannot be read, [`PeerError::Store`] for the waiting list.
+pub fn list(files: &[PathBuf], data: &Data) -> Result<Listing, PeerError> {
+    let peers = Layers::peers(files)?;
+    let accepted = peers
+        .ids()
+        .filter_map(|name| {
+            name.parse::<PeerId>().ok().map(|id| Accepted {
+                grant: peers.grant_for(name),
+                id,
+            })
         })
         .collect();
-    let waiting = store
+    let waiting = data
+        .store()?
         .waiting()
         .map_err(|error| PeerError::Store(error.to_string()))?
         .into_iter()
@@ -172,82 +153,322 @@ pub fn list(data: &Data) -> Result<Listing, PeerError> {
             source: entry.source,
         })
         .collect();
-    let orphaned = policies
-        .peers()
-        .filter(|name| {
-            name.parse::<PeerId>()
-                .map_or(true, |id| !accepted.iter().any(|known| known.id == id))
-        })
-        .map(str::to_owned)
-        .collect();
-    Ok(Listing {
-        accepted,
-        waiting,
-        orphaned,
-    })
+    Ok(Listing { accepted, waiting })
 }
 
-/// Accepts `id` (a waiting or already accepted peer) and, when `grant` is given, makes it exactly what
-/// the peer may do; without one an existing grant is left as it is, and a new peer holds nothing.
+/// The peers of the layers `files`, read again at every question, as a node's [`Keys`] and [`Grants`]: a
+/// hand edit of any layer applies at the next open or re-check. A layer that cannot be read or parsed
+/// refuses everything, and says so once for each distinct error. A proven stranger is recorded as waiting
+/// in the data directory's trust store.
+#[derive(Debug)]
+pub struct LayeredPeers {
+    files: Vec<PathBuf>,
+    store: TrustStore,
+    reported: Mutex<Option<String>>,
+}
+
+impl LayeredPeers {
+    /// The peers of `files` (lowest layer first; one that does not exist is skipped, so a layer made
+    /// later applies), strangers recorded in `data`.
+    ///
+    /// # Errors
+    ///
+    /// [`PeerError::Store`] when the waiting list cannot be opened.
+    pub fn new(files: Vec<PathBuf>, data: &Data) -> Result<Self, PeerError> {
+        Ok(Self {
+            files,
+            store: data.store()?,
+            reported: Mutex::new(None),
+        })
+    }
+
+    fn current(&self) -> Result<Peers, GrantsError> {
+        match Layers::peers(&self.files) {
+            Ok(peers) => {
+                *self.reported.lock().unwrap_or_else(PoisonError::into_inner) = None;
+                Ok(peers)
+            }
+            Err(error) => {
+                let text = error.to_string();
+                let mut last = self.reported.lock().unwrap_or_else(PoisonError::into_inner);
+                if last.as_deref() != Some(text.as_str()) {
+                    tracing::warn!("every peer is refused until this is fixed: {text}");
+                    *last = Some(text.clone());
+                }
+                Err(GrantsError::new(text))
+            }
+        }
+    }
+}
+
+impl Keys for LayeredPeers {
+    fn is_accepted(&self, peer: &PeerId) -> bool {
+        self.current()
+            .is_ok_and(|peers| peers.has(&peer.to_string()))
+    }
+
+    fn stranger(&self, _peer: &PeerId, key: &KeyMaterial, source: Option<SocketAddr>) {
+        self.store.record_waiting(key, source);
+    }
+}
+
+impl Grants for LayeredPeers {
+    fn grant(&self, peer: &PeerId) -> Result<Grant, GrantsError> {
+        Ok(self.current()?.grant_for(&peer.to_string()))
+    }
+}
+
+/// Where [`approve`] wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Approved {
+    /// The layer file that holds the peer's table now.
+    pub file: PathBuf,
+    /// Whether the file was made by this call.
+    pub made: bool,
+}
+
+/// Accepts `id`: its `[peer.<id>]` table is written to a layer, and its waiting entry (and any stored key)
+/// removed. With `grant` the table holds exactly that grant; without one an existing table stays as it is
+/// and a new peer holds nothing. Every other byte of the file, its comments and layout, stays.
+///
+/// The layer is the one that already holds the table; else the last of `files` this account can write; else
+/// `create` (parents made, readable by the owner alone).
 ///
 /// # Errors
 ///
-/// [`PeerError::NoSuchPeer`] for an id neither waiting nor accepted, or a store or file error.
-pub fn approve(data: &Data, id: &PeerId, grant: Option<Grant>) -> Result<(), PeerError> {
-    let store = data.store()?;
-    if !store.is_accepted(id) {
-        let waiting = store
-            .waiting()
-            .map_err(|error| PeerError::Store(error.to_string()))?;
-        if !waiting.iter().any(|entry| entry.id == *id) {
-            return Err(PeerError::NoSuchPeer);
-        }
-        store
-            .accept(id)
-            .map_err(|error| PeerError::Store(error.to_string()))?;
+/// [`PeerError::NoLayer`] when no file can take the table, [`PeerError::Write`] for a file that cannot be
+/// written, [`PeerError::Config`] for a layer that is not valid TOML, or a store error.
+pub fn approve(
+    files: &[PathBuf],
+    create: Option<&Path>,
+    data: &Data,
+    id: &PeerId,
+    grant: Option<&Grant>,
+) -> Result<Approved, PeerError> {
+    let name = id.to_string();
+    let (file, made) = target(files, create, &name)?;
+    let mut document = if made {
+        DocumentMut::new()
+    } else {
+        read_document(&file)?
+    };
+    let before = document.to_string();
+    set_peer(&mut document, &name, grant)?;
+    let after = document.to_string();
+    if made || after != before {
+        write_document(&file, &after, made)?;
     }
-    if let Some(grant) = grant {
-        let mut policies = data.policies()?;
-        policies.set(&id.to_string(), grant);
-        data.save(&policies)?;
-    }
-    Ok(())
+    data.store()?
+        .remove(id)
+        .map_err(|error| PeerError::Store(error.to_string()))?;
+    Ok(Approved { file, made })
 }
 
 /// What [`revoke`] removed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Revoked {
-    /// The peer's grant in `peers.cfg`.
-    pub grant: bool,
-    /// The peer's key in the trust store, accepted or waiting.
+    /// The layers whose `[peer.<id>]` table was removed.
+    pub files: Vec<PathBuf>,
+    /// Layers that hold the table and cannot be written: the key stays accepted there.
+    pub unwritable: Vec<PathBuf>,
+    /// The key waiting or stored in the data directory.
     pub key: bool,
 }
 
-/// Takes away everything `id` has: its grant first, so a running stream is ended at the next re-check
-/// even before the link notices the key is gone, then its key.
+/// Takes away everything `id` has: its table from every layer that holds one, then its waiting entry. A
+/// running stream ends at the next re-check, even before the link notices the key is gone.
 ///
 /// # Errors
 ///
-/// [`PeerError::NoSuchPeer`] when nothing was removed, or a store or file error.
-pub fn revoke(data: &Data, id: &PeerId) -> Result<Revoked, PeerError> {
-    let mut policies = data.policies()?;
-    let grant = policies.remove(&id.to_string());
-    if grant {
-        data.save(&policies)?;
+/// [`PeerError::NoSuchPeer`] when nothing was removed and no layer holds it, [`PeerError::Write`] for a file
+/// that cannot be replaced, or a layer or store error.
+pub fn revoke(files: &[PathBuf], data: &Data, id: &PeerId) -> Result<Revoked, PeerError> {
+    let name = id.to_string();
+    let (mut removed, mut unwritable) = (Vec::new(), Vec::new());
+    for file in files.iter().rev() {
+        if !file.is_file() {
+            continue;
+        }
+        let mut document = read_document(file)?;
+        if !remove_peer(&mut document, &name) {
+            continue;
+        }
+        if writable(file) {
+            write_document(file, &document.to_string(), false)?;
+            removed.push(file.clone());
+        } else {
+            unwritable.push(file.clone());
+        }
     }
     let key = data
         .store()?
         .remove(id)
         .map_err(|error| PeerError::Store(error.to_string()))?;
-    if grant || key {
-        Ok(Revoked { grant, key })
-    } else {
-        Err(PeerError::NoSuchPeer)
+    if removed.is_empty() && unwritable.is_empty() && !key {
+        return Err(PeerError::NoSuchPeer);
+    }
+    Ok(Revoked {
+        files: removed,
+        unwritable,
+        key,
+    })
+}
+
+/// The file `approve` writes, and whether it is to be made.
+fn target(
+    files: &[PathBuf],
+    create: Option<&Path>,
+    name: &str,
+) -> Result<(PathBuf, bool), PeerError> {
+    for file in files.iter().rev() {
+        if file.is_file() && holds(file, name)? {
+            return if writable(file) {
+                Ok((file.clone(), false))
+            } else {
+                Err(PeerError::Write(format!(
+                    "{} holds this peer and cannot be written",
+                    file.display()
+                )))
+            };
+        }
+    }
+    if let Some(file) = files
+        .iter()
+        .rev()
+        .find(|file| file.is_file() && writable(file))
+    {
+        return Ok((file.clone(), false));
+    }
+    match create {
+        Some(path) if path.is_file() => {
+            if writable(path) {
+                Ok((path.to_owned(), false))
+            } else {
+                Err(PeerError::Write(format!(
+                    "{} cannot be written",
+                    path.display()
+                )))
+            }
+        }
+        Some(path) => Ok((path.to_owned(), true)),
+        None => Err(PeerError::NoLayer),
     }
 }
 
-/// Shows a PIN on `listener` and pairs the first peer that joins with it: the joiner's key is accepted
-/// (it holds nothing until [`approve`] gives it a grant) and the host's key is stored by the joiner.
+/// Whether this account can change `path` (opened for appending, so nothing is truncated).
+fn writable(path: &Path) -> bool {
+    std::fs::OpenOptions::new().append(true).open(path).is_ok()
+}
+
+fn read_document(path: &Path) -> Result<DocumentMut, PeerError> {
+    let label = path.display().to_string();
+    let text = std::fs::read_to_string(path).map_err(|error| {
+        PeerError::Config(ConfigError::Read {
+            path: label.clone(),
+            reason: error.kind().to_string(),
+        })
+    })?;
+    text.parse::<DocumentMut>().map_err(|error| {
+        let (line, column) = error
+            .span()
+            .map_or((1, 1), |span| crate::config::position(&text, span.start));
+        PeerError::Config(ConfigError::Parse {
+            path: label,
+            line,
+            column,
+            key: None,
+            message: error.message().to_owned(),
+        })
+    })
+}
+
+fn holds(path: &Path, name: &str) -> Result<bool, PeerError> {
+    let document = read_document(path)?;
+    Ok(document
+        .get("peer")
+        .and_then(Item::as_table_like)
+        .is_some_and(|peers| peers.contains_key(name)))
+}
+
+/// Sets `[peer.<name>]` to `grant`, or makes it empty when it is absent and `grant` is `None`.
+fn set_peer(
+    document: &mut DocumentMut,
+    name: &str,
+    grant: Option<&Grant>,
+) -> Result<(), PeerError> {
+    let peers = document
+        .as_table_mut()
+        .entry("peer")
+        .or_insert_with(|| {
+            let mut table = Table::new();
+            table.set_implicit(true);
+            Item::Table(table)
+        })
+        .as_table_mut()
+        .ok_or_else(|| PeerError::Write("`peer` in that file is not a table".to_owned()))?;
+    match grant {
+        Some(grant) => {
+            let text = toml::to_string(grant)
+                .map_err(|_| PeerError::Write("the grant cannot be written".to_owned()))?;
+            let mut table = text
+                .parse::<DocumentMut>()
+                .map_err(|_| PeerError::Write("the grant cannot be written".to_owned()))?
+                .into_table();
+            if let Some(old) = peers.get(name).and_then(Item::as_table) {
+                // The old table's own comments and place in the file stay.
+                *table.decor_mut() = old.decor().clone();
+                table.set_position(old.position());
+            }
+            peers.insert(name, Item::Table(table));
+        }
+        None => {
+            if !peers.contains_key(name) {
+                peers.insert(name, Item::Table(Table::new()));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Removes `[peer.<name>]` (and an emptied `[peer]`); `true` when it was there.
+fn remove_peer(document: &mut DocumentMut, name: &str) -> bool {
+    let Some(peers) = document.get_mut("peer").and_then(Item::as_table_mut) else {
+        return false;
+    };
+    let removed = peers.remove(name).is_some();
+    if removed && peers.is_empty() {
+        document.as_table_mut().remove("peer");
+    }
+    removed
+}
+
+/// Replaces `path` (or makes it) with `text`, atomically through a temporary sibling. A new file is readable
+/// by its owner alone; a replaced one keeps its mode on Unix and takes its directory's inherited access list
+/// on Windows.
+fn write_document(path: &Path, text: &str, made: bool) -> Result<(), PeerError> {
+    #[cfg(unix)]
+    let mode = std::fs::metadata(path).ok().map(|meta| meta.permissions());
+    coqui_peer::file::replace(path, text.as_bytes(), coqui_peer::file::Access::OwnerOnly).map_err(
+        |error| {
+            PeerError::Write(format!(
+                "{} cannot be written: {}",
+                path.display(),
+                error.kind()
+            ))
+        },
+    )?;
+    #[cfg(unix)]
+    if !made && let Some(mode) = mode {
+        let _ = std::fs::set_permissions(path, mode);
+    }
+    #[cfg(not(unix))]
+    let _ = made;
+    Ok(())
+}
+
+/// Shows a PIN on `listener` and pairs the first peer that joins with it: the joiner's key is stored
+/// (the command then writes its `[peer.<id>]` table with [`approve`], which removes it from the store) and
+/// the host's key is stored by the joiner.
 ///
 /// `shown` is called once with the PIN, for the person who reads it out; it is never logged. Returns
 /// the joiner's id.
@@ -333,44 +554,4 @@ pub fn pair(
             }
         }
     })
-}
-
-/// The data directory's trust store and `peers.cfg` as a node's [`Keys`] and [`Grants`], read afresh at
-/// every question so an edit applies at the next open or re-check.
-#[derive(Debug, Clone)]
-pub struct FilePeers {
-    store: TrustStore,
-    policy: PathBuf,
-}
-
-impl FilePeers {
-    /// The peers `data` holds.
-    ///
-    /// # Errors
-    ///
-    /// [`PeerError::Store`] when the trust store cannot be opened.
-    pub fn open(data: &Data) -> Result<Self, PeerError> {
-        Ok(Self {
-            store: data.store()?,
-            policy: data.policy_path(),
-        })
-    }
-}
-
-impl Keys for FilePeers {
-    fn is_accepted(&self, peer: &PeerId) -> bool {
-        self.store.is_accepted(peer)
-    }
-
-    fn stranger(&self, _peer: &PeerId, key: &KeyMaterial, source: Option<SocketAddr>) {
-        self.store.record_waiting(key, source);
-    }
-}
-
-impl Grants for FilePeers {
-    fn grant(&self, peer: &PeerId) -> Result<Grant, GrantsError> {
-        Policies::load(&self.policy)
-            .map(|policies| policies.grant_for(&peer.to_string()))
-            .map_err(|error| GrantsError::new(error.to_string()))
-    }
 }

@@ -20,7 +20,7 @@ use coqui_peer::PeerId;
 
 use super::commands::{print_info, source};
 use super::{Format, RemoteAction, RemoteArgs, RemoteExecArgs, RemoteShellArgs};
-use crate::config::Environment;
+use crate::config::{Environment, Layers};
 use crate::node::Endpoint;
 
 /// What a person is told when the host will not do what was asked.
@@ -35,7 +35,8 @@ fn explain(error: &Error) -> String {
 }
 
 fn connect(args: &RemoteArgs, environment: &Environment) -> Result<Connection, String> {
-    let (config, data) = source(&args.config, environment)?;
+    let (found, data) = source(&args.config, environment)?;
+    let config = found.config();
     let endpoint = match (&args.endpoint, &args.command) {
         (Some(text), None) => Endpoint::parse(text)?,
         (None, Some(command)) => Endpoint::Command(split_command(command)?),
@@ -50,7 +51,13 @@ fn connect(args: &RemoteArgs, environment: &Environment) -> Result<Connection, S
         Some(id) => Trust::pinned([id
             .parse::<PeerId>()
             .map_err(|_| "that is not a peer id".to_owned())?]),
-        None => Trust::Store(data.store().map_err(|error| error.to_string())?),
+        // The keys `bohio join` or `bohio peer approve` wrote into the layers: a host this node trusts.
+        None => Trust::pinned(
+            Layers::peers(&found.watch)
+                .map_err(|error| error.to_string())?
+                .ids()
+                .filter_map(|name| name.parse::<PeerId>().ok()),
+        ),
     };
     let proof = Proof::builder(identity)
         .responders(trust)

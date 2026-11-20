@@ -29,13 +29,47 @@ impl Guarded {
 }
 
 /// Refuses `path` when a user other than the host's own account, SYSTEM or the administrators owns it
-/// or may change it (for the data directory, also read what is made in it). Elsewhere than Windows
-/// nothing is refused.
+/// or may change it (for the data directory, also read what is made in it). On Unix a configuration
+/// layer or its directory is refused when another account than the running one or root owns it, or its
+/// group or others may write it; the data directory is not checked there.
 ///
 /// # Errors
 ///
 /// One line saying what is wrong and with which path, or why it could not be checked.
-#[cfg(not(windows))]
+#[cfg(unix)]
+pub(super) fn check(path: &Path, what: Guarded) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    if what != Guarded::Config {
+        return Ok(());
+    }
+    let meta = std::fs::metadata(path).map_err(|error| {
+        format!(
+            "cannot check who may change the configuration {}: {error}",
+            path.display()
+        )
+    })?;
+    let me = rustix::process::geteuid().as_raw();
+    if meta.uid() != me && meta.uid() != 0 {
+        return Err(format!(
+            "the configuration {} is owned by another account: give it to the account that runs bohio, or to root",
+            path.display()
+        ));
+    }
+    if meta.mode() & 0o022 != 0 {
+        return Err(format!(
+            "the configuration {} can be changed by its group or by others: remove their write access",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Nothing is checked where the platform has neither Unix modes nor Windows access control lists.
+///
+/// # Errors
+///
+/// Never.
+#[cfg(not(any(unix, windows)))]
 pub(super) fn check(_path: &Path, _what: Guarded) -> Result<(), String> {
     Ok(())
 }

@@ -25,12 +25,12 @@ use crate::config::Environment;
     version,
     about = "Bohío: a remote host runtime serving files, processes and shells to proven peers",
     after_help = "Environment variables:\n  \
-        BOHIO_CONFIG   the configuration file, when --config is not given\n  \
+        BOHIO_CONFIG   the configuration file (the only layer), when --config is not given\n  \
         BOHIO_LOG      the log level or filter, for example `info` or `bohio=debug` (default `warn`)\n  \
         NO_COLOR       set to disable colour in log lines\n  \
         PATH           where programs and shells are looked for\n  \
         APPDATA, LOCALAPPDATA, ProgramData (Windows) and XDG_CONFIG_HOME, XDG_DATA_HOME, HOME (Unix)\n                 \
-        where the configuration and data directory are looked for\n\n\
+        where the system and user configuration files and the data directory are looked for\n\n\
         Exit status: 0 success, 1 the operation failed, 2 the invocation was wrong."
 )]
 pub struct Cli {
@@ -91,9 +91,10 @@ pub enum Format {
 /// `bohio config check`.
 #[derive(Debug, Args)]
 pub struct CheckArgs {
-    /// The configuration file; otherwise `BOHIO_CONFIG`, then the user's, then the system's.
-    #[arg(long, value_name = "FILE")]
-    pub config: Option<PathBuf>,
+    /// A configuration layer, lowest first (repeat for more); they are read alone. Otherwise
+    /// `BOHIO_CONFIG` names the one layer; otherwise the system file is read and the user's merged over it.
+    #[arg(long, value_name = "FILE", env = "BOHIO_CONFIG")]
+    pub config: Vec<PathBuf>,
     /// The output format.
     #[arg(long, value_enum, default_value = "text")]
     pub format: Format,
@@ -102,20 +103,22 @@ pub struct CheckArgs {
 /// `bohio info`.
 #[derive(Debug, Args)]
 pub struct InfoArgs {
-    /// The configuration file; otherwise `BOHIO_CONFIG`, then the user's, then the system's.
-    #[arg(long, value_name = "FILE")]
-    pub config: Option<PathBuf>,
+    /// A configuration layer, lowest first (repeat for more); they are read alone. Otherwise
+    /// `BOHIO_CONFIG` names the one layer; otherwise the system file is read and the user's merged over it.
+    #[arg(long, value_name = "FILE", env = "BOHIO_CONFIG")]
+    pub config: Vec<PathBuf>,
     /// The output format.
     #[arg(long, value_enum, default_value = "text")]
     pub format: Format,
 }
 
-/// The configuration file every command takes.
+/// The configuration layers every command takes.
 #[derive(Debug, Args)]
 pub struct ConfigOption {
-    /// The configuration file; otherwise `BOHIO_CONFIG`, then the user's, then the system's.
-    #[arg(long, value_name = "FILE")]
-    pub config: Option<PathBuf>,
+    /// A configuration layer, lowest first (repeat for more); they are read alone. Otherwise
+    /// `BOHIO_CONFIG` names the one layer; otherwise the system file is read and the user's merged over it.
+    #[arg(long, value_name = "FILE", env = "BOHIO_CONFIG")]
+    pub config: Vec<PathBuf>,
 }
 
 /// `bohio serve`.
@@ -157,9 +160,11 @@ pub struct PeerArgs {
 pub enum PeerAction {
     /// Accepted peers with what each may do, the proven keys waiting for approval, and stray grants.
     List(StatusArgs),
-    /// Accept a waiting or paired peer; with `--allow`, `--fs-root` or `--program`, set its grant.
+    /// Accept a peer by id (waiting, paired or new): write its `[peer.<id>]` table to a layer; with `--allow`,
+    /// `--fs-root` or `--program`, set its grant.
     Approve(ApproveArgs),
-    /// Take away a peer's grant and key; its running streams end within `[link] recheck`.
+    /// Remove a peer's table from every layer that holds it, and its waiting entry; its running streams end
+    /// within `[link] recheck`.
     Revoke(RevokeArgs),
 }
 
@@ -172,8 +177,8 @@ pub struct ApproveArgs {
     /// The peer's id, as `bohio peer list` prints it.
     pub id: String,
     /// What the peer may do: info, fs.read, fs.write, exec, shell, admin (repeat or separate with
-    /// commas). Setting any of `--allow`, `--fs-root` and `--program` replaces the peer's whole grant;
-    /// without them an existing grant stays and a new peer holds nothing.
+    /// commas). Setting any of `--allow`, `--fs-root` and `--program` replaces the peer's whole table;
+    /// without them an existing table stays and a new peer holds nothing.
     #[arg(long, value_delimiter = ',', value_name = "PERMISSION")]
     pub allow: Vec<String>,
     /// A directory file operations are confined to (repeat).
@@ -348,7 +353,7 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>, environment: &Environm
     }
 }
 
-/// The process environment the library's searches read.
+/// The process environment the data directory and the programs are looked for in.
 pub fn capture_environment() -> Environment {
     let var = |name: &str| {
         std::env::var_os(name)
@@ -357,11 +362,7 @@ pub fn capture_environment() -> Environment {
     };
     Environment {
         windows: cfg!(windows),
-        config: var("BOHIO_CONFIG"),
-        app_data: var("APPDATA"),
         local_app_data: var("LOCALAPPDATA"),
-        program_data: var("ProgramData"),
-        xdg_config_home: var("XDG_CONFIG_HOME"),
         xdg_data_home: var("XDG_DATA_HOME"),
         home: var("HOME"),
         path: std::env::var_os("PATH"),

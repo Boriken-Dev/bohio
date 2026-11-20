@@ -2,7 +2,7 @@
 
 use std::io::{BufRead, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::thread;
@@ -16,14 +16,14 @@ use coqui_peer::pair::{CodeAlphabet, Pin};
 use coqui_transport::Channel;
 
 use super::access::{self, Guarded};
-use super::commands::{load, source};
+use super::commands::{Found, found, source};
 use super::{
     ApproveArgs, JoinArgs, PairArgs, PeerAction, PeerArgs, RevokeArgs, ServeArgs, StatusArgs,
 };
 use crate::config::{Config, Environment, ListenConfig, Span};
 use crate::listen::Listening;
 use crate::node::{Endpoint, Node};
-use crate::peer::{self, Data, FilePeers};
+use crate::peer::{self, Data, LayeredPeers};
 use crate::policy::{Grant, Permission};
 
 /// Standard output, flushed: a person or a test reads these lines as they happen.
@@ -44,11 +44,12 @@ fn parse_id(text: &str) -> Result<PeerId, String> {
         .map_err(|_| "that is not a peer id: use the form `bohio peer list` prints".to_owned())
 }
 
-/// The node `config` describes, with the identity and the peers of its data directory.
-fn node(config: &Config, environment: &Environment) -> Result<Node, String> {
+/// The node `config` describes, with the identity of its data directory and the peers of the layers `watch`.
+fn node(config: &Config, watch: &[PathBuf], environment: &Environment) -> Result<Node, String> {
     let data = Data::new(config.data_dir(environment));
     let identity = data.identity().map_err(|error| error.to_string())?;
-    let peers = Arc::new(FilePeers::open(&data).map_err(|error| error.to_string())?);
+    let peers =
+        Arc::new(LayeredPeers::new(watch.to_vec(), &data).map_err(|error| error.to_string())?);
     let node = Node::new(config.node(), identity, peers.clone(), peers)
         .map_err(|error| error.to_string())?;
     Ok(node.with_path(environment.path.clone().unwrap_or_default()))
@@ -56,14 +57,15 @@ fn node(config: &Config, environment: &Environment) -> Result<Node, String> {
 
 /// `bohio serve`.
 pub(super) fn serve(args: &ServeArgs, environment: &Environment) -> Result<(), String> {
-    let (config, from) = load(args.config.config.as_deref(), environment)?;
+    let found = found(&args.config.config)?;
+    let config = found.config();
     if args.stdio {
         if !args.listen.is_empty() {
             return Err("--stdio serves standard input and output alone: drop --listen".to_owned());
         }
         // Standard output is the link: nothing else is written to it, and [[listen]] entries are not bound.
-        let server = node(&config, environment)?;
-        guard(from.as_deref(), &config, environment)?;
+        let server = node(config, &found.watch, environment)?;
+        guard(&found.layered.files, config, environment)?;
         tracing::info!(host = %server.host(), "serving standard input and output");
         return server.serve_stdio().map_err(|error| error.to_string());
     }
@@ -72,21 +74,33 @@ pub(super) fn serve(args: &ServeArgs, environment: &Environment) -> Result<(), S
         endpoint: endpoint.clone(),
         ..ListenConfig::default()
     }));
-    serve_endpoints(
-        &config,
-        from.as_deref(),
-        environment,
-        &entries,
-        &AtomicBool::new(false),
-    )
+    serve_endpoints(&found, environment, &entries, &AtomicBool::new(false))
 }
 
-/// Refuses to serve from a configuration file (`from`) or a data directory another user may change,
-/// unless `[service] check_access` is false: then what was found is logged and the host serves.
-fn guard(from: Option<&Path>, config: &Config, environment: &Environment) -> Result<(), String> {
-    let found = from
-        .map_or(Ok(()), |path| access::check(path, Guarded::Config))
-        .and_then(|()| access::check(&config.data_dir(environment), Guarded::DataDir));
+/// Refuses to serve from a layer or a data directory another user may change, unless `[service]
+/// check_access` is false: then what was found is logged and the host serves. `files` are the layers read.
+fn guard(files: &[PathBuf], config: &Config, environment: &Environment) -> Result<(), String> {
+    let mut problems: Vec<String> = Vec::new();
+    for file in files {
+        if let Err(problem) = access::check(file, Guarded::Config) {
+            problems.push(problem);
+        }
+        if let Some(directory) = file
+            .parent()
+            .filter(|directory| !directory.as_os_str().is_empty())
+            && let Err(problem) = access::check(directory, Guarded::Config)
+        {
+            problems.push(problem);
+        }
+    }
+    if let Err(problem) = access::check(&config.data_dir(environment), Guarded::DataDir) {
+        problems.push(problem);
+    }
+    let found = if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems.join("; "))
+    };
     allowed(found, config.service.check_access)
 }
 
@@ -103,21 +117,20 @@ fn allowed(found: Result<(), String>, check_access: bool) -> Result<(), String> 
 
 /// Binds every entry, prints what is listening, and serves them until `stop` is set. A host started
 /// by the Windows service manager stops through the flag; `bohio serve` runs until it is killed.
-/// `from` is the configuration file `config` was read from.
 pub(super) fn serve_endpoints(
-    config: &Config,
-    from: Option<&Path>,
+    found: &Found,
     environment: &Environment,
     entries: &[ListenConfig],
     stop: &AtomicBool,
 ) -> Result<(), String> {
+    let config = found.config();
     if entries.is_empty() {
         return Err(
             "nothing to listen on: add a [[listen]] entry to bohio.cfg or pass --listen".to_owned(),
         );
     }
-    let server = node(config, environment)?;
-    guard(from, config, environment)?;
+    let server = node(config, &found.watch, environment)?;
+    guard(&found.layered.files, config, environment)?;
     let settings = config.link.settings();
     let mut listeners = Vec::new();
     for entry in entries {
@@ -155,16 +168,18 @@ pub(super) fn id(args: &StatusArgs, environment: &Environment) -> Result<(), Str
 
 /// `bohio status`.
 pub(super) fn status(args: &StatusArgs, environment: &Environment) -> Result<(), String> {
-    let (config, data) = source(&args.config, environment)?;
+    let (found, data) = source(&args.config, environment)?;
     let identity = data.identity().map_err(|error| error.to_string())?;
-    let listing = peer::list(&data).map_err(|error| error.to_string())?;
+    let listing = peer::list(&found.layered.files, &data).map_err(|error| error.to_string())?;
     say!("id: {}", identity.peer_id());
     say!("method: {}", identity.method());
     say!("data_dir: {}", data.dir().display());
-    say!("peers: {}", data.policy_path().display());
+    for file in &found.layered.files {
+        say!("config: {}", file.display());
+    }
     say!("accepted: {}", listing.accepted.len());
     say!("waiting: {}", listing.waiting.len());
-    for listen in &config.listen {
+    for listen in &found.config().listen {
         let state = match Endpoint::parse(&listen.endpoint) {
             Ok(endpoint) => answers(&endpoint),
             Err(_) => "not served by this build",
@@ -244,8 +259,8 @@ fn describe(grant: &Grant) -> String {
 }
 
 fn peer_list(args: &StatusArgs, environment: &Environment) -> Result<(), String> {
-    let (_, data) = source(&args.config, environment)?;
-    let listing = peer::list(&data).map_err(|error| error.to_string())?;
+    let (found, data) = source(&args.config, environment)?;
+    let listing = peer::list(&found.layered.files, &data).map_err(|error| error.to_string())?;
     for accepted in &listing.accepted {
         say!(
             "accepted {} allow: {}",
@@ -259,9 +274,6 @@ fn peer_list(args: &StatusArgs, environment: &Environment) -> Result<(), String>
             .map_or_else(|| "unknown".to_owned(), |source| source.ip().to_string());
         say!("waiting {} from {source}", waiting.id);
     }
-    for stray in &listing.orphaned {
-        say!("grant-only {stray} (not accepted: it holds nothing)");
-    }
     if listing.accepted.is_empty() && listing.waiting.is_empty() {
         say!("no peers");
     }
@@ -269,7 +281,7 @@ fn peer_list(args: &StatusArgs, environment: &Environment) -> Result<(), String>
 }
 
 fn peer_approve(args: &ApproveArgs, environment: &Environment) -> Result<(), String> {
-    let (_, data) = source(&args.config, environment)?;
+    let (found, data) = source(&args.config, environment)?;
     let id = parse_id(&args.id)?;
     let mut permissions = Vec::new();
     for name in &args.allow {
@@ -288,26 +300,50 @@ fn peer_approve(args: &ApproveArgs, environment: &Environment) -> Result<(), Str
                 .with_programs(args.program.iter().cloned())
                 .with_env(args.env.iter().cloned())
         });
-    peer::approve(&data, &id, grant).map_err(|error| error.to_string())?;
-    let held = data
-        .policies()
-        .map_err(|error| error.to_string())?
-        .grant_for(&id.to_string());
+    let approved = peer::approve(
+        &found.layered.files,
+        found.create.as_deref(),
+        &data,
+        &id,
+        grant.as_ref(),
+    )
+    .map_err(|error| error.to_string())?;
+    let held = crate::config::Layers::peers(&if approved.made {
+        let mut files = found.layered.files.clone();
+        files.push(approved.file.clone());
+        files
+    } else {
+        found.layered.files.clone()
+    })
+    .map_err(|error| error.to_string())?
+    .grant_for(&id.to_string());
     say!("approved {id} allow: {}", describe(&held));
+    say!("wrote {}", approved.file.display());
     Ok(())
 }
 
 fn peer_revoke(args: &RevokeArgs, environment: &Environment) -> Result<(), String> {
-    let (_, data) = source(&args.config, environment)?;
+    let (found, data) = source(&args.config, environment)?;
     let id = parse_id(&args.id)?;
-    peer::revoke(&data, &id).map_err(|error| error.to_string())?;
+    let revoked =
+        peer::revoke(&found.layered.files, &data, &id).map_err(|error| error.to_string())?;
+    for file in &revoked.files {
+        say!("removed {id} from {}", file.display());
+    }
+    for file in &revoked.unwritable {
+        say!(
+            "cannot write {}: it still accepts {id}; ask whoever owns it to remove the table",
+            file.display()
+        );
+    }
     say!("revoked {id}");
     Ok(())
 }
 
 /// `bohio pair`.
 pub(super) fn pair(args: &PairArgs, environment: &Environment) -> Result<(), String> {
-    let (config, data) = source(&args.config, environment)?;
+    let (found, data) = source(&args.config, environment)?;
+    let config = found.config();
     let timeout = match &args.timeout {
         Some(text) => {
             Span::parse(text)
@@ -334,14 +370,24 @@ pub(super) fn pair(args: &PairArgs, environment: &Environment) -> Result<(), Str
         say!("pin {pin}");
     })
     .map_err(|error| error.to_string())?;
+    let approved = peer::approve(
+        &found.layered.files,
+        found.create.as_deref(),
+        &data,
+        &joined,
+        None,
+    )
+    .map_err(|error| error.to_string())?;
     say!("paired {joined}");
+    say!("wrote {}", approved.file.display());
     say!("it holds nothing until `bohio peer approve {joined} --allow ...`");
     Ok(())
 }
 
 /// `bohio join`.
 pub(super) fn join(args: &JoinArgs, environment: &Environment) -> Result<(), String> {
-    let (config, data) = source(&args.config, environment)?;
+    let (found, data) = source(&args.config, environment)?;
+    let config = found.config();
     let Endpoint::Tcp(address) = Endpoint::parse(&args.endpoint)? else {
         return Err(PAIRING_ON_TCP.to_owned());
     };
@@ -370,7 +416,17 @@ pub(super) fn join(args: &JoinArgs, environment: &Environment) -> Result<(), Str
     let joined = pairing::join(&channel, &identity, pin, &store, settings.proof_timeout);
     channel.close();
     let paired = joined.map_err(|error| error.to_string())?;
-    say!("paired with {}", paired.peer.id());
+    let host = paired.peer.id();
+    let approved = peer::approve(
+        &found.layered.files,
+        found.create.as_deref(),
+        &data,
+        &host,
+        None,
+    )
+    .map_err(|error| error.to_string())?;
+    say!("paired with {host}");
+    say!("wrote {}", approved.file.display());
     say!(
         "ask the host to `bohio peer approve {}` this peer",
         identity.peer_id()

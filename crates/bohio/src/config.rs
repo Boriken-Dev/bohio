@@ -1,7 +1,13 @@
-//! `bohio.cfg`: the host's configuration, found by a fixed search order and read from TOML.
+//! `bohio.cfg`: the host's configuration, read from TOML as layers.
 //!
 //! Every key is optional and has a documented default. A key this version does not know is an
-//! error naming it, so a misspelled setting never looks like it worked.
+//! error naming it, so a misspelled setting never looks like it worked. [`Layers`] reads the system
+//! file and the user's as one configuration, each merged over the one before; a peer is a `[peer.<id>]`
+//! table in it.
+
+mod layers;
+
+pub use layers::{Layered, Layers};
 
 use std::ffi::OsString;
 use std::fmt;
@@ -11,22 +17,16 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde::de::{self, Deserializer};
 
-/// The environment a search for the configuration and the data directory reads, captured by the
+use crate::policy::Peers;
+
+/// The environment the data directory and the host's programs are looked for in, captured by the
 /// binary so the library reads none.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Environment {
-    /// Whether to use Windows locations (`%APPDATA%`, `%ProgramData%`) instead of Unix ones.
+    /// Whether to use Windows locations (`%LOCALAPPDATA%`) instead of Unix ones.
     pub windows: bool,
-    /// `BOHIO_CONFIG`: a configuration file named outright.
-    pub config: Option<PathBuf>,
-    /// `APPDATA` (Windows): the user's configuration directory.
-    pub app_data: Option<PathBuf>,
     /// `LOCALAPPDATA` (Windows): the user's data directory.
     pub local_app_data: Option<PathBuf>,
-    /// `ProgramData` (Windows): the system's configuration directory.
-    pub program_data: Option<PathBuf>,
-    /// `XDG_CONFIG_HOME` (Unix).
-    pub xdg_config_home: Option<PathBuf>,
     /// `XDG_DATA_HOME` (Unix).
     pub xdg_data_home: Option<PathBuf>,
     /// `HOME` (Unix).
@@ -36,37 +36,8 @@ pub struct Environment {
 }
 
 impl Environment {
-    /// The configuration files to try, in order: `BOHIO_CONFIG`, then the user's, then the
-    /// system's. Only the first is an error when it is missing.
-    pub fn config_candidates(&self) -> Vec<PathBuf> {
-        let mut found = Vec::new();
-        if let Some(path) = &self.config {
-            found.push(path.clone());
-        }
-        if self.windows {
-            found.extend(
-                self.app_data
-                    .iter()
-                    .map(|d| d.join("bohio").join("bohio.cfg")),
-            );
-            found.extend(
-                self.program_data
-                    .iter()
-                    .map(|d| d.join("bohio").join("bohio.cfg")),
-            );
-        } else {
-            let user = self
-                .xdg_config_home
-                .clone()
-                .or_else(|| self.home.as_ref().map(|h| h.join(".config")));
-            found.extend(user.map(|d| d.join("bohio").join("bohio.cfg")));
-            found.push(PathBuf::from("/etc/bohio/bohio.cfg"));
-        }
-        found
-    }
-
-    /// The directory holding the host's identity, trust store and peer policy when the
-    /// configuration names none: under the user's data directory.
+    /// The directory holding the host's identity and waiting list when the configuration names none:
+    /// under the user's data directory.
     pub fn default_data_dir(&self) -> PathBuf {
         let base = if self.windows {
             self.local_app_data.clone()
@@ -80,11 +51,10 @@ impl Environment {
 }
 
 /// Why a configuration could not be used.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ConfigError {
     /// The file could not be read.
-    #[error("{path}: cannot be read: {reason}")]
     Read {
         /// The file.
         path: String,
@@ -92,7 +62,6 @@ pub enum ConfigError {
         reason: String,
     },
     /// The file is not valid TOML, or holds a key this version does not know, or a wrong type.
-    #[error("{path}:{line}:{column}: {message}")]
     Parse {
         /// The file, or `<text>`.
         path: String,
@@ -100,13 +69,14 @@ pub enum ConfigError {
         line: usize,
         /// The column of the error, from 1.
         column: usize,
-        /// What is wrong, without the line's content.
+        /// The key, as written in the file, when the error is about one.
+        key: Option<String>,
+        /// What is wrong, never a value of the file.
         message: String,
     },
     /// A value is out of range.
-    #[error("{path}: `{key}` {message}")]
     Invalid {
-        /// The file, or `<text>`.
+        /// The file, or `<text>`: the highest layer that sets the key.
         path: String,
         /// The key, as written in the file.
         key: String,
@@ -114,6 +84,31 @@ pub enum ConfigError {
         message: String,
     },
 }
+
+impl fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Read { path, reason } => write!(f, "{path}: cannot be read: {reason}"),
+            Self::Parse {
+                path,
+                line,
+                column,
+                key: Some(key),
+                message,
+            } => write!(f, "{path}:{line}:{column}: `{key}` {message}"),
+            Self::Parse {
+                path,
+                line,
+                column,
+                key: None,
+                message,
+            } => write!(f, "{path}:{line}:{column}: {message}"),
+            Self::Invalid { path, key, message } => write!(f, "{path}: `{key}` {message}"),
+        }
+    }
+}
+
+impl core::error::Error for ConfigError {}
 
 /// The whole configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
@@ -131,6 +126,9 @@ pub struct Config {
     pub execution: ExecutionConfig,
     /// `[shell]`.
     pub shell: ShellConfig,
+    /// `[peer.<id>]`: each accepted peer and what it may do. A key is accepted while any layer holds
+    /// its table, even an empty one.
+    pub peer: Peers,
 }
 
 /// `[service]`: who the host is.
@@ -139,7 +137,7 @@ pub struct Config {
 pub struct ServiceConfig {
     /// A name shown in `info` and logs. Default `bohio`.
     pub name: String,
-    /// The directory holding the identity, the trust store and `peers.cfg`. Default: `bohio`
+    /// The directory holding the identity and the waiting list. Default: `bohio`
     /// under the user's data directory (`%LOCALAPPDATA%` or `$XDG_DATA_HOME`, else `~/.local/share`).
     pub data_dir: Option<PathBuf>,
     /// Windows: whether the host refuses to start when another user's account owns or may change its
@@ -147,6 +145,9 @@ pub struct ServiceConfig {
     /// `false` the host starts, logs what it found once, and the operator vouches for the directory.
     /// Elsewhere nothing is checked. Default `true`.
     pub check_access: bool,
+    /// Whether the user's file is read over the system's when neither `--config` nor `BOHIO_CONFIG`
+    /// names the files. Set in the lowest layer only. Default `true`.
+    pub user_layer: bool,
 }
 
 impl Default for ServiceConfig {
@@ -155,6 +156,7 @@ impl Default for ServiceConfig {
             name: "bohio".to_owned(),
             data_dir: None,
             check_access: true,
+            user_layer: true,
         }
     }
 }
@@ -641,26 +643,14 @@ impl NodeConfig {
 }
 
 impl Config {
-    /// Reads a configuration from TOML. `path` only labels errors.
+    /// Reads a configuration from one layer of TOML. `path` only labels errors.
     ///
     /// # Errors
     ///
     /// [`ConfigError::Parse`] for bad TOML, an unknown key or a wrong type;
     /// [`ConfigError::Invalid`] for a value out of range.
     pub fn from_toml(text: &str, path: &str) -> Result<Self, ConfigError> {
-        let config: Self = toml::from_str(text).map_err(|error| {
-            let (line, column) = error
-                .span()
-                .map_or((1, 1), |span| position(text, span.start));
-            ConfigError::Parse {
-                path: path.to_owned(),
-                line,
-                column,
-                message: error.message().to_owned(),
-            }
-        })?;
-        config.validate(path)?;
-        Ok(config)
+        Layers::parse(text, path).map(|layered| layered.config)
     }
 
     /// Reads the configuration file at `path`.
@@ -669,37 +659,7 @@ impl Config {
     ///
     /// [`ConfigError::Read`] when the file cannot be read, else as [`Config::from_toml`].
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
-        let label = path.display().to_string();
-        let text = std::fs::read_to_string(path).map_err(|error| ConfigError::Read {
-            path: label.clone(),
-            reason: error.kind().to_string(),
-        })?;
-        Self::from_toml(&text, &label)
-    }
-
-    /// The first configuration file `environment` names that exists, or the defaults when none
-    /// does. `explicit` (a `--config` argument) is used alone and must exist.
-    ///
-    /// Returns the configuration and the file it came from.
-    ///
-    /// # Errors
-    ///
-    /// [`ConfigError::Read`] when `explicit` or `BOHIO_CONFIG` names a file that cannot be read,
-    /// else as [`Config::from_toml`].
-    pub fn locate(
-        explicit: Option<&Path>,
-        environment: &Environment,
-    ) -> Result<(Self, Option<PathBuf>), ConfigError> {
-        if let Some(path) = explicit {
-            return Self::load(path).map(|config| (config, Some(path.to_owned())));
-        }
-        for (index, candidate) in environment.config_candidates().into_iter().enumerate() {
-            let named = index == 0 && environment.config.is_some();
-            if named || candidate.is_file() {
-                return Self::load(&candidate).map(|config| (config, Some(candidate)));
-            }
-        }
-        Ok((Self::default(), None))
+        Layers::load(&[path.to_owned()]).map(|layered| layered.config)
     }
 
     /// The data directory: the configured one, else the environment's default.
@@ -722,7 +682,7 @@ impl Config {
         }
     }
 
-    fn validate(&self, path: &str) -> Result<(), ConfigError> {
+    pub(crate) fn validate(&self, path: &str) -> Result<(), ConfigError> {
         let invalid = |key: &str, message: &str| ConfigError::Invalid {
             path: path.to_owned(),
             key: key.to_owned(),

@@ -1,5 +1,6 @@
 //! The authenticated link end to end: `bohio serve` runs as a child process on `127.0.0.1:0`, peers pair
-//! and prove themselves to it, and the host decides what each may do from `peers.cfg`.
+//! and prove themselves to it, and the host decides what each may do from the `[peer.<id>]` tables of its
+//! `bohio.cfg` layers.
 //!
 //! Every wait has a deadline, every child is killed when its handle drops, and every data directory is
 //! under the system temporary directory.
@@ -248,17 +249,15 @@ impl World {
 
     /// Starts `bohio serve` and waits for its port.
     fn serve(&self, log: &str) -> Host {
-        let mut process = Proc::start(
-            &[
-                "serve",
-                "--config",
-                &self.config,
-                "--listen",
-                "tcp://127.0.0.1:0",
-            ],
-            None,
-            log,
-        );
+        self.serve_layers(&["--config", &self.config], log)
+    }
+
+    /// Starts `bohio serve` with `layers` (`--config` arguments) and waits for its port.
+    fn serve_layers(&self, layers: &[&str], log: &str) -> Host {
+        let mut args = vec!["serve"];
+        args.extend_from_slice(layers);
+        args.extend_from_slice(&["--listen", "tcp://127.0.0.1:0"]);
+        let mut process = Proc::start(&args, None, log);
         let endpoint = process.expect_line("listening ");
         let id = process.expect_line("host ");
         let address: SocketAddr = endpoint
@@ -358,8 +357,9 @@ fn remote(client: &Client, host: &Host, action: &[&str]) -> Finished {
 
 /// A library connection of `client` to `host`.
 fn connect(client: &Client, host: &Host) -> Result<Connection, Error> {
+    // The hosts a peer trusts are the `[peer.<id>]` tables `join` wrote into its configuration.
     let proof = Proof::builder(client.data.identity().expect("an identity"))
-        .responders(Trust::Store(client.data.store().expect("a store")))
+        .responders(Trust::pinned([host.id.parse().expect("a peer id")]))
         .build()
         .expect("a proof");
     Connection::connect_tcp(
@@ -580,6 +580,70 @@ fn a_revoke_ends_a_running_exec_within_recheck_and_its_process() {
         gone_within(pid, Duration::from_secs(15)),
         "the revoked peer's process is still running"
     );
+}
+
+#[test]
+fn a_hand_edit_narrowing_the_user_layer_ends_a_running_exec_within_recheck() {
+    let world = World::new("");
+    let system_before = std::fs::read(&world.config).unwrap();
+    let user = world.path("user.cfg");
+    std::fs::write(&user, "# the user layer\n").unwrap();
+    let user_text = user.to_string_lossy().into_owned();
+    let layers = [
+        "--config",
+        world.config.as_str(),
+        "--config",
+        user_text.as_str(),
+    ];
+    let host = world.serve_layers(&layers, "warn");
+    let client = world.client("ops");
+
+    let mut door = Proc::start(
+        &[
+            "pair",
+            "--config",
+            &world.config,
+            "--config",
+            &user_text,
+            "--timeout",
+            "60s",
+        ],
+        None,
+        "warn",
+    );
+    let endpoint = door.expect_line("pairing on ");
+    let pin = door.expect_line("pin ");
+    run_ok(&["join", &endpoint, "--pin", &pin, "--config", &client.config]);
+    assert_eq!(door.finish().code, Some(0));
+    let mut approve = vec!["peer", "approve", client.id.as_str(), "--allow", "exec"];
+    approve.extend_from_slice(&layers);
+    let approved = run_ok(&approve);
+    assert!(approved.stdout.contains(&user_text), "{}", approved.stdout);
+    assert_eq!(
+        std::fs::read(&world.config).unwrap(),
+        system_before,
+        "the system layer is untouched: the peer lives in the last layer that can be written"
+    );
+
+    let link = connect(&client, &host).expect("the link is up");
+    let exec = Exec::start(&link, &Request::argv([helper().as_str(), "tree", "120000"])).unwrap();
+    let Ok(Some(ExecEvent::Started { pid })) = exec.next(Some(Duration::from_secs(20))) else {
+        panic!("the process did not start");
+    };
+    assert!(alive(pid));
+
+    // A person edits the user file by hand: exec is no longer allowed.
+    let text = std::fs::read_to_string(&user).unwrap();
+    assert!(text.contains("allow = [\"exec\"]"), "{text}");
+    std::fs::write(
+        &user,
+        text.replace("allow = [\"exec\"]", "allow = [\"info\"]"),
+    )
+    .unwrap();
+    let (took, error) = ends_with_error(|| exec.next(Some(Duration::from_millis(100))), "the exec");
+    assert!(is_refusal(&error), "{error:?}");
+    assert!(took <= RECHECK + SLACK, "took {took:?}");
+    assert!(gone_within(pid, Duration::from_secs(15)));
 }
 
 #[test]

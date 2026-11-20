@@ -22,4 +22,4 @@ mod platform;
 mod stream;
 
 pub use config::{Config, ConfigError, Environment};
-pub use policy::{Grant, Permission, Policies, PolicyError};
+pub use policy::{Grant, Peers, Permission};

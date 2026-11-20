@@ -39,8 +39,8 @@ pub enum ServiceAction {
 /// `bohio service install`.
 #[derive(Debug, Args)]
 pub struct InstallArgs {
-    /// The configuration file the service reads; an absolute path is stored. Without it the service
-    /// searches the system location, `%ProgramData%\bohio\bohio.cfg`.
+    /// The configuration file the service reads, alone; an absolute path is stored. Without it the service
+    /// reads the system file, `%ProgramData%\bohio\bohio.cfg`, with its account's user file merged over it.
     #[arg(long, value_name = "FILE")]
     pub config: Option<PathBuf>,
     /// The service's name.
@@ -62,7 +62,7 @@ pub struct NameArgs {
 /// `bohio service run`.
 #[derive(Debug, Args)]
 pub struct RunArgs {
-    /// The configuration file; otherwise `BOHIO_CONFIG`, then the system's.
+    /// The configuration file, alone; otherwise `BOHIO_CONFIG`; otherwise the system file and the user's.
     #[arg(long, value_name = "FILE")]
     pub config: Option<PathBuf>,
     /// The name the service was registered under.
@@ -179,9 +179,8 @@ mod platform {
     use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
     use windows_service::{Error, service_dispatcher};
 
-    use super::super::host;
+    use super::super::{commands, host};
     use super::{Environment, Path, PathBuf, Registration};
-    use crate::config::Config;
 
     const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
     const DESCRIPTION: &str = "Bohio: serves files, processes and shells to peers it has proven";
@@ -340,12 +339,12 @@ mod platform {
         };
         report(ServiceState::StartPending, 0, STOP_HINT);
         let started = (|| {
-            let (config, from) = Config::locate(launch.config.as_deref(), &launch.environment)
-                .map_err(|error| error.to_string())?;
-            let entries = config.listen.clone();
-            Ok::<_, String>((config, from, entries))
+            let named: Vec<PathBuf> = launch.config.iter().cloned().collect();
+            let found = commands::found(&named)?;
+            let entries = found.config().listen.clone();
+            Ok::<_, String>((found, entries))
         })();
-        let (config, from, entries) = match started {
+        let (found, entries) = match started {
             Ok(parts) => parts,
             Err(reason) => {
                 report(ServiceState::Stopped, 1, Duration::ZERO);
@@ -357,9 +356,7 @@ mod platform {
         let host_stop = Arc::clone(&stop);
         let host = std::thread::spawn({
             let environment = launch.environment.clone();
-            move || {
-                host::serve_endpoints(&config, from.as_deref(), &environment, &entries, &host_stop)
-            }
+            move || host::serve_endpoints(&found, &environment, &entries, &host_stop)
         });
         report(ServiceState::Running, 0, Duration::ZERO);
         while !stop.load(Ordering::SeqCst) && !host.is_finished() {

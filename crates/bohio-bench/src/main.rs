@@ -17,6 +17,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
+use bohio::config::Layers;
 use bohio::peer::Data;
 use bohio_client::dial::Endpoint;
 use bohio_client::link::Settings;
@@ -242,12 +243,19 @@ fn command_text(program: &str, args: &[&str]) -> String {
         .unwrap_or_default()
 }
 
-fn proof_of(data_dir: &Path, server: Option<&str>) -> Result<Proof, String> {
+/// The proof of the client whose identity is in `data_dir` and whose configuration file `config` holds the
+/// `[peer.<id>]` table `bohio join` wrote for the host, or that trusts `server` alone.
+fn proof_of(data_dir: &Path, config: &Path, server: Option<&str>) -> Result<Proof, String> {
     let data = Data::new(data_dir);
     let identity = data.identity().map_err(|error| error.to_string())?;
     let trust = match server {
         Some(id) => Trust::pinned([id.parse().map_err(|_| "that is not a peer id".to_owned())?]),
-        None => Trust::Store(data.store().map_err(|error| error.to_string())?),
+        None => Trust::pinned(
+            Layers::peers(&[config.to_owned()])
+                .map_err(|error| error.to_string())?
+                .ids()
+                .filter_map(|name| name.parse().ok()),
+        ),
     };
     Proof::builder(identity)
         .responders(trust)
@@ -368,7 +376,7 @@ fn local(args: &LocalArgs) -> Result<bool, String> {
             .parse()
             .map_err(|_| "the raw control's address".to_owned())?;
         let endpoint = Endpoint::parse(&local.endpoint)?;
-        let proof = proof_of(&local.client_data, None)?;
+        let proof = proof_of(&local.client_data, &local.client_config, None)?;
         let mut runner = Runner::new(Env {
             endpoint,
             endpoint_text: local.endpoint.clone(),
@@ -397,7 +405,7 @@ fn remote(args: &RunArgs) -> Result<bool, String> {
     let common = &args.common;
     let (extra, settings) = apply_sets(&common.set)?;
     let bohio = common.bohio.clone().unwrap_or_else(|| sibling("bohio"));
-    let proof = proof_of(&args.data_dir, args.server.as_deref())?;
+    let proof = proof_of(&args.data_dir, &args.client_config, args.server.as_deref())?;
     let mut runner = Runner::new(Env {
         endpoint: Endpoint::parse(&args.endpoint)?,
         endpoint_text: args.endpoint.clone(),
