@@ -157,7 +157,7 @@ impl Open for Opener {
 
 impl Opens {
     /// Serves open requests on `mux` until the link leaves `Up`, [`Opener::close`] is called or every
-    /// [`Opener`] is gone. Each stream is handed back through a bounded [`relay`], two threads that live
+    /// [`Opener`] is gone. Each stream is handed back through a bounded [`relay`](crate::relay::relay), two threads that live
     /// as long as the stream does; whatever is still open when this returns is closed.
     pub fn run<C: Channel>(self, mux: &Mux<'_, C>, settings: &Settings) {
         let poll = settings.poll_interval.max(Duration::from_millis(1));
