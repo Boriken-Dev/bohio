@@ -367,13 +367,17 @@ fn dialing_grants_nothing(
         matches!(refused, Error::Transport(Failure::Permission)),
         "{refused:?}"
     );
-    assert!(
-        host.events
-            .seen()
-            .iter()
-            .any(|event| matches!(event, NodeEvent::Refused { .. })),
-        "the host did not report a refusal"
-    );
+    // The host closes the stream before it reports the refusal, so the report may come a moment after.
+    let until = Instant::now() + WAIT;
+    while !host
+        .events
+        .seen()
+        .iter()
+        .any(|event| matches!(event, NodeEvent::Refused { .. }))
+    {
+        assert!(Instant::now() < until, "the host did not report a refusal");
+        thread::sleep(Duration::from_millis(20));
+    }
 
     controller
         .grants
