@@ -149,7 +149,10 @@ impl Fs {
 pub struct Reader;                                                // Debug; Drop closes the stream: the host stops reading
 impl Reader {
     pub fn start(link: &dyn Open, request: &ReadRequest, timeout: Option<Duration>) -> Result<Self, Error>;   // waits for the host to open the file
-    pub fn header(&self) -> ReadHeader;                           // size, and how many bytes will arrive
+    pub fn start_with(link: &dyn Open, request: &ReadRequest, timeout: Option<Duration>, options: ReadOptions) -> Result<Self, Error>;   // progress frames restart `timeout`
+    pub fn header(&self) -> ReadHeader;                           // size, how many bytes will arrive (decompressed), what the host used
+    pub const fn compression(&self) -> Option<&Compression>;      // what the host compresses with (the level it clamped to); None: raw
+    pub fn wire_bytes(&self) -> u64;                              // the data bytes that travelled so far, compressed where they were
     pub fn digests(&self) -> Option<Digests>;                     // the request's `hashes` of what was sent; Some once the last chunk was read
     pub fn next_chunk(&self, timeout: Option<Duration>) -> Result<Option<Vec<u8>>, Error>;                  // Ok(None): all arrived
     pub fn copy_to(&self, out: &mut impl Write, timeout: Option<Duration>) -> Result<u64, Error>;           // one chunk in memory
@@ -158,13 +161,27 @@ impl Reader {
 pub struct Writer;                                                // Debug; Drop before finish closes the stream: the host abandons the write
 impl Writer {
     pub const DEFAULT_CHUNK: usize = 64 * 1024;
-    pub fn start(link: &dyn Open, request: &WriteRequest, timeout: Option<Duration>) -> Result<Self, Error>;  // waits for `ready`
+    pub fn start(link: &dyn Open, request: &WriteRequest, timeout: Option<Duration>) -> Result<Self, Error>;  // waits for `ready`; compresses when request.compression names an algorithm
+    pub fn start_with(link: &dyn Open, request: &WriteRequest, timeout: Option<Duration>, caps: &Caps) -> Result<Self, Error>;   // levels and window this side may use
+    pub fn write_compressed(&self, bytes: &[u8]) -> Result<(), Error>;   // a piece of a stream compressed elsewhere (prepared), cut anywhere
     pub fn with_chunk(self, bytes: usize) -> Self;                // most file bytes in one frame; keep it below what the link queues
     pub fn write(&self, bytes: &[u8]) -> Result<(), Error>;       // waits for room
     pub fn finish(&self, timeout: Option<Duration>) -> Result<WriteDone, Error>;   // sends `end`, waits for the host to put the data in place
     pub fn abort(&self);
 }
 ```
+
+```rust
+pub struct ReadOptions { pub window_log_max: Option<u32> /* 27 */, pub raw: bool /* hand out the compressed stream undecoded */, pub on_progress: Option<Box<dyn FnMut(u64) + Send>> }   // Default
+pub struct PutOptions { pub compression: Option<Compression>, pub prepare: bool, pub caps: Caps, pub temp_dir: Option<PathBuf>, pub chunk: Option<usize> }   // Default
+pub fn put(link: &dyn Open, request: &WriteRequest, source: &mut dyn Read, options: &PutOptions, timeout: Option<Duration>) -> Result<WriteDone, Error>;   // prepare: one context into a temp file, then sent
+pub fn resolve_auto(info: &Info, wanted: &Compression) -> Option<Compression>;        // `auto` -> the host's compression_default (a client names what it sends)
+```
+
+`Reader` decodes `compressed` frames as they arrive (cargo feature `zstd`, on in `bohio`, decodes zstd; without it a zstd header is `Error::Compression`) and stops with
+`Error::Protocol` when the output would pass `header.length`; a read that `resume`s, or `raw: true`, hands out the compressed bytes as they travelled. `Writer`
+compresses with the same per-frame raw fallback (a raw frame ends the context). `Exec::start_with(link, request, caps)` does the same for standard input and
+decodes both outputs; `Exec::compression()` is what `started` reported. `Error::Compression(text)`: an algorithm this build lacks, or `auto` where the client names one.
 
 A refusal (`denied`, `outside_root`, `not_found`, `exists`, `busy`, ...) comes from `Reader::start` and `Writer::start` as
 `Error::Remote`, before any data moves. `next_chunk` ends with `Error::Closed` when the stream finishes with a different number of

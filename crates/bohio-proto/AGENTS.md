@@ -70,15 +70,15 @@ pub struct Metadata { kind, size: u64, modified/accessed/created: Option<Timesta
                       readonly: bool, attributes: Option<u32> /* windows */ }
 pub struct Entry { pub name: String, pub metadata: Metadata }                            // not following a link
 pub struct Listing { pub entries: Vec<Entry>, pub next: Option<String>, pub skipped: u64 }   // ascending by name; `next` = pass as `after`
-pub struct ReadRequest { path, offset: u64 /* 0 */, length: Option<u64>, hashes: Vec<Algorithm> }   // open metadata of bohio-read/1; ReadRequest::whole(path)
-pub struct ReadHeader { pub size: u64, pub length: u64 }
+pub struct ReadRequest { path, offset: u64 /* 0 */, length: Option<u64>, hashes: Vec<Algorithm>, compression: Option<Compression>, prepare: bool, resume: Option<Resume> }   // open metadata of bohio-read/1; ReadRequest::whole(path)
+pub struct ReadHeader { size: u64, length: u64 /* decompressed */, compression: Option<Compression> /* what the host used, never auto */, compressed_length: Option<u64>, token: Option<String> }   // ReadHeader::raw(size, length)
 #[non_exhaustive] pub struct ReadDone { pub hashes: Digests }                        // the digests the request named, of the bytes sent
-#[non_exhaustive] pub enum ReadOutput { Header(ReadHeader), Data(Vec<u8>), Done(ReadDone), Error(ErrorBody) }
+#[non_exhaustive] pub enum ReadOutput { Header(ReadHeader), Data(Vec<u8>), Compressed(Vec<u8>) /* 0x06 */, Progress(Progress) /* 0x08 */, Done(ReadDone), Error(ErrorBody) }
 #[non_exhaustive] pub enum WriteMode { Replace /* default */, Create, Append, At { offset: u64 } }   // tagged by "type"
-pub struct WriteRequest { path, mode: WriteMode, parents: bool, file_mode: Option<u32>, expect: Digests, hashes: Option<Vec<Algorithm>> }   // WriteRequest::replace(path); hashes None: the host's write_hashes
+pub struct WriteRequest { path, mode: WriteMode, parents: bool, file_mode: Option<u32>, expect: Digests, hashes: Option<Vec<Algorithm>>, compression: Option<Compression> }   // WriteRequest::replace(path); hashes None: the host's write_hashes; compression: what the client sends, never Auto
 pub struct WriteDone { pub written: u64, pub hashes: Digests }
 #[non_exhaustive] pub enum WriteOutput { Ready, Done(WriteDone), Error(ErrorBody) }
-#[non_exhaustive] pub enum WriteInput { Data(Vec<u8>), End }
+#[non_exhaustive] pub enum WriteInput { Data(Vec<u8>), Compressed(Vec<u8>) /* 0x14 */, End }
 // each Request: to_metadata() / from_metadata(&[u8]); each frame enum: encode() / decode(&[u8]) (Error::Tag for an unknown tag)
 ```
 
@@ -129,6 +129,10 @@ pub struct Info { protocol, service: Service{name, version}, host_id: Option<Str
                   exec: ExecInfo{enabled}, shell: SessionInfo{enabled}, limits: Limits{max_streams, max_processes, max_sessions: Option<u64>},
                   transfer: TransferInfo{hashes: Vec<Algorithm>, hash_limits: HashLimits{max_streams: u64, rate: u64 /* 0 unlimited */}},
                   forward: ForwardInfo{enabled, connect, listen} }
+
+                  transfer: TransferInfo{hashes: Vec<Algorithm>, hash_limits: HashLimits{max_streams: u64, rate: u64 /* 0 unlimited */},
+                         compression: Vec<CompressionInfo{algorithm: Codec, levels: Levels{min, max}, default_level: i32, window_log_max: u32}>,
+                         compression_default: Option<Compression>, prepared: bool} }
 ```
 
 Every field has a default and unknown keys are ignored: a client works with a host that reports less or more. `os` and `arch` are
@@ -163,14 +167,14 @@ version does not know, which a reader may skip.
 ## Exec (`bohio_proto::exec`)
 
 ```rust
-pub struct Request { pub command: Command, pub cwd: Option<String>, pub env: Env, pub stdin: Stdin, pub timeout_ms: Option<u64> }
+pub struct Request { pub command: Command, pub cwd: Option<String>, pub env: Env, pub stdin: Stdin, pub timeout_ms: Option<u64>, pub output_compression: Option<Compression>, pub stdin_compression: Option<Compression> }
 impl Request { pub fn argv(argv) -> Self; pub fn shell(kind: ShellKind, script) -> Self;
                pub fn to_metadata(&self) -> Result<Vec<u8>, Error>; pub fn from_metadata(&[u8]) -> Result<Self, Error>; }
 #[non_exhaustive] pub enum Command { Argv { argv: Vec<String> }, Shell { kind: ShellKind, script: String } }
-pub struct Env { pub clear: bool, pub set: BTreeMap<String, String>, pub remove: Vec<String> }   // applied: clear, set, remove
+pub struct Started { pub pid: u32, pub output_compression: Option<Compression>, pub stdin_compression: Option<Compression> }   // Started::new(pid)
 #[non_exhaustive] pub enum Stdin { Closed /* default */, Open }
-pub struct Started { pub pid: u32 }
-pub struct Exit { pub code: Option<i32>, pub signal: Option<i32>, pub timed_out: bool, pub killed: bool }
+#[non_exhaustive] pub enum Output { Started(Started), Stdout(Vec<u8>), Stderr(Vec<u8>), StdoutCompressed(Vec<u8>) /* 0x06 */, StderrCompressed(Vec<u8>) /* 0x07 */, Exit(Exit), Error(ErrorBody) }   // host to client
+#[non_exhaustive] pub enum Input { Stdin(Vec<u8>), StdinCompressed(Vec<u8>) /* 0x13 */, StdinEnd, Kill }                              // client to host
 #[non_exhaustive] pub enum Output { Started(Started), Stdout(Vec<u8>), Stderr(Vec<u8>), Exit(Exit), Error(ErrorBody) }   // host to client
 #[non_exhaustive] pub enum Input { Stdin(Vec<u8>), StdinEnd, Kill }                                                    // client to host
 impl Output { pub fn encode(&self) -> Result<Vec<u8>, Error>; pub fn decode(&[u8]) -> Result<Self, Error>; }
@@ -201,3 +205,18 @@ pub struct LinksRequest { wait_ms: Option<u64> }   // Default; to_metadata(), fr
 pub struct LinkEntry { peer, side: String /* dialed|answered */, endpoint: Option<String>, source: Option<String>, since: u64, mine: Vec<String>, theirs: Option<Vec<String>> }
 pub struct LinksReply { links: Vec<LinkEntry> }    // Default; encode(), decode(&[u8])
 ```
+
+## Compression (`bohio_proto::compress`)
+
+```rust
+#[non_exhaustive] pub enum Codec { Zstd, Lz4, Deflate, None, Auto, Other(String) }   // Ord; a string on the wire; Codec::KNOWN = the three that compress
+impl Codec { pub fn name(&self) -> &str; pub fn from_name(&str) -> Self; pub const fn compresses(&self) -> bool; }
+pub struct Compression { pub algorithm: Codec, pub level: Option<i32>, pub window_log: Option<u32> }   // the request, or what the host used
+impl Compression { const fn none() / auto() / new(Codec); fn level(self, i32) / window_log(self, u32); const fn is_requested(&self) -> bool; fn parse("zstd:19") -> Result<Self, String>; }
+pub struct Resume { pub token: String, pub offset: u64 }      // a prepared read, from a compressed offset
+pub struct Progress { pub prepared: u64 }                     // `0x08` frame: bytes of the file compressed so far
+```
+
+Compressed bytes travel in a tag of their own beside the raw one (read host to client `0x06`, write client to host `0x14`, exec `0x06` stdout and `0x07`
+stderr from the host, `0x13` stdin from the client). The new fields of requests and headers are left out of the CBOR when absent, so a peer that never asks
+sends the bytes it always did. **A raw frame ends the compression context**; the rules and bounds are in `docs/protocol.md` ("Compression").

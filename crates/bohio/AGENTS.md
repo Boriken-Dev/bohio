@@ -103,6 +103,16 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[hash] rate` | `0` | most bytes a second one hash stream reads; `0` is unlimited |
 | `[hash] read_size` | `1048576` | the buffer a hash reads with; at least 1 (a `rate` below twenty times it reads smaller pieces) |
 | `[hash] algorithms` | every one | the digests the host computes, for hash streams, reads and writes; at least one, each known to this build |
+| `[compression] allowed` | every algorithm this build has | which of `zstd`, `lz4`, `deflate` a peer may ask for (`unsupported` otherwise); empty allows none |
+| `[compression] default` | `{algorithm = "zstd", level = 3}` (`lz4` without zstd) | what `auto` means; one of `allowed` |
+| `[compression] max_level` / `deflate_max_level` | `19` / `9` | the highest zstd / deflate level; a higher request is clamped and the header says so |
+| `[compression] window_log_max` | `23` | the largest zstd window (power of two, 10 to 31) the host uses and accepts; a decoder holds about one window per stream |
+| `[compression] workers` | `0` | zstd worker threads per stream; above 0 needs the `zstdmt` feature |
+| `[compression] skip_extensions` | archives, images, audio, video, documents, packages | extensions a read never compresses |
+| `[compression] sample_bytes` / `sample_ratio` | `65536` / `0.9` | a read compresses its first `sample_bytes` as a trial and goes raw when it saves less than `1 - sample_ratio`; `0` bytes is no trial |
+| `[compression] exclude` | `*.key *.pem *.p12 *.pfx id_* .env *.kdbx` | globs (of the path and of the name) of files never compressed |
+| `[compression] max_expansion` | `1024` | decompressed over compressed bytes a write or standard input may reach (checked past 1 MiB); `0` is off |
+| `[compression] prepare_dir` / `prepare_max_bytes` / `prepare_ttl` | `prepared` in the data directory (the command; none when embedded) / `1073741824` / `10m` | where prepared reads are kept, the most one holds (`busy` past it) and how long they live |
 | `[filesystem] list_page` | `1000` | most entries in one listing page, whatever the client asks for; at least 1 |
 | `[filesystem] idle_timeout` | `5m` | how long a transfer may make no progress before the host abandons it; not zero |
 | `[filesystem] poll_interval` | `20ms` | how often a transfer looks at its stream while it waits; not zero |
@@ -182,7 +192,7 @@ A bad endpoint, a fallback that does not follow a `webtransport://` one, or a ba
 ## Execution (`bohio::exec`)
 
 ```rust
-pub struct Context<'a> { pub grant: &'a Grant, pub config: &'a ExecutionConfig, pub slots: &'a Slots, pub path: &'a OsStr }   // Copy; `path` is the host's own PATH
+pub struct Context<'a> { pub grant: &'a Grant, pub config: &'a ExecutionConfig, pub compression: &'a CompressionConfig, pub slots: &'a Slots, pub path: &'a OsStr }   // Copy; `path` is the host's own PATH
 pub fn serve(channel: Arc<dyn Channel>, metadata: &[u8], context: &Context<'_>) -> Result<bohio_proto::exec::Exit, ErrorBody>;
 ```
 
@@ -230,7 +240,7 @@ reads slowly slows the shell.
 ## Filesystem (`bohio::fs`)
 
 ```rust
-pub struct Context<'a> { pub grant: &'a Grant, pub config: &'a FilesystemConfig, pub slots: &'a Slots }   // Copy
+pub struct Context<'a> { pub grant: &'a Grant, pub config: &'a FilesystemConfig, pub hash: &'a HashConfig, pub compression: &'a CompressionConfig, pub peer: &'a str, pub slots: &'a Slots }   // Copy
 pub fn call(context: &Context<'_>, call: &bohio_proto::control::Call, budget: usize) -> Result<Reply, ErrorBody>;
 pub fn serve_read(channel: Arc<dyn Channel>, metadata: &[u8], context: &Context<'_>) -> Result<u64, ErrorBody>;     // bytes sent
 pub fn serve_write(channel: Arc<dyn Channel>, metadata: &[u8], context: &Context<'_>) -> Result<WriteDone, ErrorBody>;
@@ -271,6 +281,13 @@ On every OS the root's owner is trusted: a hard link another local user makes to
 bind mount or junction an administrator places inside a root is part of the root. Windows has no POSIX modes (`set_mode` and a
 `mode` are `unsupported`, `Metadata::mode` is absent); `set_attributes` sets the read-only attribute there and is `unsupported`
 elsewhere.
+
+**Compression** (`fs::compress`, `fs::prepare`, `exec`): `fs::Context` carries the `[compression]` settings and the peer's id; `exec::Context` the settings. A read with
+`compression` sends each chunk as a `compressed` frame when that is smaller, else a raw `data` frame (the encoder then starts a new context); a file skipped by
+extension, `exclude` or the sample is sent raw and the header has no `compression`. `prepare` makes `<token>.bin` and `<token>.meta` in `prepare_dir` (a random
+128-bit token, the peer's id in the record), sends `progress` at least every `idle_timeout / 4`, and `resume` re-opens it for the same peer and path. A write
+decodes `0x14` frames within `window_log_max` and `max_expansion` (`bad_request` past either) and resets the decoder on a raw frame; exec output has an encoder per pipe and
+standard input a decoder. Cargo feature `zstd` (default) builds the C library; `zstdmt` adds worker threads. `fs::sweep_prepared(dir, ttl)` removes expired files (`Node::new` calls it).
 
 **Transfers.** Reads send `header`, `data` frames of at most `chunk_size` bytes, `done`; sending waits while the stream has no room.
 A `replace` write goes to a temporary sibling (`.bohio-<pid>-<n>.tmp`) and is renamed over the target after `end` (and a matching

@@ -6,7 +6,7 @@
 [![Docs](https://img.shields.io/docsrs/bohio-transfer)](https://docs.rs/bohio-transfer)
 [![CI](https://img.shields.io/github/actions/workflow/status/Boriken-Dev/bohio/test.yml)](https://github.com/Boriken-Dev/bohio/actions/workflows/test.yml)
 
-The byte-level work of Bohío, a remote host runtime: digests of several algorithms in one pass. **It does no I/O of
+The byte-level work of Bohío, a remote host runtime: digests of several algorithms in one pass, and compression (zstd, LZ4 and deflate) piece by piece. **It does no I/O of
 its own**: it takes the bytes a caller feeds it, or a `Read` a caller passes. Documentation: <https://docs.rs/bohio-transfer>.
 
 ## Features
@@ -21,7 +21,7 @@ its own**: it takes the bytes a caller feeds it, or a `Read` a caller passes. Do
 cargo add bohio-transfer --git https://github.com/Boriken-Dev/bohio
 ```
 
-The crate has no Cargo features.
+Features: `zstd` (default) compiles the zstd C library with `cc`; `zstdmt` adds its worker threads. Without `zstd`, `lz4` and `deflate` remain.
 
 ## Quick start
 
@@ -34,6 +34,25 @@ hasher.update(b"123456789");
 let digests = hasher.finish();
 assert_eq!(digests[&Algorithm::Crc32c], "e3069283");
 # Ok::<(), bohio_transfer::hash::Unsupported>(())
+```
+
+Compression, one frame at a time: a piece that does not shrink goes raw, and a raw frame ends the context.
+
+```rust
+use bohio_proto::compress::{Codec, Compression};
+use bohio_transfer::compress::{Bounds, Caps, Decoder, Encoder, Piece};
+
+let request = Compression::new(Codec::Deflate).level(6);
+let mut encoder = Encoder::new(&request, &Caps::default())?;
+let mut decoder = Decoder::new(&request, &Bounds::default())?;
+let chunk = b"hello hello hello hello hello hello\n";
+let mut out = Vec::new();
+match encoder.frame(chunk)? {
+    Piece::Compressed(piece) => { decoder.feed(&piece, &mut out)?; }
+    Piece::Raw => { decoder.reset(); out.extend_from_slice(chunk); }
+}
+assert_eq!(out, chunk);
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 ## License

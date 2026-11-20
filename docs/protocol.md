@@ -159,7 +159,12 @@ info = { ? protocol: uint, ? service: { ? name: text, ? version: text }, ? host_
          ? forward: forward-info }
 forward-info = { ? enabled: bool, ? connect: [* text], ? listen: [* text] }   ; the target kinds `bohio-connect/1` reaches: "tcp", and "unix" (Unix hosts) or "pipe" (Windows hosts); `listen` is empty
 transfer-info = { ? hashes: [* text],                        ; the algorithms the host computes, empty when none
-                  ? hash_limits: { ? max_streams: uint, ? rate: uint } }   ; hash streams at once; bytes a second one stream reads, 0 unlimited
+                  ? hash_limits: { ? max_streams: uint, ? rate: uint },    ; hash streams at once; bytes a second one stream reads, 0 unlimited
+                  ? compression: [* compression-info],                     ; the algorithms the host compresses with, empty when none
+                  ? compression_default: opt<compression>,                 ; what "auto" means on this host
+                  ? prepared: bool }                                       ; whether a read may say `prepare`
+compression-info = { algorithm: text, ? levels: { min: int, max: int },    ; the levels after the host's own cap; 0 and 0 for lz4
+                     ? default_level: int, ? window_log_max: uint }        ; the level used when a request names none; the largest zstd window, 0 where there is none
 shell-kind = "sh" / "bash" / "zsh" / "cmd" / "powershell" / "pwsh" / "other"
 ```
 
@@ -168,9 +173,15 @@ shell-kind = "sh" / "bash" / "zsh" / "cmd" / "powershell" / "pwsh" / "other"
 `bohio-read/1`. The open's metadata is a CBOR `read-request`; the client sends nothing more on the stream.
 
 ```text
-read-request = { path: text, ? offset: uint, ? length: opt<uint>, ? hashes: [* text] }   ; length null: to the end; hashes: algorithm names
-read-header  = { size: uint, length: uint }                              ; the file's size; the bytes that follow
-read-done    = { ? hashes: { * text => text } }                          ; the digests asked for, of the bytes sent
+read-request = { path: text, ? offset: uint, ? length: opt<uint>, ? hashes: [* text],   ; length null: to the end; hashes: algorithm names
+                 ? compression: compression,                                           ; how the host sends the bytes; absent or "none": raw
+                 ? prepare: bool,                                                      ; compress the whole range first, then send it
+                 ? resume: { token: text, offset: uint } }                             ; continue a prepared read at a compressed offset
+read-header  = { size: uint, length: uint,                                             ; the file's size; the bytes that follow, decompressed
+                 ? compression: compression,                                           ; what the host used, never "auto"; absent: raw
+                 ? compressed_length: uint, ? token: text }                            ; prepared reads: the compressed size, the name to resume by
+read-done    = { ? hashes: { * text => text } }                                        ; the digests asked for, of the bytes sent
+progress     = { prepared: uint }                                                      ; the bytes of the file compressed so far
 ```
 
 | Direction | Tag | Body |
@@ -179,8 +190,10 @@ read-done    = { ? hashes: { * text => text } }                          ; the d
 | host to client | `0x02` | raw file bytes, in order |
 | host to client | `0x04` | CBOR `read-done`: all `length` bytes were sent |
 | host to client | `0x05` | CBOR `error-body`: the last frame |
+| host to client | `0x06` | a piece of the compressed stream (see [Compression](#compression)) |
+| host to client | `0x08` | CBOR `progress`: a prepared read is still being compressed |
 
-The host sends the header first, then data frames whose bytes add up to `header.length`, then `0x04`. A stream that ends with no `0x04` and no `0x05` is a read cut short. A refused request is one `0x05` frame. A client closing the stream stops the read.
+The host sends the header first, then data frames whose bytes add up to `header.length` (after decompression), then `0x04`. A stream that ends with no `0x04` and no `0x05` is a read cut short. A refused request is one `0x05` frame. A client closing the stream stops the read.
 
 ## Writing a file
 
@@ -189,7 +202,8 @@ The host sends the header first, then data frames whose bytes add up to `header.
 ```text
 write-request = { path: text, ? mode: write-mode, ? parents: bool, ? file_mode: opt<uint>,
                   ? expect: { * text => text },          ; algorithm name => the digest the data must have, in hex
-                  ? hashes: opt<[* text]> }               ; digests to answer; null: the host's [filesystem] write_hashes (sha256 by default)
+                  ? hashes: opt<[* text]>,                ; digests to answer; null: the host's [filesystem] write_hashes (sha256 by default)
+                  ? compression: compression }            ; what the client sends: a concrete algorithm, never "auto"; absent or "none": raw
 write-mode    = { type: "replace" } / { type: "create" } / { type: "append" } / { type: "at", offset: uint }   ; replace by default
 write-done    = { written: uint, ? hashes: { * text => text } }            ; the bytes written, and the digests `hashes` asked for
 ```
@@ -201,6 +215,7 @@ write-done    = { written: uint, ? hashes: { * text => text } }            ; the
 | host to client | `0x05` | CBOR `error-body`: the last frame |
 | client to host | `0x10` | raw file bytes, in order |
 | client to host | `0x11` | empty: the end of the data |
+| client to host | `0x14` | a piece of the compressed stream (see [Compression](#compression)) |
 
 The client waits for `0x01`, sends `0x10` frames, then `0x11`, then waits for `0x04`. A `replace` write goes to a temporary sibling and is renamed over the target after `0x11` and a matching `expect` (every named digest is checked, a mismatch is `io`, and nothing is replaced; `expect` is for `replace` and `create` only, and a value that is not the algorithm's lowercase hex is `bad_request`); until the host's `0x04` the target is as it was. `create` fails with `exists` when the file is there. `append` and `at` write in place, and what was written stays when the stream is abandoned. `parents` creates missing directories; `file_mode` sets Unix permission bits on a new file. A write the client abandons (closing the stream) leaves no temporary file.
 
@@ -239,12 +254,14 @@ Names and digests. An algorithm is one of `md5`, `sha1`, `sha256`, `sha384`, `sh
 One process, run to its exit. The open's metadata is a CBOR `exec-request`.
 
 ```text
-exec-request = { command: command, ? cwd: opt<text>, ? env: env, ? stdin: stdin, ? timeout_ms: opt<uint> }
+exec-request = { command: command, ? cwd: opt<text>, ? env: env, ? stdin: stdin, ? timeout_ms: opt<uint>,
+                 ? output_compression: compression,             ; how the host sends standard output and standard error
+                 ? stdin_compression: compression }             ; how the client sends standard input: a concrete algorithm
 command      = { type: "argv", argv: [+ text] }                 ; the first element runs directly, never through a shell
              / { type: "shell", kind: shell-kind, script: text } ; only for a caller that chose a shell
 env          = { ? clear: bool, ? set: { * text => text }, ? remove: [* text] }   ; applied in that order
 stdin        = "closed" / "open"                                ; closed by default
-started      = { pid: uint }
+started      = { pid: uint, ? output_compression: compression, ? stdin_compression: compression }   ; what the host uses and accepts, never "auto"
 exit         = { ? code: opt<int>, ? signal: opt<int>, ? timed_out: bool, ? killed: bool }
 ```
 
@@ -255,11 +272,44 @@ exit         = { ? code: opt<int>, ? signal: opt<int>, ? timed_out: bool, ? kill
 | host to client | `0x03` | raw standard error |
 | host to client | `0x04` | CBOR `exit`: after every output byte |
 | host to client | `0x05` | CBOR `error-body` |
+| host to client | `0x06` | a piece of the compressed standard output |
+| host to client | `0x07` | a piece of the compressed standard error |
 | client to host | `0x10` | raw standard input (only with `stdin: "open"`) |
 | client to host | `0x11` | empty: end of standard input |
 | client to host | `0x12` | empty: kill the process tree |
+| client to host | `0x13` | a piece of the compressed standard input |
 
-The host sends `started`, then output as the process writes it, then `exit`. `exit` and `error` are the last frame the host sends. `killed` is true whenever the host ended the tree: a `kill` frame, a closed stream, or the deadline; `timed_out` says it was the deadline (`timeout_ms`). `code` is absent when a signal ended the process. A request the host refuses is one `error` frame (`bad_request`, `unsupported`, `denied`, `not_found`, `busy`). Standard input sent for `stdin: "closed"` is ignored. The tree is ended when the stream closes, on every path.
+Standard output and standard error have a compression context each, and standard input a third; a `0x02` frame ends the output context, `0x03` the error one and `0x10` the input one. The host sends `started`, then output as the process writes it, then `exit`. `exit` and `error` are the last frame the host sends. `killed` is true whenever the host ended the tree: a `kill` frame, a closed stream, or the deadline; `timed_out` says it was the deadline (`timeout_ms`). `code` is absent when a signal ended the process. A request the host refuses is one `error` frame (`bad_request`, `unsupported`, `denied`, `not_found`, `busy`). Standard input sent for `stdin: "closed"` is ignored. The tree is ended when the stream closes, on every path.
+
+## Compression
+
+Compression is per stream and per direction, asked for in the request, and only on `bohio-read/1` (what the host sends), `bohio-write/1` (what the client sends) and `bohio-exec/1` (output and standard input). The control stream and shells are never compressed, and a peer that never asks never sees a compressed frame (a reader skips a tag it does not know).
+
+```text
+compression = { algorithm: "zstd" / "lz4" / "deflate" / "none" / "auto" / text,
+                ? level: opt<int>,          ; the algorithm's own scale; its default when absent; clamped by the host
+                ? window_log: opt<uint> }   ; zstd: the window as a power of two; clamped by the host
+```
+
+**What a request gets.** What the host *sends* (read data, exec output): the client asks; the host replaces `auto` by its `[compression] default`, clamps `level` to its `max_level` and `window_log` to its `window_log_max`, and reports what it used in the first frame (`read-header.compression`, `started.output_compression`; never `auto`). It refuses an algorithm it does not allow, or that its build lacks, as `unsupported`. What the client *sends* (write data, standard input): the client names a concrete algorithm, which the host must allow (`unsupported` otherwise; `auto` is `bad_request`), and compresses within the host's `info.transfer.compression` levels (a host does not need the level: it decodes). A client reads `info.transfer.compression` and `compression_default` to choose.
+
+**The algorithms** are the standard formats, so any language decodes them with its own library:
+
+| Name | Stream | Notes |
+| --- | --- | --- |
+| `zstd` | zstd frames (RFC 8878): the pieces of one context are the flushed blocks of one frame, so a piece alone is not a frame | levels from the negative fast ones to 22; `window_log` sets the window; a decoder refuses a frame whose window is above the bound it runs under |
+| `lz4` | LZ4 frame format (independent blocks, no checksums): the pieces of one context are the blocks of one frame, the header on the first | no levels; the cheapest, for hosts whose CPU cannot afford more |
+| `deflate` | a zlib stream (RFC 1950), a sync flush at the end of each piece | levels 0 to 9; what a browser's `DecompressionStream("deflate")` and Python's `zlib` decode |
+
+**Pieces and the raw frame.** A sender compresses each frame of data with the context of its stream direction and flushes, so every piece decodes completely as it arrives. When a piece is not smaller than its input the sender sends the input as a *raw* frame (`0x02` for read data, `0x10` for write data, `0x02`/`0x03`/`0x10` for exec) instead. **A raw frame ends the compression context:** the next compressed piece begins a new zstd frame, a new LZ4 frame (header included) or a new zlib stream, and a receiver resets its decoder on every raw frame it receives. Every implementation must follow this, since a decoder in the middle of an old stream cannot read a new one. A stream is therefore any mix of raw and compressed frames, and data that does not compress (an archive, a photograph) costs the sender one failed attempt per frame and the link nothing.
+
+A host also decides per file for reads: a file whose extension is in `[compression] skip_extensions`, whose path or name matches `exclude` (key and certificate patterns by default), or whose first `sample_bytes` compress to more than `sample_ratio` of their size is sent raw from the first frame (the header then has no `compression`).
+
+**Bounds.** A reader (the client of a read) stops with a protocol error when the decompressed bytes would pass `read-header.length`, and refuses a stream asking for a window above its own bound. A host decoding what a peer sends (a write, standard input) holds it to `[compression] window_log_max` and to `max_expansion` (the decompressed bytes may not pass that many times the compressed bytes received, checked once more than 1 MiB has been produced; `0` turns it off); a stream past either ends with `bad_request`. A write is bounded by the disk and the expansion check alone, so a host that accepts files of zeros sets `max_expansion = 0` knowingly.
+
+**One context per direction, never shared.** The context of one stream direction is never reused for another stream or direction, so what a client sends and what it reads never mix in one dictionary window.
+
+**Prepared reads.** With `prepare: true` the host compresses the whole range into a file first, in one context at the requested level, and sends `progress` frames (`0x08`) at least every `idle_timeout / 4` while it works, so neither side's idle timer runs out. It then sends the header with `compressed_length` and `token`, and the compressed stream in `0x06` frames cut anywhere (a decoder takes it in any pieces), then `0x04`. The token names the file, which only the peer that made it can open and which expires after `[compression] prepare_ttl`; `resume: {token, offset}` (with the same `path`) from the same peer sends the same header and the compressed stream from that compressed offset. A client that resumes holds the first part itself and decodes the whole stream once it has it, since a decoder cannot start in the middle. A result past `prepare_max_bytes` is `busy`, and a host without a prepare directory answers `unsupported`.
 
 ## Shells
 

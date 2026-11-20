@@ -20,6 +20,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   and `hello` report `transfer` (`hashes`, `hash_limits`). `bohio_client::hash::{hash_file, hash_range, hash_many, hash_items}` (items and results on two
   threads, so a long batch cannot stop on a full stream), `bohio remote ... hash [--algorithm NAME]... PATH...` and the bench's `hash_*` scenarios
   (feature `hash`). `docs/protocol.md` has the CDDL and `vectors/hash.json` the messages.
+- Compression, per stream and per direction, for a slow link or a weak host. A client names it in the request (`compression` on a read and a write,
+  `output_compression` and `stdin_compression` on exec; `zstd`, `lz4`, `deflate`, `none` or `auto`, with a `level` and for zstd a `window_log`); the host clamps it to its
+  `[compression]` caps and reports what it used in the first frame, and `info.transfer` lists the algorithms with their levels, `compression_default` and `prepared`.
+  Compressed bytes travel in their own frame tags beside the raw ones (`0x06` host to client, `0x14` write, `0x06`/`0x07`/`0x13` exec), so a sender switches per
+  frame: a piece that does not shrink goes raw, and **a raw frame ends the compression context**, which every implementation follows (`docs/protocol.md`). A file
+  whose extension is already compressed, whose name is key material (`exclude`) or whose first `sample_bytes` do not compress is read raw from the first frame.
+  `prepare: true` compresses the whole range into a file on the host first (progress frames keep the stream alive), reports `compressed_length` and a `token`, and
+  resumes from a compressed offset. What a peer sends is decoded within `window_log_max` and `max_expansion`, and a reader stops at the header's `length`.
+  `[compression]` has `allowed`, `default`, `max_level`, `deflate_max_level`, `window_log_max`, `workers`, `skip_extensions`, `sample_bytes`, `sample_ratio`,
+  `exclude`, `max_expansion`, `prepare_dir`, `prepare_max_bytes` and `prepare_ttl`. zstd is the C library behind the default-on Cargo feature `zstd` (`zstdmt` adds
+  worker threads) of `bohio`, `bohio-client` and `bohio-transfer`; without it `lz4` and `deflate` remain and a request for zstd is `unsupported`.
+  `bohio_transfer::compress` (`Encoder`, `Decoder`, `Caps`, `Bounds`), `bohio_client::fs::{put, PutOptions, ReadOptions, resolve_auto}`, `Writer::start_with`,
+  `Reader::{compression, wire_bytes}`, `Exec::{start_with, compression}`, `bohio remote ... read --compress ALG[:LEVEL] [--prepare]`, `write PATH` (standard input to a
+  file) and `exec --compress`, and the bench's `read_<corpus>_<size>[_<algorithm>]`, `write_...` and `exec_text_...` scenarios (feature `compress`).
 - `[link] key_recheck` (unset: `2 x recheck`) is how often the link itself asks whether the peer's key is still accepted; it was always twice `recheck`. A stream whose link ended before its reader took what it held (a bulk read behind a slow reader) lost that and read as ended in order, not revoked: the opener now lets the reader take the rest and the stream's own end for at most `[link] send_limit`. A revoke found by that check, and not by the stream recheck, now reaches a running stream as a revoke: coqui-link 50c768d closes every open stream revoked before it ends the link. A `remote --via` read or exec that the check found first used to end with `the channel failed: the peer broke the wire format`.
 - `tools/build.py` (a copy of the release overlay's build tool), `tools/build.cfg` and `tools/sdk.lock`: a `deps` branch of vendored
   crates kept equal to `Cargo.lock`, the lock of the toolchains and base images a release is built with, offline builds from the
