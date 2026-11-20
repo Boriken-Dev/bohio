@@ -295,3 +295,218 @@ fn an_endpoint_whose_key_is_not_the_tables_id_is_not_linked_and_learns_nothing()
     let listing = pair.controller.peers();
     assert!(!listing.contains("waiting"), "{listing}");
 }
+
+/// A host that dialed its controller, both ready: what `grant` gives the controller on the host side, and
+/// `back` what the host is given on the controller side.
+struct Linked {
+    pair: Pair,
+    host: Proc,
+}
+
+fn linked(grant: &str, back: &str) -> Linked {
+    let pair = Pair::new(false);
+    pair.controller
+        .write_with(BEAT, &Node::peer_table(&pair.host.id, None, back, ""));
+    pair.host.write_with(
+        BEAT,
+        &Node::peer_table(&pair.controller.id, Some(&pair.endpoint), grant, DIAL),
+    );
+    let (host, _) = pair.host.serve(None, "info");
+    pair.controller_proc.wait_stderr("link up", 1, DEADLINE);
+    host.wait_stderr("link up", 1, DEADLINE);
+    Linked { pair, host }
+}
+
+/// `bohio remote --via` run by `from` for the link to `to`.
+fn via(from: &Node, to: &Node, action: &[&str]) -> support::procs::Finished {
+    let config = from.config();
+    let mut args = vec!["remote", "--via", &to.id, "--config", &config];
+    args.extend_from_slice(action);
+    support::procs::run(&args)
+}
+
+fn toml_list(path: &std::path::Path) -> String {
+    format!("'{}'", path.display())
+}
+
+#[test]
+fn a_controller_runs_info_read_and_exec_on_a_host_that_dialed_it() {
+    let root = tempfile::tempdir().expect("a directory");
+    std::fs::write(
+        root.path().join("hello.txt"),
+        "read over the link the host made\n",
+    )
+    .unwrap();
+    let grant = format!(
+        "allow = [\"info\", \"exec\", \"fs.read\"]\nfs_roots = [{}]",
+        toml_list(root.path())
+    );
+    let up = linked(&grant, "");
+    let (controller, host) = (&up.pair.controller, &up.pair.host);
+
+    let info = via(controller, host, &["info", "--format", "json"]);
+    assert_eq!(info.code, Some(0), "{}", info.stderr);
+    assert!(
+        info.stdout
+            .contains(&format!("\"host_id\":\"{}\"", host.id)),
+        "{}",
+        info.stdout
+    );
+    let path = root.path().join("hello.txt").to_string_lossy().into_owned();
+    let read = via(controller, host, &["read", &path]);
+    assert_eq!(read.code, Some(0), "{}", read.stderr);
+    assert_eq!(read.stdout, "read over the link the host made\n");
+    let helper = support::helper();
+    let echo = via(
+        controller,
+        host,
+        &["exec", "--", &helper, "echo", "from", "the", "host"],
+    );
+    assert_eq!(echo.code, Some(0), "{}", echo.stderr);
+    assert_eq!(echo.stdout.trim(), "from the host");
+    let exit = via(controller, host, &["exec", "--", &helper, "exit", "3"]);
+    assert_eq!(exit.code, Some(3), "{}", exit.stderr);
+}
+
+#[test]
+fn both_sides_control_each_other_over_the_one_link_at_once() {
+    let up = linked("allow = [\"exec\"]", "allow = [\"exec\"]");
+    let (controller, host) = (&up.pair.controller, &up.pair.host);
+    let helper = support::helper();
+    thread::scope(|scope| {
+        let from_controller = scope.spawn(|| {
+            via(
+                controller,
+                host,
+                &["exec", "--", &helper, "echo", "controller", "ran", "it"],
+            )
+        });
+        let from_host = scope.spawn(|| {
+            via(
+                host,
+                controller,
+                &["exec", "--", &helper, "echo", "host", "ran", "it"],
+            )
+        });
+        let (a, b) = (from_controller.join().unwrap(), from_host.join().unwrap());
+        assert_eq!(
+            (a.code, a.stdout.trim()),
+            (Some(0), "controller ran it"),
+            "{}",
+            a.stderr
+        );
+        assert_eq!(
+            (b.code, b.stdout.trim()),
+            (Some(0), "host ran it"),
+            "{}",
+            b.stderr
+        );
+    });
+}
+
+#[test]
+fn a_host_that_grants_nothing_refuses_the_controller_exec() {
+    let up = linked("", "");
+    let (controller, host) = (&up.pair.controller, &up.pair.host);
+    let helper = support::helper();
+    let refused = via(controller, host, &["exec", "--", &helper, "echo", "no"]);
+    assert_ne!(refused.code, Some(0), "an exec the host never granted ran");
+    assert!(
+        refused.stdout.is_empty() && refused.stderr.contains("refused"),
+        "{}",
+        refused.stderr
+    );
+    // No link at all is said so, and is not a refusal.
+    let other = Node::new(up.pair.controller.dir.as_path(), "stranger");
+    let none = via(controller, &other, &["info"]);
+    assert_ne!(none.code, Some(0));
+    assert!(none.stderr.contains("no link to"), "{}", none.stderr);
+}
+
+#[test]
+fn revoking_the_controller_on_the_host_ends_its_running_exec_within_a_recheck() {
+    let up = linked("allow = [\"exec\"]", "");
+    let (controller, host) = (&up.pair.controller, &up.pair.host);
+    let helper = support::helper();
+    let config = controller.config();
+    let mut long = Proc::start(
+        &[
+            "remote", "--via", &host.id, "--config", &config, "exec", "--", &helper, "tree",
+            "120000",
+        ],
+        "warn",
+    );
+    thread::sleep(Duration::from_secs(2));
+    let began = Instant::now();
+    run_ok(&["peer", "revoke", &controller.id, "--config", &host.config()]);
+    let until = Instant::now() + DEADLINE;
+    while long.stderr().is_empty() && Instant::now() < until {
+        thread::sleep(Duration::from_millis(50));
+    }
+    let took = began.elapsed();
+    assert!(
+        long.stderr().contains("revoked"),
+        "the controller was not told: {}",
+        long.stderr()
+    );
+    // `recheck` is one second here.
+    assert!(took < Duration::from_secs(5), "took {took:?}");
+    long.kill();
+}
+
+#[test]
+fn revoking_the_host_on_the_controller_ends_the_link_within_two_rechecks() {
+    let up = linked("allow = [\"exec\"]", "");
+    let (controller, host) = (&up.pair.controller, &up.pair.host);
+    let began = Instant::now();
+    run_ok(&["peer", "revoke", &host.id, "--config", &controller.config()]);
+    up.pair
+        .controller_proc
+        .wait_stderr("link down", 1, DEADLINE);
+    let took = began.elapsed();
+    assert!(took < Duration::from_secs(7), "took {took:?}");
+    let _ = &up.host;
+}
+
+#[test]
+fn bohio_links_shows_each_side_and_what_each_offers() {
+    let up = linked("allow = [\"info\", \"exec\"]", "");
+    let (controller, host) = (&up.pair.controller, &up.pair.host);
+    let on_host = run_ok(&["links", "--config", &host.config()]);
+    let line = on_host.stdout.trim();
+    assert!(
+        line.starts_with(&controller.id)
+            && line.contains(" dialed ")
+            && line.contains(&up.pair.endpoint),
+        "{line}"
+    );
+    // The host offers the controller what it grants; the controller offers the host nothing.
+    assert!(
+        line.contains("offers-to-peer: bohio-exec/1,bohio/1"),
+        "{line}"
+    );
+    assert!(line.contains("offers-from-peer: none"), "{line}");
+    let on_controller = run_ok(&["links", "--config", &controller.config()]);
+    let line = on_controller.stdout.trim();
+    assert!(
+        line.starts_with(&host.id) && line.contains(" answered "),
+        "{line}"
+    );
+    assert!(line.contains("offers-to-peer: none"), "{line}");
+    assert!(
+        line.contains("offers-from-peer: bohio-exec/1,bohio/1"),
+        "{line}"
+    );
+    let json = run_ok(&[
+        "links",
+        "--format",
+        "json",
+        "--config",
+        &controller.config(),
+    ]);
+    assert!(
+        json.stdout.contains("\"side\":\"answered\""),
+        "{}",
+        json.stdout
+    );
+}

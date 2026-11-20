@@ -173,6 +173,20 @@ impl PeerLink {
         self.peer
     }
 
+    /// Opens a stream, keeping the type that says why it ended: a refusal or a revoke with the text its peer
+    /// gave.
+    ///
+    /// # Errors
+    ///
+    /// As [`bohio_client::Open::open`].
+    pub fn open_stream(
+        &self,
+        protocol: &str,
+        metadata: &[u8],
+    ) -> Result<bohio_client::connect::Opened, bohio_client::Error> {
+        self.opener.open_stream(protocol, metadata)
+    }
+
     /// Whether the link can still open streams.
     pub fn is_up(&self) -> bool {
         self.opener.is_up()
@@ -215,7 +229,7 @@ impl OpenStreams for PeerLink {
 
 /// The links a node serves, in the order they came up.
 #[derive(Default)]
-struct Registry {
+pub(crate) struct Registry {
     next: AtomicU64,
     entries: Mutex<Vec<Entry>>,
 }
@@ -233,6 +247,40 @@ struct Listed<'a> {
 }
 
 impl Registry {
+    /// The oldest link that is up to `peer`.
+    pub(crate) fn find(&self, peer: &PeerId) -> Option<PeerLink> {
+        self.entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .find(|entry| entry.info.peer == *peer && entry.opener.is_up())
+            .map(|entry| PeerLink {
+                peer: *peer,
+                opener: entry.opener.clone(),
+            })
+    }
+
+    /// Every link that is up, oldest first, with what `grants` gives each peer as `mine`.
+    pub(crate) fn list_links(&self, grants: &dyn Grants) -> Vec<(LinkInfo, PeerLink)> {
+        self.entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter(|entry| entry.opener.is_up())
+            .map(|entry| {
+                let mut info = entry.info.clone();
+                info.mine = grant_of(grants, &info.peer.to_string())
+                    .map(|grant| offered(&grant).into_iter().map(str::to_owned).collect())
+                    .unwrap_or_default();
+                let link = PeerLink {
+                    peer: info.peer,
+                    opener: entry.opener.clone(),
+                };
+                (info, link)
+            })
+            .collect()
+    }
+
     fn add(&self, info: LinkInfo, opener: Opener) -> Listed<'_> {
         let id = self.next.fetch_add(1, Ordering::SeqCst);
         self.entries
@@ -261,7 +309,7 @@ pub struct Node {
     events: Arc<EventCell>,
     proof: Proof,
     identity: Identity,
-    registry: Registry,
+    registry: Arc<Registry>,
     peers: NodePeers,
     host: PeerId,
     connections: AtomicUsize,
@@ -404,7 +452,7 @@ impl Node {
             .map_err(|error| NodeError::Proof(error.to_string()))?;
         Ok(Self {
             identity,
-            registry: Registry::default(),
+            registry: Arc::default(),
             shared: Shared::new(&config, &grants, host, OsString::new()),
             peers: NodePeers::new(Arc::clone(&keys), Arc::clone(&grants)),
             grants,
@@ -849,33 +897,15 @@ impl Node {
 
     /// The oldest link that is up to `peer`, to open streams on whichever side made it.
     pub fn peer(&self, peer: &PeerId) -> Option<PeerLink> {
-        self.registry
-            .entries
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .iter()
-            .find(|entry| entry.info.peer == *peer && entry.opener.is_up())
-            .map(|entry| PeerLink {
-                peer: *peer,
-                opener: entry.opener.clone(),
-            })
+        self.registry.find(peer)
     }
 
     /// Every link that is up, oldest first.
     pub fn links(&self) -> Vec<LinkInfo> {
         self.registry
-            .entries
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .iter()
-            .filter(|entry| entry.opener.is_up())
-            .map(|entry| {
-                let mut info = entry.info.clone();
-                info.mine = grant_of(self.grants.as_ref(), &info.peer.to_string())
-                    .map(|grant| offered(&grant).into_iter().map(str::to_owned).collect())
-                    .unwrap_or_default();
-                info
-            })
+            .list_links(self.grants.as_ref())
+            .into_iter()
+            .map(|(info, _)| info)
             .collect()
     }
 }
@@ -1006,5 +1036,16 @@ impl Jitter {
         )]
         let unit = (self.0 >> 11) as f64 / (1u64 << 53) as f64;
         unit.mul_add(2.0, -1.0)
+    }
+}
+
+impl Node {
+    /// What the local endpoint serves from: the links, the grants and the link settings.
+    pub(crate) fn local_parts(&self) -> (Arc<Registry>, Arc<dyn Grants>, Settings) {
+        (
+            Arc::clone(&self.registry),
+            Arc::clone(&self.grants),
+            self.shared.settings,
+        )
     }
 }

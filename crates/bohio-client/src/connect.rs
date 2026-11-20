@@ -12,13 +12,13 @@ use std::time::Duration;
 
 use coqui_link::auth::{Proof, Sealed, prove_out};
 use coqui_link::link::{Capabilities, capabilities};
-use coqui_link::mux::{LinkState, Mux, Side};
+use coqui_link::mux::{LinkState, Mux, Side, Stream, StreamEnd};
 use coqui_peer::PeerId;
 use coqui_transport::{Channel, Failure};
 
 use crate::dial::{Endpoint, ServerTrust};
 use crate::link::Settings;
-use crate::relay::{Relay, relay};
+use crate::relay::{Relay, relay_with};
 use crate::{Error, Open};
 
 /// One request of the link's thread: open a stream, or read the peer's capability document.
@@ -26,7 +26,7 @@ enum Request {
     Open {
         protocol: String,
         metadata: Vec<u8>,
-        reply: Sender<Result<Box<dyn Channel>, Error>>,
+        reply: Sender<Result<Opened, Error>>,
     },
     Capabilities {
         wait: Duration,
@@ -125,8 +125,14 @@ impl Opener {
     }
 }
 
-impl Open for Opener {
-    fn open(&self, protocol: &str, metadata: &[u8]) -> Result<Box<dyn Channel>, Error> {
+impl Opener {
+    /// Opens a stream for `protocol` carrying `metadata`, as [`Open::open`] does, keeping the type that can
+    /// say why the stream ended.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Closed`] when the link has ended, else whatever the open reports.
+    pub fn open_stream(&self, protocol: &str, metadata: &[u8]) -> Result<Opened, Error> {
         if !self.is_up() {
             return Err(Error::Closed);
         }
@@ -139,6 +145,13 @@ impl Open for Opener {
             })
             .map_err(|_| Error::Closed)?;
         answer.recv().map_err(|_| Error::Closed)?
+    }
+}
+
+impl Open for Opener {
+    fn open(&self, protocol: &str, metadata: &[u8]) -> Result<Box<dyn Channel>, Error> {
+        self.open_stream(protocol, metadata)
+            .map(|opened| Box::new(opened) as Box<dyn Channel>)
     }
 }
 
@@ -167,7 +180,12 @@ impl Opens {
                     }) => {
                         let opened = mux.open_with(&protocol, &metadata).map_err(Error::from);
                         let answer = opened.map(|stream| {
-                            let relay = relay(scope, Arc::new(stream), settings);
+                            let relay = relay_with(
+                                scope,
+                                Arc::new(stream),
+                                settings,
+                                |stream: &Stream<'_, C>| stream.end(),
+                            );
                             let mut relays = self
                                 .shared
                                 .relays
@@ -175,7 +193,7 @@ impl Opens {
                                 .unwrap_or_else(PoisonError::into_inner);
                             relays.retain(|known| known.strong_count() > 0);
                             relays.push(Arc::downgrade(&relay));
-                            Box::new(Handle(relay)) as Box<dyn Channel>
+                            Opened(relay)
                         });
                         let _ = reply.send(answer);
                     }
@@ -331,10 +349,19 @@ impl Open for Connection {
     }
 }
 
-/// What a client holds of a stream: closing or dropping it closes the relay.
-struct Handle(Arc<Relay>);
+/// What a client holds of a stream: closing or dropping it closes the relay. [`Opened::end`] says why
+/// the stream ended, with the text its peer gave.
+#[derive(Debug)]
+pub struct Opened(Arc<Relay>);
 
-impl Channel for Handle {
+impl Opened {
+    /// Why the stream ended, with the text its peer gave (a refusal, a revoke), once it has.
+    pub fn end(&self) -> Option<StreamEnd> {
+        self.0.end()
+    }
+}
+
+impl Channel for Opened {
     fn send(&self, message: &[u8]) -> Result<(), Failure> {
         self.0.send(message)
     }
@@ -360,7 +387,7 @@ impl Channel for Handle {
     }
 }
 
-impl Drop for Handle {
+impl Drop for Opened {
     fn drop(&mut self) {
         self.0.close();
     }

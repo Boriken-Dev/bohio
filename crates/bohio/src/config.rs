@@ -126,6 +126,8 @@ pub struct Config {
     pub execution: ExecutionConfig,
     /// `[shell]`.
     pub shell: ShellConfig,
+    /// `[control]`: the node's local endpoint.
+    pub control: ControlConfig,
     /// `[peer.<id>]`: each accepted peer and what it may do. A key is accepted while any layer holds
     /// its table, even an empty one.
     pub peer: Peers,
@@ -434,6 +436,66 @@ impl DialConfig {
             return Err(("retry_jitter", "must be from 0 to 1"));
         }
         Ok(())
+    }
+}
+
+/// `[control]`: the local endpoint of a running node, through which `bohio remote --via` and `bohio links` reach
+/// the links the node holds (including those a peer dialed). Whoever can connect there acts with everything
+/// every peer grants this node, so it is guarded like the key file: by default this user alone.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ControlConfig {
+    /// Whether the node serves the endpoint. Default `true`.
+    pub enabled: Option<bool>,
+    /// A `pipe://` endpoint. Default `pipe://bohio-` and the first 16 hex digits of the node's id, so two accounts'
+    /// nodes never share a Windows pipe name.
+    pub endpoint: Option<String>,
+    /// Unix: the socket's mode as octal text with the `0o` prefix. Default `"0o600"`: the owner alone. Setting it
+    /// (or `socket_group` or `security_descriptor`) makes the operator's choice the only check: with none set a
+    /// client that is not this user is closed unread as well.
+    pub socket_mode: Option<String>,
+    /// Unix: the socket's group, a name or a numeric id. Default the process's own.
+    pub socket_group: Option<String>,
+    /// Windows: the pipe's security descriptor (SDDL). Default this user alone.
+    pub security_descriptor: Option<String>,
+}
+
+impl ControlConfig {
+    /// Whether the endpoint is served.
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.unwrap_or(true)
+    }
+
+    /// The endpoint text: the one set, else `pipe://bohio-` and the first 16 hex digits of `node`'s digest.
+    pub fn endpoint_for(&self, node: &coqui_peer::PeerId) -> String {
+        self.endpoint.clone().unwrap_or_else(|| {
+            let text = node.to_string();
+            let digits = text.rsplit(':').next().unwrap_or("");
+            format!("pipe://bohio-{}", &digits[..digits.len().min(16)])
+        })
+    }
+
+    /// Whether the operator set who may connect, which then replaces the same-user check.
+    pub fn sets_access(&self) -> bool {
+        self.socket_mode.is_some()
+            || self.socket_group.is_some()
+            || self.security_descriptor.is_some()
+    }
+
+    /// The socket mode's bits.
+    ///
+    /// # Errors
+    ///
+    /// Why the text is not an octal mode with the `0o` prefix.
+    pub fn socket_mode_bits(&self) -> Result<Option<u32>, String> {
+        let Some(text) = &self.socket_mode else {
+            return Ok(None);
+        };
+        text.strip_prefix("0o")
+            .and_then(|digits| u32::from_str_radix(digits, 8).ok())
+            .filter(|bits| *bits <= 0o7777)
+            .map(Some)
+            .ok_or_else(|| format!("`{text}` is not an octal mode such as `0o660`"))
     }
 }
 
@@ -851,6 +913,17 @@ impl Config {
             if let Err(reason) = listen.socket_mode_bits() {
                 return Err(invalid("listen.socket_mode", &reason));
             }
+        }
+        if let Some(endpoint) = &self.control.endpoint
+            && !endpoint.starts_with("pipe://")
+        {
+            return Err(invalid(
+                "control.endpoint",
+                "must be a `pipe://` endpoint: the control endpoint is local",
+            ));
+        }
+        if let Err(reason) = self.control.socket_mode_bits() {
+            return Err(invalid("control.socket_mode", &reason));
         }
         for (name, endpoint, dial) in self.peer.dials() {
             if let Err((key, reason)) = dial.validate() {

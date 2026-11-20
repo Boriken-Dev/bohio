@@ -28,6 +28,7 @@ pub(super) fn run(command: &Command, environment: &Environment) -> Result<ExitCo
         Command::Join(args) => done(host::join(args, environment)),
         Command::Service(args) => done(service::run(args, environment)),
         Command::Remote(args) => remote::run(args, environment),
+        Command::Links(args) => done(remote::links(args, environment)),
     }
 }
 

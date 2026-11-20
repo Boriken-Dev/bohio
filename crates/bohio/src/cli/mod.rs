@@ -62,6 +62,8 @@ pub enum Command {
     Service(service::ServiceArgs),
     /// Use a host: info, run a program, read a file or open a shell.
     Remote(RemoteArgs),
+    /// List the links this node's running `bohio serve` holds, whichever side made each.
+    Links(LinksArgs),
 }
 
 /// `bohio config`.
@@ -245,13 +247,18 @@ pub struct RemoteArgs {
     /// The host: `tcp://host:port`, `pipe://name`, `ws://host:port`, `wss://host:port`, `webtransport://host:port`, `serial://port?baud=N` or
     /// `stdio://program args` (the program is started and its standard streams are the link). With
     /// `--command` there is none.
-    #[arg(required_unless_present = "command")]
+    #[arg(required_unless_present_any = ["command", "via"])]
     pub endpoint: Option<String>,
     /// Start this program (a command line, run directly, never through a shell) and use its standard
     /// input and output as the link, for example `docker exec -i NAME bohio serve --stdio`. The same
     /// as the endpoint `stdio://COMMAND`; the program is ended when the command does.
-    #[arg(long, value_name = "COMMAND", conflicts_with = "endpoint")]
+    #[arg(long, value_name = "COMMAND", conflicts_with_all = ["endpoint", "via"])]
     pub command: Option<String>,
+    /// Use the link this node's running `bohio serve` holds to the peer ID, whichever side made it (a host that dialed
+    /// in is reached this way), through the node's local control endpoint (`[control]`). Exclusive with an endpoint and
+    /// `--command`.
+    #[arg(long, value_name = "ID", conflicts_with_all = ["endpoint", "command"])]
+    pub via: Option<String>,
     /// The host's id to trust instead of the keys `bohio join` stored.
     #[arg(long, value_name = "ID")]
     pub server: Option<String>,
@@ -385,4 +392,18 @@ fn install_subscriber() {
         .with_writer(std::io::stderr)
         .with_ansi(color)
         .try_init();
+}
+
+/// `bohio links`.
+#[derive(Debug, Args)]
+pub struct LinksArgs {
+    /// The configuration.
+    #[command(flatten)]
+    pub config: ConfigOption,
+    /// How the links are written.
+    #[arg(long, value_enum, default_value = "text")]
+    pub format: Format,
+    /// How long to wait for each peer to say what it offers.
+    #[arg(long, value_name = "TIME", default_value = "5s")]
+    pub wait: String,
 }

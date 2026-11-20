@@ -22,6 +22,7 @@ use super::{
 };
 use crate::config::{Config, DialConfig, Environment, ListenConfig, Span};
 use crate::listen::Listening;
+use crate::local::Local;
 use crate::node::{Endpoint, Node};
 use crate::peer::{self, Data, LayeredPeers};
 use crate::policy::{Grant, Permission};
@@ -156,6 +157,20 @@ pub(super) fn serve_endpoints(
         }
         listeners.push(listening);
     }
+    let local = if config.control.is_enabled() {
+        match Local::bind(&config.control, &server.host()) {
+            Ok(local) => {
+                say!("control {}", local.endpoint());
+                Some(local)
+            }
+            Err(error) => {
+                tracing::warn!("the local control endpoint is not served: {error}");
+                None
+            }
+        }
+    } else {
+        None
+    };
     say!("host {}", server.host());
     for (id, endpoint, _) in &dials {
         say!("dialing {endpoint} peer {id}");
@@ -166,6 +181,14 @@ pub(super) fn serve_endpoints(
             .iter()
             .map(|listening| scope.spawn(|| server.serve_listening(listening, stop)))
             .collect();
+        if let Some(local) = &local {
+            let server = &server;
+            scope.spawn(move || {
+                if let Err(error) = server.serve_local(local, stop) {
+                    tracing::error!("the local control endpoint failed: {error}");
+                }
+            });
+        }
         for (id, endpoint, dial) in &dials {
             let server = &server;
             scope.spawn(move || server.run_dial(id, endpoint, dial, stop));

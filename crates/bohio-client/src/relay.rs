@@ -14,6 +14,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::Scope;
 use std::time::{Duration, Instant};
 
+use coqui_link::mux::StreamEnd;
 use coqui_transport::{Capabilities, Carrier, Channel, Failure};
 
 use crate::link::Settings;
@@ -38,6 +39,8 @@ struct State {
     /// `Some(None)`: the stream ended in order; `Some(Some(failure))`: it failed or was closed
     /// by the host with a reason.
     inbound_end: Option<Option<Failure>>,
+    /// Why the stream ended, when the stream said (a refusal or a revoke with its text).
+    cause: Option<StreamEnd>,
     outbound: VecDeque<Vec<u8>>,
     outbound_bytes: usize,
     outbound_failed: Option<Failure>,
@@ -110,10 +113,19 @@ impl Relay {
         }
     }
 
-    fn end_inbound(&self, failure: Option<Failure>) {
+    fn end_inbound(&self, failure: Option<Failure>, cause: Option<StreamEnd>) {
         let mut state = self.lock();
-        state.inbound_end.get_or_insert(failure);
+        if state.inbound_end.is_none() {
+            state.inbound_end = Some(failure);
+            state.cause = cause;
+        }
         self.changed.notify_all();
+    }
+
+    /// Why the stream ended, with the text its peer gave (a refusal, a revoke), once it has; `None`
+    /// while it runs and for a stream that cannot say.
+    pub fn end(&self) -> Option<StreamEnd> {
+        self.lock().cause.clone()
     }
 
     fn next_outbound(&self, wait: Duration) -> Next {
@@ -251,11 +263,27 @@ where
     P: Deref + Clone + Send + 'scope,
     P::Target: Channel,
 {
+    relay_with(scope, stream, settings, |_| None)
+}
+
+/// [`relay`], asking `ended` for the stream's own account of why it ended (a refusal or a revoke with
+/// its text), which [`Relay::end`] then gives.
+pub fn relay_with<'scope, 'env, P, E>(
+    scope: &'scope Scope<'scope, 'env>,
+    stream: P,
+    settings: &Settings,
+    ended: E,
+) -> Arc<Relay>
+where
+    P: Deref + Clone + Send + 'scope,
+    P::Target: Channel,
+    E: Fn(&P::Target) -> Option<StreamEnd> + Send + 'scope,
+{
     let relay = Arc::new(Relay::new(settings));
     let poll = settings.poll_interval.max(Duration::from_millis(1));
     {
         let (relay, stream) = (Arc::clone(&relay), stream.clone());
-        scope.spawn(move || read_side(&relay, &*stream, poll));
+        scope.spawn(move || read_side(&relay, &*stream, poll, ended));
     }
     {
         let relay = Arc::clone(&relay);
@@ -265,7 +293,12 @@ where
 }
 
 /// Moves what the stream receives into the relay.
-fn read_side<C: Channel + ?Sized>(relay: &Relay, stream: &C, poll: Duration) {
+fn read_side<C: Channel + ?Sized>(
+    relay: &Relay,
+    stream: &C,
+    poll: Duration,
+    ended: impl Fn(&C) -> Option<StreamEnd>,
+) {
     loop {
         if relay.is_closed_by_user() {
             return;
@@ -276,9 +309,9 @@ fn read_side<C: Channel + ?Sized>(relay: &Relay, stream: &C, poll: Duration) {
                     return;
                 }
             }
-            Ok(None) => return relay.end_inbound(None),
+            Ok(None) => return relay.end_inbound(None, ended(stream)),
             Err(Failure::Timeout) => {}
-            Err(failure) => return relay.end_inbound(Some(failure)),
+            Err(failure) => return relay.end_inbound(Some(failure), ended(stream)),
         }
     }
 }

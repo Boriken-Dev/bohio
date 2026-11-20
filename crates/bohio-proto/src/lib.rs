@@ -7,6 +7,7 @@ pub mod error;
 pub mod exec;
 pub mod fs;
 pub mod info;
+pub mod local;
 pub mod shell;
 
 pub use codec::{DEFAULT_DEPTH, decode, decode_with_depth, encode};

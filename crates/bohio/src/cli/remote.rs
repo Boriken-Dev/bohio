@@ -6,13 +6,13 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use bohio_client::Error;
 use bohio_client::connect::Connection;
 use bohio_client::control::Control;
 use bohio_client::dial::{ServerTrust, split_command};
 use bohio_client::exec::{Event, Exec};
 use bohio_client::fs::Reader;
 use bohio_client::shell::{Event as ShellEvent, Shell};
+use bohio_client::{Error, Open};
 use bohio_proto::exec::{Request, Stdin};
 use bohio_proto::shell::{Request as ShellRequest, ShellKind};
 use coqui_link::auth::{Proof, Trust};
@@ -21,6 +21,7 @@ use coqui_peer::PeerId;
 use super::commands::{print_info, source};
 use super::{Format, RemoteAction, RemoteArgs, RemoteExecArgs, RemoteShellArgs};
 use crate::config::{Environment, Layers};
+use crate::local::Via;
 use crate::node::Endpoint;
 
 /// What a person is told when the host will not do what was asked.
@@ -96,10 +97,13 @@ fn connect(args: &RemoteArgs, environment: &Environment) -> Result<Connection, S
 
 /// `bohio remote`.
 pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCode, String> {
-    let link = connect(args, environment)?;
+    let link: Box<dyn Open> = match &args.via {
+        Some(id) => Box::new(connect_via(id, args, environment)?),
+        None => Box::new(connect(args, environment)?),
+    };
     match &args.action {
         RemoteAction::Info(info) => {
-            let control = Control::open(&link).map_err(|error| explain(&error))?;
+            let control = Control::open(&*link).map_err(|error| explain(&error))?;
             let found = control
                 .info(Some(Duration::from_secs(30)))
                 .map_err(|error| explain(&error))?;
@@ -113,10 +117,10 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
             }
             Ok(ExitCode::SUCCESS)
         }
-        RemoteAction::Exec(exec) => exec_command(&link, exec),
+        RemoteAction::Exec(exec) => exec_command(&*link, exec),
         RemoteAction::Read(read) => {
             let reader = Reader::start(
-                &link,
+                &*link,
                 &bohio_proto::fs::ReadRequest::whole(read.path.clone()),
                 Some(Duration::from_secs(30)),
             )
@@ -128,7 +132,7 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
             out.flush().map_err(|error| error.to_string())?;
             Ok(ExitCode::SUCCESS)
         }
-        RemoteAction::Shell(shell) => shell_command(&link, shell),
+        RemoteAction::Shell(shell) => shell_command(&*link, shell),
     }
 }
 
@@ -146,7 +150,7 @@ fn status_of(exit: &bohio_proto::exec::Exit) -> ExitCode {
     ExitCode::from(u8::try_from(code).unwrap_or(1))
 }
 
-fn exec_command(link: &Connection, args: &RemoteExecArgs) -> Result<ExitCode, String> {
+fn exec_command(link: &dyn Open, args: &RemoteExecArgs) -> Result<ExitCode, String> {
     let mut request = Request::argv(args.argv.iter().cloned());
     request.cwd.clone_from(&args.cwd);
     request.timeout_ms = args.timeout_ms;
@@ -199,7 +203,7 @@ fn local_size() -> (u16, u16) {
     crossterm::terminal::size().unwrap_or((80, 24))
 }
 
-fn shell_command(link: &Connection, args: &RemoteShellArgs) -> Result<ExitCode, String> {
+fn shell_command(link: &dyn Open, args: &RemoteShellArgs) -> Result<ExitCode, String> {
     let default = if cfg!(windows) {
         ShellKind::Cmd
     } else {
@@ -268,4 +272,90 @@ fn shell_command(link: &Connection, args: &RemoteShellArgs) -> Result<ExitCode, 
             .and_then(|code| u8::try_from(code & 0xff).ok())
             .unwrap_or(0),
     ))
+}
+
+/// The node's local control endpoint for the configuration `config` names: the one set, else the default of
+/// this machine's key.
+fn control_endpoint(
+    config: &super::ConfigOption,
+    environment: &Environment,
+) -> Result<(Endpoint, bohio_client::link::Settings), String> {
+    let (found, data) = source(config, environment)?;
+    let identity = data.identity().map_err(|error| error.to_string())?;
+    let settings = found.config().link.settings();
+    let text = found.config().control.endpoint_for(&identity.peer_id());
+    Endpoint::parse(&text)
+        .map(|endpoint| (endpoint, settings))
+        .map_err(|reason| format!("[control] endpoint: {reason}"))
+}
+
+const NO_NODE: &str = "the node's local control endpoint does not answer: `bohio serve` must be running with this configuration and `[control] enabled` not false";
+
+/// The link a running node holds to `id`, through its local control endpoint.
+fn connect_via(id: &str, args: &RemoteArgs, environment: &Environment) -> Result<Via, String> {
+    let peer = id
+        .parse::<PeerId>()
+        .map_err(|_| "that is not a peer id".to_owned())?;
+    let (endpoint, settings) = control_endpoint(&args.config, environment)?;
+    let via = Via::connect(&endpoint, &peer, &settings).map_err(|_| NO_NODE.to_owned())?;
+    let listed = via
+        .links(Duration::from_millis(50))
+        .map_err(|error| explain(&error))?;
+    if !listed
+        .links
+        .iter()
+        .any(|link| link.peer == peer.to_string())
+    {
+        return Err(format!(
+            "no link to {peer}: the node holds none (`bohio links` lists them); a peer that dials in must have connected"
+        ));
+    }
+    Ok(via)
+}
+
+/// `bohio links`.
+pub(super) fn links(args: &super::LinksArgs, environment: &Environment) -> Result<(), String> {
+    let wait = crate::config::Span::parse(&args.wait)
+        .ok_or_else(|| "--wait is a time such as `5s` or `500ms`".to_owned())?
+        .0;
+    let (endpoint, settings) = control_endpoint(&args.config, environment)?;
+    let local =
+        crate::local::LocalLink::connect(&endpoint, &settings).map_err(|_| NO_NODE.to_owned())?;
+    let reply = local.links(wait).map_err(|error| explain(&error))?;
+    match args.format {
+        Format::Json => println!(
+            "{}",
+            serde_json::to_string(&reply).map_err(|_| "the links cannot be written")?
+        ),
+        Format::Text => {
+            if reply.links.is_empty() {
+                println!("no links");
+            }
+            for link in &reply.links {
+                let at = link
+                    .endpoint
+                    .as_deref()
+                    .or(link.source.as_deref())
+                    .unwrap_or("-");
+                let list = |offers: &[String]| {
+                    if offers.is_empty() {
+                        "none".to_owned()
+                    } else {
+                        offers.join(",")
+                    }
+                };
+                let theirs = link
+                    .theirs
+                    .as_deref()
+                    .map_or_else(|| "unknown".to_owned(), list);
+                println!(
+                    "{} {} {at} offers-to-peer: {} offers-from-peer: {theirs}",
+                    link.peer,
+                    link.side,
+                    list(&link.mine)
+                );
+            }
+        }
+    }
+    Ok(())
 }
