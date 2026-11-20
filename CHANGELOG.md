@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - `[link] key_recheck` (unset: `2 x recheck`) is how often the link itself asks whether the peer's key is still accepted; it was always twice `recheck`. A revoke found by that check, and not by the stream recheck, now reaches a running stream as a revoke: coqui-link 50c768d closes every open stream revoked before it ends the link. A `remote --via` read or exec that the check found first used to end with `the channel failed: the peer broke the wire format`.
+- `tools/build.py` (a copy of the release overlay's build tool), `tools/build.cfg` and `tools/sdk.lock`: a `deps` branch of vendored
+  crates kept equal to `Cargo.lock`, the lock of the toolchains and base images a release is built with, offline builds from the
+  branch, and release archives per target (static Linux musl, Windows with a static CRT, a universal macOS binary) and a container
+  image per architecture. `test.yml` checks the tool, builds offline with the network cut and builds every release artifact;
+  `release.yml` attaches them to a GitHub release on a `v*` tag. See `docs/building.md`.
 - Per-stream receive windows. One stream moves at most its window per round trip (1 MiB over a 250 ms path is about 4 MB/s), and the window could only be
   raised safely on both sides at once. `[link] bulk_window` is the receive window a side grants a bulk stream it receives (a client's `bohio-read/1`, a host's
   `bohio-write/1`): it widens the stream by granting credit, which every sender already accepts, so it may differ between sides and no peer changes. `max_window`

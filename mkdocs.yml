@@ -18,3 +18,4 @@ nav:
   - The protocol: protocol.md
   - Security: security.md
   - Using it from hostctl: hostctl.md
+  - Building: building.md

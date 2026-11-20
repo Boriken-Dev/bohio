@@ -41,6 +41,9 @@ cd bohio
 cargo build --release
 ```
 
+`tools/build.py` builds without a network from the `deps` branch and makes the release archives per target;
+[docs/building.md](https://github.com/Boriken-Dev/bohio/blob/main/docs/building.md) says how.
+
 | Crate | Purpose |
 | --- | --- |
 | `bohio-proto` | the wire types and their CBOR codec; no I/O |
@@ -132,7 +135,8 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 
 ### Releasing
 
-Nothing is published: the workspace depends on git revisions.
+Nothing is published to a registry: the workspace depends on git revisions. A `v*` tag builds the archives for every
+target and the container images and attaches them to a GitHub release.
 
 ## License
 

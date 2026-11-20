@@ -22,6 +22,7 @@ One Cargo workspace (`Cargo.toml`, one committed `Cargo.lock`: the repository bu
 | `examples/bohio.cfg` | every setting with its default |
 | `docs/`, `mkdocs.yml` | the narrative site: the protocol (the wire, in CDDL), security and the hostctl mapping; the Rust API reference is published under `/rust/` |
 | `vectors/` | the wire's messages as hex, written and checked by `crates/bohio-proto/tests/vectors.rs`; a clean tree after `cargo test` means they are current |
+| `tools/` | `build.py`, a copy of the release overlay's build tool (edited there, never here; `self check` holds it equal), its `build.cfg` and `sdk.lock`: the `deps` branch, the SDK lock, offline and release builds |
 | `packaging/` | the systemd unit (`systemd/bohio.service`) and the container image (`container/Containerfile`); the Windows service is `bohio service` |
 
 ## Commands
@@ -34,6 +35,16 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 ```
+
+```bash
+python tools/build.py self check        # the copy equals the overlay's
+python tools/build.py sdk check --online # the lock agrees with the repository and with its publishers
+python tools/build.py deps check         # the deps checkout covers Cargo.lock (--ref SHA for a commit)
+python tools/build.py scan REF           # no archive, executable, key or opaque binary
+python tools/build.py deps refresh       # after Cargo.lock changes: deps commits, then the pin; push deps before main
+```
+
+`docs/building.md` says what each is for; flags are in `--help`.
 
 A narrow run of an integration test that starts the helper program needs it built first, because a test run builds examples
 under another name: `cargo build -p bohio --example exec_helper`, then `cargo test -p bohio --test exec`. `tests/link.rs` also runs the
@@ -64,6 +75,12 @@ built `bohio` binary (cargo builds it for the test): `bohio serve` runs as a chi
 
 - `.github/workflows/test.yml` runs fmt, clippy, the workspace tests, a check that `vectors/` is unchanged and strict rustdoc on Linux,
   Windows and macOS, on stable and 1.89, on demand and on `ci-*` tags. Linux installs `socat` so the serial test runs.
+- `test.yml` also runs `tools` (the copy, the SDK lock and the pinned deps commit), `offline` (a build from the deps branch in a
+  namespace with no network, beside a control that must fail) and the release builds: a static musl archive per Linux
+  architecture, Windows x64 and ARM64 archives, a universal macOS archive and a container image per architecture, each uploaded as an
+  artifact. The matrix is `python tools/build.py release matrix`; CI never commits the deps branch.
+- `.github/workflows/release.yml` (a `v*` tag, or on demand without publishing) calls `test.yml`, builds the docs strictly without
+  deploying, then attaches every artifact and one `SHA256SUMS` to a GitHub release; nothing goes to a registry.
 - `.github/workflows/bench.yml` is on demand only (`workflow_dispatch`: `ref`, `baseline_ref`, `samples`, `links`): it measures on emulated links, alternating two refs, with a raw TCP control; never per push.
 - `.github/workflows/docs.yml` builds the narrative site strictly with the Rust API reference and deploys Pages.
 
