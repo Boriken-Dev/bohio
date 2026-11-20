@@ -11,7 +11,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use coqui_link::auth::{Proof, Sealed, prove_out};
-use coqui_link::link::{Capabilities, capabilities};
+use coqui_link::link::{Capabilities, LINK_PROTOCOL, capabilities};
 use coqui_link::mux::{LinkState, Mux, Side, Stream, StreamEnd};
 use coqui_peer::PeerId;
 use coqui_transport::{Channel, Failure};
@@ -198,14 +198,22 @@ impl Opens {
     pub fn run<C: Channel>(self, mux: &Mux<'_, C>, settings: &Settings) {
         let poll = settings.poll_interval.max(Duration::from_millis(1));
         thread::scope(|scope| {
-            // The peer's `link/1` says its own window and frame: a difference from this side's is worth one line.
-            scope.spawn(move || match capabilities(mux, settings.proof_timeout) {
-                Ok(told) => report_difference(settings, &told),
-                Err(error) => tracing::debug!(%error, "the peer's link/1 document was not read"),
-            });
+            // The peer's `link/1` says its own window and frame: a difference from this side's is worth one line. The
+            // stream is read between requests and dropped with the loop, so a link that ends first waits for no answer.
+            let mut probe = mux.open(LINK_PROTOCOL).ok();
             loop {
                 if self.shared.ended.load(Ordering::SeqCst) {
                     break;
+                }
+                if let Some(stream) = &probe {
+                    match stream.receive(Some(Duration::ZERO)) {
+                        Err(Failure::Timeout) => {}
+                        Ok(Some(document)) => {
+                            report_difference(settings, &document);
+                            probe = None;
+                        }
+                        Ok(None) | Err(_) => probe = None,
+                    }
                 }
                 match self.requests.recv_timeout(poll) {
                     Ok(Request::Capabilities { wait, reply }) => {
@@ -250,6 +258,7 @@ impl Opens {
                     Err(RecvTimeoutError::Disconnected) => break,
                 }
             }
+            drop(probe);
             self.shared.ended.store(true, Ordering::SeqCst);
             // The link is over: whatever is still open is closed, so the scope can end.
             self.shared.close_relays();
@@ -426,8 +435,19 @@ fn widen<C: Channel>(stream: &Stream<'_, C>, wanted: u32) {
 /// The initial window is not negotiated: each sender starts a stream with its own as credit, and a receiver
 /// ends a stream whose sender is ahead of its own. A peer with the larger window can therefore break the other's
 /// streams, and one with the larger frame is refused; the safe way to widen one stream is `bulk_window`.
-fn report_difference(settings: &Settings, told: &Capabilities) {
-    if let Some(window) = told.window.filter(|window| *window != settings.window) {
+fn report_difference(settings: &Settings, document: &[u8]) {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(document) else {
+        return;
+    };
+    let window = value
+        .get("window")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|window| u32::try_from(window).ok());
+    let max_frame = value
+        .get("max_frame")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|frame| usize::try_from(frame).ok());
+    if let Some(window) = window.filter(|window| *window != settings.window) {
         if window > settings.window {
             tracing::warn!(
                 peer = window,
@@ -443,7 +463,7 @@ fn report_difference(settings: &Settings, told: &Capabilities) {
             );
         }
     }
-    if let Some(frame) = told.max_frame.filter(|frame| *frame != settings.max_frame) {
+    if let Some(frame) = max_frame.filter(|frame| *frame != settings.max_frame) {
         tracing::warn!(
             peer = frame,
             ours = settings.max_frame,

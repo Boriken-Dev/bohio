@@ -85,6 +85,10 @@ required-features = ["cli"]
 name = "transports"
 required-features = ["cli"]
 
+[[test]]
+name = "windows"
+required-features = ["cli"]
+
 [lints]
 workspace = true
 

@@ -249,6 +249,7 @@ dependencies = [
  "coqui-transport-serial",
  "coqui-transport-web",
  "rustls",
+ "serde_json",
  "socket2",
  "thiserror 2.0.21",
  "tracing",

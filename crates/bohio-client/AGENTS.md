@@ -5,7 +5,7 @@ crate can be used without reading its source. It ships inside the package and is
 with the source at <https://github.com/Boriken-Dev/bohio>.
 
 No Cargo features. MSRV Rust 1.89. Depends on `bohio-proto`, `coqui-transport` (with `process`), `coqui-link` (with `sealed`), `coqui-peer`, `coqui-transport-pipe` (`channel`), `coqui-transport-web` (`websocket`, `webtransport`), `coqui-peer-tls`, `rustls` and
-`coqui-transport-serial` (each a git revision, one copy), `url`, `socket2`, `tracing` and `thiserror`. Version
+`coqui-transport-serial` (each a git revision, one copy), `url`, `socket2`, `serde_json`, `tracing` and `thiserror`. Version
 `0.0.0-alpha.0`, not published.
 
 Imports: the root holds `Open` and `Error`. Public modules: `connect`, `control`, `dial`, `exec`, `fs`, `link`, `relay`, `shell`. No `unsafe` code
