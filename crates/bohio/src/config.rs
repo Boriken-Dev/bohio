@@ -183,9 +183,10 @@ pub struct ListenConfig {
     /// never logged. Required with `tls_cert`.
     #[serde(default)]
     pub tls_key: Option<PathBuf>,
-    /// `webtransport` without `tls_cert`: how many days the certificate the host makes is valid, from 1
-    /// to 14 (a browser pinning a certificate by its hash accepts no more). The host makes a new one
-    /// halfway through and prints its hash. Default `13`.
+    /// `webtransport` without `tls_cert`: how many days the certificate the host makes is valid, not zero.
+    /// A browser pinning a certificate by its hash accepts at most 14, so a longer one is logged once
+    /// at start as a certificate a browser will not accept; other clients pin it whatever its validity.
+    /// The host makes a new one halfway through and prints its hash. Default `13`.
     #[serde(default)]
     pub tls_valid_days: Option<u32>,
     /// `serial`: bits per second. Not zero. Default `115200`.
@@ -709,11 +710,8 @@ impl Config {
                 }
             }
             if let Some(days) = listen.tls_valid_days {
-                if !(1..=14).contains(&days) {
-                    return Err(invalid(
-                        "listen.tls_valid_days",
-                        "must be from 1 to 14: a browser pins no certificate valid longer",
-                    ));
+                if days == 0 {
+                    return Err(invalid("listen.tls_valid_days", "must be at least 1"));
                 }
                 if listen.tls_cert.is_some() {
                     return Err(invalid(

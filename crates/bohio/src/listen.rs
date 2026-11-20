@@ -27,6 +27,40 @@ use crate::serve::ServeError;
 /// a browser pinning it by hash accepts at most 14, and a day short of that leaves room for a slow clock.
 const DEFAULT_CERTIFICATE_DAYS: u32 = 13;
 
+/// The longest validity, in days, a browser accepts for a certificate pinned by hash (`serverCertificateHashes`).
+const BROWSER_PIN_DAYS: u64 = 14;
+
+/// Why a browser would not accept `certificate_der` pinned by its hash, or `None` when it would: the browsers'
+/// rule is an ECDSA P-256 key and a validity of at most 14 days. A client that is not a browser pins any
+/// certificate, so this is a report and never a refusal.
+#[must_use]
+pub fn browser_pin_problem(certificate_der: &[u8]) -> Option<String> {
+    let Ok((_, certificate)) = x509_parser::parse_x509_certificate(certificate_der) else {
+        return Some("the certificate could not be read".to_owned());
+    };
+    let validity = certificate.validity();
+    let seconds = validity.not_after.timestamp() - validity.not_before.timestamp();
+    let public_key = certificate.public_key();
+    let p256 = public_key
+        .algorithm
+        .parameters
+        .as_ref()
+        .and_then(|parameters| parameters.as_oid().ok())
+        .is_some_and(|curve| curve.to_id_string() == "1.2.840.10045.3.1.7");
+    let ecdsa = public_key.algorithm.algorithm.to_id_string() == "1.2.840.10045.2.1";
+    let mut problems = Vec::new();
+    if !(ecdsa && p256) {
+        problems.push("its key is not ECDSA P-256".to_owned());
+    }
+    if seconds > i64::try_from(BROWSER_PIN_DAYS * 24 * 3600).unwrap_or(i64::MAX) {
+        problems.push(format!(
+            "it is valid for {} days, more than {BROWSER_PIN_DAYS}",
+            seconds / 86400
+        ));
+    }
+    (!problems.is_empty()).then(|| problems.join(" and "))
+}
+
 /// The TLS configuration of a `wss` entry: the certificate chain and key `tls_cert` and `tls_key`
 /// name. The key is read here and never logged; a client presents no certificate, because the link's
 /// proof, not TLS, says who it is.
@@ -300,10 +334,16 @@ impl Listening {
                 let (tls, certificate) = if config.tls_cert.is_some() {
                     let identity = server_identity(config).map_err(fail)?;
                     let hash = identity.fingerprint().to_string();
+                    if let Some(problem) = browser_pin_problem(identity.certificate_der()) {
+                        tracing::warn!(certificate = %hash, "a browser will not accept this WebTransport certificate pinned by its hash: {problem}");
+                    }
                     let tls = WebTransportTls::Config(server_config_of(&identity).map_err(fail)?);
                     (tls, Certificate::Files(hash))
                 } else {
                     let days = u64::from(config.tls_valid_days.unwrap_or(DEFAULT_CERTIFICATE_DAYS));
+                    if days > BROWSER_PIN_DAYS {
+                        tracing::warn!("the WebTransport certificate is valid for {days} days: a browser will not accept it pinned by its hash, which takes at most {BROWSER_PIN_DAYS}");
+                    }
                     // An hour back: a client whose clock is behind still accepts it. Browsers allow 14 days.
                     let made = MadeCertificate::new(
                         Duration::from_secs(days * 24 * 3600),
@@ -420,6 +460,38 @@ impl Listening {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn made_for(days: u64) -> Vec<u8> {
+        Identity::builder()
+            .valid_for(Duration::from_secs(days * 24 * 3600))
+            .generate()
+            .unwrap()
+            .certificate_der()
+            .to_vec()
+    }
+
+    #[test]
+    fn a_certificate_a_browser_would_pin_is_not_reported() {
+        assert_eq!(browser_pin_problem(&made_for(14)), None);
+        assert_eq!(browser_pin_problem(&made_for(1)), None);
+    }
+
+    #[test]
+    fn a_certificate_a_browser_would_not_pin_says_why_and_is_still_a_certificate() {
+        let long = browser_pin_problem(&made_for(30)).expect("30 days is too long");
+        assert!(
+            long.contains("30 days") && !long.contains("ECDSA"),
+            "{long}"
+        );
+        let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
+        let other = rcgen::CertificateParams::new(vec!["127.0.0.1".to_owned()])
+            .unwrap()
+            .self_signed(&key)
+            .unwrap();
+        let both = browser_pin_problem(other.der()).expect("Ed25519 is not ECDSA P-256");
+        assert!(both.contains("not ECDSA P-256"), "{both}");
+        assert!(browser_pin_problem(b"not a certificate").is_some());
+    }
 
     #[test]
     fn a_made_certificate_is_replaced_when_half_its_validity_has_passed() {

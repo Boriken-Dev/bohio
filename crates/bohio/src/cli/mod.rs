@@ -254,9 +254,9 @@ pub struct RemoteArgs {
     /// whatever its name and issuer, as a self-signed host needs. May be repeated.
     #[arg(long, value_name = "HASH")]
     pub cert_hash: Vec<String>,
-    /// For a `webtransport://` host: a `ws://` or `wss://` endpoint of the same host to dial when the
-    /// UDP path is blocked. A certificate that is refused never falls back, and `ws://` is taken only
-    /// on a loopback address.
+    /// For a `webtransport://` host: a `ws://` or `wss://` endpoint to dial when the UDP path is
+    /// blocked. A certificate that is refused never falls back. A `ws://` one is plain until the
+    /// link's proof has run, and one on another host sends the proof there: naming either is the choice.
     #[arg(long, value_name = "ENDPOINT")]
     pub fallback: Option<String>,
     /// What to ask of it.

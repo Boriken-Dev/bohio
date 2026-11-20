@@ -669,10 +669,6 @@ fn tls_keys_come_in_a_pair_and_belong_to_the_tls_schemes() {
             "listen.tls_cert",
         ),
         (
-            "endpoint = \"webtransport://127.0.0.1:1\"\ntls_valid_days = 15\n".to_owned(),
-            "listen.tls_valid_days",
-        ),
-        (
             "endpoint = \"webtransport://127.0.0.1:1\"\ntls_valid_days = 0\n".to_owned(),
             "listen.tls_valid_days",
         ),
@@ -921,6 +917,40 @@ fn webtransport_takes_the_longest_validity_a_browser_pins() {
     );
 }
 
+/// What a host's log says, once it has been stopped.
+fn stopped_log(mut host: Proc) -> String {
+    let _ = host.child.kill();
+    let done = host.finish();
+    format!("{}{}", done.stdout, done.stderr)
+}
+
+#[test]
+fn a_validity_beyond_what_a_browser_pins_is_taken_logged_once_and_pinned_by_hash() {
+    let world =
+        World::new("[[listen]]\nendpoint = \"webtransport://127.0.0.1:0\"\ntls_valid_days = 400\n");
+    let (mut host, bound) = world.serve_listed("warn");
+    let hash = host
+        .expect_line("certificate ")
+        .split(' ')
+        .next()
+        .unwrap()
+        .to_owned();
+    world.exercise(&["--cert-hash", &hash, &bound], 1);
+    let log = stopped_log(host);
+    assert_eq!(log.matches("a browser will not accept").count(), 1, "{log}");
+    assert!(log.contains("400 days"), "{log}");
+}
+
+#[test]
+fn a_certificate_from_files_a_browser_would_not_pin_is_logged_and_still_pinned_by_hash() {
+    let certificates = Certificates::new();
+    let world = World::new(&certificates.listen("webtransport://127.0.0.1:0"));
+    let (host, bound) = world.serve_listed("warn");
+    world.exercise(&["--cert-hash", &certificates.hash, &bound], 1);
+    let log = stopped_log(host);
+    assert_eq!(log.matches("a browser will not accept").count(), 1, "{log}");
+}
+
 #[test]
 fn webtransport_over_a_certificate_from_files_is_trusted_through_its_authority() {
     let certificates = Certificates::new();
@@ -929,6 +959,95 @@ fn webtransport_over_a_certificate_from_files_is_trusted_through_its_authority()
     let line = host.expect_line("certificate ");
     assert_eq!(line, format!("{} for {bound}", certificates.hash));
     world.exercise(&["--ca", &certificates.ca, &bound], 1);
+}
+
+/// This host's address on a route to the outside, or `None` when it has none (no network is no failure here).
+fn routed_address() -> Option<std::net::IpAddr> {
+    let probe = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    probe.connect("192.0.2.1:9").ok()?;
+    let address = probe.local_addr().ok()?.ip();
+    (!address.is_loopback() && !address.is_unspecified()).then_some(address)
+}
+
+/// A host listening on `ws_listen` with the client approved, and a UDP port nothing answers on.
+fn fallback_world(ws_listen: &str) -> (World, Proc, String, std::net::UdpSocket) {
+    let world = World::new(&format!("[[listen]]\nendpoint = \"{ws_listen}\"\n"));
+    let (mut host, bound) = world.serve_listed("warn");
+    let port = bound.rsplit(':').next().unwrap().to_owned();
+    assert_eq!(
+        world
+            .remote(&[&bound.replace("0.0.0.0", "127.0.0.1")], &["info"])
+            .code,
+        Some(1)
+    );
+    run_ok(&[
+        "peer",
+        "approve",
+        &world.client_id,
+        "--config",
+        &world.host,
+        "--allow",
+        "info",
+    ]);
+    let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let _ = &mut host;
+    (world, host, port, silent)
+}
+
+#[test]
+fn a_fallback_on_another_host_is_dialled_when_the_operator_names_it() {
+    // 127.0.0.2 is another host name than the WebTransport endpoint's 127.0.0.1; macOS has no such address.
+    if std::net::UdpSocket::bind("127.0.0.2:0").is_err() {
+        println!("skipped: 127.0.0.2 cannot be bound here");
+        return;
+    }
+    let (world, _host, port, silent) = fallback_world("ws://127.0.0.2:0");
+    let blocked = format!("webtransport://{}", silent.local_addr().unwrap());
+    let ws = format!("ws://127.0.0.2:{port}");
+    let fell_back = world.remote(
+        &["--fallback", &ws, &blocked],
+        &["info", "--format", "json"],
+    );
+    assert_eq!(
+        fell_back.code,
+        Some(0),
+        "stdout: {}\nstderr: {}",
+        fell_back.stdout,
+        fell_back.stderr
+    );
+    assert!(
+        fell_back.stdout.contains(&world.host_id),
+        "{}",
+        fell_back.stdout
+    );
+}
+
+#[test]
+fn a_plain_fallback_beyond_loopback_is_dialled_when_the_operator_names_it() {
+    let Some(address) = routed_address() else {
+        println!("skipped: this host has no routed address");
+        return;
+    };
+    let (world, _host, port, silent) = fallback_world("ws://0.0.0.0:0");
+    // The WebTransport endpoint names a different host than the fallback, which is plain on a routed address.
+    let blocked = format!("webtransport://{}", silent.local_addr().unwrap());
+    let ws = format!("ws://{address}:{port}");
+    let fell_back = world.remote(
+        &["--fallback", &ws, &blocked],
+        &["info", "--format", "json"],
+    );
+    assert_eq!(
+        fell_back.code,
+        Some(0),
+        "stdout: {}\nstderr: {}",
+        fell_back.stdout,
+        fell_back.stderr
+    );
+    assert!(
+        fell_back.stdout.contains(&world.host_id),
+        "{}",
+        fell_back.stdout
+    );
 }
 
 #[test]

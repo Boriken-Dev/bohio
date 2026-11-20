@@ -113,7 +113,7 @@ fn a_trust_file_that_cannot_be_read_is_named() {
 }
 
 #[test]
-fn webtransport_needs_a_udp_port_and_takes_a_websocket_fallback_of_its_host() {
+fn webtransport_needs_a_udp_port_and_takes_a_websocket_fallback_wherever_it_is_asked() {
     let wt = Endpoint::parse("webtransport://127.0.0.1:4433/bohio").unwrap();
     assert_eq!(wt.to_string(), "webtransport://127.0.0.1:4433/bohio");
     assert!(Endpoint::parse("webtransport://127.0.0.1").is_err());
@@ -125,9 +125,16 @@ fn webtransport_needs_a_udp_port_and_takes_a_websocket_fallback_of_its_host() {
         paired.to_string(),
         "webtransport://127.0.0.1:4433/bohio (or ws://127.0.0.1:7621/)"
     );
-    // Another host, a non-WebSocket fallback and a fallback on a non-WebTransport endpoint are refused.
-    let other = Endpoint::parse("ws://127.0.0.2:7621").unwrap();
-    assert!(wt.clone().with_fallback(other).is_err());
+    // A fallback on another host is the caller's choice, plain or not.
+    let other = Endpoint::parse("ws://192.0.2.7:7621").unwrap();
+    let elsewhere = wt.clone().with_fallback(other).unwrap();
+    assert_eq!(
+        elsewhere.to_string(),
+        "webtransport://127.0.0.1:4433/bohio (or ws://192.0.2.7:7621/)"
+    );
+    let secure = Endpoint::parse("wss://other.example:7621").unwrap();
+    assert!(wt.clone().with_fallback(secure).is_ok());
+    // A non-WebSocket fallback and a fallback on a non-WebTransport endpoint are refused.
     assert!(
         wt.with_fallback(Endpoint::parse("tcp://127.0.0.1:7620").unwrap())
             .is_err()

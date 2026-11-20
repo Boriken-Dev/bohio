@@ -30,9 +30,7 @@ use coqui_transport_serial::{
 };
 use coqui_transport_web::websocket::{Connector as WebSocketConnector, Dialer, Frames};
 use coqui_transport_web::webtransport::{self, ClientTrust, Connector as WebTransportConnector};
-use coqui_transport_web::{
-    CertificatePin, Dialer as WebDialer, Endpoints, Kind, Limits, NoPreflight,
-};
+use coqui_transport_web::{Dialer as WebDialer, Endpoints, Kind, Limits, NoPreflight};
 use url::Url;
 
 use crate::Error;
@@ -289,28 +287,25 @@ impl Endpoint {
         }
     }
 
-    /// This WebTransport endpoint with `fallback`, a `ws://` or `wss://` endpoint of the same host,
-    /// dialled when the QUIC path fails before anything crossed (a blocked UDP port, a timeout). A
-    /// certificate, permission or protocol failure never falls back, and a `ws://` fallback is taken
-    /// only on a loopback address: beyond it the fallback is `wss://`.
+    /// This WebTransport endpoint with `fallback`, a `ws://` or `wss://` endpoint, dialled when the QUIC
+    /// path fails before anything crossed (a blocked UDP port, a timeout). A certificate, permission or
+    /// protocol failure never falls back.
+    ///
+    /// Naming the fallback is the choice: a `ws://` one is dialled plain on any address, and one on
+    /// another host than the WebTransport endpoint is dialled there. A plain WebSocket is readable and
+    /// changeable by anything on the path until the link's proof, which seals what follows, has run; a
+    /// fallback to another host sends the proof to that host, so the peer it proves is the one the
+    /// caller expects only if the link's trust says so.
     ///
     /// # Errors
     ///
-    /// The reason, when this is not a WebTransport endpoint, `fallback` is not a WebSocket one or
-    /// names another host.
+    /// The reason, when this is not a WebTransport endpoint or `fallback` is not a WebSocket one.
     pub fn with_fallback(self, fallback: Self) -> Result<Self, String> {
         match (self, fallback) {
-            (Self::WebTransport { url, .. }, Self::WebSocket(other)) => {
-                if url.host_str() != other.host_str() {
-                    return Err(format!(
-                        "the fallback `{other}` is not on the host `{url}` names"
-                    ));
-                }
-                Ok(Self::WebTransport {
-                    url,
-                    fallback: Some(other),
-                })
-            }
+            (Self::WebTransport { url, .. }, Self::WebSocket(other)) => Ok(Self::WebTransport {
+                url,
+                fallback: Some(other),
+            }),
             _ => Err(
                 "a fallback is a `ws://` or `wss://` endpoint that follows a `webtransport://` one"
                     .to_owned(),
@@ -457,14 +452,16 @@ fn dial_web_transport(
             .map_err(Error::Transport)?;
         return Ok(Box::new(channel));
     };
+    // The caller named this fallback, so a plain one and one on another host are what was asked for.
     let endpoints = Endpoints::builder()
         .webtransport(https.as_str())
         .websocket(fallback.as_str())
-        .allow_plain_loopback(true)
+        .allow_plain_websocket(fallback.scheme() == "ws")
+        .require_same_host(https.host() == fallback.host())
         .build()
         .map_err(|error| Error::Link(format!("the endpoint pair is refused: {error:?}")))?;
     let mut both = Both {
-        websocket: web_socket_dialer(fallback, settings, trust, false)?,
+        websocket: web_socket_dialer(fallback, settings, trust, true)?,
         webtransport: dialer,
     };
     let opened = coqui_transport_web::connect(&endpoints, &mut both, &mut NoPreflight, timeout)
@@ -477,23 +474,14 @@ fn web_transport_dialer(
     settings: &Settings,
     trust: &ServerTrust,
 ) -> Result<webtransport::Dialer, Error> {
-    // Hashes alone are how a browser pins: ECDSA P-256 valid at most 14 days. With a CA file as well the
-    // certificate may match either.
-    let client_trust = if trust.ca_files.is_empty() && !trust.pins.is_empty() {
-        let pins = trust
-            .pins
-            .iter()
-            .map(|id| id.to_string().parse::<CertificatePin>())
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| Error::Link("a certificate hash is not a SHA-256 digest".to_owned()))?;
-        ClientTrust::Pinned(pins)
-    } else {
-        ClientTrust::Config(trust.client_config().map_err(Error::Link)?)
-    };
-    webtransport::Dialer::builder(client_trust)
-        .limits(web_limits(settings))
-        .build()
-        .map_err(|_| Error::Transport(Failure::Unsupported))
+    // The hash decides, whatever the certificate's key or validity: ClientTrust::Pinned would hold it to what a
+    // browser accepts (ECDSA P-256, at most 14 days), which is the browser's rule and not this client's.
+    webtransport::Dialer::builder(ClientTrust::Config(
+        trust.client_config().map_err(Error::Link)?,
+    ))
+    .limits(web_limits(settings))
+    .build()
+    .map_err(|_| Error::Transport(Failure::Unsupported))
 }
 
 /// Dials WebTransport or WebSocket by the kind [`coqui_transport_web::connect`] asks for.
