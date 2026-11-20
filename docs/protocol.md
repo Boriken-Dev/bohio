@@ -34,6 +34,10 @@ TLS, where a carrier has it, decides whether the carrier's own handshake succeed
 
 A host serves a serial line to one peer at a time. A message never exceeds the link's `max_message` setting (1 MiB by default); a longer one is the link's job to cut into `more` frames of at most `max_frame` bytes (64 KiB by default).
 
+## Flow control
+
+Each direction of each stream starts with a credit window of `[link] window` bytes (1 MiB by default), and a sender may be at most that far ahead of the reader, so one stream moves at most a window per round trip: about 4 MB/s over a 250 ms path. The initial window is not negotiated, so both sides keep it equal; a side whose window is larger can end the other's streams as broken. A receiver widens one stream by granting credit beyond what it has read, which every sender already accepts, so no peer changes: `[link] bulk_window` is what a side grants a bulk stream it receives (a client's `bohio-read/1`, a host's `bohio-write/1`), `max_window` bounds every widening and `auto_window` grows a stream from the link's round trip. Each side's `link/1` document carries its `window` and `max_frame`, and a side that sees them differ from its own logs it once.
+
 ## Protocol names
 
 A stream's `open` carries a protocol token and metadata. A client ignores a token it does not know and treats an unknown `offers` entry the same way.

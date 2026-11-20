@@ -5,7 +5,7 @@ crate can be used without reading its source. It ships inside the package and is
 with the source at <https://github.com/Boriken-Dev/bohio>.
 
 No Cargo features. MSRV Rust 1.89. Depends on `bohio-proto`, `coqui-transport` (with `process`), `coqui-link` (with `sealed`), `coqui-peer`, `coqui-transport-pipe` (`channel`), `coqui-transport-web` (`websocket`, `webtransport`), `coqui-peer-tls`, `rustls` and
-`coqui-transport-serial` (each a git revision, one copy), `url` and `thiserror`. Version
+`coqui-transport-serial` (each a git revision, one copy), `url`, `socket2`, `tracing` and `thiserror`. Version
 `0.0.0-alpha.0`, not published.
 
 Imports: the root holds `Open` and `Error`. Public modules: `connect`, `control`, `dial`, `exec`, `fs`, `link`, `relay`, `shell`. No `unsafe` code
@@ -17,7 +17,10 @@ Imports: the root holds `Open` and `Error`. Public modules: `connect`, `control`
 ```rust
 pub trait Open: Send + Sync {
     fn open(&self, protocol: &str, metadata: &[u8]) -> Result<Box<dyn Channel>, Error>;   // a stream named `protocol` whose open carries `metadata`
+    fn open_with(&self, protocol: &str, metadata: &[u8], options: &OpenOptions) -> Result<Box<dyn Channel>, Error>;   // provided: `open`, ignoring the options
+    fn bulk_window(&self) -> Option<u32>;                          // provided: None; what `Reader::start` asks for, `Some` only when above the link's `window`
 }
+#[derive(Default)] #[non_exhaustive] pub struct OpenOptions { pub receive_window: Option<u32> }   // None: the link's window; `OpenOptions::receive_window(bytes)`. A link grants the difference on the new stream, up to its `max_window`
 #[non_exhaustive] pub enum Error { Remote(ErrorBody), Transport(Failure), Protocol(bohio_proto::Error), Link(String), Timeout, Closed }   // Clone, Eq, std::error::Error
 ```
 
@@ -178,8 +181,9 @@ impl Connection {
 #[derive(Clone)] pub struct Opener;                               // Debug; Open (Error::Closed once the link ended or `close` was called)
 pub struct Opens;                                                 // Debug; the serving half of an Opener
 impl Opener {
-    pub fn pair() -> (Opener, Opens);                              // nothing opens until `Opens::run` runs on a link
+    pub fn pair(settings: &Settings) -> (Opener, Opens);           // nothing opens until `Opens::run` runs on a link; `settings.bulk_window` is what `Open::bulk_window` answers
     pub fn open_stream(&self, protocol: &str, metadata: &[u8]) -> Result<Opened, Error>;   // as Open::open, keeping the type that says why a stream ended
+    pub fn open_stream_with(&self, protocol: &str, metadata: &[u8], options: &OpenOptions) -> Result<Opened, Error>;   // a `receive_window` is granted before the stream is returned
     pub fn is_up(&self) -> bool;                                   // false once the link ended or `close` was called
     pub fn close(&self);                                           // closes every stream this opener opened and makes `Opens::run` return
     pub fn capabilities(&self, wait: Duration) -> Result<coqui_link::link::Capabilities, Error>;   // reads the peer's `link/1` document now, on a thread of the link's
@@ -188,14 +192,18 @@ impl Opens {
     pub fn run<C: Channel>(self, mux: &coqui_link::mux::Mux<'_, C>, settings: &Settings);   // serves open requests, each stream through a bounded relay, until the link leaves Up, `close`, or every Opener is gone
 }
 
-#[non_exhaustive] pub struct Settings { pub max_streams: usize /*64*/, pub proof_timeout: Duration /*10 s*/, pub window: u32 /*1 MiB*/, pub max_frame: usize /*64 KiB*/,
+#[non_exhaustive] pub struct Settings { pub max_streams: usize /*64*/, pub proof_timeout: Duration /*10 s*/, pub window: u32 /*1 MiB*/, pub max_window: u32 /*1 MiB*/, pub auto_window: bool /*false*/,
+    pub bulk_window: u32 /*1 MiB*/, pub max_frame: usize /*64 KiB*/, pub max_metadata: usize /*4096*/, pub max_pending_opens: usize /*8*/, pub max_opens_per_minute: u32 /*600*/,
+    pub tcp_send_buffer: Option<usize> /*None: system*/, pub tcp_receive_buffer: Option<usize> /*None: system*/,
     pub max_message: usize /*1 MiB*/, pub queue_bytes: usize /*256 KiB*/, pub read_ahead: usize /*8*/, pub queued_bytes: usize /*1 MiB*/,
     pub send_limit: Duration /*10 s*/, pub send_wait: Duration /*250 ms*/, pub poll_interval: Duration /*50 ms*/,
     pub heartbeat: Duration /*25 s; zero is off*/, pub heartbeat_misses: u32 /*3; at least 1*/ }   // Default; the host's `[link]` section
 impl Settings { pub fn limits(&self) -> coqui_link::mux::Limits; pub fn record_length(&self, method: coqui_link::auth::Method) -> usize; }
 pub fn framed<S: Split, C: Codec>(stream: S, codec: C, settings: &Settings) -> io::Result<StreamChannel>;   // an unproven peer held to one proof-sized message
 pub fn stream<S: Split>(stream: S, settings: &Settings) -> io::Result<StreamChannel>;   // framed with a 4-byte big-endian length: a pipe, a child's streams
-pub fn socket(stream: TcpStream, settings: &Settings) -> io::Result<StreamChannel>;   // stream() with TCP_NODELAY
+pub fn socket(stream: TcpStream, settings: &Settings) -> io::Result<StreamChannel>;   // stream() with TCP_NODELAY and the TCP buffers `settings` name
+pub fn connect(address: &SocketAddr, timeout: Duration, settings: &Settings) -> io::Result<TcpStream>;   // the buffers set before connecting (`TcpStream::connect_timeout` when none is set)
+pub fn tune_listener(listener: &TcpListener, settings: &Settings) -> io::Result<()>;   // the buffers on a listening socket
 pub fn stdio(settings: &Settings) -> io::Result<StreamChannel>;                       // stream() over this process's standard input and output
 
 pub struct Relay;                                                 // Debug; Channel: an owned, bounded channel over one stream of a link
@@ -214,8 +222,14 @@ outlives the call. A stream the host refused (no grant, no such protocol) or end
 `Error::Transport(Failure::Permission)` from the call that reads it; a lost link is `Failure::PathLost`.
 
 A `Relay` holds at most `queue_bytes` in each direction (a message larger than that passes alone), so a slow reader or writer makes the other side
-wait; closing it delivers what is queued for at most `send_limit`. What one stream can buffer is `window` plus `2 x queue_bytes`; what a link
-buffers besides is `read_ahead` messages and `queued_bytes` at the socket. Nothing grows with a file's size.
+wait; closing it delivers what is queued for at most `send_limit`. What one stream can buffer is `window` plus `2 x queue_bytes` (`bulk_window` instead of
+`window` for a stream widened by it, up to `max_window`); what a link buffers besides is `read_ahead` messages and `queued_bytes` at the socket. Nothing grows with a
+file's size.
+
+One stream moves at most its receive window per round trip. `window` is what each sender starts every stream with and is not negotiated, so keep it equal on both
+sides: a side whose window is larger can make the other end its streams as broken. `Open::open_with` and `Settings::bulk_window` widen one stream instead, by
+granting credit the sender already accepts, which needs no setting at the peer; a link logs once, as a warning and not a refusal, a `window` or `max_frame` its
+peer's `link/1` document shows differing from its own.
 
 ## Gotchas
 

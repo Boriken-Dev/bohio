@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Per-stream receive windows. One stream moves at most its window per round trip (1 MiB over a 250 ms path is about 4 MB/s), and the window could only be
+  raised safely on both sides at once. `[link] bulk_window` is the receive window a side grants a bulk stream it receives (a client's `bohio-read/1`, a host's
+  `bohio-write/1`): it widens the stream by granting credit, which every sender already accepts, so it may differ between sides and no peer changes. `max_window`
+  (unset: the larger of `window` and `bulk_window`) bounds it and `auto_window` (`false`) grows a stream by itself from the link's round trip, up to it. `window`
+  stays the credit both sides start from; each side logs once, as a warning and not a refusal, a `window` or `max_frame` its peer's `link/1` shows differing from
+  its own. `bohio_client::Open` gains `open_with` and `bulk_window` (`OpenOptions { receive_window }`), `Opener::pair` takes the settings, and the host widens a
+  `bohio-write/1` as it accepts it.
+- `[link] max_metadata` (`4096`), `max_pending_opens` (`8`) and `max_opens_per_minute` (`600`) are settings, where coqui-link's defaults applied before: a sync
+  that opens a stream for each small file is capped by the last. `tcp_send_buffer` and `tcp_receive_buffer` (unset: the system's automatic sizing) set a TCP
+  socket's buffers before connecting and on the listener and each accepted socket.
 - `bohio::node::Node`, an embeddable host: it is made from a `NodeConfig`, an identity, `Keys` (who is accepted) and `Grants`
   (what each may do) the caller supplies, and reads no file, environment variable or process-wide state, so an application runs
   one from settings kept anywhere. `MemoryKeys` and `MemoryGrants` are in-memory implementations whose changes apply at the next

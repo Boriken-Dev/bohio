@@ -71,8 +71,15 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[link] max_unproven_per_source` | `16` | connections from one source (an IPv4 address or an IPv6 /64) still proving themselves; one past it is closed unread; a pipe, serial line or stdio link has no source; at least 1 |
 | `[link] max_links_per_peer` | `16` | links one proven peer may have open; one past it is closed after its proof; at least 1 |
 | `[link] proof_timeout` | `10s` | how long a peer has to prove itself; not zero |
-| `[link] window` | `1048576` | bytes a peer may send on one stream ahead of what the host has read (the credit window); at least 1 |
+| `[link] window` | `1048576` | bytes a peer may send on one stream ahead of what the host has read (the credit window); at least 1. Not negotiated: each sender starts a stream with its own as credit, so keep it equal on both sides (a side whose window is larger can end the other's streams as broken; each side logs a difference in `window` or `max_frame` that the peer's `link/1` shows, once per link, and refuses nothing). One stream moves at most `window` per round trip |
+| `[link] bulk_window` | unset (`window`) | the receive window this side grants a bulk stream it receives: a client's `bohio-read/1`, a host's `bohio-write/1`; widens a stream by granting credit, so it may differ between sides and needs no change at the peer; at most `max_window`; a value below `window` changes nothing; costs that much memory for each bulk stream whose reader falls behind |
+| `[link] max_window` | unset (the larger of `window` and `bulk_window`) | the most a stream's receive window may grow to, by `bulk_window` or `auto_window`; at least 1; at least `window`, and at least `bulk_window` |
+| `[link] auto_window` | `false` | grows a stream's window by itself while data arrives (one `ping` per round trip; a stream that received over two thirds of its window before the `pong` doubles it, up to `max_window`); never shrinks; does nothing unless `max_window` is above `window` |
 | `[link] max_frame` | `65536` | most bytes of one message in one frame (a longer message is sent in parts); at least 1 |
+| `[link] max_metadata` | `4096` | most metadata one open may carry; an open with more is refused; at least 1 |
+| `[link] max_pending_opens` | `8` | streams a peer may have opened that nothing has accepted yet; at least 1 |
+| `[link] max_opens_per_minute` | `600` | streams a peer may open in a minute (ten a second); a sync that opens a stream for each small file needs more; at least 1 |
+| `[link] tcp_send_buffer`, `tcp_receive_buffer` | unset (the system's automatic sizing) | a TCP socket's buffer sizes in bytes, set before connecting (the client) and on the listener and each accepted socket (the host); at least 1; the system may clamp them; they matter only where a path's bandwidth-delay product exceeds what the system reaches |
 | `[link] max_message` | `1048576` | largest message on a stream; more than the largest `chunk_size` |
 | `[link] queue_bytes` | `262144` | bytes a stream holds each way between the link and its engine; a larger message passes alone; at least 1 |
 | `[link] read_ahead` | `8` | messages the socket's reader holds ahead of the link once a peer is proven (one before); at least 1 |
