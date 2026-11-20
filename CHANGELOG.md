@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `PeerLink` (an `Open`, cheap to clone) and `Node::links()` lists each link's peer, side, endpoint, source and start. `bohio_client::connect::{Opener, Opens}`
   are the open loop `Connection` already ran, now reusable, and `Connection::opener()` hands one out. Who dialed decides nothing: each side's own grants
   decide what the other may open, and a dialed key the node does not accept ends the link after the proof and is reported as a stranger.
+- Roles are read from the link. A node's `link/1` `offers` now lists only the protocols its grant for that peer holds a permission for (it listed all
+  five for any accepted key), so the document says what the node would serve that peer now. `PeerLink::offers(wait)` reads the peer's document,
+  `LinkInfo::mine` gives this node's side, and `Opener::capabilities(wait)` reads it on the link's own thread. Admission still decides every open. Nothing
+  is added to the wire; `docs/protocol.md` has a "Roles" section.
 
 ### Changed
 

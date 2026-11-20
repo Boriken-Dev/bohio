@@ -181,6 +181,7 @@ impl Opener {
     pub fn pair() -> (Opener, Opens);                              // nothing opens until `Opens::run` runs on a link
     pub fn is_up(&self) -> bool;                                   // false once the link ended or `close` was called
     pub fn close(&self);                                           // closes every stream this opener opened and makes `Opens::run` return
+    pub fn capabilities(&self, wait: Duration) -> Result<coqui_link::link::Capabilities, Error>;   // reads the peer's `link/1` document now, on a thread of the link's
 }
 impl Opens {
     pub fn run<C: Channel>(self, mux: &coqui_link::mux::Mux<'_, C>, settings: &Settings);   // serves open requests, each stream through a bounded relay, until the link leaves Up, `close`, or every Opener is gone

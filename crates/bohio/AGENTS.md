@@ -277,8 +277,8 @@ impl Node {
     pub fn links(&self) -> Vec<LinkInfo>;                           // every link that is up, oldest first
 }
 #[non_exhaustive] pub enum NodeError { Config(ConfigError), Proof(String), Listen { endpoint, reason }, Dial { endpoint, reason }, Stranger { peer } }   // Dial: the path or the proof failed; Stranger: the dialed key proved itself and Keys do not accept it
-#[non_exhaustive] pub struct LinkInfo { pub peer: PeerId, pub side: Side, pub endpoint: Option<String>, pub source: Option<SocketAddr>, pub since: SystemTime }   // `side` (Dialed or Answered) decides nothing
-#[derive(Clone)] pub struct PeerLink;                              // Debug; bohio_client::Open (Error::Closed once the link ended); peer(), is_up()
+#[non_exhaustive] pub struct LinkInfo { pub peer: PeerId, pub side: Side, pub endpoint: Option<String>, pub source: Option<SocketAddr>, pub since: SystemTime, pub mine: Vec<String> }   // `mine`: the tokens this node offers the peer now, computed when asked   // `side` (Dialed or Answered) decides nothing
+#[derive(Clone)] pub struct PeerLink;                              // Debug; bohio_client::Open (Error::Closed once the link ended); peer(), is_up(), offers(wait) -> Result<Vec<String>, bohio_client::Error> (the peer's `link/1` offers now)
 
 pub trait Keys: Send + Sync {
     fn is_accepted(&self, peer: &PeerId) -> bool;                  // the proof, every stream decision and the link's check every `2 x recheck`
@@ -296,7 +296,8 @@ pub trait NodeEvents: Send + Sync { fn event(&self, event: &NodeEvent); }   // r
 pub struct LogEvents;                                              // the default: log lines
 
 pub const PROTOCOLS: [(&str, &[Permission]); 5];                   // each protocol with the permissions of which a peer needs one to open it
-pub struct NodePeers;                                              // coqui_link::peers::PeerStore over `Keys`: an accepted key may open every protocol
+pub struct NodePeers;                                              // coqui_link::peers::PeerStore over `Keys` and `Grants`: NodePeers::new(keys, grants); an accepted key may open each protocol its grant holds a permission for, which is what `link/1` offers it
+pub fn offered(grant: &Grant) -> Vec<&'static str>;                       // the PROTOCOLS tokens `grant` holds a permission for: what a node offers that peer
 pub fn admission(grants: Arc<dyn Grants>, protocol: &'static str) -> coqui_link::link::Admission;   // asks `grants` afresh each call
 pub fn covers(grant: &Grant, protocol: &str, metadata: &[u8]) -> bool;   // the grant still covers what the open asked for
 pub fn grant_of(grants: &dyn Grants, peer: &str) -> Result<Grant, GrantsError>;
@@ -327,6 +328,11 @@ side made it, runs `coqui_link::link::serve_with` with a `bohio_client::connect:
 peer's grants and `Node::peer(&id)` opens its own under the peer's grants for this node. Who dialed decides nothing: `Side` reaches neither `Keys` nor `Grants`, and
 a link serves only a key whose `Keys` accept it, so a dialed key that proved itself and is not accepted ends the link after the proof (`NodeError::Stranger`,
 `Keys::stranger`, `NodeEvent::Stranger`). A dialed link counts against `[link] max_links_per_peer`. Both sides dialing at once make two links; both serve.
+
+Roles are read from the link, not configured: a node offers a peer the tokens its `Grants` entry for that peer holds a permission for (`offered`), which is the
+`offers` of the `link/1` document it answers on every link, so the document is what this node would serve that peer now, recomputed at each read; admission and
+`covers` still decide every open and recheck. `PeerLink::offers(wait)` reads the peer's document and `LinkInfo::mine` is this node's side. A node that grants a peer
+nothing offers nothing and still opens streams on it. Nothing is added to the wire.
 
 `LayeredPeers` is the command's pair: `[peer.<id>]` of the layer files (what accepts a key and what it may do) and, in the data directory, the waiting list
 (`peers/waiting/`; `peers/accepted/` is no longer read). A layer that cannot be read or parsed refuses everything, logged once per distinct error.
