@@ -111,5 +111,5 @@ rounds at different times, measured on the same code:
 - `results/cross-site-1248e07-flows.json`: 1, 4 and 8 raw downloads at once.
 
 Known gaps in these files: `open_close_x100` and `open_close_x50` fail on a fast Linux link (the host's
-stream limit; the metric is missing from the `lan` files made on Linux),; the first
+stream limit; the metric is missing from the `lan` files made on Linux); the first
 cross-site round predates the warm raw control, so `raw_warm_*` there come from two rounds.
