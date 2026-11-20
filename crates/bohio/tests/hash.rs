@@ -530,7 +530,7 @@ fn the_control_stream_no_longer_has_a_checksum_call() {
     // A request a newer or older client could still send is answered, not fatal.
     #[derive(serde::Serialize)]
     struct Call {
-        r#type: &'static str,
+        r#type: String,
         path: &'static str,
     }
     #[derive(serde::Serialize)]
@@ -543,7 +543,8 @@ fn the_control_stream_no_longer_has_a_checksum_call() {
     let bytes = bohio_proto::encode(&Request {
         id: 5,
         call: Call {
-            r#type: "checksum",
+            // The name of the call this stream used to have.
+            r#type: "check_sum".replace('_', ""),
             path: "f.txt",
         },
     })

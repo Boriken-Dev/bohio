@@ -28,6 +28,14 @@ on:
         description: "KEY=VALUE settings for A only, space separated (for example link.bulk_window=8MiB), so a setting B does not know can be measured against B's defaults"
         required: false
         default: ""
+      features:
+        description: "Cargo features of bohio-bench, for the scenarios a feature adds (for example hash); built into A only"
+        required: false
+        default: ""
+      extra_scenarios:
+        description: "Scenario names added to every link's set, space separated (for example hash_blake3_256MiB)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -40,6 +48,8 @@ jobs:
       LINKS: ${{ inputs.links }}
       SAMPLES: ${{ inputs.samples }}
       A_SETTINGS: ${{ inputs.a_settings }}
+      FEATURES: ${{ inputs.features }}
+      EXTRA_SCENARIOS: ${{ inputs.extra_scenarios }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -76,7 +86,10 @@ jobs:
           set -eu
           for side in a b; do
             [ -d "$side" ] || continue
-            (cd "$side" && cargo build --release -p bohio -p bohio-bench && cargo build --release -p bohio --example exec_helper)
+            features=""
+            if [ "$side" = a ] && [ -n "$FEATURES" ]; then features="--features $FEATURES"; fi
+            # shellcheck disable=SC2086
+            (cd "$side" && cargo build --release -p bohio -p bohio-bench $features && cargo build --release -p bohio --example exec_helper)
           done
       - name: Measure
         shell: bash
@@ -98,6 +111,7 @@ jobs:
               prefix="sudo -n systemd-run --scope --quiet -p CPUQuota=25% $drop"
             fi
             args=$(sh a/benchmarks/scenarios.sh "$link")
+            for extra in $EXTRA_SCENARIOS; do args="$args --scenario $extra"; done
             for round in 1 2 3; do
               for side in a b; do
                 [ -d "$side" ] || continue

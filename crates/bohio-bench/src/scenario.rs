@@ -92,6 +92,10 @@ impl Kind {
             parse_size(text)?;
             Ok(text.to_owned())
         };
+        // The host's SHA-256 of a file keeps the metric name the committed baselines use.
+        if let Some(rest) = name.strip_prefix("checksum_") {
+            return Ok(Self::Checksum { size: size(rest)? });
+        }
         Ok(match parts.as_slice() {
             ["connect"] => Self::Connect,
             ["info"] => Self::Info,
@@ -104,7 +108,6 @@ impl Kind {
             ["write", s] => Self::Write { size: size(s)? },
             ["exec", "echo"] => Self::ExecEcho,
             ["exec", "out", s] => Self::ExecOut { size: size(s)? },
-            ["checksum", s] => Self::Checksum { size: size(s)? },
             #[cfg(feature = "hash")]
             ["hash", "many", n] => Self::HashMany(
                 n.parse()

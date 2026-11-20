@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
-keywords = ["bohio", "hash", "checksum", "digest"]
+keywords = ["bohio", "hash", "digest", "crc32c"]
 categories = ["cryptography", "algorithms"]
 exclude = [".*", "*.local.*"]
 # Its sibling bohio-proto is unpublished: released once it is.

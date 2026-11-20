@@ -45,7 +45,9 @@ Names are metric prefixes. Sizes are `1KiB`, `16MiB`, ...; a count is `x100`.
 | `read_<size>_warm` | the read on a link that has already carried one (past TCP slow start) |
 | `write_<size>` | a `replace` of that many bytes on a ready link |
 | `exec_echo`, `exec_out_<size>` | a program that prints a word, or that many bytes |
-| `checksum_<size>` | today's host-side SHA-256 call |
+| `checksum_<size>` | the host's SHA-256 of a file, over a `bohio-hash/1` stream |
+| `hash_<algorithm>_<size>`, `hash_many_<n>` | (feature `hash`) the host's digest of a file by one algorithm; SHA-256 of `n` small files on one stream |
+| `cpu_hash_<algorithm>_<size>` | (feature `hash`) the control: the same algorithm over memory, no I/O |
 | `remote_read_<size>`, `remote_info` | `bohio remote ...` as a child process: process start counts |
 | `timeline_read_<size>`, `timeline_info` | the parts of one cold request: `_dial`, `_proof`, `_open` (to the header), `_first` (to the first byte), `_body`, `_total`; with the bytes received by time in `curves` |
 | `raw_connect`, `raw_down_<size>`, `raw_up_<size>` | the control: a plain TCP socket, no proof, no mux, with the connect included | 
@@ -74,7 +76,7 @@ name, or `site-vpn` for the cross-site pair. No result names a host or an addres
 
 ## Emulated links in CI
 
-`.github/workflows/bench.yml` (`workflow_dispatch`: `ref`, `baseline_ref`, `samples`, `links`, `a_settings`) builds the
+`.github/workflows/bench.yml` (`workflow_dispatch`: `ref`, `baseline_ref`, `samples`, `links`, `a_settings`, `features`, `extra_scenarios`) builds the
 refs, and on each link runs the scenario set (`scenarios.sh`) three rounds, alternating A (`ref`) and B
 (`baseline_ref`). `netem.sh up <link>` makes two network namespaces joined by a veth pair, with `tc netem`
 on each end:
@@ -90,6 +92,9 @@ on each end:
 
 `a_settings` (`link.bulk_window=8MiB`) puts `--set` keys on A's runs alone, for a setting the baseline does not know
 or to measure one against the baseline's defaults.
+
+`features` builds A's harness with Cargo features (`hash`) and `extra_scenarios` adds scenario names to every link's set, for what a feature adds; B's
+harness is its own commit's, so it does not run a scenario it lacks (a warning).
 
 A hosted runner cannot show a gain under about 10%. Read the controls (`raw_*`, `cpu_sha256_*`) before any
 change: a claim needs the same job on both commits, more than once, with the controls unchanged.
