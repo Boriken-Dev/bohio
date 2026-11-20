@@ -8,6 +8,7 @@ pub mod dial;
 mod error;
 pub mod exec;
 pub mod fs;
+pub mod hash;
 pub mod link;
 pub mod relay;
 pub mod shell;

@@ -111,6 +111,7 @@ struct Shared {
     info: Info,
     processes: Slots,
     transfers: Slots,
+    hashes: Slots,
     sessions: Slots,
 }
 
@@ -130,6 +131,7 @@ impl Shared {
             info: capabilities,
             processes: Slots::new(config.execution.max_processes),
             transfers: Slots::new(config.filesystem.max_transfers),
+            hashes: Slots::new(config.hash.max_streams),
             sessions: Slots::new(config.shell.max_sessions),
             config: config.clone(),
         })
@@ -1070,6 +1072,7 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
         let files = fs::Context {
             grant: &grant,
             config: &config.filesystem,
+            hash: &config.hash,
             slots: &shared.transfers,
         };
         match accepted.protocol.as_str() {
@@ -1105,6 +1108,23 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
             protocol::WRITE => {
                 if let Err(error) = fs::serve_write(channel, metadata, &files) {
                     tracing::info!(code = ?error.code, "write refused");
+                }
+            }
+            protocol::HASH => {
+                // Each item is decided by the grant as it is then, not as it was when the stream opened.
+                let now = || {
+                    grant_of(shared.grants.as_ref(), &accepted.peer).map_err(|_| {
+                        ErrorBody::new(ErrorCode::Internal, "the host cannot read its peer grants")
+                    })
+                };
+                let context = fs::HashContext {
+                    files,
+                    slots: &shared.hashes,
+                    current: Some(control::Current(&now)),
+                };
+                match fs::serve_hash(channel, metadata, &context) {
+                    Ok(items) => tracing::debug!(items, "hash ended"),
+                    Err(error) => tracing::info!(code = ?error.code, "hash refused"),
                 }
             }
             protocol::CONTROL => {

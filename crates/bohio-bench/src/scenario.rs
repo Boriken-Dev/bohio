@@ -9,6 +9,8 @@ use std::time::Instant;
 use bohio_client::connect::Connection;
 use bohio_client::dial::Endpoint;
 use bohio_client::link::Settings;
+#[cfg(feature = "hash")]
+use bohio_proto::hash::Algorithm;
 use coqui_link::auth::Proof;
 use sha2::{Digest, Sha256};
 
@@ -16,6 +18,10 @@ use crate::corpus::{Xorshift, parse_size};
 use crate::host::Cpu;
 use crate::report::{Metric, ms};
 use crate::{compat, raw};
+
+/// How many small files the corpus holds when it is made with its default count: `hash_many_N` cycles over them.
+#[cfg(feature = "hash")]
+const SMALL_FILES: u64 = 100;
 
 /// What a scenario is, parsed from its name.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,8 +42,17 @@ pub enum Kind {
     ExecEcho,
     /// A program that writes this many bytes to standard output.
     ExecOut { size: String },
-    /// Today's `checksum` call.
+    /// The host's SHA-256 of a file.
     Checksum { size: String },
+    /// The host's digest of a file by one algorithm.
+    #[cfg(feature = "hash")]
+    Hash { algorithm: Algorithm, size: String },
+    /// The host's SHA-256 of this many small files on one stream.
+    #[cfg(feature = "hash")]
+    HashMany(u64),
+    /// One algorithm over memory, no I/O: the CPU control of `Hash`.
+    #[cfg(feature = "hash")]
+    CpuHash { algorithm: Algorithm, size: String },
     /// `bohio remote ... read` as a child process.
     RemoteRead { size: String },
     /// `bohio remote ... info` as a child process.
@@ -90,6 +105,21 @@ impl Kind {
             ["exec", "echo"] => Self::ExecEcho,
             ["exec", "out", s] => Self::ExecOut { size: size(s)? },
             ["checksum", s] => Self::Checksum { size: size(s)? },
+            #[cfg(feature = "hash")]
+            ["hash", "many", n] => Self::HashMany(
+                n.parse()
+                    .map_err(|_| format!("`{n}` in `{name}` is not a count"))?,
+            ),
+            #[cfg(feature = "hash")]
+            ["hash", algorithm, s] => Self::Hash {
+                algorithm: known(algorithm, name)?,
+                size: size(s)?,
+            },
+            #[cfg(feature = "hash")]
+            ["cpu", "hash", algorithm, s] => Self::CpuHash {
+                algorithm: known(algorithm, name)?,
+                size: size(s)?,
+            },
             ["remote", "read", s] => Self::RemoteRead { size: size(s)? },
             ["remote", "info"] => Self::RemoteInfo,
             ["raw", "down", s] => Self::RawDown { size: size(s)? },
@@ -108,6 +138,17 @@ impl Kind {
             ["timeline", "info"] => Self::TimelineInfo,
             _ => return Err(format!("no scenario is named `{name}`")),
         })
+    }
+}
+
+/// The algorithm a scenario name spells.
+#[cfg(feature = "hash")]
+fn known(text: &str, name: &str) -> Result<Algorithm, String> {
+    let algorithm = Algorithm::from_name(text);
+    if algorithm.is_known() {
+        Ok(algorithm)
+    } else {
+        Err(format!("`{text}` in `{name}` is not a hash algorithm"))
     }
 }
 
@@ -340,11 +381,48 @@ impl Runner {
             Kind::Checksum { size } => {
                 let file = self.path(&format!("random-{size}"));
                 let link = warm_link(&self.env, &mut self.warm)?;
-                let fs = compat::fs(link)?;
+                let taken = timed(&mut self.env.cpu, samples, || compat::checksum(link, &file))?;
+                self.record(name, &taken, Some(parse_size(&size)?));
+            }
+            #[cfg(feature = "hash")]
+            Kind::Hash { algorithm, size } => {
+                let file = self.path(&format!("random-{size}"));
+                let link = warm_link(&self.env, &mut self.warm)?;
                 let taken = timed(&mut self.env.cpu, samples, || {
-                    compat::checksum(&fs, &file).map(drop)
+                    compat::hash(link, &file, &algorithm)
                 })?;
                 self.record(name, &taken, Some(parse_size(&size)?));
+            }
+            #[cfg(feature = "hash")]
+            Kind::HashMany(count) => {
+                let files: Vec<String> = (0..count)
+                    .map(|index| self.path(&format!("small/{:05}.bin", index % SMALL_FILES)))
+                    .collect();
+                let link = warm_link(&self.env, &mut self.warm)?;
+                let taken = timed(&mut self.env.cpu, samples, || {
+                    compat::hash_batch(link, &files)
+                })?;
+                self.record(name, &taken, None);
+            }
+            #[cfg(feature = "hash")]
+            Kind::CpuHash { algorithm, size } => {
+                let bytes = parse_size(&size)?;
+                let mut block = vec![0_u8; 1 << 20];
+                Xorshift::new(13).fill(&mut block);
+                let taken = timed(&mut None, samples, || {
+                    let mut hasher =
+                        bohio_transfer::hash::Hasher::new(std::slice::from_ref(&algorithm))
+                            .map_err(|error| error.to_string())?;
+                    let mut left = bytes;
+                    while left > 0 {
+                        let take = usize::try_from(left.min(block.len() as u64)).unwrap_or(1);
+                        hasher.update(&block[..take]);
+                        left -= take as u64;
+                    }
+                    std::hint::black_box(hasher.finish());
+                    Ok(())
+                })?;
+                self.record(name, &taken, Some(bytes));
             }
             Kind::RemoteRead { size } => {
                 let file = self.path(&format!("random-{size}"));

@@ -220,6 +220,22 @@ pub(super) fn print_info(info: &Info) {
         limit(limits.max_processes),
         limit(limits.max_sessions)
     );
+    let transfer = &info.transfer;
+    let names: Vec<&str> = transfer.hashes.iter().map(|name| name.name()).collect();
+    println!(
+        "hashes: {} (max_streams={} rate={})",
+        if names.is_empty() {
+            "none".to_owned()
+        } else {
+            names.join(",")
+        },
+        transfer.hash_limits.max_streams,
+        if transfer.hash_limits.rate == 0 {
+            "unlimited".to_owned()
+        } else {
+            format!("{}/s", transfer.hash_limits.rate)
+        }
+    );
 }
 
 fn limit(value: Option<u64>) -> String {

@@ -25,10 +25,11 @@ use bohio_client::link::Settings;
 use bohio_client::shell::{Event as ShellEvent, Shell};
 use bohio_proto::exec::Request;
 use bohio_proto::fs::{ReadRequest, WriteRequest};
+use bohio_proto::hash::Algorithm;
 use bohio_proto::shell::{Request as ShellRequest, ShellKind};
+use bohio_transfer::hash::Hasher;
 use coqui_link::auth::{Proof, Trust};
 use coqui_transport::Failure;
-use sha2::{Digest, Sha256};
 use support::{alive, gone_within, helper};
 use sysinfo::{Pid, ProcessesToUpdate, System};
 use tempfile::TempDir;
@@ -382,7 +383,7 @@ fn connect_with(client: &Client, host: &Host, settings: &Settings) -> Result<Con
 /// A file with `size` bytes of a fixed pseudo-random sequence, and its SHA-256.
 fn big_file(path: &Path, size: u64) -> String {
     const CHUNK: usize = 1024 * 1024;
-    let mut hash = Sha256::new();
+    let mut hash = Hasher::new(&[Algorithm::Sha256]).unwrap();
     let mut file = std::io::BufWriter::new(std::fs::File::create(path).expect("a file"));
     let mut state = 0x9E37_79B9_7F4A_7C15_u64;
     let mut chunk = vec![0_u8; CHUNK];
@@ -396,7 +397,7 @@ fn big_file(path: &Path, size: u64) -> String {
         hash.update(&chunk);
         file.write_all(&chunk).expect("the file is written");
     }
-    format!("{:x}", hash.finalize())
+    hash.finish()[&Algorithm::Sha256].clone()
 }
 
 /// An approved peer: paired, then granted `grant`.
@@ -453,6 +454,43 @@ fn an_approved_peer_gets_info_runs_exec_and_reads_a_file() {
     let read = remote(&client, &host, &["read", &path]);
     assert_eq!(read.code, Some(0), "{}", read.stderr);
     assert_eq!(read.stdout, "read over the link\n");
+
+    // The same bytes hashed on the host: one algorithm prints `HEX  PATH`, several `NAME HEX  PATH`, a missing file is
+    // reported and ends the command with status 1 after the rest are printed.
+    let mut local = Hasher::new(&[Algorithm::Sha256, Algorithm::Crc32c]).unwrap();
+    local.update(b"read over the link\n");
+    let local = local.finish();
+    let one = remote(&client, &host, &["hash", &path]);
+    assert_eq!(one.code, Some(0), "{}", one.stderr);
+    assert_eq!(
+        one.stdout.trim(),
+        format!("{}  {path}", local[&Algorithm::Sha256])
+    );
+    let missing = root.join("absent.txt").to_string_lossy().into_owned();
+    let two = remote(
+        &client,
+        &host,
+        &[
+            "hash",
+            "--algorithm",
+            "sha256",
+            "--algorithm",
+            "crc32c",
+            &missing,
+            &path,
+        ],
+    );
+    assert_eq!(two.code, Some(1), "{}", two.stderr);
+    assert_eq!(
+        two.stdout.lines().collect::<Vec<_>>(),
+        [
+            format!("sha256 {}  {path}", local[&Algorithm::Sha256]),
+            format!("crc32c {}  {path}", local[&Algorithm::Crc32c]),
+        ]
+    );
+    assert!(two.stderr.contains("absent.txt"), "{}", two.stderr);
+    let unknown = remote(&client, &host, &["hash", "--algorithm", "whirlpool", &path]);
+    assert_eq!(unknown.code, Some(1));
 
     // The peer holds no write permission, so a write through the library is refused at the open.
     let link = connect(&client, &host).expect("the link is up");
@@ -1018,7 +1056,7 @@ fn a_64_mib_file_crosses_the_real_link_both_ways_with_bounded_host_memory() {
     let baseline = resident(&mut System::new(), host_pid);
     assert!(baseline > 0, "the host's memory cannot be read");
 
-    let mut hash = Sha256::new();
+    let mut hash = Hasher::new(&[Algorithm::Sha256]).unwrap();
     let mut total = 0_u64;
     let read_growth = peak_growth(host_pid, baseline, || {
         let reader = Reader::start(&link, &ReadRequest::whole("big.bin"), wait).unwrap();
@@ -1029,7 +1067,7 @@ fn a_64_mib_file_crosses_the_real_link_both_ways_with_bounded_host_memory() {
         }
     });
     assert_eq!(
-        (total, format!("{:x}", hash.finalize())),
+        (total, hash.finish()[&Algorithm::Sha256].clone()),
         (SIZE, want.clone())
     );
 
@@ -1045,7 +1083,10 @@ fn a_64_mib_file_crosses_the_real_link_both_ways_with_bounded_host_memory() {
             writer.write(&chunk[..count]).unwrap();
         }
         let done = writer.finish(wait).unwrap();
-        assert_eq!((done.written, done.sha256.as_str()), (SIZE, want.as_str()));
+        assert_eq!(
+            (done.written, done.hashes[&Algorithm::Sha256].as_str()),
+            (SIZE, want.as_str())
+        );
     });
     eprintln!(
         "64 MiB over the link: host grew {read_growth} bytes reading, {write_growth} writing"
@@ -1239,13 +1280,13 @@ fn bulk_settings(bulk: u32) -> Settings {
 /// Reads `name` whole and returns its length and SHA-256.
 fn read_hash(link: &Connection, name: &str, wait: Option<Duration>) -> (u64, String) {
     let reader = Reader::start(link, &ReadRequest::whole(name), wait).unwrap();
-    let mut hash = Sha256::new();
+    let mut hash = Hasher::new(&[Algorithm::Sha256]).unwrap();
     let mut total = 0_u64;
     while let Some(chunk) = reader.next_chunk(wait).unwrap() {
         hash.update(&chunk);
         total += chunk.len() as u64;
     }
-    (total, format!("{:x}", hash.finalize()))
+    (total, hash.finish()[&Algorithm::Sha256].clone())
 }
 
 /// Writes the file `from` to `name` on the host and returns what the host says it wrote.
@@ -1261,7 +1302,7 @@ fn write_file(link: &Connection, from: &Path, name: &str, wait: Option<Duration>
         writer.write(&chunk[..count]).unwrap();
     }
     let done = writer.finish(wait).unwrap();
-    (done.written, done.sha256)
+    (done.written, done.hashes[&Algorithm::Sha256].clone())
 }
 
 #[test]

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{ErrorBody, ErrorCode};
 use crate::fs::{Listing, Metadata, Timestamp};
-use crate::info::Info;
+use crate::info::{Info, TransferInfo};
 
 /// A call from the client.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,17 +127,6 @@ pub enum Call {
         #[serde(default)]
         readonly: Option<bool>,
     },
-    /// The SHA-256 of a file or a range of it.
-    Checksum {
-        /// The file.
-        path: String,
-        /// The first byte hashed.
-        #[serde(default)]
-        offset: u64,
-        /// How many bytes at most; to the end when absent.
-        #[serde(default)]
-        length: Option<u64>,
-    },
 }
 
 /// The answer to one request: exactly one of `reply` and `error` is present.
@@ -198,6 +187,9 @@ pub enum Reply {
     Hello {
         /// The protocol version the host will speak: the lower of the two.
         version: u32,
+        /// What the host does to move bytes, for a peer that cannot ask `info`.
+        #[serde(default)]
+        transfer: TransferInfo,
     },
     /// The host's capabilities.
     Info(Box<Info>),
@@ -211,12 +203,5 @@ pub enum Reply {
     Link {
         /// What the link holds.
         target: String,
-    },
-    /// A file's digest.
-    Checksum {
-        /// SHA-256 as lowercase hex.
-        sha256: String,
-        /// How many bytes were hashed.
-        length: u64,
     },
 }

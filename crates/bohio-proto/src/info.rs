@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::hash::Algorithm;
 use crate::shell::ShellKind;
 
 /// The protocol version this crate speaks.
@@ -34,6 +35,8 @@ pub struct Info {
     pub shell: SessionInfo,
     /// Bounds the host applies.
     pub limits: Limits,
+    /// What the host does to move and compare bytes.
+    pub transfer: TransferInfo,
 }
 
 /// The serving program.
@@ -99,4 +102,26 @@ pub struct Limits {
     pub max_processes: Option<u64>,
     /// Concurrent shell sessions.
     pub max_sessions: Option<u64>,
+}
+
+/// How the host moves and compares bytes. A client that finds something missing does not use it.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TransferInfo {
+    /// The digest algorithms the host computes for `bohio-hash/1`, and for the `hashes` and `expect`
+    /// of reads and writes: empty when it serves none.
+    pub hashes: Vec<Algorithm>,
+    /// The bounds `bohio-hash/1` runs under.
+    pub hash_limits: HashLimits,
+}
+
+/// The bounds of `bohio-hash/1`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HashLimits {
+    /// The most hash streams running at once on the host; a stream past it is `busy`. `0` when the
+    /// host serves none.
+    pub max_streams: u64,
+    /// The most bytes a second one stream hashes; `0` is no limit.
+    pub rate: u64,
 }

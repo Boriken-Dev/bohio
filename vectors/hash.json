@@ -1,0 +1,206 @@
+{
+  "encoding": "hex is the stream message exactly as it travels: open metadata and control messages are bare CBOR, a frame is one tag byte then its body",
+  "protocol": "bohio-hash/1",
+  "vectors": [
+    {
+      "direction": "client_to_host",
+      "hex": "a26a616c676f726974686d73816673686132353666626c6f636b73f6",
+      "kind": "open",
+      "name": "open_one",
+      "type": "hash.Request",
+      "value": {
+        "algorithms": [
+          "sha256"
+        ],
+        "blocks": null
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a26a616c676f726974686d7383636d643566626c616b65336678786831323866626c6f636b73a36473697a65190800647765616b657273796e636a7374726f6e675f6c656e10",
+      "kind": "open",
+      "name": "open_several_with_blocks",
+      "type": "hash.Request",
+      "value": {
+        "algorithms": [
+          "md5",
+          "blake3",
+          "xxh128"
+        ],
+        "blocks": {
+          "size": 2048,
+          "strong_len": 16,
+          "weak": "rsync"
+        }
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "10a564706174686c2f7372762f6269672e62696e666f6666736574190400666c656e6774681910006769665f73697a651923286b69665f6d6f646966696564a264736563731a6553f100656e616e6f7305",
+      "kind": "frame",
+      "name": "item",
+      "type": "hash.Input",
+      "value": {
+        "message": {
+          "if_modified": {
+            "nanos": 5,
+            "secs": 1700000000
+          },
+          "if_size": 9000,
+          "length": 4096,
+          "offset": 1024,
+          "path": "/srv/big.bin"
+        },
+        "tag": 16
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "10a564706174686d2f6574632f686f73746e616d65666f666673657400666c656e677468f66769665f73697a65f66b69665f6d6f646966696564f6",
+      "kind": "frame",
+      "name": "item_whole",
+      "type": "hash.Input",
+      "value": {
+        "message": {
+          "if_modified": null,
+          "if_size": null,
+          "length": null,
+          "offset": 0,
+          "path": "/etc/hostname"
+        },
+        "tag": 16
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "11",
+      "kind": "frame",
+      "name": "end",
+      "type": "hash.Input",
+      "value": {
+        "tag": 17
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "01a665696e646578006473697a6503686d6f646966696564a264736563731a6553f100656e616e6f7305666c656e6774680369756e6368616e676564f466686173686573a2636d64357820393030313530393833636432346662306436393633663764323865313766373266637263333263683336346233666237",
+      "kind": "frame",
+      "name": "result",
+      "type": "hash.Output",
+      "value": {
+        "message": {
+          "hashes": {
+            "crc32c": "364b3fb7",
+            "md5": "900150983cd24fb0d6963f7d28e17f72"
+          },
+          "index": 0,
+          "length": 3,
+          "modified": {
+            "nanos": 5,
+            "secs": 1700000000
+          },
+          "size": 3,
+          "unchanged": false
+        },
+        "tag": 1
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "01a665696e646578016473697a6503686d6f646966696564a264736563731a6553f100656e616e6f7305666c656e6774680069756e6368616e676564f566686173686573a0",
+      "kind": "frame",
+      "name": "result_unchanged",
+      "type": "hash.Output",
+      "value": {
+        "message": {
+          "hashes": {},
+          "index": 1,
+          "length": 0,
+          "modified": {
+            "nanos": 5,
+            "secs": 1700000000
+          },
+          "size": 3,
+          "unchanged": true
+        },
+        "tag": 1
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "02a565696e64657802656669727374006473697a65190800647765616b821a0001000207667374726f6e6744deadbeef",
+      "kind": "frame",
+      "name": "blocks",
+      "type": "hash.Output",
+      "value": {
+        "message": {
+          "first": 0,
+          "index": 2,
+          "size": 2048,
+          "strong": [
+            222,
+            173,
+            190,
+            239
+          ],
+          "weak": [
+            65538,
+            7
+          ]
+        },
+        "tag": 2
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "03a365696e6465780364636f6465696e6f745f666f756e64676d65737361676577746865207061746820646f6573206e6f74206578697374",
+      "kind": "frame",
+      "name": "item_error",
+      "type": "hash.Output",
+      "value": {
+        "message": {
+          "code": "not_found",
+          "index": 3,
+          "message": "the path does not exist"
+        },
+        "tag": 3
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "04a1656974656d7304",
+      "kind": "frame",
+      "name": "done",
+      "type": "hash.Output",
+      "value": {
+        "message": {
+          "items": 4
+        },
+        "tag": 4
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "05a264636f64656462757379676d65737361676575746f6f206d616e7920686173682073747265616d73",
+      "kind": "frame",
+      "name": "error_busy",
+      "type": "hash.Output",
+      "value": {
+        "message": {
+          "code": "busy",
+          "message": "too many hash streams"
+        },
+        "tag": 5
+      }
+    },
+    {
+      "decode_only": true,
+      "direction": "host_to_client",
+      "error": "tag",
+      "hex": "7f",
+      "kind": "frame",
+      "name": "unknown_tag",
+      "type": "hash.Output"
+    }
+  ]
+}

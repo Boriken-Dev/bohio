@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/bohio-proto", "crates/bohio-client", "crates/bohio", "crates/bohio-bench"]
+members = ["crates/bohio-proto", "crates/bohio-transfer", "crates/bohio-client", "crates/bohio", "crates/bohio-bench"]
 
 [workspace.package]
 version = "0.0.0-alpha.0"
@@ -66,11 +66,21 @@ portable-pty = "0.9"
 # Capability-style file access: every path resolves against a directory handle and cannot leave it.
 cap-std = "4"
 cap-fs-ext = "4"
-# SHA-256 for the checksum call.
-sha2 = "0.10"
+# The digests `bohio-transfer` offers. RustCrypto's SHA-2, SHA-1 and MD5 (md-5) share one `digest` trait; SHA-1 and MD5 are there for
+# comparing against tools and sums that still use them, not as a security choice.
+sha2 = { version = "0.11", default-features = false }
+sha1 = { version = "0.11", default-features = false }
+md-5 = { version = "0.11", default-features = false }
+# BLAKE3, the fast cryptographic digest (SIMD where the CPU has it).
+blake3 = { version = "1", default-features = false, features = ["std"] }
+# XXH3 (64 and 128 bits) and XXH64: fast non-cryptographic digests for change detection.
+xxhash-rust = { version = "0.8", default-features = false, features = ["xxh3", "xxh64"] }
+# CRC-32C (Castagnoli), hardware accelerated where the CPU has it.
+crc32c = "0.6"
 # Tests: scratch directories that remove themselves.
 tempfile = "3"
 bohio-proto = { path = "crates/bohio-proto" }
+bohio-transfer = { path = "crates/bohio-transfer" }
 bohio-client = { path = "crates/bohio-client" }
 
 # One PeerId type across the graph needs one source: the methods name coqui-peer by version.

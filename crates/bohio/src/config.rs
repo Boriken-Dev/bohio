@@ -17,6 +17,8 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde::de::{self, Deserializer};
 
+use bohio_proto::hash::Algorithm;
+
 use crate::policy::Peers;
 
 /// The environment the data directory and the host's programs are looked for in, captured by the
@@ -122,6 +124,8 @@ pub struct Config {
     pub link: LinkConfig,
     /// `[filesystem]`.
     pub filesystem: FilesystemConfig,
+    /// `[hash]`.
+    pub hash: HashConfig,
     /// `[execution]`.
     pub execution: ExecutionConfig,
     /// `[shell]`.
@@ -565,8 +569,7 @@ pub struct FilesystemConfig {
     /// The most file transfers (`bohio-read/1` and `bohio-write/1` streams) running at once,
     /// across peers. At least 1. Default `16`.
     pub max_transfers: usize,
-    /// The most file bytes in one frame, and the size of the buffer a copy or a checksum reads
-    /// with. At least 1; a smaller message bound of the stream wins. Default `65536`.
+    /// The most file bytes in one frame, and the size of the buffer a copy reads with. At least 1; a smaller message bound of the stream wins. Default `65536`.
     pub chunk_size: usize,
     /// The most entries in one page of a directory listing, whatever the client asks for. At
     /// least 1. Default `1000`.
@@ -579,6 +582,10 @@ pub struct FilesystemConfig {
     pub poll_interval: Span,
     /// Whether a write is flushed to storage before it is put in place. Default `true`.
     pub sync_writes: bool,
+    /// The digests a write answers in `write-done` when its request names none. Each must be one of
+    /// `[hash] algorithms`. An empty list answers none, which saves the CPU of hashing every byte
+    /// written. Default `["sha256"]`.
+    pub write_hashes: Vec<Algorithm>,
 }
 
 impl Default for FilesystemConfig {
@@ -591,6 +598,42 @@ impl Default for FilesystemConfig {
             idle_timeout: Span(Duration::from_secs(300)),
             poll_interval: Span(Duration::from_millis(20)),
             sync_writes: true,
+            write_hashes: vec![Algorithm::Sha256],
+        }
+    }
+}
+
+/// `[hash]`: digests of files, for `bohio-hash/1` and for the `hashes` and `expect` of reads and writes.
+///
+/// Hashing reads every byte it hashes, so a peer that may read can make the host spend its disk and
+/// CPU: `max_streams` bounds how many hash streams run, `rate` how fast each one reads. The
+/// algorithms are the host's to allow: the cryptographic ones cost more CPU than `xxh3` or `crc32c`,
+/// and `md5` and `sha1` are there for comparing with sums that still use them.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct HashConfig {
+    /// The most `bohio-hash/1` streams running at once, across peers; one past it is `busy`. At least
+    /// 1. Default `4`.
+    pub max_streams: usize,
+    /// The most bytes a second one hash stream reads; `0` is no limit. A limit protects a disk another
+    /// service uses, and makes a long hash take as long as the bytes divided by it. Default `0`.
+    pub rate: u64,
+    /// The size of the buffer a hash reads with, in bytes. At least 1. A `rate` below twenty times
+    /// this reads in smaller pieces so the limit holds within a twentieth of a second. Default
+    /// `1048576`.
+    pub read_size: usize,
+    /// The algorithms the host computes, for hash streams, reads and writes; an unknown name is an
+    /// error. At least one. Default every algorithm this build has.
+    pub algorithms: Vec<Algorithm>,
+}
+
+impl Default for HashConfig {
+    fn default() -> Self {
+        Self {
+            max_streams: 4,
+            rate: 0,
+            read_size: 1024 * 1024,
+            algorithms: bohio_transfer::hash::available(),
         }
     }
 }
@@ -785,6 +828,8 @@ pub struct NodeConfig {
     pub link: LinkConfig,
     /// `[filesystem]`.
     pub filesystem: FilesystemConfig,
+    /// `[hash]`.
+    pub hash: HashConfig,
     /// `[execution]`.
     pub execution: ExecutionConfig,
     /// `[shell]`.
@@ -799,6 +844,7 @@ impl Default for NodeConfig {
             name: ServiceConfig::default().name,
             link: LinkConfig::default(),
             filesystem: FilesystemConfig::default(),
+            hash: HashConfig::default(),
             execution: ExecutionConfig::default(),
             shell: ShellConfig::default(),
             pairing: PairingConfig::default(),
@@ -918,6 +964,36 @@ impl NodeConfig {
         if self.filesystem.poll_interval.0.is_zero() {
             return Err(invalid("filesystem.poll_interval", "must not be zero"));
         }
+        if self.hash.max_streams == 0 {
+            return Err(invalid("hash.max_streams", "must be at least 1"));
+        }
+        if self.hash.read_size == 0 {
+            return Err(invalid("hash.read_size", "must be at least 1"));
+        }
+        if self.hash.algorithms.is_empty() {
+            return Err(invalid(
+                "hash.algorithms",
+                "must name at least one algorithm",
+            ));
+        }
+        let have = bohio_transfer::hash::available();
+        if self.hash.algorithms.iter().any(|name| !have.contains(name)) {
+            return Err(invalid(
+                "hash.algorithms",
+                "names an algorithm this build does not compute",
+            ));
+        }
+        if self
+            .filesystem
+            .write_hashes
+            .iter()
+            .any(|name| !self.hash.algorithms.contains(name))
+        {
+            return Err(invalid(
+                "filesystem.write_hashes",
+                "must name only algorithms that [hash] algorithms allows",
+            ));
+        }
         if self.shell.max_sessions == 0 {
             return Err(invalid("shell.max_sessions", "must be at least 1"));
         }
@@ -966,6 +1042,7 @@ impl Config {
             name: self.service.name.clone(),
             link: self.link.clone(),
             filesystem: self.filesystem.clone(),
+            hash: self.hash.clone(),
             execution: self.execution.clone(),
             shell: self.shell.clone(),
             pairing: self.pairing.clone(),

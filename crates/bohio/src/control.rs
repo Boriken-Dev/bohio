@@ -106,6 +106,7 @@ fn answer_with(
             }
             Ok(Reply::Hello {
                 version: (*version).min(PROTOCOL_VERSION),
+                transfer: info.transfer.clone(),
             })
         }
         Call::Info => {

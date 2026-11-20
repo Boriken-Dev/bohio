@@ -1,0 +1,31 @@
+[package]
+name = "bohio-transfer"
+description = "Bohío's byte-level work, with no I/O of its own: digests of several algorithms in one pass"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["bohio", "hash", "checksum", "digest"]
+categories = ["cryptography", "algorithms"]
+exclude = [".*", "*.local.*"]
+# Its sibling bohio-proto is unpublished: released once it is.
+publish = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+bohio-proto.workspace = true
+sha2.workspace = true
+sha1.workspace = true
+md-5.workspace = true
+blake3.workspace = true
+xxhash-rust.workspace = true
+crc32c.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

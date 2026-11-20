@@ -4,7 +4,10 @@ use std::ffi::OsStr;
 use std::path::Path;
 
 use bohio_proto::PROTOCOL_VERSION;
-use bohio_proto::info::{ExecInfo, FilesystemInfo, Info, Limits, Service, SessionInfo, ShellInfo};
+use bohio_proto::info::{
+    ExecInfo, FilesystemInfo, HashLimits, Info, Limits, Service, SessionInfo, ShellInfo,
+    TransferInfo,
+};
 use bohio_proto::shell::ShellKind;
 
 use crate::config::NodeConfig;
@@ -52,6 +55,17 @@ pub fn collect(config: &NodeConfig, path: &OsStr) -> Info {
             max_streams: Some(config.link.max_streams as u64),
             max_processes: Some(config.execution.max_processes as u64),
             max_sessions: Some(config.shell.max_sessions as u64),
+        },
+        transfer: TransferInfo {
+            hashes: if config.filesystem.enabled {
+                config.hash.algorithms.clone()
+            } else {
+                Vec::new()
+            },
+            hash_limits: HashLimits {
+                max_streams: config.hash.max_streams as u64,
+                rate: config.hash.rate,
+            },
         },
     }
 }

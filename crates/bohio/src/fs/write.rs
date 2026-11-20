@@ -5,11 +5,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bohio_proto::fs::{WriteDone, WriteInput, WriteMode, WriteOutput, WriteRequest};
+use bohio_proto::hash::Algorithm;
 use bohio_proto::{ErrorBody, ErrorCode};
 use coqui_transport::{Channel, Failure};
-use sha2::{Digest, Sha256};
 
-use super::ops::{Roots, hex};
+use super::hash::hasher_for;
+use super::ops::Roots;
 use super::stage::Staged;
 use super::{Context, authorize, io_error};
 use crate::policy::Permission;
@@ -22,9 +23,10 @@ fn encode(output: &WriteOutput) -> Vec<u8> {
 /// Serves one `bohio-write/1` stream whose open carried `metadata`, until the client ends the data
 /// and it is in place.
 ///
-/// Frames out: `ready` once the target is open, then `done` with the byte count and SHA-256. For
+/// Frames out: `ready` once the target is open, then `done` with the byte count and the digests the
+/// request asked for (`hashes`, else `[filesystem] write_hashes`). For
 /// `replace` the data goes to a temporary sibling and is renamed over the target only after the
-/// client's `end` (and the checksum, when one was asked for, matched); a stream that closes, fails
+/// client's `end` (and every digest in `expect` matched); a stream that closes, fails
 /// or stays idle for `idle_timeout` first leaves the target as it was and removes the temporary
 /// file. `create` removes the file it made. `append` and `at` write in place, so what was written
 /// before the stream ended stays. A request that cannot be served gets one `error` frame and the
@@ -33,9 +35,9 @@ fn encode(output: &WriteOutput) -> Vec<u8> {
 /// # Errors
 ///
 /// The [`ErrorBody`] sent to the peer: `bad_request` for an undecodable request, an unusable mode
-/// or checksum text, a directory target or the root itself; `unsupported`, `denied` and `busy` (at
-/// `max_transfers`) before any path is looked at; `outside_root`, `not_found`, `exists` (`create`)
-/// and `io` from the path and the file, and `io` for a checksum mismatch or a stream that ended
+/// or digest text, a directory target or the root itself; `unsupported` (also for a digest the host
+/// does not offer), `denied` and `busy` (at `max_transfers`) before any path is looked at; `outside_root`, `not_found`, `exists` (`create`)
+/// and `io` from the path and the file, and `io` for a digest mismatch or a stream that ended
 /// early.
 pub fn serve_write(
     channel: Arc<dyn Channel>,
@@ -59,17 +61,21 @@ fn check_request(request: &WriteRequest) -> Result<(), ErrorBody> {
     if let Some(bits) = request.file_mode {
         super::check_mode(bits)?;
     }
-    if let Some(expected) = &request.expect_sha256 {
-        let text = expected.len() == 64
+    // An algorithm this build does not know is refused as unsupported, with the other names, once the hasher is made.
+    for (algorithm, expected) in &request.expect {
+        let text = algorithm
+            .hex_len()
+            .is_none_or(|length| length == expected.len())
             && expected
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
         if !text {
-            return bad("a checksum is 64 lowercase hexadecimal digits");
+            return bad("an expected digest is the algorithm's lowercase hexadecimal digits");
         }
-        if !matches!(request.mode, WriteMode::Replace | WriteMode::Create) {
-            return bad("a checksum is only checked for replace and create");
-        }
+    }
+    if !request.expect.is_empty() && !matches!(request.mode, WriteMode::Replace | WriteMode::Create)
+    {
+        return bad("a digest is only checked for replace and create");
     }
     Ok(())
 }
@@ -85,6 +91,18 @@ fn run(
         .map_err(|_| ErrorBody::new(ErrorCode::BadRequest, "the request cannot be read"))?;
     authorize(context, &[Permission::FsWrite])?;
     check_request(&request)?;
+    let answered: Vec<Algorithm> = request
+        .hashes
+        .clone()
+        .unwrap_or_else(|| context.config.write_hashes.clone());
+    // One pass computes the union of what is answered and what is checked.
+    let mut computed = answered.clone();
+    for algorithm in request.expect.keys() {
+        if !computed.contains(algorithm) {
+            computed.push(algorithm.clone());
+        }
+    }
+    let mut hasher = hasher_for(context, &computed)?;
     let _permit = context.slots.acquire().ok_or_else(|| {
         ErrorBody::new(
             ErrorCode::Busy,
@@ -111,7 +129,6 @@ fn run(
         return Err(ended());
     }
 
-    let mut hasher = Sha256::new();
     let mut written = 0_u64;
     let mut last_progress = Instant::now();
     loop {
@@ -145,19 +162,24 @@ fn run(
         }
     }
 
-    let sha256 = hex(&hasher.finalize());
-    if request
-        .expect_sha256
-        .as_ref()
-        .is_some_and(|want| *want != sha256)
+    let mut digests = hasher.finish();
+    if let Some(name) = request
+        .expect
+        .iter()
+        .find(|(algorithm, want)| digests.get(*algorithm) != Some(*want))
+        .map(|(algorithm, _)| algorithm)
     {
         return Err(ErrorBody::new(
             ErrorCode::Io,
-            "the data does not match the checksum",
+            format!("the data does not match the expected {name}"),
         ));
     }
+    digests.retain(|algorithm, _| answered.contains(algorithm));
     staged.commit(context.config.sync_writes)?;
-    let done = WriteDone { written, sha256 };
+    let done = WriteDone {
+        written,
+        hashes: digests,
+    };
     if !send_waiting(
         channel.as_ref(),
         &encode(&WriteOutput::Done(done.clone())),

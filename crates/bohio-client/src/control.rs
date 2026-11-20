@@ -83,7 +83,7 @@ impl Control {
             },
             timeout,
         )? {
-            Reply::Hello { version } => Ok(version),
+            Reply::Hello { version, .. } => Ok(version),
             _ => Err(Error::Protocol(bohio_proto::Error::Decode)),
         }
     }

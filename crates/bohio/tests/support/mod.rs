@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use bohio::config::{ExecutionConfig, FilesystemConfig, ShellConfig};
+use bohio::config::{ExecutionConfig, FilesystemConfig, HashConfig, ShellConfig};
 use bohio::exec::{self, Context};
 use bohio::limit::Slots;
 use bohio::policy::Grant;
@@ -39,7 +39,12 @@ pub struct Link {
     pub config: Arc<ExecutionConfig>,
     pub slots: Arc<Slots>,
     pub files: Arc<FilesystemConfig>,
+    pub hash: Arc<HashConfig>,
     pub transfers: Arc<Slots>,
+    pub hash_slots: Arc<Slots>,
+    /// What the peer is granted now, when it differs from `grant`: a hash stream reads it before each item, as the
+    /// node does, so a test narrows a grant while a stream is open.
+    pub live: Arc<Mutex<Option<Grant>>>,
     pub info: Arc<Info>,
     pub shells: Arc<ShellConfig>,
     pub sessions: Arc<Slots>,
@@ -82,6 +87,19 @@ impl Link {
         )
     }
 
+    /// As [`Link::files`], with the `[hash]` settings `hash`.
+    pub fn hashing(grant: Grant, files: FilesystemConfig, hash: HashConfig) -> Self {
+        let mut link = Self::files(grant, files);
+        link.hash_slots = Arc::new(Slots::new(hash.max_streams));
+        link.hash = Arc::new(hash);
+        link
+    }
+
+    /// From now on the peer is granted `grant`: a hash stream's next item is decided by it.
+    pub fn narrow(&self, grant: Grant) {
+        *self.live.lock().unwrap() = Some(grant);
+    }
+
     fn build(
         grant: Grant,
         config: ExecutionConfig,
@@ -95,6 +113,9 @@ impl Link {
             grant: Arc::new(grant),
             config: Arc::new(config),
             slots: Arc::new(slots),
+            hash_slots: Arc::new(Slots::new(HashConfig::default().max_streams)),
+            hash: Arc::new(HashConfig::default()),
+            live: Arc::new(Mutex::new(None)),
             files: Arc::new(files),
             transfers: Arc::new(transfers),
             info: Arc::new(Info {
@@ -208,10 +229,16 @@ impl Open for Link {
                 Arc::clone(&self.transfers),
                 Arc::clone(&self.info),
             );
+            let (hash, hash_slots, live) = (
+                Arc::clone(&self.hash),
+                Arc::clone(&self.hash_slots),
+                Arc::clone(&self.live),
+            );
             let handle = std::thread::spawn(move || {
                 let context = fs::Context {
                     grant: &grant,
                     config: &files,
+                    hash: &hash,
                     slots: &transfers,
                 };
                 let result = match name.as_str() {
@@ -229,6 +256,21 @@ impl Open for Link {
                     }
                     protocol::WRITE => {
                         fs::serve_write(Arc::clone(&host), &metadata, &context).map(|_| ())
+                    }
+                    protocol::HASH => {
+                        let now = || {
+                            Ok(live
+                                .lock()
+                                .unwrap()
+                                .clone()
+                                .unwrap_or_else(|| (*grant).clone()))
+                        };
+                        let context = fs::HashContext {
+                            files: context,
+                            slots: &hash_slots,
+                            current: Some(control::Current(&now)),
+                        };
+                        fs::serve_hash(Arc::clone(&host), &metadata, &context).map(|_| ())
                     }
                     other => panic!("the test link does not serve {other}"),
                 };

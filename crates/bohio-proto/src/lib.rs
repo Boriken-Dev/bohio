@@ -6,6 +6,7 @@ pub mod control;
 pub mod error;
 pub mod exec;
 pub mod fs;
+pub mod hash;
 pub mod info;
 pub mod local;
 pub mod shell;
@@ -26,4 +27,6 @@ pub mod protocol {
     pub const READ: &str = "bohio-read/1";
     /// One file written, streamed.
     pub const WRITE: &str = "bohio-write/1";
+    /// Digests of many files, streamed.
+    pub const HASH: &str = "bohio-hash/1";
 }

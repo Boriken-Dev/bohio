@@ -4,10 +4,11 @@ use std::io::{Read, Seek, SeekFrom};
 use std::sync::Arc;
 use std::time::Duration;
 
-use bohio_proto::fs::{ReadHeader, ReadOutput, ReadRequest};
+use bohio_proto::fs::{ReadDone, ReadHeader, ReadOutput, ReadRequest};
 use bohio_proto::{ErrorBody, ErrorCode};
 use coqui_transport::Channel;
 
+use super::hash::hasher_for;
 use super::ops::{self, Roots};
 use super::{Context, authorize, io_error};
 use crate::policy::Permission;
@@ -24,13 +25,14 @@ fn encode(output: &ReadOutput) -> Vec<u8> {
 /// no progress for `idle_timeout`, or closes the stream, ends it. A request that cannot be served
 /// gets one `error` frame and the same error is returned; the stream is left open for the caller
 /// to close. A file that shrinks while it is read ends with an `io` error frame. Returns the number
-/// of data bytes sent.
+/// of data bytes sent. With `hashes` in the request the closing `done` frame carries those digests
+/// of the bytes sent.
 ///
 /// # Errors
 ///
 /// The [`ErrorBody`] sent to the peer: `bad_request` for an undecodable request, a directory or an
-/// offset past the end; `unsupported`, `denied` and `busy` (at `max_transfers`) before any path
-/// is looked at; `outside_root`, `not_found` and `io` from the path and the file.
+/// offset past the end; `unsupported` (also for a digest the host does not offer), `denied` and
+/// `busy` (at `max_transfers`) before any path is looked at; `outside_root`, `not_found` and `io` from the path and the file.
 pub fn serve_read(
     channel: Arc<dyn Channel>,
     metadata: &[u8],
@@ -59,6 +61,7 @@ fn run(
     let request = ReadRequest::from_metadata(metadata)
         .map_err(|_| ErrorBody::new(ErrorCode::BadRequest, "the request cannot be read"))?;
     authorize(context, &[Permission::FsRead])?;
+    let mut hasher = hasher_for(context, &request.hashes)?;
     let _permit = context.slots.acquire().ok_or_else(|| {
         ErrorBody::new(
             ErrorCode::Busy,
@@ -104,10 +107,12 @@ fn run(
         if !send(&ReadOutput::Data(buffer[..count].to_vec())) {
             return Err(give_up());
         }
+        hasher.update(&buffer[..count]);
         remaining -= count as u64;
         sent += count as u64;
     }
-    if !send(&ReadOutput::Done) {
+    let hashes = hasher.finish();
+    if !send(&ReadOutput::Done(ReadDone { hashes })) {
         return Err(give_up());
     }
     Ok(sent)

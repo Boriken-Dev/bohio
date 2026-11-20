@@ -9,9 +9,15 @@ use bohio_client::control::Control;
 use bohio_client::dial::{Endpoint, ServerTrust};
 use bohio_client::exec::Exec;
 use bohio_client::fs::{Fs, Reader, Writer};
+use bohio_client::hash::hash_file;
+#[cfg(feature = "hash")]
+use bohio_client::hash::hash_many;
 use bohio_client::link::Settings;
 use bohio_proto::exec::Request;
 use bohio_proto::fs::{ReadRequest, WriteRequest};
+use bohio_proto::hash::Algorithm;
+#[cfg(feature = "hash")]
+use bohio_proto::hash::HashItem;
 use coqui_link::auth::Proof;
 
 /// How long one call may take before a sample fails.
@@ -144,9 +150,29 @@ pub fn exec(link: &dyn Open, argv: &[String]) -> Result<u64, String> {
     Ok(done.stdout.len() as u64)
 }
 
-/// The host's SHA-256 of `path`, today's control call.
-pub fn checksum(fs: &Fs, path: &str) -> Result<u64, String> {
-    fs.checksum(path, 0, None)
-        .map(|sum| sum.length)
+/// The host's SHA-256 of `path`, over a `bohio-hash/1` stream.
+pub fn checksum(link: &dyn Open, path: &str) -> Result<(), String> {
+    hash_file(link, path, &[Algorithm::Sha256])
+        .map(drop)
         .map_err(|error| error.to_string())
+}
+
+/// The host's digest of `path` by `algorithm`.
+#[cfg(feature = "hash")]
+pub fn hash(link: &dyn Open, path: &str, algorithm: &Algorithm) -> Result<(), String> {
+    hash_file(link, path, std::slice::from_ref(algorithm))
+        .map(drop)
+        .map_err(|error| error.to_string())
+}
+
+/// The host's SHA-256 of each of `paths`, on one stream.
+#[cfg(feature = "hash")]
+pub fn hash_batch(link: &dyn Open, paths: &[String]) -> Result<(), String> {
+    let items: Vec<_> = paths.iter().map(HashItem::whole).collect();
+    let answers =
+        hash_many(link, &items, &[Algorithm::Sha256]).map_err(|error| error.to_string())?;
+    match answers.iter().find_map(|answer| answer.as_ref().err()) {
+        Some(body) => Err(body.to_string()),
+        None => Ok(()),
+    }
 }

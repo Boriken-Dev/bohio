@@ -1,6 +1,7 @@
 //! Files on a host: the filesystem calls and the two transfer streams.
 
 use std::io::Write;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -9,6 +10,7 @@ use bohio_proto::fs::{
     Entry, Listing, Metadata, ReadHeader, ReadOutput, ReadRequest, Timestamp, WriteDone,
     WriteInput, WriteOutput, WriteRequest,
 };
+use bohio_proto::hash::Digests;
 use bohio_proto::protocol;
 use coqui_transport::Channel;
 
@@ -20,15 +22,6 @@ use crate::{Error, Open, OpenOptions};
 pub struct Fs {
     control: Control,
     timeout: Option<Duration>,
-}
-
-/// The digest of a file or a range of it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Checksum {
-    /// SHA-256 as lowercase hex.
-    pub sha256: String,
-    /// How many bytes were hashed.
-    pub length: u64,
 }
 
 impl Fs {
@@ -244,30 +237,6 @@ impl Fs {
             readonly: Some(readonly),
         })
     }
-
-    /// The SHA-256 of `path`, or of `length` bytes from `offset`.
-    ///
-    /// # Errors
-    ///
-    /// As [`Fs::stat`].
-    pub fn checksum(
-        &self,
-        path: &str,
-        offset: u64,
-        length: Option<u64>,
-    ) -> Result<Checksum, Error> {
-        match self.control.call(
-            Call::Checksum {
-                path: path.to_owned(),
-                offset,
-                length,
-            },
-            self.timeout,
-        )? {
-            Reply::Checksum { sha256, length } => Ok(Checksum { sha256, length }),
-            _ => Err(Error::Protocol(bohio_proto::Error::Decode)),
-        }
-    }
 }
 
 /// A file being read from a host: `bohio-read/1`. Dropping it closes the stream, which stops the
@@ -276,6 +245,7 @@ pub struct Reader {
     channel: Box<dyn Channel>,
     header: ReadHeader,
     received: AtomicU64,
+    digests: Mutex<Option<Digests>>,
 }
 
 impl core::fmt::Debug for Reader {
@@ -314,6 +284,7 @@ impl Reader {
                         channel,
                         header,
                         received: AtomicU64::new(0),
+                        digests: Mutex::new(None),
                     });
                 }
                 Ok(ReadOutput::Error(body)) => return Err(Error::Remote(body)),
@@ -326,6 +297,15 @@ impl Reader {
     /// The file's size and how many bytes this read will deliver.
     pub const fn header(&self) -> ReadHeader {
         self.header
+    }
+
+    /// The digests of the bytes the host sent, those the request's `hashes` named, once the last chunk
+    /// has been read; `None` before that.
+    pub fn digests(&self) -> Option<Digests> {
+        self.digests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// The next chunk of the file, waiting up to `timeout`; `Ok(None)` once all of it arrived.
@@ -348,8 +328,12 @@ impl Reader {
                         .fetch_add(bytes.len() as u64, Ordering::Relaxed);
                     return Ok(Some(bytes));
                 }
-                Ok(ReadOutput::Done) => {
+                Ok(ReadOutput::Done(done)) => {
                     return if self.received.load(Ordering::Relaxed) == self.header.length {
+                        *self
+                            .digests
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(done.hashes);
                         Ok(None)
                     } else {
                         Err(Error::Closed)

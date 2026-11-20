@@ -11,11 +11,16 @@ use std::path::{Path, PathBuf};
 use bohio_proto::control::{Call, Reply, Request as ControlRequest, Response};
 use bohio_proto::exec::{self, Env, Stdin};
 use bohio_proto::fs::{
-    Entry, FileKind, Listing, Metadata, ReadHeader, ReadOutput, ReadRequest, Timestamp, WriteDone,
-    WriteInput, WriteMode, WriteOutput, WriteRequest,
+    Entry, FileKind, Listing, Metadata, ReadDone, ReadHeader, ReadOutput, ReadRequest, Timestamp,
+    WriteDone, WriteInput, WriteMode, WriteOutput, WriteRequest,
+};
+use bohio_proto::hash::{
+    Algorithm, BlockOptions, Digests, HashBlocks, HashDone, HashInput, HashItem, HashOutput,
+    HashRequest, HashResult, ItemError,
 };
 use bohio_proto::info::{
-    ExecInfo, FilesystemInfo, Info, Limits, PROTOCOL_VERSION, Service, SessionInfo, ShellInfo,
+    ExecInfo, FilesystemInfo, HashLimits, Info, Limits, PROTOCOL_VERSION, Service, SessionInfo,
+    ShellInfo, TransferInfo,
 };
 use bohio_proto::shell::{self, ShellKind, Size};
 use bohio_proto::{Error, ErrorBody, ErrorCode, decode, encode};
@@ -187,6 +192,17 @@ fn sample_info() -> Info {
             max_processes: Some(16),
             max_sessions: None,
         },
+        transfer: sample_transfer(),
+    }
+}
+
+fn sample_transfer() -> TransferInfo {
+    TransferInfo {
+        hashes: vec![Algorithm::Md5, Algorithm::Sha256, Algorithm::Blake3],
+        hash_limits: HashLimits {
+            max_streams: 4,
+            rate: 0,
+        },
     }
 }
 
@@ -334,17 +350,15 @@ fn control() -> Vec<Case> {
                 readonly: Some(true),
             },
         ),
-        request(
-            "checksum_range",
-            14,
-            Call::Checksum {
-                path: "/srv/a".into(),
-                offset: 1024,
-                length: Some(4096),
+        request("largest_id", u64::MAX, Call::Info),
+        response(
+            "hello_reply",
+            1,
+            Reply::Hello {
+                version: 1,
+                transfer: sample_transfer(),
             },
         ),
-        request("largest_id", u64::MAX, Call::Info),
-        response("hello_reply", 1, Reply::Hello { version: 1 }),
         response("info_reply", 2, Reply::Info(Box::new(sample_info()))),
         response("stat_reply", 3, Reply::Stat(Box::new(sample_metadata()))),
         response(
@@ -372,14 +386,6 @@ fn control() -> Vec<Case> {
         ),
         response("done_reply", 5, Reply::Done),
         response("link_reply", 10, Reply::Link { target: "a".into() }),
-        response(
-            "checksum_reply",
-            14,
-            Reply::Checksum {
-                sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into(),
-                length: 0,
-            },
-        ),
     ];
     for (name, code) in [
         ("bad_request", ErrorCode::BadRequest),
@@ -644,6 +650,15 @@ fn read_cases() -> Vec<Case> {
             body,
         )
     };
+    let read_done = ReadDone {
+        hashes: Digests::from([
+            (
+                Algorithm::Sha256,
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad".into(),
+            ),
+            (Algorithm::Xxh3, "78af5f94892f3950".into()),
+        ]),
+    };
     vec![
         message(
             "open_whole",
@@ -661,6 +676,17 @@ fn read_cases() -> Vec<Case> {
                 path: "/srv/big.bin".into(),
                 offset: 1_048_576,
                 length: Some(65_536),
+                hashes: Vec::new(),
+            },
+        ),
+        message(
+            "open_hashed",
+            OPEN,
+            "open",
+            "fs.ReadRequest",
+            &ReadRequest {
+                hashes: vec![Algorithm::Sha256, Algorithm::Xxh3],
+                ..ReadRequest::whole("/srv/big.bin")
             },
         ),
         output(
@@ -669,7 +695,16 @@ fn read_cases() -> Vec<Case> {
             to_json(&ReadHeader { size: 9, length: 5 }),
         ),
         output("data", ReadOutput::Data(b"hello".to_vec()), raw(b"hello")),
-        output("done", ReadOutput::Done, Value::Null),
+        output(
+            "done",
+            ReadOutput::Done(ReadDone::default()),
+            to_json(&ReadDone::default()),
+        ),
+        output(
+            "done_hashed",
+            ReadOutput::Done(read_done.clone()),
+            to_json(&read_done),
+        ),
         output(
             "error_outside_root",
             ReadOutput::Error(ErrorBody::new(ErrorCode::OutsideRoot, "a path led outside")),
@@ -694,14 +729,19 @@ fn write_cases() -> Vec<Case> {
     let input = |name: &str, value: WriteInput, body: Value| {
         frame(name, TO_HOST, "fs.WriteInput", value.encode(), body)
     };
+    let sha256 = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
     let done = WriteDone {
         written: 5,
-        sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824".into(),
+        hashes: Digests::from([
+            (Algorithm::Md5, "5d41402abc4b2a76b9719d911017c592".into()),
+            (Algorithm::Sha256, sha256.into()),
+        ]),
     };
     let mut checked = WriteRequest::replace("/srv/out.txt");
     checked.parents = true;
     checked.file_mode = Some(0o600);
-    checked.expect_sha256 = Some(done.sha256.clone());
+    checked.expect = Digests::from([(Algorithm::Sha256, sha256.into())]);
+    checked.hashes = Some(vec![Algorithm::Sha256, Algorithm::Md5]);
     vec![
         message(
             "open_replace",
@@ -753,6 +793,134 @@ fn write_cases() -> Vec<Case> {
     ]
 }
 
+fn hash_cases() -> Vec<Case> {
+    let output = |name: &str, value: HashOutput, body: Value| {
+        frame(
+            name,
+            TO_CLIENT,
+            "hash.Output",
+            value.encode().unwrap(),
+            body,
+        )
+    };
+    let input = |name: &str, value: HashInput, body: Value| {
+        frame(name, TO_HOST, "hash.Input", value.encode().unwrap(), body)
+    };
+    let result = HashResult {
+        index: 0,
+        size: 3,
+        modified: Some(Timestamp {
+            secs: 1_700_000_000,
+            nanos: 5,
+        }),
+        length: 3,
+        unchanged: false,
+        hashes: Digests::from([
+            (Algorithm::Md5, "900150983cd24fb0d6963f7d28e17f72".into()),
+            (Algorithm::Crc32c, "364b3fb7".into()),
+        ]),
+    };
+    let unchanged = HashResult {
+        index: 1,
+        size: 3,
+        modified: result.modified,
+        length: 0,
+        unchanged: true,
+        hashes: Digests::new(),
+    };
+    let blocks = HashBlocks {
+        index: 2,
+        first: 0,
+        size: 2048,
+        weak: vec![0x0001_0002, 7],
+        strong: vec![0xde, 0xad, 0xbe, 0xef],
+    };
+    let failed = ItemError::new(
+        3,
+        ErrorBody::new(ErrorCode::NotFound, "the path does not exist"),
+    );
+    let item = HashItem {
+        path: "/srv/big.bin".into(),
+        offset: 1024,
+        length: Some(4096),
+        if_size: Some(9_000),
+        if_modified: Some(Timestamp {
+            secs: 1_700_000_000,
+            nanos: 5,
+        }),
+    };
+    vec![
+        message(
+            "open_one",
+            OPEN,
+            "open",
+            "hash.Request",
+            &HashRequest::new([Algorithm::Sha256]),
+        ),
+        message(
+            "open_several_with_blocks",
+            OPEN,
+            "open",
+            "hash.Request",
+            &HashRequest {
+                algorithms: vec![Algorithm::Md5, Algorithm::Blake3, Algorithm::Xxh128],
+                blocks: Some(BlockOptions {
+                    size: Some(2048),
+                    weak: Some("rsync".into()),
+                    strong_len: Some(16),
+                }),
+            },
+        ),
+        input("item", HashInput::Item(item.clone()), to_json(&item)),
+        input(
+            "item_whole",
+            HashInput::Item(HashItem::whole("/etc/hostname")),
+            to_json(&HashItem::whole("/etc/hostname")),
+        ),
+        input("end", HashInput::End, Value::Null),
+        output(
+            "result",
+            HashOutput::Result(result.clone()),
+            to_json(&result),
+        ),
+        output(
+            "result_unchanged",
+            HashOutput::Result(unchanged.clone()),
+            to_json(&unchanged),
+        ),
+        output(
+            "blocks",
+            HashOutput::Blocks(blocks.clone()),
+            to_json(&blocks),
+        ),
+        output(
+            "item_error",
+            HashOutput::ItemError(failed.clone()),
+            to_json(&failed),
+        ),
+        output(
+            "done",
+            HashOutput::Done(HashDone { items: 4 }),
+            to_json(&HashDone { items: 4 }),
+        ),
+        output(
+            "error_busy",
+            HashOutput::Error(ErrorBody::new(ErrorCode::Busy, "too many hash streams")),
+            to_json(&ErrorBody::new(ErrorCode::Busy, "too many hash streams")),
+        ),
+        Case {
+            name: "unknown_tag".into(),
+            direction: TO_CLIENT,
+            kind: "frame",
+            ty: "hash.Output",
+            bytes: vec![0x7f],
+            value: None,
+            decode_only: true,
+            error: Some("tag"),
+        },
+    ]
+}
+
 fn files() -> Vec<(&'static str, &'static str, Vec<Case>)> {
     vec![
         ("control.json", "bohio/1", control()),
@@ -760,6 +928,7 @@ fn files() -> Vec<(&'static str, &'static str, Vec<Case>)> {
         ("shell.json", "bohio-shell/1", shell_cases()),
         ("read.json", "bohio-read/1", read_cases()),
         ("write.json", "bohio-write/1", write_cases()),
+        ("hash.json", "bohio-hash/1", hash_cases()),
     ]
 }
 
@@ -793,6 +962,9 @@ fn decode_error(ty: &str, bytes: &[u8]) -> Result<(), Error> {
         "fs.WriteRequest" => WriteRequest::from_metadata(bytes).map(|_| ()),
         "fs.WriteOutput" => WriteOutput::decode(bytes).map(|_| ()),
         "fs.WriteInput" => WriteInput::decode(bytes).map(|_| ()),
+        "hash.Request" => HashRequest::from_metadata(bytes).map(|_| ()),
+        "hash.Output" => HashOutput::decode(bytes).map(|_| ()),
+        "hash.Input" => HashInput::decode(bytes).map(|_| ()),
         other => panic!("a vector names a type this test does not know: {other}"),
     }
 }
@@ -840,6 +1012,7 @@ fn check(entry: &Value) {
         "shell.Request" => check_message::<shell::Request>(entry, &bytes),
         "fs.ReadRequest" => check_message::<ReadRequest>(entry, &bytes),
         "fs.WriteRequest" => check_message::<WriteRequest>(entry, &bytes),
+        "hash.Request" => check_message::<HashRequest>(entry, &bytes),
         "exec.Output" => check_frame(entry, &bytes, exec::Output::decode, |v| v.encode().unwrap()),
         "exec.Input" => check_frame(entry, &bytes, exec::Input::decode, exec::Input::encode),
         "shell.Output" => check_frame(entry, &bytes, shell::Output::decode, |v| {
@@ -851,6 +1024,8 @@ fn check(entry: &Value) {
             check_frame(entry, &bytes, WriteOutput::decode, |v| v.encode().unwrap())
         }
         "fs.WriteInput" => check_frame(entry, &bytes, WriteInput::decode, WriteInput::encode),
+        "hash.Output" => check_frame(entry, &bytes, HashOutput::decode, |v| v.encode().unwrap()),
+        "hash.Input" => check_frame(entry, &bytes, HashInput::decode, |v| v.encode().unwrap()),
         other => panic!("a vector names a type this test does not know: {other}"),
     }
 }

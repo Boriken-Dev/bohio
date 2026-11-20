@@ -10,7 +10,7 @@
 //! | --- | --- | --- | --- |
 //! | host to client | `0x01` | [`ReadOutput::Header`] | CBOR [`ReadHeader`] |
 //! | host to client | `0x02` | [`ReadOutput::Data`] | raw bytes |
-//! | host to client | `0x04` | [`ReadOutput::Done`] | empty |
+//! | host to client | `0x04` | [`ReadOutput::Done`] | CBOR [`ReadDone`] |
 //! | host to client | `0x05` | [`ReadOutput::Error`] | CBOR [`ErrorBody`] |
 //!
 //! `bohio-write/1`: the open's metadata is a [`WriteRequest`].
@@ -26,6 +26,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, ErrorBody};
+use crate::hash::{Algorithm, Digests};
 use crate::{decode, encode};
 
 /// A point in time: seconds since the Unix epoch (negative before it) and nanoseconds within the second.
@@ -116,6 +117,9 @@ pub struct ReadRequest {
     /// How many bytes at most; to the end of the file when absent.
     #[serde(default)]
     pub length: Option<u64>,
+    /// Digests of the bytes sent, answered in the closing frame. Default none.
+    #[serde(default)]
+    pub hashes: Vec<Algorithm>,
 }
 
 impl ReadRequest {
@@ -125,6 +129,7 @@ impl ReadRequest {
             path: path.into(),
             offset: 0,
             length: None,
+            hashes: Vec::new(),
         }
     }
 
@@ -154,6 +159,14 @@ pub struct ReadHeader {
     pub size: u64,
     /// How many data bytes follow in total.
     pub length: u64,
+}
+
+/// The last frame of a read that succeeded.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ReadDone {
+    /// The digests of the bytes sent that the request named.
+    #[serde(default)]
+    pub hashes: Digests,
 }
 
 /// How a `bohio-write/1` stream puts the bytes in place.
@@ -193,10 +206,14 @@ pub struct WriteRequest {
     /// replaced file keeps the mode of the one it replaces unless this is given.
     #[serde(default)]
     pub file_mode: Option<u32>,
-    /// The SHA-256 (lowercase hex) the data must have; only for `replace` and `create`: on a
-    /// mismatch nothing is put in place.
+    /// The digests (lowercase hex) the data must have, by algorithm; only for `replace` and
+    /// `create`: after the data ends each is checked, and on a mismatch nothing is put in place.
     #[serde(default)]
-    pub expect_sha256: Option<String>,
+    pub expect: Digests,
+    /// The digests of the data written to answer in `write-done`. When absent the host's
+    /// `[filesystem] write_hashes` applies; an empty list asks for none.
+    #[serde(default)]
+    pub hashes: Option<Vec<Algorithm>>,
 }
 
 impl WriteRequest {
@@ -207,7 +224,8 @@ impl WriteRequest {
             mode: WriteMode::Replace,
             parents: false,
             file_mode: None,
-            expect_sha256: None,
+            expect: Digests::new(),
+            hashes: None,
         }
     }
 
@@ -235,8 +253,9 @@ impl WriteRequest {
 pub struct WriteDone {
     /// Data bytes written by this stream.
     pub written: u64,
-    /// SHA-256 (lowercase hex) of those bytes.
-    pub sha256: String,
+    /// The digests of those bytes the request asked for.
+    #[serde(default)]
+    pub hashes: Digests,
 }
 
 const HEADER: u8 = 0x01;
@@ -270,7 +289,7 @@ pub enum ReadOutput {
     /// Bytes of the file, in order.
     Data(Vec<u8>),
     /// Every byte was sent; the last frame.
-    Done,
+    Done(ReadDone),
     /// The read failed; the last frame.
     Error(ErrorBody),
 }
@@ -285,7 +304,7 @@ impl ReadOutput {
         Ok(match self {
             Self::Header(body) => tagged(HEADER, &encode(body)?),
             Self::Data(bytes) => tagged(DATA, bytes),
-            Self::Done => tagged(DONE, &[]),
+            Self::Done(body) => tagged(DONE, &encode(body)?),
             Self::Error(body) => tagged(ERROR, &encode(body)?),
         })
     }
@@ -301,7 +320,7 @@ impl ReadOutput {
         match tag {
             HEADER => decode(body).map(Self::Header),
             DATA => Ok(Self::Data(body.to_vec())),
-            DONE => Ok(Self::Done),
+            DONE => decode(body).map(Self::Done),
             ERROR => decode(body).map(Self::Error),
             other => Err(Error::Tag(other)),
         }

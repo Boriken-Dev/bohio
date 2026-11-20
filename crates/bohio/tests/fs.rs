@@ -16,9 +16,12 @@ use std::time::{Duration, Instant};
 use bohio::config::{FilesystemConfig, Span};
 use bohio::{Grant, Permission};
 use bohio_client::fs::{Fs, Reader, Writer};
+use bohio_client::hash::{hash_file, hash_range};
 use bohio_client::{Error, Open};
 use bohio_proto::fs::{FileKind, ReadRequest, Timestamp, WriteMode, WriteRequest};
+use bohio_proto::hash::{Algorithm, Digests, HashItem};
 use bohio_proto::{ErrorCode, protocol};
+use bohio_transfer::hash::Hasher;
 use sha2::{Digest, Sha256};
 use support::{Link, WAIT};
 use tempfile::TempDir;
@@ -127,9 +130,14 @@ fn make_symlink(target: &Path, link: &Path) -> bool {
     }
 }
 
+/// The host's SHA-256 of `path`, over a `bohio-hash/1` stream.
+fn sha256_of(fixture: &Fixture, path: &str) -> String {
+    hash_file(&fixture.link, path, &[Algorithm::Sha256]).unwrap()[&Algorithm::Sha256].clone()
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     let mut text = String::new();
-    for byte in Sha256::digest(bytes) {
+    for byte in Sha256::digest(bytes).iter() {
         text.push_str(&format!("{byte:02x}"));
     }
     text
@@ -196,6 +204,7 @@ fn reads_honour_offset_and_length() {
             path: "n.txt".into(),
             offset,
             length,
+            hashes: Vec::new(),
         };
         let reader = Reader::start(&fixture.link, &request, WAIT)?;
         let header = reader.header();
@@ -262,7 +271,7 @@ fn a_64_mib_file_streams_in_both_directions_with_bounded_memory() {
     const BOUND: u64 = 16 * 1024 * 1024;
     let fixture = fixture(&RW);
     let source = fixture.root.join("big.bin");
-    let mut local = Sha256::new();
+    let mut local = Hasher::new(&[Algorithm::Sha256]).unwrap();
     {
         let mut file = std::io::BufWriter::new(std::fs::File::create(&source).unwrap());
         let mut state = 0x9E37_79B9_7F4A_7C15_u64;
@@ -278,14 +287,13 @@ fn a_64_mib_file_streams_in_both_directions_with_bounded_memory() {
             file.write_all(&chunk).unwrap();
         }
     }
-    let want = format!("{:x}", local.finalize());
+    let want = local.finish()[&Algorithm::Sha256].clone();
 
     // One small exchange first, so threads and buffers the engines always need are not counted.
     fixture.put("warm.txt", b"warm");
     assert_eq!(fixture.get("warm.txt").unwrap(), b"warm");
 
-    let fs = fixture.fs();
-    let mut read_hash = Sha256::new();
+    let mut read_hash = Hasher::new(&[Algorithm::Sha256]).unwrap();
     let mut read_total = 0_u64;
     let read_growth = peak_growth_during(|| {
         let reader = Reader::start(&fixture.link, &ReadRequest::whole("big.bin"), WAIT).unwrap();
@@ -296,7 +304,7 @@ fn a_64_mib_file_streams_in_both_directions_with_bounded_memory() {
         }
     });
     assert_eq!(read_total, SIZE);
-    assert_eq!(format!("{:x}", read_hash.finalize()), want);
+    assert_eq!(read_hash.finish()[&Algorithm::Sha256], want);
     assert!(
         read_growth < BOUND,
         "reading grew memory by {read_growth} bytes"
@@ -315,13 +323,16 @@ fn a_64_mib_file_streams_in_both_directions_with_bounded_memory() {
             writer.write(&chunk[..count]).unwrap();
         }
         let done = writer.finish(WAIT).unwrap();
-        assert_eq!((done.written, done.sha256.as_str()), (SIZE, want.as_str()));
+        assert_eq!(
+            (done.written, done.hashes[&Algorithm::Sha256].as_str()),
+            (SIZE, want.as_str())
+        );
     });
     assert!(
         write_growth < BOUND,
         "writing grew memory by {write_growth} bytes"
     );
-    assert_eq!(fs.checksum("copy.bin", 0, None).unwrap().sha256, want);
+    assert_eq!(sha256_of(&fixture, "copy.bin"), want);
     assert_eq!(
         std::fs::metadata(fixture.root.join("copy.bin"))
             .unwrap()
@@ -332,24 +343,34 @@ fn a_64_mib_file_streams_in_both_directions_with_bounded_memory() {
 }
 
 #[test]
-fn checksum_matches_a_local_sha256_whole_and_by_range() {
+fn a_hash_matches_a_local_sha256_whole_and_by_range() {
     let fixture = fixture(&RW);
     let data: Vec<u8> = (0..200_000_u32).map(|n| (n % 251) as u8).collect();
     fixture.put("data.bin", &data);
-    let fs = fixture.fs();
-    let whole = fs.checksum("data.bin", 0, None).unwrap();
-    assert_eq!(whole.sha256, sha256_hex(&data));
-    assert_eq!(whole.length, data.len() as u64);
-    let range = fs.checksum("data.bin", 1000, Some(70_000)).unwrap();
-    assert_eq!(range.sha256, sha256_hex(&data[1000..71_000]));
-    assert_eq!(range.length, 70_000);
-    let tail = fs.checksum("data.bin", 199_990, Some(100)).unwrap();
+    let sha256 = [Algorithm::Sha256];
+    let range = |offset: u64, length: Option<u64>| {
+        let item = HashItem {
+            offset,
+            length,
+            ..HashItem::whole("data.bin")
+        };
+        hash_range(&fixture.link, item, &sha256).map(|digests| digests[&Algorithm::Sha256].clone())
+    };
+    assert_eq!(sha256_of(&fixture, "data.bin"), sha256_hex(&data));
     assert_eq!(
-        (tail.length, tail.sha256),
-        (10, sha256_hex(&data[199_990..]))
+        range(1000, Some(70_000)).unwrap(),
+        sha256_hex(&data[1000..71_000])
     );
-    assert_eq!(fs.checksum("data.bin", 500_000, None).unwrap().length, 0);
-    assert_eq!(code(fs.checksum("absent", 0, None)), ErrorCode::NotFound);
+    assert_eq!(
+        range(199_990, Some(100)).unwrap(),
+        sha256_hex(&data[199_990..])
+    );
+    assert_eq!(range(200_000, None).unwrap(), sha256_hex(b""));
+    assert_eq!(code(range(500_000, None)), ErrorCode::BadRequest);
+    assert_eq!(
+        code(hash_file(&fixture.link, "absent", &sha256)),
+        ErrorCode::NotFound
+    );
 }
 
 #[test]
@@ -384,10 +405,10 @@ fn a_dotdot_that_escapes_is_outside_root_for_every_operation() {
             at("list")
         );
         assert_eq!(
-            code(fs.checksum(path, 0, None)),
+            code(hash_file(&fixture.link, path, &[Algorithm::Sha256])),
             ErrorCode::OutsideRoot,
             "{}",
-            at("checksum")
+            at("hash")
         );
         assert_eq!(
             code(fs.readlink(path)),
@@ -491,7 +512,7 @@ fn a_symlink_out_of_the_root_is_refused_at_the_end_and_in_the_middle_of_a_path()
     assert_eq!(code(fixture.get("file_link")), ErrorCode::OutsideRoot);
     assert_eq!(code(fs.stat("file_link", true)), ErrorCode::OutsideRoot);
     assert_eq!(
-        code(fs.checksum("file_link", 0, None)),
+        code(hash_file(&fixture.link, "file_link", &[Algorithm::Sha256])),
         ErrorCode::OutsideRoot
     );
     let write = Writer::start(
@@ -793,7 +814,7 @@ fn a_peer_with_fs_read_only_cannot_write_in_any_way() {
     assert_eq!(fixture.get("f.txt").unwrap(), b"data");
     assert_eq!(fs.stat("f.txt", false).unwrap().size, 4);
     assert_eq!(fs.list_all(".").unwrap().len(), 1);
-    assert_eq!(fs.checksum("f.txt", 0, None).unwrap().length, 4);
+    assert_eq!(sha256_of(&fixture, "f.txt"), sha256_hex(b"data"));
 
     assert_eq!(
         code(Writer::start(
@@ -828,7 +849,10 @@ fn a_peer_with_fs_write_only_cannot_read() {
     assert_eq!(code(fs.stat("f.txt", false)), ErrorCode::Denied);
     assert_eq!(code(fs.list(".", None, None)), ErrorCode::Denied);
     assert_eq!(code(fs.readlink("f.txt")), ErrorCode::Denied);
-    assert_eq!(code(fs.checksum("f.txt", 0, None)), ErrorCode::Denied);
+    assert_eq!(
+        code(hash_file(&fixture.link, "f.txt", &[Algorithm::Sha256])),
+        ErrorCode::Denied
+    );
     assert_eq!(code(fs.copy("f.txt", "g.txt", false)), ErrorCode::Denied);
 }
 
@@ -900,12 +924,12 @@ fn replace_leaves_the_old_file_until_the_data_is_complete_and_cleans_up_when_aba
 }
 
 #[test]
-fn a_checksum_that_does_not_match_puts_nothing_in_place() {
+fn a_digest_that_does_not_match_puts_nothing_in_place() {
     let fixture = fixture(&RW);
     fixture.put("doc.txt", b"old");
     let wrong = sha256_hex(b"something else");
     let request = WriteRequest {
-        expect_sha256: Some(wrong),
+        expect: Digests::from([(Algorithm::Sha256, wrong)]),
         ..WriteRequest::replace("doc.txt")
     };
     let writer = Writer::start(&fixture.link, &request, WAIT).unwrap();
@@ -915,17 +939,20 @@ fn a_checksum_that_does_not_match_puts_nothing_in_place() {
     fixture.no_temporary_files();
 
     let right = WriteRequest {
-        expect_sha256: Some(sha256_hex(b"new")),
+        expect: Digests::from([(Algorithm::Sha256, sha256_hex(b"new"))]),
         ..WriteRequest::replace("doc.txt")
     };
     let writer = Writer::start(&fixture.link, &right, WAIT).unwrap();
     writer.write(b"new").unwrap();
-    assert_eq!(writer.finish(WAIT).unwrap().sha256, sha256_hex(b"new"));
+    assert_eq!(
+        writer.finish(WAIT).unwrap().hashes[&Algorithm::Sha256],
+        sha256_hex(b"new")
+    );
     assert_eq!(std::fs::read(fixture.root.join("doc.txt")).unwrap(), b"new");
 
     let append_with_sum = WriteRequest {
         mode: WriteMode::Append,
-        expect_sha256: Some(sha256_hex(b"x")),
+        expect: Digests::from([(Algorithm::Sha256, sha256_hex(b"x"))]),
         ..WriteRequest::replace("doc.txt")
     };
     assert_eq!(
@@ -933,7 +960,7 @@ fn a_checksum_that_does_not_match_puts_nothing_in_place() {
         ErrorCode::BadRequest
     );
     let bad_text = WriteRequest {
-        expect_sha256: Some("ABC".into()),
+        expect: Digests::from([(Algorithm::Sha256, "ABC".into())]),
         ..WriteRequest::replace("doc.txt")
     };
     assert_eq!(

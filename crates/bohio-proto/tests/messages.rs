@@ -6,8 +6,13 @@ use bohio_proto::control::{Call, Reply, Request as ControlRequest, Response};
 use bohio_proto::exec::{
     Command, Env, Exit, Input, Output, Request as ExecRequest, Started, Stdin,
 };
+use bohio_proto::hash::{
+    Algorithm, BlockOptions, Digests, HashBlocks, HashDone, HashInput, HashItem, HashOutput,
+    HashRequest, HashResult, ItemError,
+};
 use bohio_proto::info::{
-    ExecInfo, FilesystemInfo, Info, Limits, PROTOCOL_VERSION, Service, SessionInfo, ShellInfo,
+    ExecInfo, FilesystemInfo, HashLimits, Info, Limits, PROTOCOL_VERSION, Service, SessionInfo,
+    ShellInfo, TransferInfo,
 };
 use bohio_proto::shell::ShellKind;
 use bohio_proto::{Error, ErrorBody, ErrorCode, decode, decode_with_depth, encode};
@@ -48,6 +53,17 @@ fn sample_info() -> Info {
             max_processes: Some(16),
             max_sessions: None,
         },
+        transfer: sample_transfer(),
+    }
+}
+
+fn sample_transfer() -> TransferInfo {
+    TransferInfo {
+        hashes: vec![Algorithm::Sha256, Algorithm::Blake3],
+        hash_limits: HashLimits {
+            max_streams: 4,
+            rate: 0,
+        },
     }
 }
 
@@ -64,7 +80,13 @@ fn every_control_message_round_trips() {
         id: u64::MAX,
         call: Call::Info,
     });
-    round_trips(&Response::ok(2, Reply::Hello { version: 1 }));
+    round_trips(&Response::ok(
+        2,
+        Reply::Hello {
+            version: 1,
+            transfer: sample_transfer(),
+        },
+    ));
     round_trips(&Response::ok(3, Reply::Info(Box::new(sample_info()))));
     round_trips(&Response::failed(
         4,
@@ -349,11 +371,6 @@ fn every_filesystem_call_and_reply_round_trips() {
             path: "a".into(),
             readonly: Some(true),
         },
-        Call::Checksum {
-            path: "a".into(),
-            offset: 5,
-            length: Some(9),
-        },
     ];
     for (id, call) in (1..).zip(calls) {
         round_trips(&ControlRequest { id, call });
@@ -372,10 +389,6 @@ fn every_filesystem_call_and_reply_round_trips() {
         Reply::Link {
             target: "../t".into(),
         },
-        Reply::Checksum {
-            sha256: "ab".repeat(32),
-            length: 3,
-        },
     ];
     for (id, reply) in (1..).zip(replies) {
         round_trips(&Response::ok(id, reply));
@@ -385,13 +398,14 @@ fn every_filesystem_call_and_reply_round_trips() {
 #[test]
 fn every_transfer_message_round_trips() {
     use bohio_proto::fs::{
-        ReadHeader, ReadOutput, ReadRequest, WriteDone, WriteInput, WriteMode, WriteOutput,
-        WriteRequest,
+        ReadDone, ReadHeader, ReadOutput, ReadRequest, WriteDone, WriteInput, WriteMode,
+        WriteOutput, WriteRequest,
     };
     let read = ReadRequest {
         path: "f".into(),
         offset: 4,
         length: Some(8),
+        hashes: vec![Algorithm::Md5, Algorithm::Xxh3],
     };
     assert_eq!(
         ReadRequest::from_metadata(&read.to_metadata().unwrap()).unwrap(),
@@ -408,7 +422,8 @@ fn every_transfer_message_round_trips() {
             mode,
             parents: true,
             file_mode: Some(0o600),
-            expect_sha256: Some("cd".repeat(32)),
+            expect: Digests::from([(Algorithm::Sha256, "cd".repeat(32))]),
+            hashes: Some(vec![Algorithm::Sha256, Algorithm::Crc32c]),
         };
         assert_eq!(
             WriteRequest::from_metadata(&write.to_metadata().unwrap()).unwrap(),
@@ -419,7 +434,9 @@ fn every_transfer_message_round_trips() {
     for output in [
         ReadOutput::Header(ReadHeader { size: 5, length: 3 }),
         ReadOutput::Data(vec![0, 1, 255]),
-        ReadOutput::Done,
+        ReadOutput::Done(ReadDone {
+            hashes: Digests::from([(Algorithm::Crc32c, "e3069283".into())]),
+        }),
         ReadOutput::Error(error.clone()),
     ] {
         assert_eq!(
@@ -431,7 +448,7 @@ fn every_transfer_message_round_trips() {
         WriteOutput::Ready,
         WriteOutput::Done(WriteDone {
             written: 3,
-            sha256: "ef".repeat(32),
+            hashes: Digests::from([(Algorithm::Sha256, "ef".repeat(32))]),
         }),
         WriteOutput::Error(error),
     ] {
@@ -467,7 +484,8 @@ fn a_file_kind_a_newer_host_adds_decodes_as_other_and_a_write_mode_defaults_to_r
     }
     let bare = WriteRequest::from_metadata(&encode(&Bare { path: "p" }).unwrap()).unwrap();
     assert_eq!(bare.mode, WriteMode::Replace);
-    assert!(!bare.parents && bare.file_mode.is_none() && bare.expect_sha256.is_none());
+    assert!(!bare.parents && bare.file_mode.is_none());
+    assert!(bare.expect.is_empty() && bare.hashes.is_none());
 }
 
 #[test]
@@ -528,4 +546,111 @@ fn every_shell_message_round_trips() {
     let bare = Request::from_metadata(&bytes).unwrap();
     assert_eq!((bare.cols, bare.rows), (DEFAULT_COLS, DEFAULT_ROWS));
     assert!(bare.cwd.is_none() && !bare.env.clear);
+}
+
+#[test]
+fn every_hash_message_round_trips() {
+    let digests = Digests::from([
+        (Algorithm::Md5, "d41d8cd98f00b204e9800998ecf8427e".into()),
+        (Algorithm::Xxh128, "99aa06d3014798d86001c324468d497f".into()),
+    ]);
+    let mut request = HashRequest::new([Algorithm::Md5, Algorithm::Blake3]);
+    request.blocks = Some(BlockOptions {
+        size: Some(2048),
+        weak: Some("rsync".into()),
+        strong_len: Some(16),
+    });
+    for request in [request, HashRequest::new([])] {
+        assert_eq!(
+            HashRequest::from_metadata(&request.to_metadata().unwrap()).unwrap(),
+            request
+        );
+    }
+    let error = ErrorBody::new(ErrorCode::Busy, "full");
+    let outputs = [
+        HashOutput::Result(HashResult {
+            index: 0,
+            size: 7,
+            modified: Some(bohio_proto::fs::Timestamp { secs: 5, nanos: 6 }),
+            length: 7,
+            unchanged: false,
+            hashes: digests,
+        }),
+        HashOutput::Result(HashResult {
+            index: 1,
+            size: 9,
+            modified: None,
+            length: 0,
+            unchanged: true,
+            hashes: Digests::new(),
+        }),
+        HashOutput::Blocks(HashBlocks {
+            index: 1,
+            first: 3,
+            size: 2048,
+            weak: vec![1, u32::MAX],
+            strong: vec![0, 1, 255, 7],
+        }),
+        HashOutput::ItemError(ItemError::new(2, ErrorBody::new(ErrorCode::NotFound, "no"))),
+        HashOutput::Done(HashDone { items: 3 }),
+        HashOutput::Error(error),
+    ];
+    for output in outputs {
+        assert_eq!(
+            HashOutput::decode(&output.encode().unwrap()).unwrap(),
+            output
+        );
+    }
+    let inputs = [
+        HashInput::Item(HashItem {
+            path: "a".into(),
+            offset: 1,
+            length: Some(2),
+            if_size: Some(3),
+            if_modified: Some(bohio_proto::fs::Timestamp { secs: 1, nanos: 0 }),
+        }),
+        HashInput::Item(HashItem::whole("b")),
+        HashInput::End,
+    ];
+    for input in inputs {
+        assert_eq!(HashInput::decode(&input.encode().unwrap()).unwrap(), input);
+    }
+    assert_eq!(HashOutput::decode(&[]), Err(Error::Short));
+    assert_eq!(HashOutput::decode(&[0x7f]), Err(Error::Tag(0x7f)));
+    assert_eq!(HashInput::decode(&[0x01]), Err(Error::Tag(0x01)));
+}
+
+#[test]
+fn an_algorithm_is_its_name_and_a_name_this_version_lacks_survives() {
+    for algorithm in Algorithm::KNOWN {
+        assert_eq!(Algorithm::from_name(algorithm.name()), algorithm);
+        assert!(algorithm.is_known() && algorithm.hex_len().is_some());
+        let bytes = encode(&algorithm).unwrap();
+        assert_eq!(decode::<Algorithm>(&bytes).unwrap(), algorithm);
+    }
+    let newer = Algorithm::from_name("sha3-256");
+    assert_eq!(newer, Algorithm::Other("sha3-256".into()));
+    assert!(!newer.is_known() && newer.hex_len().is_none());
+    assert_eq!(
+        decode::<Algorithm>(&encode(&newer).unwrap()).unwrap(),
+        newer
+    );
+    // A map keyed by algorithm is a map keyed by text, in the order its keys sort.
+    let digests = Digests::from([(newer, "00".into()), (Algorithm::Md5, "11".into())]);
+    let bytes = encode(&digests).unwrap();
+    let by_text: BTreeMap<String, String> = decode(&bytes).unwrap();
+    assert_eq!(
+        by_text.keys().cloned().collect::<Vec<_>>(),
+        ["md5", "sha3-256"]
+    );
+    assert_eq!(decode::<Digests>(&bytes).unwrap(), digests);
+}
+
+#[test]
+fn a_hash_stream_decodes_whatever_bytes_it_is_given_without_panicking() {
+    proptest!(|(bytes in proptest::collection::vec(any::<u8>(), 0..64))| {
+        let _ = HashOutput::decode(&bytes);
+        let _ = HashInput::decode(&bytes);
+        let _ = HashRequest::from_metadata(&bytes);
+    });
 }

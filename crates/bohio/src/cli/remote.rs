@@ -11,15 +11,17 @@ use bohio_client::control::Control;
 use bohio_client::dial::{ServerTrust, split_command};
 use bohio_client::exec::{Event, Exec};
 use bohio_client::fs::Reader;
+use bohio_client::hash::hash_many;
 use bohio_client::shell::{Event as ShellEvent, Shell};
 use bohio_client::{Error, Open};
 use bohio_proto::exec::{Request, Stdin};
+use bohio_proto::hash::{Algorithm, HashItem};
 use bohio_proto::shell::{Request as ShellRequest, ShellKind};
 use coqui_link::auth::{Proof, Trust};
 use coqui_peer::PeerId;
 
 use super::commands::{print_info, source};
-use super::{Format, RemoteAction, RemoteArgs, RemoteExecArgs, RemoteShellArgs};
+use super::{Format, RemoteAction, RemoteArgs, RemoteExecArgs, RemoteHashArgs, RemoteShellArgs};
 use crate::config::{Environment, Layers};
 use crate::local::{ANOTHER_ACCOUNT, Server, Via};
 use crate::node::Endpoint;
@@ -156,8 +158,60 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
             out.flush().map_err(|error| error.to_string())?;
             Ok(ExitCode::SUCCESS)
         }
+        RemoteAction::Hash(hash) => hash_command(&*link, hash),
         RemoteAction::Shell(shell) => shell_command(&*link, shell),
     }
+}
+
+/// `bohio remote ... hash`: one line per file, in the order given; a file that cannot be hashed is reported and
+/// the exit status is 1 after the rest are printed.
+fn hash_command(link: &dyn Open, args: &RemoteHashArgs) -> Result<ExitCode, String> {
+    let mut algorithms: Vec<Algorithm> = Vec::new();
+    for name in &args.algorithm {
+        let algorithm = Algorithm::from_name(name);
+        if !algorithm.is_known() {
+            let known: Vec<&str> = Algorithm::KNOWN.iter().map(Algorithm::name).collect();
+            return Err(format!(
+                "`{name}` is not an algorithm; the names are {}",
+                known.join(", ")
+            ));
+        }
+        if !algorithms.contains(&algorithm) {
+            algorithms.push(algorithm);
+        }
+    }
+    if algorithms.is_empty() {
+        algorithms.push(Algorithm::Sha256);
+    }
+    let items: Vec<HashItem> = args.paths.iter().map(HashItem::whole).collect();
+    let answers = hash_many(link, &items, &algorithms).map_err(|error| explain(&error))?;
+    let mut failed = false;
+    let mut out = std::io::stdout().lock();
+    for (path, answer) in args.paths.iter().zip(answers) {
+        match answer {
+            Ok(digests) => {
+                for algorithm in &algorithms {
+                    let hex = digests.get(algorithm).map_or("", String::as_str);
+                    let line = if algorithms.len() == 1 {
+                        format!("{hex}  {path}")
+                    } else {
+                        format!("{algorithm} {hex}  {path}")
+                    };
+                    writeln!(out, "{line}").map_err(|error| error.to_string())?;
+                }
+            }
+            Err(body) => {
+                failed = true;
+                eprintln!("bohio: {path}: {}", body.message);
+            }
+        }
+    }
+    out.flush().map_err(|error| error.to_string())?;
+    Ok(if failed {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    })
 }
 
 /// The exit status a finished program gives this command.

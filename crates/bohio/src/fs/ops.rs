@@ -1,7 +1,7 @@
 //! The control calls, each resolved against a directory handle for the root its path lies under.
 
 use std::collections::BTreeMap;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -9,7 +9,6 @@ use bohio_proto::fs::{Entry, FileKind, Listing, Metadata, Timestamp, WriteMode};
 use bohio_proto::{ErrorBody, ErrorCode};
 use cap_fs_ext::{DirExt, SystemTimeSpec};
 use cap_std::fs::{Dir, DirBuilder, DirEntry, File};
-use sha2::{Digest, Sha256};
 
 use super::path::{self, check_link_target};
 use super::stage::Staged;
@@ -59,7 +58,7 @@ fn bad(message: &'static str) -> ErrorBody {
     ErrorBody::new(ErrorCode::BadRequest, message)
 }
 
-fn timestamp(time: cap_std::time::SystemTime) -> Timestamp {
+pub(crate) fn timestamp(time: cap_std::time::SystemTime) -> Timestamp {
     let time = time.into_std();
     match time.duration_since(UNIX_EPOCH) {
         Ok(after) => Timestamp {
@@ -432,17 +431,6 @@ pub(crate) fn set_attributes(
     ))
 }
 
-/// The lowercase hexadecimal text of `bytes`.
-pub(crate) fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes
-        .iter()
-        .fold(String::with_capacity(bytes.len() * 2), |mut text, byte| {
-            let _ = write!(text, "{byte:02x}");
-            text
-        })
-}
-
 /// Opens the regular file `relative` under `dir` and returns it with its metadata. A directory or
 /// other kind is `bad_request`, judged before the open because some systems refuse to open a
 /// directory with an access error.
@@ -469,34 +457,4 @@ pub(crate) fn open_regular(
 ) -> Result<(File, cap_std::fs::Metadata), ErrorBody> {
     let (dir, relative) = roots.resolve_entry(text)?;
     open_regular_in(&dir, &relative)
-}
-
-pub(crate) fn checksum(
-    roots: &Roots<'_>,
-    context: &Context<'_>,
-    text: &str,
-    offset: u64,
-    length: Option<u64>,
-) -> Result<(String, u64), ErrorBody> {
-    let (mut file, _) = open_regular(roots, text)?;
-    file.seek(SeekFrom::Start(offset))
-        .map_err(|error| io_error(&error))?;
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0_u8; context.config.chunk_size];
-    let mut remaining = length.unwrap_or(u64::MAX);
-    let mut total = 0_u64;
-    while remaining > 0 {
-        let want = usize::try_from(remaining).map_or(buffer.len(), |left| left.min(buffer.len()));
-        match file.read(&mut buffer[..want]) {
-            Ok(0) => break,
-            Ok(count) => {
-                hasher.update(&buffer[..count]);
-                total += count as u64;
-                remaining -= count as u64;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(error) => return Err(io_error(&error)),
-        }
-    }
-    Ok((hex(&hasher.finalize()), total))
 }

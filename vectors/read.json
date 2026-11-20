@@ -4,11 +4,12 @@
   "vectors": [
     {
       "direction": "client_to_host",
-      "hex": "a364706174686d2f6574632f686f73746e616d65666f666673657400666c656e677468f6",
+      "hex": "a464706174686d2f6574632f686f73746e616d65666f666673657400666c656e677468f66668617368657380",
       "kind": "open",
       "name": "open_whole",
       "type": "fs.ReadRequest",
       "value": {
+        "hashes": [],
         "length": null,
         "offset": 0,
         "path": "/etc/hostname"
@@ -16,13 +17,30 @@
     },
     {
       "direction": "client_to_host",
-      "hex": "a364706174686c2f7372762f6269672e62696e666f66667365741a00100000666c656e6774681a00010000",
+      "hex": "a464706174686c2f7372762f6269672e62696e666f66667365741a00100000666c656e6774681a000100006668617368657380",
       "kind": "open",
       "name": "open_range",
       "type": "fs.ReadRequest",
       "value": {
+        "hashes": [],
         "length": 65536,
         "offset": 1048576,
+        "path": "/srv/big.bin"
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a464706174686c2f7372762f6269672e62696e666f666673657400666c656e677468f66668617368657382667368613235366478786833",
+      "kind": "open",
+      "name": "open_hashed",
+      "type": "fs.ReadRequest",
+      "value": {
+        "hashes": [
+          "sha256",
+          "xxh3"
+        ],
+        "length": null,
+        "offset": 0,
         "path": "/srv/big.bin"
       }
     },
@@ -53,11 +71,30 @@
     },
     {
       "direction": "host_to_client",
-      "hex": "04",
+      "hex": "04a166686173686573a0",
       "kind": "frame",
       "name": "done",
       "type": "fs.ReadOutput",
       "value": {
+        "message": {
+          "hashes": {}
+        },
+        "tag": 4
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "04a166686173686573a26673686132353678406261373831366266386630316366656134313431343064653564616532323233623030333631613339363137376139636234313066663631663230303135616464787868337037386166356639343839326633393530",
+      "kind": "frame",
+      "name": "done_hashed",
+      "type": "fs.ReadOutput",
+      "value": {
+        "message": {
+          "hashes": {
+            "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            "xxh3": "78af5f94892f3950"
+          }
+        },
         "tag": 4
       }
     },

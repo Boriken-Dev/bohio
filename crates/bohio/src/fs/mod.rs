@@ -1,7 +1,7 @@
 //! Filesystem access confined to a peer's roots: the control calls and the two transfer streams.
 //!
-//! [`call`] answers one filesystem call of the control stream; [`serve_read`] and [`serve_write`]
-//! serve a `bohio-read/1` and a `bohio-write/1` stream. Every path is resolved against the
+//! [`call`] answers one filesystem call of the control stream; [`serve_read`], [`serve_write`] and
+//! [`serve_hash`] serve a `bohio-read/1`, a `bohio-write/1` and a `bohio-hash/1` stream. Every path is resolved against the
 //! directory handle of the granted root it lies under, so a `..` or a symbolic link on the way
 //! cannot lead out of it.
 //!
@@ -23,7 +23,7 @@
 //! - macOS and other Unix: the component-by-component `openat` walk with `O_NOFOLLOW`; the same
 //!   guarantee, and `*at` calls on the parent's handle.
 //! - Windows: walking a path and opening a file or directory are relative to the root's handle
-//!   (`NtCreateFile` with a `RootDirectory`, reparse points not followed), so `stat`, `checksum`, reads
+//!   (`NtCreateFile` with a `RootDirectory`, reparse points not followed), so `stat`, hashes, reads
 //!   and the opens of writes are race-free. Listing a directory, reading a link, creating a
 //!   directory, removing, renaming, symlinking and changing permissions are not: the library
 //!   turns the parent's handle into its current path and acts on the parent's path joined with the name, so a peer or local
@@ -35,6 +35,7 @@
 //! to a file outside a root exposes that file, and a bind mount or a Windows junction an
 //! administrator places inside a root is part of the root.
 
+mod hash;
 mod ops;
 mod path;
 mod read;
@@ -44,10 +45,11 @@ mod write;
 use bohio_proto::control::{Call, Reply};
 use bohio_proto::{ErrorBody, ErrorCode};
 
-use crate::config::FilesystemConfig;
+use crate::config::{FilesystemConfig, HashConfig};
 use crate::limit::Slots;
 use crate::policy::{Grant, Permission};
 
+pub use hash::{HashContext, serve_hash};
 pub use read::serve_read;
 pub use write::serve_write;
 
@@ -60,6 +62,8 @@ pub struct Context<'a> {
     pub grant: &'a Grant,
     /// The `[filesystem]` settings.
     pub config: &'a FilesystemConfig,
+    /// The `[hash]` settings: which digests reads and writes may name, and the hash streams' bounds.
+    pub hash: &'a HashConfig,
     /// The bound on concurrent transfers, shared by every stream.
     pub slots: &'a Slots,
 }
@@ -77,9 +81,7 @@ pub struct Context<'a> {
 pub fn call(context: &Context<'_>, call: &Call, budget: usize) -> Result<Reply, ErrorBody> {
     use Permission::{FsRead, FsWrite};
     let needs: &[Permission] = match call {
-        Call::Stat { .. } | Call::List { .. } | Call::Readlink { .. } | Call::Checksum { .. } => {
-            &[FsRead]
-        }
+        Call::Stat { .. } | Call::List { .. } | Call::Readlink { .. } => &[FsRead],
         Call::Copy { .. } => &[FsRead, FsWrite],
         Call::Mkdir { .. }
         | Call::Remove { .. }
@@ -157,14 +159,6 @@ pub fn call(context: &Context<'_>, call: &Call, budget: usize) -> Result<Reply, 
         Call::SetAttributes { path, readonly } => {
             ops::set_attributes(&roots, path, *readonly)?;
             Reply::Done
-        }
-        Call::Checksum {
-            path,
-            offset,
-            length,
-        } => {
-            let (sha256, length) = ops::checksum(&roots, context, path, *offset, *length)?;
-            Reply::Checksum { sha256, length }
         }
         _ => unreachable!("every other call returned above"),
     })

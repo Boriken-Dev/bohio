@@ -321,6 +321,8 @@ pub enum RemoteAction {
     Exec(RemoteExecArgs),
     /// Write a file of the host to standard output.
     Read(RemoteReadArgs),
+    /// Print digests of files on the host, computed there: `HEX  PATH` for one algorithm, `NAME HEX  PATH` for several.
+    Hash(RemoteHashArgs),
     /// Open an interactive shell on the host.
     Shell(RemoteShellArgs),
 }
@@ -358,6 +360,18 @@ pub struct RemoteExecArgs {
 pub struct RemoteReadArgs {
     /// The file, in the host's own path text.
     pub path: String,
+}
+
+/// `bohio remote ... hash`.
+#[derive(Debug, Args)]
+pub struct RemoteHashArgs {
+    /// A digest to compute: md5, sha1, sha256, sha384, sha512, blake3, xxh3, xxh128, xxh64 or crc32c (repeat for
+    /// several, computed in one pass). Default sha256.
+    #[arg(long, value_name = "NAME")]
+    pub algorithm: Vec<String>,
+    /// The files, in the host's own path text.
+    #[arg(required = true, value_name = "PATH")]
+    pub paths: Vec<String>,
 }
 
 /// `bohio remote ... shell`.

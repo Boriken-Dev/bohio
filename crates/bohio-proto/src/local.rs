@@ -28,7 +28,7 @@ pub struct ViaRequest {
     /// The protocol to open on the link to that peer, for example `bohio-exec/1`.
     pub protocol: String,
     /// That protocol's open metadata, passed unchanged.
-    #[serde(with = "bytes", default)]
+    #[serde(with = "crate::codec::bytes", default)]
     pub metadata: Vec<u8>,
 }
 
@@ -209,46 +209,6 @@ impl LinksReply {
     /// [`Error::Decode`] when the bytes are not a reply.
     pub fn decode(message: &[u8]) -> Result<Self, Error> {
         decode(message)
-    }
-}
-
-/// CBOR byte strings for a `Vec<u8>`.
-mod bytes {
-    use serde::Serializer;
-    use serde::de::{self, Deserializer, SeqAccess, Visitor};
-
-    pub fn serialize<S: Serializer>(value: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_bytes(value)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
-        struct Bytes;
-
-        impl<'de> Visitor<'de> for Bytes {
-            type Value = Vec<u8>;
-
-            fn expecting(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                f.write_str("a byte string")
-            }
-
-            fn visit_bytes<E: de::Error>(self, value: &[u8]) -> Result<Vec<u8>, E> {
-                Ok(value.to_vec())
-            }
-
-            fn visit_byte_buf<E: de::Error>(self, value: Vec<u8>) -> Result<Vec<u8>, E> {
-                Ok(value)
-            }
-
-            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<u8>, A::Error> {
-                let mut out = Vec::new();
-                while let Some(byte) = seq.next_element::<u8>()? {
-                    out.push(byte);
-                }
-                Ok(out)
-            }
-        }
-
-        deserializer.deserialize_bytes(Bytes)
     }
 }
 

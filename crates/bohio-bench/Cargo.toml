@@ -11,7 +11,7 @@ publish = false
 
 [features]
 # Scenarios for features a later change adds; each is off until the feature exists.
-hash = []
+hash = ["dep:bohio-transfer"]
 compress = []
 delta = []
 walk = []
@@ -21,6 +21,7 @@ pipeline = []
 bohio = { path = "../bohio", default-features = false }
 bohio-client.workspace = true
 bohio-proto.workspace = true
+bohio-transfer = { workspace = true, optional = true }
 coqui-link.workspace = true
 coqui-transport.workspace = true
 clap.workspace = true
