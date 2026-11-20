@@ -127,12 +127,10 @@ pub const PROTOCOL_VERSION: u32 = 1;
 pub struct Info { protocol, service: Service{name, version}, host_id: Option<String>, os, arch, shells: Vec<ShellInfo{kind, path}>,
                   filesystem: FilesystemInfo{enabled, symlinks, unix_modes, windows_attributes, case_sensitive, separator},
                   exec: ExecInfo{enabled}, shell: SessionInfo{enabled}, limits: Limits{max_streams, max_processes, max_sessions: Option<u64>},
-                  transfer: TransferInfo{hashes: Vec<Algorithm>, hash_limits: HashLimits{max_streams: u64, rate: u64 /* 0 unlimited */}},
-                  forward: ForwardInfo{enabled, connect, listen} }
-
                   transfer: TransferInfo{hashes: Vec<Algorithm>, hash_limits: HashLimits{max_streams: u64, rate: u64 /* 0 unlimited */},
                          compression: Vec<CompressionInfo{algorithm: Codec, levels: Levels{min, max}, default_level: i32, window_log_max: u32}>,
-                         compression_default: Option<Compression>, prepared: bool} }
+                         compression_default: Option<Compression>, prepared: bool},
+                  forward: ForwardInfo{enabled, connect, listen} }
 ```
 
 Every field has a default and unknown keys are ignored: a client works with a host that reports less or more. `os` and `arch` are

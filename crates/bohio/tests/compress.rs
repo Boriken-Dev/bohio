@@ -20,6 +20,7 @@ use bohio_proto::hash::Algorithm;
 use bohio_proto::{ErrorCode, protocol};
 use bohio_transfer::compress::{Bounds, Decoder};
 use bohio_transfer::hash::{Hasher, available};
+use coqui_link::mux::LinkStream;
 use coqui_transport::Channel;
 use sha2::{Digest, Sha256};
 use support::{Link, WAIT, helper};
@@ -498,7 +499,7 @@ struct Crafted {
 }
 
 impl Open for Crafted {
-    fn open(&self, _protocol: &str, _metadata: &[u8]) -> Result<Box<dyn Channel>, Error> {
+    fn open(&self, _protocol: &str, _metadata: &[u8]) -> Result<Box<dyn LinkStream>, Error> {
         use coqui_transport::frame::LengthPrefix;
         use coqui_transport::{StreamChannelBuilder, memory};
         let build = |stream| {
@@ -524,7 +525,7 @@ impl Open for Crafted {
             }
             std::thread::sleep(Duration::from_millis(500));
         });
-        Ok(Box::new(build(client)))
+        Ok(Box::new(bohio_client::relay::Plain(build(client))))
     }
 }
 
