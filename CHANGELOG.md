@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   five for any accepted key), so the document says what the node would serve that peer now. `PeerLink::offers(wait)` reads the peer's document,
   `LinkInfo::mine` gives this node's side, and `Opener::capabilities(wait)` reads it on the link's own thread. Admission still decides every open. Nothing
   is added to the wire; `docs/protocol.md` has a "Roles" section.
+- A node dials out. A peer's table with an `endpoint` (`[peer."<id>"] endpoint = "tcp://host.example:7620"`, any endpoint `bohio remote` takes) makes
+  `bohio serve` keep a link to that key, which the table's name pins and which must prove itself before this node sends its own; `[peer."<id>".dial]`
+  (`DialConfig`) sets `ca`, `cert_hash`, `fallback`, `timeout` (`10s`), `retry_min` (`1s`), `retry_max` (`60s`), `retry_factor` (`2`) and
+  `retry_jitter` (`0.1`). `Node::run_dial` is the loop, reporting `NodeEvent::Dialing` and `DialFailed`; a node with no `[[listen]]` may only dial.
+  `[link] heartbeat` (`25s`, `0` off) and `heartbeat_misses` (`3`) make both sides of every link ask whether the other is there, so a path that goes silent
+  without closing ends the link. `bohio peer approve --endpoint` writes the endpoint, `peer list` and `status` show it, `config check` counts the dials.
 
 ### Changed
 

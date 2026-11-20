@@ -79,6 +79,8 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[link] send_limit` | `10s` | how long a frame the socket takes nothing of ends the link, and a finished stream's queue is given to drain; not zero |
 | `[link] send_wait` | `250ms` | how long a send waits for credit before it reports no progress and is tried again; not zero |
 | `[link] poll_interval` | `50ms` | how often a stream's threads look at whether it was closed; not zero |
+| `[link] heartbeat` | `25s` | how often the link asks its peer whether it is there (both sides ask; also keeps a quiet link from a proxy's or NAT's idle timeout); `0` is off |
+| `[link] heartbeat_misses` | `3` | heartbeat intervals with nothing heard after which the link is lost; at least 1 |
 | `[filesystem] enabled` | `true` | whether filesystem calls are served |
 | `[filesystem] max_transfers` | `16` | concurrent `bohio-read/1` and `bohio-write/1` streams across peers; at least 1 |
 | `[filesystem] chunk_size` | `65536` | most file bytes in one frame, and the buffer a copy or checksum reads with; at least 1; a smaller message bound of the stream wins |
@@ -118,8 +120,9 @@ impl Grant { pub fn none() -> Self; pub fn allowing(permissions) -> Self; pub fn
              pub fn permits_program(&self, program: &str) -> bool; pub fn permits_shell_script(&self) -> bool;
              pub fn with_env(self, names) -> Self; pub fn env_names(&self) -> &[String]; pub fn permits_env(&self, env: &bohio_proto::exec::Env) -> bool; }
 pub struct Peers;                                                // Default = no peer; Deserialize (the `[peer]` table of `bohio.cfg`)
-impl Peers { pub fn grant_for(&self, peer: &str) -> Grant; pub fn has(&self, peer: &str) -> bool; pub fn ids(&self) -> impl Iterator<Item = &str>;
-             pub fn len(&self) -> usize; pub fn is_empty(&self) -> bool; pub fn set(&mut self, peer: &str, grant: Grant); pub fn remove(&mut self, peer: &str) -> bool; }
+pub struct PeerTable;                                            // one `[peer.<id>]`: grant(), endpoint() -> Option<&str>, dial() -> &DialConfig
+impl Peers { pub fn grant_for(&self, peer: &str) -> Grant; pub fn table(&self, peer: &str) -> Option<&PeerTable>; pub fn dials(&self) -> impl Iterator<Item = (&str, &str, &DialConfig)>; pub fn has(&self, peer: &str) -> bool; pub fn ids(&self) -> impl Iterator<Item = &str>;
+             pub fn len(&self) -> usize; pub fn is_empty(&self) -> bool; }
 ```
 
 `[peer."<id>"]` (the id is `sha256:` and 64 hex digits, so it is quoted as a key) with `allow = [..]`, `fs_roots = [..]`, and `[peer."<id>".exec]` with
@@ -133,6 +136,25 @@ names it (the program still starts from the host's own `PATH`), and may not clea
 `DYLD_INSERT_LIBRARIES`, `BASH_ENV` load or run code the peer chose). `permits_env` is that check; without a program list it always holds. The list
 limits which program starts, not what it does: `git -c alias.x=!cmd`, `make`, `find -exec` and interpreters run anything they are
 given, so list only programs that are safe with every argument. `fs_roots` empty means no file operation is allowed.
+
+`[peer."<id>"] endpoint = "<any endpoint>"` makes this node dial that peer (the table's name pins the key that must answer there); `bohio serve` and `bohio service run`
+run a dialer for each, beside the listeners, read at start (a restart applies a new endpoint). `[peer."<id>".dial]` is `bohio::config::DialConfig` (Deserialize,
+usable by an embedder; unknown keys refused):
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `ca` | none | PEM files trusted instead of the system roots, for `wss` and `webtransport` |
+| `cert_hash` | none | certificate hashes (`sha256:` and 64 hex digits) trusted as they are |
+| `fallback` | none | for a `webtransport://` endpoint, a `ws://` or `wss://` one tried when the QUIC path fails before anything crossed |
+| `timeout` | `10s` | opening the path (the proof has `[link] proof_timeout` besides); not zero |
+| `retry_min` | `1s` | the first wait after a failure; not zero |
+| `retry_max` | `60s` | the longest wait; at least `retry_min` |
+| `retry_factor` | `2` | what each further failure multiplies the wait by; at least 1 |
+| `retry_jitter` | `0.1` | a wait moves by up to this fraction of itself, either way; 0 to 1 |
+
+A shorter `retry_min` and a smaller factor retry faster and ask the peer, and a watching network, more often; a larger `retry_max` notices a peer that came back later. A
+link that stayed up at least `retry_min` starts the sequence again, and one that ends sooner counts as a failure (the peer most likely refused the key after its proof).
+A bad endpoint, a fallback that does not follow a `webtransport://` one, or a bad `cert_hash` is `ConfigError::Invalid`; a name in a `tcp://` endpoint is resolved at each attempt, never when the file is read.
 
 ## Execution (`bohio::exec`)
 
@@ -275,6 +297,7 @@ impl Node {
     pub fn connect(&self, endpoint: &Endpoint, expect: &PeerId, trust: &ServerTrust, timeout: Duration) -> Result<(), NodeError>;   // dials any endpoint, then connect_channel; the link lists `endpoint`
     pub fn peer(&self, peer: &PeerId) -> Option<PeerLink>;          // the oldest link that is up to `peer`, whichever side made it
     pub fn links(&self) -> Vec<LinkInfo>;                           // every link that is up, oldest first
+    pub fn run_dial(&self, peer: &PeerId, endpoint: &str, dial: &DialConfig, stop: &AtomicBool);   // keeps a link to `peer` at `endpoint` (text, read again at each attempt) until `stop`: dials, serves, waits (retry_min x retry_factor per failure, up to retry_max, with jitter), repeats; no dial while an up link to the peer exists
 }
 #[non_exhaustive] pub enum NodeError { Config(ConfigError), Proof(String), Listen { endpoint, reason }, Dial { endpoint, reason }, Stranger { peer } }   // Dial: the path or the proof failed; Stranger: the dialed key proved itself and Keys do not accept it
 #[non_exhaustive] pub struct LinkInfo { pub peer: PeerId, pub side: Side, pub endpoint: Option<String>, pub source: Option<SocketAddr>, pub since: SystemTime, pub mine: Vec<String> }   // `mine`: the tokens this node offers the peer now, computed when asked   // `side` (Dialed or Answered) decides nothing
@@ -292,7 +315,7 @@ pub struct MemoryKeys;                                             // new(), acc
 pub struct MemoryGrants;                                           // new(), set(PeerId, Grant), remove(&PeerId) -> bool; FromIterator<(PeerId, Grant)>; no entry: Grant::none()
 
 pub trait NodeEvents: Send + Sync { fn event(&self, event: &NodeEvent); }   // runs on the link's thread: return quickly
-#[non_exhaustive] pub enum NodeEvent { LinkUp { peer, side }, LinkDown { peer }, Opened { peer, protocol }, Refused { peer, protocol }, Revoked { peer, protocol }, Stranger { peer, source } }   // an id, a protocol, an address: never a key, PIN or request
+#[non_exhaustive] pub enum NodeEvent { LinkUp { peer, side }, LinkDown { peer }, Opened { peer, protocol }, Refused { peer, protocol }, Revoked { peer, protocol }, Dialing { peer, endpoint }, DialFailed { peer, endpoint, reason, retry_in }, Stranger { peer, source } }   // an id, a protocol, an address: never a key, PIN or request
 pub struct LogEvents;                                              // the default: log lines
 
 pub const PROTOCOLS: [(&str, &[Permission]); 5];                   // each protocol with the permissions of which a peer needs one to open it
@@ -304,8 +327,8 @@ pub fn grant_of(grants: &dyn Grants, peer: &str) -> Result<Grant, GrantsError>;
 
 pub struct Data;                                                   // Data::new(dir): dir(), identity_path(), identity(), store() (the waiting list)
 pub struct LayeredPeers;                                           // Keys + Grants over config layers read again at every question: LayeredPeers::new(files: Vec<PathBuf>, &Data) -> Result<Self, PeerError>; a stranger is recorded as waiting in the Data directory
-pub fn list(files: &[PathBuf], data: &Data) -> Result<Listing, PeerError>;   // Listing { accepted: Vec<Accepted{id, grant}>, waiting: Vec<Waiting{id, source}> }
-pub fn approve(files: &[PathBuf], create: Option<&Path>, data: &Data, id: &PeerId, grant: Option<&Grant>) -> Result<Approved, PeerError>;   // Approved { file, made }
+pub fn list(files: &[PathBuf], data: &Data) -> Result<Listing, PeerError>;   // Listing { accepted: Vec<Accepted{id, grant, endpoint}>, waiting: Vec<Waiting{id, source}> }
+pub fn approve(files: &[PathBuf], create: Option<&Path>, data: &Data, id: &PeerId, grant: Option<&Grant>, endpoint: Option<&str>) -> Result<Approved, PeerError>;   // Approved { file, made }
 pub fn revoke(files: &[PathBuf], data: &Data, id: &PeerId) -> Result<Revoked, PeerError>;   // Revoked { files, unwritable, key }; NoSuchPeer when nothing was removed and no layer holds it
 pub fn pair(data: &Data, listener: &TcpListener, settings: &Settings, timeout: Duration, shown: impl FnOnce(&str)) -> Result<PeerId, PeerError>;
 #[non_exhaustive] pub enum PeerError { Identity(String), Store(String), Config(ConfigError), Write(String), NoLayer, NoSuchPeer, Pairing(String) }
@@ -328,6 +351,12 @@ side made it, runs `coqui_link::link::serve_with` with a `bohio_client::connect:
 peer's grants and `Node::peer(&id)` opens its own under the peer's grants for this node. Who dialed decides nothing: `Side` reaches neither `Keys` nor `Grants`, and
 a link serves only a key whose `Keys` accept it, so a dialed key that proved itself and is not accepted ends the link after the proof (`NodeError::Stranger`,
 `Keys::stranger`, `NodeEvent::Stranger`). A dialed link counts against `[link] max_links_per_peer`. Both sides dialing at once make two links; both serve.
+
+`run_dial` is the keep-alive of a dialed link: after a failure it waits `retry_min`, then that times `retry_factor` per further failure up to `retry_max` (with `retry_jitter`),
+and starts again from `retry_min` after a link that stayed up at least `retry_min`; it never dials while an up link to the peer exists, and the node's `[link] heartbeat`
+(25 s, 3 misses by default, both sides) ends a link whose path went silent without closing. A peer that does not prove itself as the table's key is a `DialFailed`
+(its reason, once per change); a peer that proves itself and then ends the link at once (it does not accept this node's key) is a failure too, with the same
+backoff, and sees this node's key as waiting. `NodeEvent::DialFailed` and `Dialing` carry an id, an endpoint and a reason, never a key.
 
 Roles are read from the link, not configured: a node offers a peer the tokens its `Grants` entry for that peer holds a permission for (`offered`), which is the
 `offers` of the `link/1` document it answers on every link, so the document is what this node would serve that peer now, recomputed at each read; admission and
@@ -384,14 +413,14 @@ a person or a script reads is printed to standard output and flushed; diagnostic
 
 | Command | What it does |
 | --- | --- |
-| `config check [--format text\|json]` | reads the configuration and prints `ok` with a summary |
+| `config check [--format text|json]` | reads the configuration and prints `ok` with a summary (including `dial: <count>`) |\|json]` | reads the configuration and prints `ok` with a summary |
 | `info [--format text\|json]` | prints this host's capabilities (`json` is `bohio_proto::info::Info`) |
-| `serve [--listen ENDPOINT]...` | serves each `[[listen]]` endpoint and `--listen` (`tcp://host:port`, port 0 picks one; `pipe://name`, `ws://host:port`, `wss://host:port` (needs a `[[listen]]` entry with `tls_cert` and `tls_key`), `webtransport://host:port`, `serial://port?baud=N`) until killed; prints `listening <endpoint>` for each, then `host <id>` |
+| `serve [--listen ENDPOINT]...` | also dials each peer whose `[peer.<id>]` table has an `endpoint` (printing `dialing <endpoint> peer <id>`; with no `[[listen]]` and no `--listen`, a node that only dials is fine); serves each `[[listen]]` endpoint and `--listen` (`tcp://host:port`, port 0 picks one; `pipe://name`, `ws://host:port`, `wss://host:port` (needs a `[[listen]]` entry with `tls_cert` and `tls_key`), `webtransport://host:port`, `serial://port?baud=N`) until killed; prints `listening <endpoint>` for each, then `host <id>` |
 | `serve --stdio` | serves one link on standard input and output until it ends; prints nothing to standard output, logs to standard error; excludes `--listen` and binds no `[[listen]]` |
-| `status` | the host's id, key method, data directory, one `config: <file>` line per layer read, counts of accepted and waiting peers, and one `listen: <endpoint> <state>` line per configured endpoint: `reachable` / `not reachable` (a connect is made; a TCP, WebSocket or pipe host sees it), `device present` / `device missing` (serial, Unix) or `device not checked` (Windows), `UDP not checked` (WebTransport), `not served by this build` |
+| `status` | the host's id, key method, data directory, one `config: <file>` line per layer read, counts of accepted and waiting peers, one `dial: <endpoint> peer <id>` line per peer dialed, and one `listen: <endpoint> <state>` line per configured endpoint: `reachable` / `not reachable` (a connect is made; a TCP, WebSocket or pipe host sees it), `device present` / `device missing` (serial, Unix) or `device not checked` (Windows), `UDP not checked` (WebTransport), `not served by this build` |
 | `id` | the id of this machine's key, made on first use |
-| `peer list` | `accepted <id> allow: ...` and `waiting <id> from <ip>` lines |
-| `peer approve <id> [--allow P,P] [--fs-root DIR]... [--program NAME]... [--env VAR]...` | accepts a peer by id (waiting, paired or new): writes its `[peer.<id>]` table to a layer and prints `wrote <file>`; any of `--allow`, `--fs-root` and `--program` replaces its whole table, none leaves an existing one; `--env` (with `--program`) names the variables its requests may change |
+| `peer list` | `accepted <id> allow: ...` (then ` dial: <endpoint>` when the table has one) and `waiting <id> from <ip>` lines |
+| `peer approve <id> [--allow P,P] [--fs-root DIR]... [--program NAME]... [--env VAR]... [--endpoint ENDPOINT]` | `--endpoint` writes the table's `endpoint` (this node then dials the peer; a table that is replaced keeps its `endpoint` and `[dial]`); accepts a peer by id (waiting, paired or new): writes its `[peer.<id>]` table to a layer and prints `wrote <file>`; any of `--allow`, `--fs-root` and `--program` replaces its whole table, none leaves an existing one; `--env` (with `--program`) names the variables its requests may change |
 | `peer revoke <id>` | removes the table from every layer that holds it (naming any layer it cannot write) and its waiting entry; running streams end within `[link] recheck` |
 | `pair [--listen ENDPOINT] [--timeout TIME]` | prints `pairing on <endpoint>`, `host <id>`, `pin <PIN>` (default `tcp://127.0.0.1:0`, `5m`), waits for one peer, prints `paired <id>` and `wrote <file>`: the joiner's key is accepted as a `[peer.<id>]` table, holding nothing |
 | `join <endpoint> [--pin PIN]` | pairs with a host that shows a PIN (the PIN is read from standard input when absent); each side writes the other's key as a `[peer.<id>]` table into its layers; the joiner holds nothing until approved |
