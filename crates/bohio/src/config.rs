@@ -279,6 +279,9 @@ pub struct LinkConfig {
     /// How often a running stream's permission is decided again, so a revoked peer's streams
     /// end. A number of seconds or text with a unit (`500ms`, `5s`, `2m`, `1h`). Default `5s`.
     pub recheck: Span,
+    /// How often the link itself asks whether the peer's key is still accepted, and ends the link (after telling each running
+    /// stream it was revoked) when it is not. Same units as `recheck`; not zero. Unset: `2 x recheck`.
+    pub key_recheck: Option<Span>,
     /// The most streams one peer may have open at once. At least 1. Default `64`.
     pub max_streams: usize,
     /// The most links open at once across peers, counting those still proving themselves; a
@@ -358,6 +361,7 @@ impl Default for LinkConfig {
         let link = bohio_client::link::Settings::default();
         Self {
             recheck: Span(Duration::from_secs(5)),
+            key_recheck: None,
             max_streams: 64,
             max_connections: 128,
             max_unproven_per_source: 16,
@@ -819,6 +823,9 @@ impl NodeConfig {
         }
         if self.link.max_streams == 0 {
             return Err(invalid("link.max_streams", "must be at least 1"));
+        }
+        if self.link.key_recheck.is_some_and(|every| every.0.is_zero()) {
+            return Err(invalid("link.key_recheck", "must not be zero"));
         }
         if self.link.recheck.0.is_zero() {
             return Err(invalid("link.recheck", "must not be zero"));

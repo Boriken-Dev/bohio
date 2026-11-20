@@ -4,7 +4,7 @@
 //! [`Keys`] says who a peer is (an accepted key); [`Grants`] says what it may do. A node asks them
 //! at every decision, so a change by their owner applies at the next open or [`recheck`] without a
 //! restart: [`admission`] decides each stream when it opens and every `[link] recheck` while it
-//! runs, and the link itself checks the key every second recheck.
+//! runs, and the link itself checks the key every `[link] key_recheck`.
 //!
 //! [`recheck`]: crate::config::LinkConfig::recheck
 
@@ -38,7 +38,7 @@ pub const PROTOCOLS: [(&str, &[Permission]); 5] = [
 /// Which keys a node accepts.
 ///
 /// It is asked when a peer's proof holds (a key it does not accept ends the connection), at every
-/// stream decision and by the link every second `[link] recheck`, so an implementation answers from
+/// stream decision and by the link every `[link] key_recheck`, so an implementation answers from
 /// where its owner keeps the list, and answers quickly.
 pub trait Keys: Send + Sync {
     /// Whether `peer` is accepted now. A question that cannot be answered is `false`.

@@ -954,10 +954,16 @@ impl Node {
         let _ = channel.set_pending(settings.read_ahead);
         let recheck = self.shared.config.link.recheck.0;
         let keys = Arc::clone(&self.keys);
-        // A revoked key's streams end at the next re-check; the link itself ends at the second.
+        // A revoked key's streams end at the next re-check and hear why; the link itself ends at its own key check.
         let sealed = Sealed::new(channel, established.session)
             .with_check(move || keys.is_accepted(&peer))
-            .with_check_every(recheck.saturating_mul(2));
+            .with_check_every(
+                self.shared
+                    .config
+                    .link
+                    .key_recheck
+                    .map_or_else(|| recheck.saturating_mul(2), |every| every.0),
+            );
         let mut options = Options::default();
         options.limits = settings.limits();
         options.recheck = recheck;

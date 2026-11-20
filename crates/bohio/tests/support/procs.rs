@@ -241,12 +241,21 @@ impl Node {
     }
 
     /// Writes the configuration: this node's `[service]` and a `[link]` of a one-second re-check with
-    /// `link`, then `extra` (the rest of the file).
+    /// `link`, then `extra` (the rest of the file). A `recheck` among the `link` lines replaces the
+    /// one second.
     pub fn write_with(&self, link: &str, extra: &str) {
+        let recheck = if link
+            .lines()
+            .any(|line| line.trim_start().starts_with("recheck"))
+        {
+            ""
+        } else {
+            "recheck = \"1s\"\n"
+        };
         std::fs::write(
             &self.config,
             format!(
-                "[service]\nname = \"{}\"\ndata_dir = {}\n[link]\nrecheck = \"1s\"\n{link}\n{extra}\n",
+                "[service]\nname = \"{}\"\ndata_dir = {}\n[link]\n{recheck}{link}\n{extra}\n",
                 self.name,
                 toml_path(&self.data_dir())
             ),

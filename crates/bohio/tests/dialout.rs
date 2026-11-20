@@ -304,11 +304,16 @@ struct Linked {
 }
 
 fn linked(grant: &str, back: &str) -> Linked {
+    linked_with(BEAT, grant, back)
+}
+
+/// As `linked`, with `host_link` as the host's `[link]` settings.
+fn linked_with(host_link: &str, grant: &str, back: &str) -> Linked {
     let pair = Pair::new(false);
     pair.controller
         .write_with(BEAT, &Node::peer_table(&pair.host.id, None, back, ""));
     pair.host.write_with(
-        BEAT,
+        host_link,
         &Node::peer_table(&pair.controller.id, Some(&pair.endpoint), grant, DIAL),
     );
     let (host, _) = pair.host.serve(None, "info");
@@ -456,6 +461,122 @@ controller log: {}",
     // `recheck` is one second here.
     assert!(took < Duration::from_secs(5), "took {took:?}");
     long.kill();
+}
+
+/// The key check and the stream recheck are two timers, so either may find a revoke first. Here only the key check can: the stream
+/// recheck is an hour away. The link goes, and the stream's peer is still told it was revoked, not that the wire broke.
+#[test]
+fn a_revoke_found_by_the_links_key_check_still_reaches_the_running_exec_as_revoked() {
+    let host_link = format!("{BEAT}\nrecheck = \"1h\"\nkey_recheck = \"250ms\"");
+    let up = linked_with(&host_link, "allow = [\"exec\"]", "");
+    let (controller, host) = (&up.pair.controller, &up.pair.host);
+    let helper = support::helper();
+    let config = controller.config();
+    let mut long = Proc::start(
+        &[
+            "remote", "--via", &host.id, "--config", &config, "exec", "--", &helper, "tree",
+            "120000",
+        ],
+        "warn",
+    );
+    thread::sleep(Duration::from_secs(2));
+    let began = Instant::now();
+    run_ok(&["peer", "revoke", &controller.id, "--config", &host.config()]);
+    let until = Instant::now() + DEADLINE;
+    while long.stderr().is_empty() && Instant::now() < until {
+        thread::sleep(Duration::from_millis(50));
+    }
+    let took = began.elapsed();
+    assert!(
+        long.stderr().contains("revoked") && !long.stderr().contains("wire format"),
+        "the controller was not told it was revoked: {}
+host log: {}
+controller log: {}",
+        long.stderr(),
+        up.host.stderr(),
+        up.pair.controller_proc.stderr()
+    );
+    assert!(took < Duration::from_secs(5), "took {took:?}");
+    long.kill();
+}
+
+/// The same revoke found by the key check, on a transfer part way through: a reader that takes a few megabytes a second keeps
+/// a large file from finishing before the revoke.
+#[test]
+fn a_revoke_found_by_the_links_key_check_still_reaches_a_running_read_as_revoked() {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+
+    let root = tempfile::tempdir().expect("a directory");
+    let big = root.path().join("big.bin");
+    std::fs::File::create(&big)
+        .and_then(|file| file.set_len(512 * 1024 * 1024))
+        .expect("the file is made");
+    let grant = format!(
+        "allow = [\"fs.read\"]\nfs_roots = [{}]",
+        toml_list(root.path())
+    );
+    let host_link = format!("{BEAT}\nrecheck = \"1h\"\nkey_recheck = \"250ms\"");
+    let up = linked_with(&host_link, &grant, "");
+    let (controller, host) = (&up.pair.controller, &up.pair.host);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_bohio"))
+        .args([
+            "remote",
+            "--via",
+            &host.id,
+            "--config",
+            &controller.config(),
+        ])
+        .args(["read", &big.to_string_lossy()])
+        .env_remove("BOHIO_CONFIG")
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the binary starts");
+    let mut stdout = child.stdout.take().unwrap();
+    let mut stderr = child.stderr.take().unwrap();
+    let slow = thread::spawn(move || {
+        let mut chunk = vec![0_u8; 64 * 1024];
+        let mut total = 0_u64;
+        while let Ok(count) = stdout.read(&mut chunk) {
+            if count == 0 {
+                break;
+            }
+            total += count as u64;
+            thread::sleep(Duration::from_millis(10));
+        }
+        total
+    });
+    let said = thread::spawn(move || {
+        let mut text = String::new();
+        let _ = stderr.read_to_string(&mut text);
+        text
+    });
+    thread::sleep(Duration::from_secs(2));
+    assert!(
+        child.try_wait().expect("it can be asked").is_none(),
+        "the transfer ended before the revoke"
+    );
+    run_ok(&["peer", "revoke", &controller.id, "--config", &host.config()]);
+    let until = Instant::now() + DEADLINE;
+    while child.try_wait().expect("it can be asked").is_none() {
+        if Instant::now() > until {
+            let _ = child.kill();
+            panic!("the read did not end within the deadline");
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    let said = said.join().unwrap();
+    let received = slow.join().unwrap();
+    assert!(received < 512 * 1024 * 1024, "the whole file arrived");
+    assert!(
+        said.contains("revoked") && !said.contains("wire format"),
+        "the reader was not told it was revoked: {said}
+host log: {}",
+        up.host.stderr()
+    );
 }
 
 #[test]
