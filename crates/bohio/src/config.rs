@@ -111,7 +111,7 @@ impl fmt::Display for ConfigError {
 impl core::error::Error for ConfigError {}
 
 /// The whole configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Config {
     /// `[service]`.
@@ -309,6 +309,12 @@ pub struct LinkConfig {
     pub send_wait: Span,
     /// How often a stream's threads look at whether it was closed. Not zero. Default `50ms`.
     pub poll_interval: Span,
+    /// How often the link asks its peer whether it is there, and what keeps a quiet link from a proxy's or a NAT's idle
+    /// timeout; both sides ask. A number of seconds or text with a unit; `0` turns it off. Default `25s`.
+    pub heartbeat: Span,
+    /// Heartbeat intervals with nothing heard after which the link is lost: a peer that went away without closing
+    /// is noticed in about `heartbeat` times this. At least 1. Default `3`.
+    pub heartbeat_misses: u32,
 }
 
 impl Default for LinkConfig {
@@ -330,6 +336,8 @@ impl Default for LinkConfig {
             send_limit: Span(link.send_limit),
             send_wait: Span(link.send_wait),
             poll_interval: Span(link.poll_interval),
+            heartbeat: Span(link.heartbeat),
+            heartbeat_misses: link.heartbeat_misses,
         }
     }
 }
@@ -349,7 +357,83 @@ impl LinkConfig {
         settings.send_limit = self.send_limit.0;
         settings.send_wait = self.send_wait.0;
         settings.poll_interval = self.poll_interval.0;
+        settings.heartbeat = self.heartbeat.0;
+        settings.heartbeat_misses = self.heartbeat_misses;
         settings
+    }
+}
+
+/// `[peer."<id>".dial]`: how this node dials a peer whose table names an `endpoint`, with a default for every
+/// setting. Usable by an application that keeps its peers elsewhere: it deserializes from any table.
+///
+/// After a failure the node waits `retry_min`, then `retry_min x retry_factor`, and so on up to `retry_max`,
+/// each wait changed by up to `retry_jitter` of itself in either direction so many nodes do not retry together;
+/// a link that stayed up at least `retry_min` starts the sequence again. A smaller `retry_min` retries faster and
+/// asks the peer, and a watching network, more often; a larger `retry_max` takes longer to notice a peer that
+/// came back.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct DialConfig {
+    /// PEM files whose certificates are the trusted roots for a `wss://` or `webtransport://` endpoint, instead of
+    /// the system's. Default none.
+    pub ca: Vec<PathBuf>,
+    /// SHA-256 hashes of certificates trusted as they are (`sha256:` and 64 hex digits) for a TLS endpoint. Default
+    /// none.
+    pub cert_hash: Vec<String>,
+    /// For a `webtransport://` endpoint, a `ws://` or `wss://` endpoint of the same host tried when the QUIC path
+    /// fails before anything crossed. Default none.
+    pub fallback: Option<String>,
+    /// How long opening the path may take (the socket, the WebSocket handshake, the program); the proof has
+    /// `[link] proof_timeout` besides. Not zero. Default `10s`.
+    pub timeout: Span,
+    /// The first wait after a failure. Not zero. Default `1s`.
+    pub retry_min: Span,
+    /// The longest wait. At least `retry_min`. Default `60s`.
+    pub retry_max: Span,
+    /// What each further failure multiplies the wait by. At least 1 (1 is a fixed wait). Default `2`.
+    pub retry_factor: f64,
+    /// How far a wait may move, as a fraction of itself: 0 (none) to 1. Default `0.1`.
+    pub retry_jitter: f64,
+}
+
+impl Default for DialConfig {
+    fn default() -> Self {
+        Self {
+            ca: Vec::new(),
+            cert_hash: Vec::new(),
+            fallback: None,
+            timeout: Span(Duration::from_secs(10)),
+            retry_min: Span(Duration::from_secs(1)),
+            retry_max: Span(Duration::from_secs(60)),
+            retry_factor: 2.0,
+            retry_jitter: 0.1,
+        }
+    }
+}
+
+impl DialConfig {
+    /// Checks the settings: the key of a bad one (relative to `[peer."<id>".dial]`) and why.
+    ///
+    /// # Errors
+    ///
+    /// The key and the reason, for a value that means nothing.
+    pub fn validate(&self) -> Result<(), (&'static str, &'static str)> {
+        if self.timeout.0.is_zero() {
+            return Err(("timeout", "must not be zero"));
+        }
+        if self.retry_min.0.is_zero() {
+            return Err(("retry_min", "must not be zero"));
+        }
+        if self.retry_max.0 < self.retry_min.0 {
+            return Err(("retry_max", "must be at least retry_min"));
+        }
+        if !self.retry_factor.is_finite() || self.retry_factor < 1.0 {
+            return Err(("retry_factor", "must be at least 1"));
+        }
+        if !(0.0..=1.0).contains(&self.retry_jitter) {
+            return Err(("retry_jitter", "must be from 0 to 1"));
+        }
+        Ok(())
     }
 }
 
@@ -575,6 +659,7 @@ impl NodeConfig {
             ("link.max_message", link.max_message == 0),
             ("link.queue_bytes", link.queue_bytes == 0),
             ("link.read_ahead", link.read_ahead == 0),
+            ("link.heartbeat_misses", link.heartbeat_misses == 0),
             ("link.queued_bytes", link.queued_bytes == 0),
         ] {
             if zero {
@@ -767,7 +852,48 @@ impl Config {
                 return Err(invalid("listen.socket_mode", &reason));
             }
         }
+        for (name, endpoint, dial) in self.peer.dials() {
+            if let Err((key, reason)) = dial.validate() {
+                return Err(invalid(&format!("peer.{name}.dial.{key}"), reason));
+            }
+            if let Err(reason) = check_dialed(endpoint, dial.fallback.as_deref()) {
+                return Err(invalid(&format!("peer.{name}.endpoint"), &reason));
+            }
+            let mut trust = bohio_client::dial::ServerTrust::default();
+            for hash in &dial.cert_hash {
+                if let Err(reason) = trust.pin(hash) {
+                    return Err(invalid(&format!("peer.{name}.dial.cert_hash"), &reason));
+                }
+            }
+        }
         Ok(())
+    }
+}
+
+/// Whether `endpoint` (and `fallback` after it) could be dialed, without resolving a name: a name is resolved at
+/// each attempt, and a host that is offline when the file is read is not a mistake in it.
+fn check_dialed(endpoint: &str, fallback: Option<&str>) -> Result<(), String> {
+    use bohio_client::dial::Endpoint;
+    let (scheme, rest) = endpoint.split_once("://").ok_or_else(|| {
+        "must look like `scheme://address`, as an endpoint of `bohio remote` does".to_owned()
+    })?;
+    let parsed = if scheme == "tcp" {
+        if rest.is_empty() {
+            return Err("`tcp://` needs a host and a port".to_owned());
+        }
+        None
+    } else {
+        Some(Endpoint::parse(endpoint)?)
+    };
+    match (parsed, fallback) {
+        (Some(parsed), Some(text)) => Endpoint::parse(text)
+            .and_then(|fallback| parsed.with_fallback(fallback))
+            .map(|_| ()),
+        (None, Some(_)) => Err(
+            "a fallback is a `ws://` or `wss://` endpoint that follows a `webtransport://` one"
+                .to_owned(),
+        ),
+        _ => Ok(()),
     }
 }
 

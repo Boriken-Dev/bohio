@@ -107,6 +107,8 @@ pub struct Accepted {
     pub id: PeerId,
     /// Its grant: nothing when its table has no `allow`.
     pub grant: Grant,
+    /// Where this node dials the peer, when its table has an `endpoint`.
+    pub endpoint: Option<String>,
 }
 
 /// A proven key that is not accepted.
@@ -139,6 +141,9 @@ pub fn list(files: &[PathBuf], data: &Data) -> Result<Listing, PeerError> {
         .filter_map(|name| {
             name.parse::<PeerId>().ok().map(|id| Accepted {
                 grant: peers.grant_for(name),
+                endpoint: peers
+                    .table(name)
+                    .and_then(|table| table.endpoint().map(str::to_owned)),
                 id,
             })
         })
@@ -228,8 +233,9 @@ pub struct Approved {
 }
 
 /// Accepts `id`: its `[peer.<id>]` table is written to a layer, and its waiting entry (and any stored key)
-/// removed. With `grant` the table holds exactly that grant; without one an existing table stays as it is
-/// and a new peer holds nothing. Every other byte of the file, its comments and layout, stays.
+/// removed. With `grant` the table holds exactly that grant (and keeps its `endpoint` and `[dial]`); without one an existing table stays as it is
+/// and a new peer holds nothing. `endpoint`, when given, is written as the table's `endpoint`: this node then dials the
+/// peer. Every other byte of the file, its comments and layout, stays.
 ///
 /// The layer is the one that already holds the table; else the last of `files` this account can write; else
 /// `create` (parents made, readable by the owner alone).
@@ -244,6 +250,7 @@ pub fn approve(
     data: &Data,
     id: &PeerId,
     grant: Option<&Grant>,
+    endpoint: Option<&str>,
 ) -> Result<Approved, PeerError> {
     let name = id.to_string();
     let (file, made) = target(files, create, &name)?;
@@ -253,7 +260,7 @@ pub fn approve(
         read_document(&file)?
     };
     let before = document.to_string();
-    set_peer(&mut document, &name, grant)?;
+    set_peer(&mut document, &name, grant, endpoint)?;
     let after = document.to_string();
     if made || after != before {
         write_document(&file, &after, made)?;
@@ -390,11 +397,13 @@ fn holds(path: &Path, name: &str) -> Result<bool, PeerError> {
         .is_some_and(|peers| peers.contains_key(name)))
 }
 
-/// Sets `[peer.<name>]` to `grant`, or makes it empty when it is absent and `grant` is `None`.
+/// Sets `[peer.<name>]` to `grant`, or makes it empty when it is absent and `grant` is `None`; `endpoint`, when
+/// given, is written as the table's `endpoint`. A table that is replaced keeps its `endpoint` and `[dial]`.
 fn set_peer(
     document: &mut DocumentMut,
     name: &str,
     grant: Option<&Grant>,
+    endpoint: Option<&str>,
 ) -> Result<(), PeerError> {
     let peers = document
         .as_table_mut()
@@ -415,9 +424,14 @@ fn set_peer(
                 .map_err(|_| PeerError::Write("the grant cannot be written".to_owned()))?
                 .into_table();
             if let Some(old) = peers.get(name).and_then(Item::as_table) {
-                // The old table's own comments and place in the file stay.
+                // The old table's own comments and place in the file stay, and what says where it is dialed.
                 *table.decor_mut() = old.decor().clone();
                 table.set_position(old.position());
+                for key in ["endpoint", "dial"] {
+                    if let Some(kept) = old.get(key) {
+                        table.insert(key, kept.clone());
+                    }
+                }
             }
             peers.insert(name, Item::Table(table));
         }
@@ -426,6 +440,13 @@ fn set_peer(
                 peers.insert(name, Item::Table(Table::new()));
             }
         }
+    }
+    if let Some(endpoint) = endpoint {
+        peers
+            .get_mut(name)
+            .and_then(Item::as_table_mut)
+            .ok_or_else(|| PeerError::Write(format!("`peer.{name}` is not a table")))?
+            .insert("endpoint", toml_edit::value(endpoint));
     }
     Ok(())
 }

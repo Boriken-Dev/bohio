@@ -17,6 +17,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::DialConfig;
+
 /// One thing a peer may be allowed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
 #[non_exhaustive]
@@ -211,16 +213,65 @@ impl Grant {
     }
 }
 
+/// One `[peer.<id>]` table: what the peer may do (`allow`, `fs_roots`, `[exec]`) and, if this node dials it,
+/// where (`endpoint`, `[dial]`).
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct PeerTable {
+    allow: BTreeSet<Permission>,
+    fs_roots: Vec<PathBuf>,
+    exec: ExecGrant,
+    /// Where this node dials the peer, any endpoint `bohio remote` takes. The table's name pins the key
+    /// that must answer there. Absent: this node does not dial the peer.
+    endpoint: Option<String>,
+    dial: DialConfig,
+}
+
+impl PeerTable {
+    /// What the peer may do.
+    pub fn grant(&self) -> Grant {
+        Grant {
+            allow: self.allow.clone(),
+            fs_roots: self.fs_roots.clone(),
+            exec: self.exec.clone(),
+        }
+    }
+
+    /// Where this node dials the peer, when it does.
+    pub fn endpoint(&self) -> Option<&str> {
+        self.endpoint.as_deref()
+    }
+
+    /// How this node dials the peer.
+    pub const fn dial(&self) -> &DialConfig {
+        &self.dial
+    }
+}
+
 /// The peers a configuration lists, by the peer's id: `[peer.<id>]` in `bohio.cfg`. A key is accepted
 /// when its table is here, even an empty one, and what it may do is the table's grant.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 #[serde(transparent)]
-pub struct Peers(BTreeMap<String, Grant>);
+pub struct Peers(BTreeMap<String, PeerTable>);
 
 impl Peers {
     /// What `peer` may do: its grant, or nothing.
     pub fn grant_for(&self, peer: &str) -> Grant {
-        self.0.get(peer).cloned().unwrap_or_default()
+        self.0.get(peer).map(PeerTable::grant).unwrap_or_default()
+    }
+
+    /// `peer`'s table, when it has one.
+    pub fn table(&self, peer: &str) -> Option<&PeerTable> {
+        self.0.get(peer)
+    }
+
+    /// The peers this node dials: each id with its endpoint text and dial settings, in id order.
+    pub fn dials(&self) -> impl Iterator<Item = (&str, &str, &DialConfig)> {
+        self.0.iter().filter_map(|(name, table)| {
+            table
+                .endpoint()
+                .map(|endpoint| (name.as_str(), endpoint, table.dial()))
+        })
     }
 
     /// Whether `peer` has a table, even one that grants nothing: whether its key is accepted.
@@ -241,15 +292,5 @@ impl Peers {
     /// Whether there is no peer.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
-    }
-
-    /// Gives `peer` exactly `grant`, replacing any table it had.
-    pub fn set(&mut self, peer: &str, grant: Grant) {
-        self.0.insert(peer.to_owned(), grant);
-    }
-
-    /// Removes `peer`'s table; `true` when it had one.
-    pub fn remove(&mut self, peer: &str) -> bool {
-        self.0.remove(peer).is_some()
     }
 }

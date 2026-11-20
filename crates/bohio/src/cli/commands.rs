@@ -144,6 +144,7 @@ fn config_check(args: &CheckArgs, environment: &Environment) -> Result<(), Strin
             println!("data_dir: {}", config.data_dir(environment).display());
             println!("listen: {}", config.listen.len());
             println!("peers: {}", config.peer.len());
+            println!("dial: {}", config.peer.dials().count());
             println!("filesystem: {}", enabled(config.filesystem.enabled));
             println!("execution: {}", enabled(config.execution.enabled));
             println!("shell: {}", enabled(config.shell.enabled));
@@ -156,6 +157,7 @@ fn config_check(args: &CheckArgs, environment: &Environment) -> Result<(), Strin
                 "data_dir": config.data_dir(environment).display().to_string(),
                 "listen": config.listen.iter().map(|l| l.endpoint.as_str()).collect::<Vec<_>>(),
                 "peers": config.peer.len(),
+                "dial": config.peer.dials().map(|(id, endpoint, _)| serde_json::json!({ "peer": id, "endpoint": endpoint })).collect::<Vec<_>>(),
                 "filesystem": config.filesystem.enabled,
                 "execution": config.execution.enabled,
                 "shell": config.shell.enabled,

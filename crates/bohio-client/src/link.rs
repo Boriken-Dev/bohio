@@ -5,7 +5,7 @@ use std::net::TcpStream;
 use std::time::Duration;
 
 use coqui_link::auth::MAX_PROOF_MESSAGE;
-use coqui_link::mux::Limits;
+use coqui_link::mux::{Heartbeat, Limits};
 use coqui_transport::frame::{Codec, LengthPrefix};
 use coqui_transport::{Split, StreamChannel, StreamChannelBuilder};
 
@@ -45,6 +45,11 @@ pub struct Settings {
     pub send_wait: Duration,
     /// How often a stream's threads look at whether it was closed. Default 50 ms.
     pub poll_interval: Duration,
+    /// How often the link asks the peer whether it is there, which also keeps a quiet link from being closed by a
+    /// proxy's or a NAT's idle timeout. Zero: never. Default 25 seconds.
+    pub heartbeat: Duration,
+    /// Heartbeat intervals with nothing heard from the peer after which the link is lost. At least 1. Default 3.
+    pub heartbeat_misses: u32,
 }
 
 impl Default for Settings {
@@ -61,6 +66,8 @@ impl Default for Settings {
             send_limit: Duration::from_secs(10),
             send_wait: Duration::from_millis(250),
             poll_interval: Duration::from_millis(50),
+            heartbeat: Duration::from_secs(25),
+            heartbeat_misses: 3,
         }
     }
 }
@@ -76,6 +83,8 @@ impl Settings {
         limits.max_frame = self.max_frame.max(1);
         limits.max_message = self.max_message.max(1);
         limits.send_wait = self.send_wait;
+        limits.heartbeat = (!self.heartbeat.is_zero())
+            .then(|| Heartbeat::new(self.heartbeat, self.heartbeat_misses.max(1)));
         limits
     }
 

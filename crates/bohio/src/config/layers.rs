@@ -19,7 +19,7 @@ use super::{Config, ConfigError, position};
 use crate::policy::Peers;
 
 /// A configuration read from its layers.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Layered {
     /// Every setting, merged.
     pub config: Config,

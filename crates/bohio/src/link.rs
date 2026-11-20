@@ -11,6 +11,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::sync::{Arc, PoisonError, RwLock};
+use std::time::Duration;
 
 use coqui_link::Error;
 use coqui_link::link::Admission;
@@ -210,6 +211,25 @@ pub enum NodeEvent {
         /// The protocol.
         protocol: String,
     },
+    /// This node is dialing a peer's endpoint (an attempt: one is made again after each wait).
+    Dialing {
+        /// The peer the dial expects.
+        peer: PeerId,
+        /// The endpoint, as text.
+        endpoint: String,
+    },
+    /// A dial did not give a link, or the link it gave ended at once. Told once per change of reason, not at every
+    /// retry of the same one.
+    DialFailed {
+        /// The peer the dial expects.
+        peer: PeerId,
+        /// The endpoint, as text.
+        endpoint: String,
+        /// Why, with no key, PIN or request in it.
+        reason: String,
+        /// How long until the next attempt.
+        retry_in: Duration,
+    },
     /// A key proved itself and [`Keys`] did not accept it.
     Stranger {
         /// The key's id.
@@ -243,6 +263,13 @@ impl NodeEvents for LogEvents {
             NodeEvent::Revoked { peer, protocol } => {
                 tracing::info!(%peer, %protocol, "stream ended: the peer lost its grant");
             }
+            NodeEvent::Dialing { peer, endpoint } => tracing::info!(%peer, %endpoint, "dialing"),
+            NodeEvent::DialFailed {
+                peer,
+                endpoint,
+                reason,
+                retry_in,
+            } => tracing::info!(%peer, %endpoint, %reason, ?retry_in, "dial failed"),
             NodeEvent::Stranger { peer, source } => {
                 tracing::info!(%peer, ?source, "a key proved itself and is not accepted");
             }

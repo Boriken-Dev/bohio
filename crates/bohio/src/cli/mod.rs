@@ -192,6 +192,10 @@ pub struct ApproveArgs {
     /// starts others then runs what the peer's PATH finds.
     #[arg(long, value_name = "NAME", requires = "program")]
     pub env: Vec<String>,
+    /// Where this node dials the peer (any endpoint `bohio remote` takes): `bohio serve` then keeps a link to it,
+    /// reconnecting after a failure. Written as the table's `endpoint`; the peer's table keeps its other settings.
+    #[arg(long, value_name = "ENDPOINT")]
+    pub endpoint: Option<String>,
 }
 
 /// `bohio peer revoke`.

@@ -511,3 +511,114 @@ fn a_format_line_is_a_comment_and_a_missing_layer_is_an_error() {
         "no layer is the defaults"
     );
 }
+
+#[test]
+fn the_heartbeat_and_the_dial_settings_have_their_defaults() {
+    use bohio::config::DialConfig;
+    let config = parse("").unwrap();
+    assert_eq!(config.link.heartbeat, Span(Duration::from_secs(25)));
+    assert_eq!(config.link.heartbeat_misses, 3);
+    let settings = config.link.settings();
+    assert_eq!(settings.heartbeat, Duration::from_secs(25));
+    assert_eq!(settings.heartbeat_misses, 3);
+
+    let id = peer_id();
+    let config = parse(&format!(
+        "[peer.\"{id}\"]\nendpoint = \"tcp://host.example:7620\"\n"
+    ))
+    .unwrap();
+    let table = config.peer.table(&id).expect("the table");
+    assert_eq!(table.endpoint(), Some("tcp://host.example:7620"));
+    assert_eq!(table.dial(), &DialConfig::default());
+    let dial = DialConfig::default();
+    assert_eq!(dial.timeout, Span(Duration::from_secs(10)));
+    assert_eq!(dial.retry_min, Span(Duration::from_secs(1)));
+    assert_eq!(dial.retry_max, Span(Duration::from_secs(60)));
+    assert!((dial.retry_factor - 2.0).abs() < f64::EPSILON);
+    assert!((dial.retry_jitter - 0.1).abs() < f64::EPSILON);
+    assert!(dial.ca.is_empty() && dial.cert_hash.is_empty() && dial.fallback.is_none());
+    assert_eq!(config.peer.dials().count(), 1);
+    // A peer without an endpoint is accepted and not dialed.
+    let other = peer_id();
+    let config = parse(&format!("[peer.\"{other}\"]\nallow = [\"info\"]\n")).unwrap();
+    assert_eq!(config.peer.dials().count(), 0);
+}
+
+#[test]
+fn a_heartbeat_of_zero_is_off_and_every_dial_setting_is_read() {
+    let id = peer_id();
+    let config = parse(&format!(
+        "[link]\nheartbeat = 0\nheartbeat_misses = 1\n\
+         [peer.\"{id}\"]\nendpoint = \"webtransport://host.example:7622/bohio\"\n\
+         [peer.\"{id}\".dial]\nca = [\"ca.pem\"]\nfallback = \"wss://host.example:7622/bohio\"\n\
+         timeout = \"3s\"\nretry_min = \"200ms\"\nretry_max = \"5s\"\nretry_factor = 1\nretry_jitter = 0\n"
+    ))
+    .unwrap();
+    assert!(config.link.heartbeat.0.is_zero());
+    assert!(config.link.settings().limits().heartbeat.is_none());
+    let dial = config.peer.table(&id).unwrap().dial();
+    assert_eq!(dial.ca, [PathBuf::from("ca.pem")]);
+    assert_eq!(dial.timeout, Span(Duration::from_secs(3)));
+    assert_eq!(dial.retry_min, Span(Duration::from_millis(200)));
+    assert!((dial.retry_factor - 1.0).abs() < f64::EPSILON);
+    assert!(dial.retry_jitter.abs() < f64::EPSILON);
+}
+
+#[test]
+fn a_dial_setting_that_means_nothing_is_refused_naming_its_key() {
+    let id = peer_id();
+    let table = |dial: &str, endpoint: &str| {
+        format!("[peer.\"{id}\"]\nendpoint = \"{endpoint}\"\n[peer.\"{id}\".dial]\n{dial}\n")
+    };
+    let tcp = "tcp://host.example:7620";
+    for (text, key) in [
+        (table("timeout = 0", tcp), "timeout"),
+        (table("retry_min = 0", tcp), "retry_min"),
+        (
+            table("retry_min = \"5s\"\nretry_max = \"1s\"", tcp),
+            "retry_max",
+        ),
+        (table("retry_factor = 0.5", tcp), "retry_factor"),
+        (table("retry_jitter = 1.5", tcp), "retry_jitter"),
+        (table("retry_jitter = -0.1", tcp), "retry_jitter"),
+        (table("cert_hash = [\"not a hash\"]", tcp), "cert_hash"),
+    ] {
+        match parse(&text) {
+            Err(ConfigError::Invalid { key: found, .. }) => {
+                assert_eq!(found, format!("peer.{id}.dial.{key}"), "{text}");
+            }
+            other => panic!("{text}: expected Invalid, got {other:?}"),
+        }
+    }
+    for (text, key) in [
+        (table("", "nowhere"), "endpoint"),
+        (
+            table(
+                "fallback = \"tcp://127.0.0.1:7620\"",
+                "webtransport://host.example:7622/b",
+            ),
+            "endpoint",
+        ),
+        (
+            "[link]\nheartbeat_misses = 0\n".to_owned(),
+            "link.heartbeat_misses",
+        ),
+    ] {
+        match parse(&text) {
+            Err(ConfigError::Invalid { key: found, .. }) => {
+                let want = if key.starts_with("link.") {
+                    key.to_owned()
+                } else {
+                    format!("peer.{id}.{key}")
+                };
+                assert_eq!(found, want, "{text}");
+            }
+            other => panic!("{text}: expected Invalid, got {other:?}"),
+        }
+    }
+    // A key this version does not know in `[dial]` is a parse error, like everywhere else.
+    assert!(matches!(
+        parse(&table("retries = 3", tcp)),
+        Err(ConfigError::Parse { .. })
+    ));
+}

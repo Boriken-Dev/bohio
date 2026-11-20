@@ -20,7 +20,7 @@ use super::commands::{Found, found, source};
 use super::{
     ApproveArgs, JoinArgs, PairArgs, PeerAction, PeerArgs, RevokeArgs, ServeArgs, StatusArgs,
 };
-use crate::config::{Config, Environment, ListenConfig, Span};
+use crate::config::{Config, DialConfig, Environment, ListenConfig, Span};
 use crate::listen::Listening;
 use crate::node::{Endpoint, Node};
 use crate::peer::{self, Data, LayeredPeers};
@@ -115,8 +115,20 @@ fn allowed(found: Result<(), String>, check_access: bool) -> Result<(), String> 
     }
 }
 
-/// Binds every entry, prints what is listening, and serves them until `stop` is set. A host started
-/// by the Windows service manager stops through the flag; `bohio serve` runs until it is killed.
+/// The peers a node dials, from the merged configuration: each id, endpoint text and dial settings. The text
+/// is read again at every attempt, so nothing is resolved here.
+pub(super) fn dial_targets(config: &Config) -> Result<Vec<(PeerId, String, DialConfig)>, String> {
+    config
+        .peer
+        .dials()
+        .map(|(name, endpoint, dial)| Ok((parse_id(name)?, endpoint.to_owned(), dial.clone())))
+        .collect()
+}
+
+/// Binds every entry, prints what is listening, dials every peer whose table has an `endpoint`, and
+/// serves them all until `stop` is set. A host started by the Windows service manager stops through the
+/// flag; `bohio serve` runs until it is killed. The peers dialed are read once, here: a restart applies a
+/// new endpoint.
 pub(super) fn serve_endpoints(
     found: &Found,
     environment: &Environment,
@@ -124,9 +136,11 @@ pub(super) fn serve_endpoints(
     stop: &AtomicBool,
 ) -> Result<(), String> {
     let config = found.config();
-    if entries.is_empty() {
+    let dials = dial_targets(config)?;
+    if entries.is_empty() && dials.is_empty() {
         return Err(
-            "nothing to listen on: add a [[listen]] entry to bohio.cfg or pass --listen".to_owned(),
+            "nothing to listen on or dial: add a [[listen]] entry or a peer with an `endpoint` to bohio.cfg, or pass --listen"
+                .to_owned(),
         );
     }
     let server = node(config, &found.watch, environment)?;
@@ -143,12 +157,19 @@ pub(super) fn serve_endpoints(
         listeners.push(listening);
     }
     say!("host {}", server.host());
+    for (id, endpoint, _) in &dials {
+        say!("dialing {endpoint} peer {id}");
+    }
     tracing::info!(host = %server.host(), "serving");
     thread::scope(|scope| {
         let handles: Vec<_> = listeners
             .iter()
             .map(|listening| scope.spawn(|| server.serve_listening(listening, stop)))
             .collect();
+        for (id, endpoint, dial) in &dials {
+            let server = &server;
+            scope.spawn(move || server.run_dial(id, endpoint, dial, stop));
+        }
         for handle in handles {
             if let Ok(Err(error)) = handle.join() {
                 tracing::error!("a listener failed: {error}");
@@ -185,6 +206,9 @@ pub(super) fn status(args: &StatusArgs, environment: &Environment) -> Result<(),
             Err(_) => "not served by this build",
         };
         say!("listen: {} {state}", listen.endpoint);
+    }
+    for (id, endpoint, _) in dial_targets(found.config())? {
+        say!("dial: {endpoint} peer {id}");
     }
     Ok(())
 }
@@ -262,8 +286,12 @@ fn peer_list(args: &StatusArgs, environment: &Environment) -> Result<(), String>
     let (found, data) = source(&args.config, environment)?;
     let listing = peer::list(&found.layered.files, &data).map_err(|error| error.to_string())?;
     for accepted in &listing.accepted {
+        let dialed = accepted
+            .endpoint
+            .as_ref()
+            .map_or_else(String::new, |endpoint| format!(" dial: {endpoint}"));
         say!(
-            "accepted {} allow: {}",
+            "accepted {} allow: {}{dialed}",
             accepted.id,
             describe(&accepted.grant)
         );
@@ -283,6 +311,9 @@ fn peer_list(args: &StatusArgs, environment: &Environment) -> Result<(), String>
 fn peer_approve(args: &ApproveArgs, environment: &Environment) -> Result<(), String> {
     let (found, data) = source(&args.config, environment)?;
     let id = parse_id(&args.id)?;
+    if let Some(endpoint) = &args.endpoint {
+        Endpoint::parse(endpoint).map_err(|reason| format!("--endpoint: {reason}"))?;
+    }
     let mut permissions = Vec::new();
     for name in &args.allow {
         let name = name.trim();
@@ -306,6 +337,7 @@ fn peer_approve(args: &ApproveArgs, environment: &Environment) -> Result<(), Str
         &data,
         &id,
         grant.as_ref(),
+        args.endpoint.as_deref(),
     )
     .map_err(|error| error.to_string())?;
     let held = crate::config::Layers::peers(&if approved.made {
@@ -376,6 +408,7 @@ pub(super) fn pair(args: &PairArgs, environment: &Environment) -> Result<(), Str
         &data,
         &joined,
         None,
+        None,
     )
     .map_err(|error| error.to_string())?;
     say!("paired {joined}");
@@ -422,6 +455,7 @@ pub(super) fn join(args: &JoinArgs, environment: &Environment) -> Result<(), Str
         found.create.as_deref(),
         &data,
         &host,
+        None,
         None,
     )
     .map_err(|error| error.to_string())?;

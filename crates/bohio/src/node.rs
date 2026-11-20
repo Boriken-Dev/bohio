@@ -19,7 +19,7 @@ use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use bohio_client::Open as OpenStreams;
 use bohio_client::connect::Opener;
@@ -37,7 +37,7 @@ use coqui_peer::{Established, Handshake, KeyMaterial, Method as ProofMethod, Pee
 use coqui_transport::Channel;
 
 use crate::config::ConfigError;
-pub use crate::config::NodeConfig;
+pub use crate::config::{DialConfig, NodeConfig};
 use crate::limit::Slots;
 use crate::link::{Bridge, NodePeers, PROTOCOLS, admission, grant_of, offered};
 pub use crate::link::{
@@ -595,7 +595,7 @@ impl Node {
         expect: &PeerId,
         source: Option<SocketAddr>,
     ) -> Result<(), NodeError> {
-        self.dial(channel, expect, source, None)
+        self.dial(channel, expect, source, None, None)
     }
 
     /// Opens `endpoint`, within `timeout`, and links to it as [`Node::connect_channel`] does, with
@@ -612,6 +612,18 @@ impl Node {
         trust: &ServerTrust,
         timeout: Duration,
     ) -> Result<(), NodeError> {
+        self.connect_until(endpoint, expect, trust, timeout, None)
+    }
+
+    /// [`Node::connect`], ending the link when `stop` is set.
+    fn connect_until(
+        &self,
+        endpoint: &Endpoint,
+        expect: &PeerId,
+        trust: &ServerTrust,
+        timeout: Duration,
+        stop: Option<&AtomicBool>,
+    ) -> Result<(), NodeError> {
         let named = endpoint.to_string();
         let channel = endpoint
             .dial_with(timeout, &self.shared.settings, trust)
@@ -620,7 +632,7 @@ impl Node {
                 reason: error.to_string(),
             })?;
         let source = endpoint_source(endpoint);
-        let linked = self.dial(&channel, expect, source, Some(named));
+        let linked = self.dial(&channel, expect, source, Some(named), stop);
         channel.close();
         linked
     }
@@ -631,28 +643,138 @@ impl Node {
         expect: &PeerId,
         source: Option<SocketAddr>,
         endpoint: Option<String>,
+        stop: Option<&AtomicBool>,
     ) -> Result<(), NodeError> {
         let settings = &self.shared.settings;
         let proof = Proof::builder(self.identity.clone())
             .responders(Trust::pinned([*expect]))
             .build()
             .map_err(|error| NodeError::Proof(error.to_string()))?;
-        let established = prove_out(
-            &proof,
-            channel,
-            settings.proof_timeout,
-            settings.record_length(proof.method()),
-        )
-        .map_err(|error| NodeError::Dial {
-            endpoint: endpoint.clone().unwrap_or_else(|| "channel".to_owned()),
-            reason: match error {
-                coqui_link::Error::Proof(_) => {
-                    "the peer did not prove itself as the key expected".to_owned()
+        let finished = AtomicBool::new(false);
+        thread::scope(|scope| {
+            if let Some(stop) = stop {
+                // A stopped node ends a proof or a link that is still going: closing the channel ends both.
+                scope.spawn(|| {
+                    while !finished.load(Ordering::SeqCst) {
+                        if stop.load(Ordering::SeqCst) {
+                            channel.close();
+                            return;
+                        }
+                        thread::sleep(settings.poll_interval);
+                    }
+                });
+            }
+            let linked = prove_out(
+                &proof,
+                channel,
+                settings.proof_timeout,
+                settings.record_length(proof.method()),
+            )
+            .map_err(|error| NodeError::Dial {
+                endpoint: endpoint.clone().unwrap_or_else(|| "channel".to_owned()),
+                reason: match error {
+                    coqui_link::Error::Proof(_) => {
+                        "the peer did not prove itself as the key expected".to_owned()
+                    }
+                    other => other.to_string(),
+                },
+            })
+            .and_then(|established| {
+                self.serve_proven(channel, established, Side::Dialed, source, endpoint)
+            });
+            finished.store(true, Ordering::SeqCst);
+            linked
+        })
+    }
+
+    /// Keeps a link to `peer` at `endpoint` (any endpoint text `bohio remote` takes) until `stop` is set: dials it,
+    /// serves the link until it ends, waits and dials again. The text is read again at every attempt, so a name is
+    /// resolved again after the peer moved. A failure waits `dial.retry_min`, then that times `dial.retry_factor`
+    /// for each further one up to `dial.retry_max`, each wait moved by up to `dial.retry_jitter` of itself; a link
+    /// that stayed up at least `retry_min` starts the sequence again. No dial is made while an up link to `peer`
+    /// exists, whichever side made it. Two links made at once (the peer dialing this node as this node dials it)
+    /// both serve.
+    ///
+    /// The peer must prove itself as `peer` before this node sends its own key. This node reports
+    /// [`NodeEvent::Dialing`] at each attempt and [`NodeEvent::DialFailed`] once per change of reason; it prints
+    /// nothing. It returns when `stop` is set, having ended its link, or at once when `dial` holds a certificate
+    /// hash that is not one.
+    pub fn run_dial(&self, peer: &PeerId, endpoint: &str, dial: &DialConfig, stop: &AtomicBool) {
+        let mut trust = ServerTrust::default();
+        trust.ca_files.clone_from(&dial.ca);
+        for hash in &dial.cert_hash {
+            if let Err(reason) = trust.pin(hash) {
+                return self.events.event(&NodeEvent::DialFailed {
+                    peer: *peer,
+                    endpoint: endpoint.to_owned(),
+                    reason,
+                    retry_in: Duration::MAX,
+                });
+            }
+        }
+        let poll = self.shared.settings.poll_interval;
+        let mut failures = 0u32;
+        let mut told: Option<String> = None;
+        let mut jitter = Jitter::new();
+        while !stop.load(Ordering::SeqCst) {
+            if self.peer(peer).is_some() {
+                thread::sleep(poll);
+                continue;
+            }
+            self.events.event(&NodeEvent::Dialing {
+                peer: *peer,
+                endpoint: endpoint.to_owned(),
+            });
+            let began = Instant::now();
+            let result = Endpoint::parse(endpoint)
+                .and_then(|parsed| match &dial.fallback {
+                    Some(text) => {
+                        Endpoint::parse(text).and_then(|fallback| parsed.with_fallback(fallback))
+                    }
+                    None => Ok(parsed),
+                })
+                .map_err(|reason| NodeError::Dial {
+                    endpoint: endpoint.to_owned(),
+                    reason,
+                })
+                .and_then(|parsed| {
+                    self.connect_until(&parsed, peer, &trust, dial.timeout.0, Some(stop))
+                });
+            if stop.load(Ordering::SeqCst) {
+                return;
+            }
+            let reason = match result {
+                Ok(()) if began.elapsed() >= dial.retry_min.0 => {
+                    failures = 0;
+                    told = None;
+                    None
                 }
-                other => other.to_string(),
-            },
-        })?;
-        self.serve_proven(channel, established, Side::Dialed, source, endpoint)
+                Ok(()) => Some(
+                    "the peer ended the link at once: it may not accept this node's key".to_owned(),
+                ),
+                Err(error) => Some(match error {
+                    NodeError::Dial { reason, .. } => reason,
+                    other => other.to_string(),
+                }),
+            };
+            let wait = backoff(dial, failures, jitter.next());
+            if let Some(reason) = reason {
+                failures = failures.saturating_add(1);
+                if told.as_ref() != Some(&reason) {
+                    self.events.event(&NodeEvent::DialFailed {
+                        peer: *peer,
+                        endpoint: endpoint.to_owned(),
+                        reason: reason.clone(),
+                        retry_in: wait,
+                    });
+                    told = Some(reason);
+                }
+            }
+            let until = Instant::now() + wait;
+            while Instant::now() < until && !stop.load(Ordering::SeqCst) {
+                thread::sleep(poll.min(until.saturating_duration_since(Instant::now())));
+            }
+        }
     }
 
     /// Serves the link of a peer that has proved itself, on whichever side it was made: the same
@@ -840,4 +962,49 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
         }
         relay.close();
     });
+}
+
+/// How long to wait after `failures` failures in a row: `retry_min` times `retry_factor` that many times, up to
+/// `retry_max`, then moved by `retry_jitter` of itself in the direction `random` (from -1 to 1) says.
+fn backoff(dial: &DialConfig, failures: u32, random: f64) -> Duration {
+    let min = dial.retry_min.0.as_secs_f64();
+    let max = dial.retry_max.0.as_secs_f64();
+    let grown = min
+        * dial
+            .retry_factor
+            .powi(i32::try_from(failures).unwrap_or(i32::MAX));
+    let base = if grown.is_finite() {
+        grown.min(max)
+    } else {
+        max
+    };
+    let moved = base * (1.0 + dial.retry_jitter * random);
+    Duration::from_secs_f64(moved.max(0.001))
+}
+
+/// Numbers from -1 to 1 for jitter, seeded by the process's own hasher randomness: nothing depends on them
+/// being unpredictable, only on different nodes not retrying in step.
+struct Jitter(u64);
+
+impl Jitter {
+    fn new() -> Self {
+        use std::hash::{BuildHasher, Hasher};
+        let seed = std::collections::hash_map::RandomState::new()
+            .build_hasher()
+            .finish();
+        Self(seed | 1)
+    }
+
+    fn next(&mut self) -> f64 {
+        // xorshift64
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "a fraction of 2^53 steps is all jitter needs"
+        )]
+        let unit = (self.0 >> 11) as f64 / (1u64 << 53) as f64;
+        unit.mul_add(2.0, -1.0)
+    }
 }
