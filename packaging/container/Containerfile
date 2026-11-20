@@ -11,14 +11,14 @@
 # and nothing is published. The container's filesystem and processes are what a peer with `exec`,
 # `shell` or `fs.*` reaches: see docs/security.md before adding capabilities, mounts or a socket.
 
-FROM docker.io/library/rust:1.89-bookworm AS build
+FROM docker.io/library/rust:1.89-bookworm@sha256:948f9b08a66e7fe01b03a98ef1c7568292e07ec2e4fe90d88c07bb14563c84ff AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates crates
 RUN cargo build --release --locked -p bohio \
     && strip target/release/bohio
 
-FROM docker.io/library/debian:bookworm-slim
+FROM docker.io/library/debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 # A fixed non-root account that owns the data directory, so a named volume starts writable.
 RUN groupadd --system --gid 10001 bohio \
     && useradd --system --uid 10001 --gid bohio --home-dir /var/lib/bohio --shell /usr/sbin/nologin bohio \
