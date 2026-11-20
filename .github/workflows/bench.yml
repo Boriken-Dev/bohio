@@ -1,0 +1,141 @@
+name: Bench
+
+# On demand only, never per push: builds `ref` (A) and, when given, `baseline_ref` (B), then runs the
+# benchmark scenarios on emulated links, alternating A and B three times each so a drift of the shared
+# runner shows in both. Host and client of a side come from the same checkout, since a protocol change
+# makes a new client unable to talk to an old host. Controls: `raw_*` (a plain socket on the same link)
+# and `cpu_sha256_*` (no I/O); read them before any change.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "The ref to measure (A)"
+        required: false
+        default: "main"
+      baseline_ref:
+        description: "The ref to compare it with (B); empty measures A alone"
+        required: false
+        default: ""
+      samples:
+        description: "Samples per metric in each round"
+        required: false
+        default: "3"
+      links:
+        description: "Emulated links, space separated"
+        required: false
+        default: "lan wan fat lossy slow weak"
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      LINKS: ${{ inputs.links }}
+      SAMPLES: ${{ inputs.samples }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          path: a
+      - uses: actions/checkout@v4
+        if: inputs.baseline_ref != ''
+        with:
+          ref: ${{ inputs.baseline_ref }}
+          path: b
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: a
+          shared-key: bench-a
+      - uses: Swatinem/rust-cache@v2
+        if: inputs.baseline_ref != ''
+        with:
+          workspaces: b
+          shared-key: bench-b
+      - name: Give the baseline the harness
+        if: inputs.baseline_ref != ''
+        shell: bash
+        run: |
+          set -eu
+          if [ ! -d b/crates/bohio-bench ]; then
+            cp -r a/crates/bohio-bench b/crates/bohio-bench
+            sed -i 's|"crates/bohio"\]|"crates/bohio", "crates/bohio-bench"]|' b/Cargo.toml
+          fi
+          grep -n 'bohio-bench' b/Cargo.toml
+      - name: Build
+        shell: bash
+        run: |
+          set -eu
+          for side in a b; do
+            [ -d "$side" ] || continue
+            (cd "$side" && cargo build --release -p bohio -p bohio-bench && cargo build --release -p bohio --example exec_helper)
+          done
+      - name: Measure
+        shell: bash
+        run: |
+          set -eu
+          sudo apt-get install -y --no-install-recommends ethtool >/dev/null 2>&1 || true
+          out="$RUNNER_TEMP/results"
+          corpus="$RUNNER_TEMP/corpus"
+          mkdir -p "$out"
+          uid=$(id -u)
+          gid=$(id -g)
+          a/target/release/bohio-bench corpus --dir "$corpus" --sizes 1KiB,256KiB,1MiB,4MiB,16MiB,64MiB,256MiB --small 100
+          for link in $LINKS; do
+            sudo sh a/benchmarks/netem.sh up "$link"
+            drop="ip netns exec bh-host setpriv --reuid=$uid --regid=$gid --clear-groups"
+            prefix="sudo -n $drop"
+            if [ "$link" = weak ]; then
+              sudo systemd-run --scope --quiet -p CPUQuota=25% sh -c 'cat /sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)/cpu.max'
+              prefix="sudo -n systemd-run --scope --quiet -p CPUQuota=25% $drop"
+            fi
+            args=$(sh a/benchmarks/scenarios.sh "$link")
+            for round in 1 2 3; do
+              for side in a b; do
+                [ -d "$side" ] || continue
+                label=$(echo "$side" | tr a-z A-Z)
+                commit=$(git -C "$side" rev-parse --short HEAD)
+                echo "::group::$link round $round $label"
+                # shellcheck disable=SC2086
+                sudo -n ip netns exec bh-client setpriv --reuid="$uid" --regid="$gid" --clear-groups \
+                  "$side/target/release/bohio-bench" local --corpus "$corpus" \
+                  --host-prefix "$prefix" --listen-ip 192.0.2.1 --samples "$SAMPLES" \
+                  --link "$link" --label "$label" --commit "$commit" \
+                  --save "$out/$label-$link-r$round.json" $args
+                echo "::endgroup::"
+              done
+            done
+            sudo sh a/benchmarks/netem.sh down
+          done
+      - name: Tables
+        if: always()
+        shell: bash
+        run: |
+          set -eu
+          out="$RUNNER_TEMP/results"
+          for link in $LINKS; do
+            for label in A B; do
+              files=$(ls "$out"/"$label"-"$link"-r*.json 2>/dev/null || true)
+              [ -n "$files" ] || continue
+              # shellcheck disable=SC2086
+              python3 a/benchmarks/summarize.py merge --out "$out/$label-$link.json" $files
+            done
+            if [ -f "$out/A-$link.json" ] && [ -f "$out/B-$link.json" ]; then
+              echo "== $link: A (ref) against B (baseline_ref)"
+              python3 a/benchmarks/summarize.py ab "$out/B-$link.json" "$out/A-$link.json"
+            elif [ -f "$out/A-$link.json" ]; then
+              echo "== $link"
+              python3 a/benchmarks/summarize.py ab "$out/A-$link.json" "$out/A-$link.json"
+            fi
+          done
+      - name: Remove the namespaces
+        if: always()
+        run: sudo sh a/benchmarks/netem.sh down
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-results
+          path: ${{ runner.temp }}/results/*.json
