@@ -44,6 +44,8 @@ pub enum Kind {
     RemoteInfo,
     /// A raw TCP download.
     RawDown { size: String },
+    /// `n` raw TCP downloads at the same time: what the path carries across flows.
+    RawParDown { n: u64, size: String },
     /// A raw TCP upload.
     RawUp { size: String },
     /// A raw TCP connect.
@@ -90,6 +92,10 @@ impl Kind {
             ["remote", "info"] => Self::RemoteInfo,
             ["raw", "down", s] => Self::RawDown { size: size(s)? },
             ["raw", "up", s] => Self::RawUp { size: size(s)? },
+            ["raw", "par", n, "down", s] => Self::RawParDown {
+                n: count(n)?,
+                size: size(s)?,
+            },
             ["raw", "connect"] => Self::RawConnect,
             ["cpu", "sha256", s] => Self::CpuSha256 { size: size(s)? },
             ["timeline", "read", s] => Self::TimelineRead { size: size(s)? },
@@ -371,6 +377,24 @@ impl Runner {
                     done.map_err(|error| error.to_string())
                 })?;
                 self.record(name, &taken, Some(bytes));
+            }
+            Kind::RawParDown { n, size } => {
+                let address = self.env.raw.ok_or("no raw control address")?;
+                let bytes = parse_size(&size)?;
+                let taken = timed(&mut self.env.cpu, samples, || {
+                    std::thread::scope(|scope| {
+                        let flows: Vec<_> = (0..n)
+                            .map(|_| scope.spawn(|| raw::download(address, bytes, compat::LIMIT)))
+                            .collect();
+                        for flow in flows {
+                            flow.join()
+                                .map_err(|_| "a download thread failed".to_owned())?
+                                .map_err(|error| error.to_string())?;
+                        }
+                        Ok(())
+                    })
+                })?;
+                self.record(name, &taken, Some(bytes * n));
             }
             Kind::CpuSha256 { size } => {
                 let bytes = parse_size(&size)?;
