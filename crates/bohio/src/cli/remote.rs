@@ -21,7 +21,7 @@ use coqui_peer::PeerId;
 use super::commands::{print_info, source};
 use super::{Format, RemoteAction, RemoteArgs, RemoteExecArgs, RemoteShellArgs};
 use crate::config::{Environment, Layers};
-use crate::local::Via;
+use crate::local::{ANOTHER_ACCOUNT, Server, Via};
 use crate::node::Endpoint;
 
 /// What a person is told when the host will not do what was asked.
@@ -303,14 +303,26 @@ fn shell_command(link: &dyn Open, args: &RemoteShellArgs) -> Result<ExitCode, St
 fn control_endpoint(
     config: &super::ConfigOption,
     environment: &Environment,
-) -> Result<(Endpoint, bohio_client::link::Settings), String> {
+) -> Result<(Endpoint, bohio_client::link::Settings, Server), String> {
     let (found, data) = source(config, environment)?;
     let identity = data.identity().map_err(|error| error.to_string())?;
     let settings = found.config().link.settings();
     let text = found.config().control.endpoint_for(&identity.peer_id());
+    let server = Server::for_control(&found.config().control);
     Endpoint::parse(&text)
-        .map(|endpoint| (endpoint, settings))
+        .map(|endpoint| (endpoint, settings, server))
         .map_err(|reason| format!("[control] endpoint: {reason}"))
+}
+
+/// What a client of the control endpoint says when it cannot use it: why another account's endpoint is refused,
+/// else that no node answers.
+fn unreachable(error: &bohio_client::Error) -> String {
+    match error {
+        bohio_client::Error::Link(text) if text == ANOTHER_ACCOUNT => format!(
+            "{text}: another account bound the name first; stop it, then start `bohio serve` again"
+        ),
+        _ => NO_NODE.to_owned(),
+    }
 }
 
 const NO_NODE: &str = "the node's local control endpoint does not answer: `bohio serve` must be running with this configuration and `[control] enabled` not false";
@@ -320,8 +332,9 @@ fn connect_via(id: &str, args: &RemoteArgs, environment: &Environment) -> Result
     let peer = id
         .parse::<PeerId>()
         .map_err(|_| "that is not a peer id".to_owned())?;
-    let (endpoint, settings) = control_endpoint(&args.config, environment)?;
-    let via = Via::connect(&endpoint, &peer, &settings).map_err(|_| NO_NODE.to_owned())?;
+    let (endpoint, settings, server) = control_endpoint(&args.config, environment)?;
+    let via = Via::connect_to(&endpoint, &peer, &settings, server)
+        .map_err(|error| unreachable(&error))?;
     let listed = via
         .links(Duration::from_millis(50))
         .map_err(|error| explain(&error))?;
@@ -342,9 +355,9 @@ pub(super) fn links(args: &super::LinksArgs, environment: &Environment) -> Resul
     let wait = crate::config::Span::parse(&args.wait)
         .ok_or_else(|| "--wait is a time such as `5s` or `500ms`".to_owned())?
         .0;
-    let (endpoint, settings) = control_endpoint(&args.config, environment)?;
-    let local =
-        crate::local::LocalLink::connect(&endpoint, &settings).map_err(|_| NO_NODE.to_owned())?;
+    let (endpoint, settings, server) = control_endpoint(&args.config, environment)?;
+    let local = crate::local::LocalLink::connect_to(&endpoint, &settings, server)
+        .map_err(|error| unreachable(&error))?;
     let reply = local.links(wait).map_err(|error| explain(&error))?;
     match args.format {
         Format::Json => println!(

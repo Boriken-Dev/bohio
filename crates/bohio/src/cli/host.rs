@@ -24,7 +24,7 @@ use super::{
 use crate::config::{Config, DialConfig, Environment, ListenConfig};
 use crate::link::{Grants, Keys, KeysError, MemoryGrants};
 use crate::listen::Listening;
-use crate::local::{Local, LocalLink};
+use crate::local::{ANOTHER_ACCOUNT, Local, LocalLink, Server};
 use crate::node::{Endpoint, Node};
 use crate::peer::{self, Data, LayeredPeers};
 use crate::policy::{Grant, Permission};
@@ -426,9 +426,16 @@ pub(super) fn pair(args: &PairArgs, environment: &Environment) -> Result<(), Str
     let identity = data.identity().map_err(|error| error.to_string())?;
     if config.control.is_enabled()
         && let Ok(control) = Endpoint::parse(&config.control.endpoint_for(&identity.peer_id()))
-        && let Ok(link) = LocalLink::connect(&control, &config.link.settings())
     {
-        return pair_running(&link, &found, &identity.peer_id(), args);
+        let server = Server::for_control(&config.control);
+        match LocalLink::connect_to(&control, &config.link.settings(), server) {
+            Ok(link) => return pair_running(&link, &found, &identity.peer_id(), args),
+            // A PIN or a "paired" from another account's endpoint would be its own, so nothing is asked of it.
+            Err(bohio_client::Error::Link(text)) if text == ANOTHER_ACCOUNT => {
+                return Err(format!("{text}: another account bound the name first"));
+            }
+            Err(_) => {}
+        }
     }
     pair_alone(&found, environment, args)
 }

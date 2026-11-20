@@ -403,6 +403,62 @@ fn pair(context: &Context, stream: &dyn LinkStream, accepted: &Accepted) {
     let _ = stream.receive(Some(context.settings.send_limit));
 }
 
+/// Who a client accepts as the server of a local endpoint. The endpoint is not sealed, so the account that serves
+/// the name is the only thing that says it is the node: a name another account bound first (while the node was
+/// down, or so that its bind failed) would read every request and answer as it liked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Server {
+    /// This account alone, as a node serves its endpoint when `[control]` sets nothing about who may connect.
+    ThisAccount,
+    /// Any account, for an endpoint whose access the operator set (`[control] socket_mode`, `socket_group` or
+    /// `security_descriptor`), where the node may run as another account: who may bind the name is then the check.
+    Any,
+}
+
+impl Server {
+    /// The server a client of the endpoint `config` describes accepts.
+    pub fn for_control(config: &ControlConfig) -> Self {
+        if config.sets_access() {
+            Self::Any
+        } else {
+            Self::ThisAccount
+        }
+    }
+}
+
+/// The text of the error a client gets from an endpoint another account serves.
+pub const ANOTHER_ACCOUNT: &str =
+    "the local endpoint is served by another account, so it is not this node's";
+
+/// Opens the pipe `endpoint` names and checks who serves it.
+fn dial_local(
+    endpoint: &Endpoint,
+    settings: &Settings,
+    server: Server,
+) -> Result<coqui_transport::StreamChannel, Error> {
+    use coqui_transport::Connector as _;
+    let Endpoint::Pipe(name) = endpoint else {
+        return Err(Error::Link(
+            "a local endpoint is a `pipe://` one".to_owned(),
+        ));
+    };
+    let pipe = coqui_transport_pipe::Connector::new(name.clone())
+        .connect(settings.proof_timeout)
+        .map_err(|_| Error::Transport(Failure::PathLost))?;
+    if server == Server::ThisAccount {
+        let same = pipe
+            .peer()
+            .and_then(|who| who.is_current_user())
+            .ok()
+            .flatten();
+        if same != Some(true) {
+            return Err(Error::Link(ANOTHER_ACCOUNT.to_owned()));
+        }
+    }
+    bohio_client::link::stream(pipe, settings).map_err(|_| Error::Transport(Failure::PathLost))
+}
+
 /// A client of a node's local endpoint: the links it holds, and [`Via`] their streams.
 #[derive(Debug)]
 pub struct LocalLink {
@@ -412,13 +468,29 @@ pub struct LocalLink {
 }
 
 impl LocalLink {
-    /// Connects to the local endpoint `endpoint` within `settings.proof_timeout`.
+    /// Connects to the local endpoint `endpoint` within `settings.proof_timeout`, served by this account.
     ///
     /// # Errors
     ///
-    /// [`Error::Transport`] when nothing answers there (no node runs, or it serves no control endpoint).
+    /// As [`LocalLink::connect_to`] with [`Server::ThisAccount`].
     pub fn connect(endpoint: &Endpoint, settings: &Settings) -> Result<Self, Error> {
-        let channel = endpoint.dial(settings.proof_timeout, settings)?;
+        Self::connect_to(endpoint, settings, Server::ThisAccount)
+    }
+
+    /// Connects to the local endpoint `endpoint` within `settings.proof_timeout`, accepting `server` as the one
+    /// that serves it.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Transport`] when nothing answers there (no node runs, or it serves no control endpoint);
+    /// [`Error::Link`] for an endpoint that is not a `pipe://` one, or one another account serves when `server`
+    /// is [`Server::ThisAccount`] (the text is [`ANOTHER_ACCOUNT`]), before anything is sent to it.
+    pub fn connect_to(
+        endpoint: &Endpoint,
+        settings: &Settings,
+        server: Server,
+    ) -> Result<Self, Error> {
+        let channel = dial_local(endpoint, settings, server)?;
         channel.set_max_message(settings.max_frame.saturating_add(5));
         let _ = channel.set_pending(settings.read_ahead);
         let (opener, opens) = Opener::pair(settings);
@@ -556,14 +628,28 @@ pub struct Via {
 }
 
 impl Via {
-    /// Connects to the local endpoint `endpoint`, for streams on the node's link to `peer`.
+    /// Connects to the local endpoint `endpoint`, served by this account, for streams on the node's link to `peer`.
     ///
     /// # Errors
     ///
     /// As [`LocalLink::connect`].
     pub fn connect(endpoint: &Endpoint, peer: &PeerId, settings: &Settings) -> Result<Self, Error> {
+        Self::connect_to(endpoint, peer, settings, Server::ThisAccount)
+    }
+
+    /// [`Via::connect`], accepting `server` as the one that serves the endpoint.
+    ///
+    /// # Errors
+    ///
+    /// As [`LocalLink::connect_to`].
+    pub fn connect_to(
+        endpoint: &Endpoint,
+        peer: &PeerId,
+        settings: &Settings,
+        server: Server,
+    ) -> Result<Self, Error> {
         Ok(Self {
-            link: LocalLink::connect(endpoint, settings)?,
+            link: LocalLink::connect_to(endpoint, settings, server)?,
             peer: *peer,
         })
     }
