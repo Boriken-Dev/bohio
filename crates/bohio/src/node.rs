@@ -22,7 +22,7 @@ use std::time::{Duration, Instant, SystemTime};
 use bohio_client::Open as OpenStreams;
 use bohio_client::connect::Opener;
 pub use bohio_client::dial::Endpoint;
-use bohio_client::dial::{SerialOptions, ServerTrust, serial};
+use bohio_client::dial::{Mtu, SerialOptions, ServerTrust, serial};
 use bohio_client::link::Settings;
 use bohio_client::relay::relay;
 use bohio_proto::info::Info;
@@ -909,6 +909,11 @@ impl Node {
                         Endpoint::parse(text).and_then(|fallback| parsed.with_fallback(fallback))
                     }
                     None => Ok(parsed),
+                })
+                .and_then(|parsed| match dial.web_mtu() {
+                    Ok(mtu) if mtu != Mtu::default() => parsed.with_mtu(mtu),
+                    Ok(_) => Ok(parsed),
+                    Err((key, reason)) => Err(format!("{key} {reason}")),
                 })
                 .map_err(|reason| NodeError::Dial {
                     endpoint: endpoint.to_owned(),

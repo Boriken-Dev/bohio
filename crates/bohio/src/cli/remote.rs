@@ -56,6 +56,7 @@ fn connect(args: &RemoteArgs, environment: &Environment) -> Result<Connection, S
         Some(text) => endpoint.with_fallback(Endpoint::parse(text)?)?,
         None => endpoint,
     };
+    let endpoint = args.mtu.apply(endpoint)?;
     let identity = data.identity().map_err(|error| error.to_string())?;
     let trust = match &args.server {
         Some(id) => Trust::pinned([id

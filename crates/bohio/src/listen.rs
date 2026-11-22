@@ -356,8 +356,10 @@ impl Listening {
                     let tls = WebTransportTls::per_connection(move |_, _| renewing.config());
                     (tls, Certificate::Made(made))
                 };
+                let mtu = config.web_mtu().map_err(|(key, reason)| fail(format!("{key} {reason}")))?;
                 let listener = WebTransportListener::builder(address, tls)
                     .limits(web_limits(settings))
+                    .mtu(mtu)
                     .origins(config.origins.clone().unwrap_or_default())
                     .build()
                     .map_err(|e| fail(e.to_string()))?;

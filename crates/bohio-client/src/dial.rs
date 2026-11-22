@@ -30,6 +30,7 @@ use coqui_transport_serial::{
 };
 use coqui_transport_web::websocket::{Connector as WebSocketConnector, Dialer, Frames};
 use coqui_transport_web::webtransport::{self, ClientTrust, Connector as WebTransportConnector};
+pub use coqui_transport_web::webtransport::{MIN_MTU, Mtu};
 use coqui_transport_web::{Dialer as WebDialer, Endpoints, Kind, Limits, NoPreflight};
 use url::Url;
 
@@ -229,6 +230,9 @@ pub enum Endpoint {
         /// A WebSocket endpoint of the same host to dial when the UDP path fails before anything crossed
         /// (see [`Endpoint::with_fallback`]).
         fallback: Option<Url>,
+        /// The UDP payload sizes and path-MTU discovery of this endpoint's QUIC connection (see
+        /// [`Endpoint::with_mtu`]); the default is quinn's.
+        mtu: Mtu,
     },
     /// A serial port: a device path on Unix, a port name such as `COM3` on Windows.
     Serial {
@@ -283,6 +287,7 @@ impl Endpoint {
                 Ok(Self::WebTransport {
                     url,
                     fallback: None,
+                    mtu: Mtu::default(),
                 })
             }
             "serial" => {
@@ -324,14 +329,38 @@ impl Endpoint {
     /// The reason, when this is not a WebTransport endpoint or `fallback` is not a WebSocket one.
     pub fn with_fallback(self, fallback: Self) -> Result<Self, String> {
         match (self, fallback) {
-            (Self::WebTransport { url, .. }, Self::WebSocket(other)) => Ok(Self::WebTransport {
-                url,
-                fallback: Some(other),
-            }),
+            (Self::WebTransport { url, mtu, .. }, Self::WebSocket(other)) => {
+                Ok(Self::WebTransport {
+                    url,
+                    fallback: Some(other),
+                    mtu,
+                })
+            }
             _ => Err(
                 "a fallback is a `ws://` or `wss://` endpoint that follows a `webtransport://` one"
                     .to_owned(),
             ),
+        }
+    }
+
+    /// This WebTransport endpoint with `mtu` as the UDP payload sizes and path-MTU discovery of its QUIC connection. The
+    /// default is quinn's (start at 1200, probe up to 1452); a path with a smaller MTU, such as a tunnel, loses each probe
+    /// above it and a host may log that as a send error, so lower `upper_bound` to the path's size or turn `discovery` off.
+    /// A larger `initial` than the path carries stalls the connection until black-hole detection falls to `min`. See
+    /// [`Mtu`].
+    ///
+    /// # Errors
+    ///
+    /// The reason, when this is not a WebTransport endpoint or `initial` or `min` is below [`MIN_MTU`], which names the value.
+    pub fn with_mtu(self, mtu: Mtu) -> Result<Self, String> {
+        mtu.check().map_err(|error| error.to_string())?;
+        match self {
+            Self::WebTransport { url, fallback, .. } => {
+                Ok(Self::WebTransport { url, fallback, mtu })
+            }
+            other => Err(format!(
+                "the MTU settings are for a `webtransport://` endpoint, not `{other}`"
+            )),
         }
     }
 
@@ -381,8 +410,8 @@ impl Endpoint {
                     .map_err(Error::Transport)?;
                 Ok(Box::new(channel))
             }
-            Self::WebTransport { url, fallback } => {
-                dial_web_transport(url, fallback.as_ref(), timeout, settings, trust)
+            Self::WebTransport { url, fallback, mtu } => {
+                dial_web_transport(url, fallback.as_ref(), *mtu, timeout, settings, trust)
             }
             Self::Serial { path, options } => {
                 let channel =
@@ -403,7 +432,7 @@ impl core::fmt::Display for Endpoint {
             Self::Tcp(address) => write!(f, "tcp://{address}"),
             Self::Pipe(name) => write!(f, "pipe://{}", name.path().display()),
             Self::WebSocket(url) => write!(f, "{url}"),
-            Self::WebTransport { url, fallback } => {
+            Self::WebTransport { url, fallback, .. } => {
                 write!(f, "{url}")?;
                 match fallback {
                     Some(fallback) => write!(f, " (or {fallback})"),
@@ -460,6 +489,7 @@ fn web_socket_dialer(
 fn dial_web_transport(
     url: &Url,
     fallback: Option<&Url>,
+    mtu: Mtu,
     timeout: Duration,
     settings: &Settings,
     trust: &ServerTrust,
@@ -467,7 +497,7 @@ fn dial_web_transport(
     // The crate names a WebTransport endpoint by `https`; this crate names it by what it is.
     let https = Url::parse(&url.as_str().replacen("webtransport", "https", 1))
         .map_err(|_| Error::Transport(Failure::Unsupported))?;
-    let dialer = web_transport_dialer(settings, trust)?;
+    let dialer = web_transport_dialer(mtu, settings, trust)?;
     let Some(fallback) = fallback else {
         let channel = WebTransportConnector::new(dialer, https)
             .connect(timeout)
@@ -493,6 +523,7 @@ fn dial_web_transport(
 }
 
 fn web_transport_dialer(
+    mtu: Mtu,
     settings: &Settings,
     trust: &ServerTrust,
 ) -> Result<webtransport::Dialer, Error> {
@@ -502,6 +533,7 @@ fn web_transport_dialer(
         trust.client_config().map_err(Error::Link)?,
     ))
     .limits(web_limits(settings))
+    .mtu(mtu)
     .build()
     .map_err(|_| Error::Transport(Failure::Unsupported))
 }

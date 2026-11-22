@@ -1305,3 +1305,64 @@ fn pair_with_no_node_and_no_listener_says_what_to_add_and_listen_is_only_for_tha
     assert_eq!(refused.code, Some(1));
     assert!(refused.stderr.contains("--listen"), "{}", refused.stderr);
 }
+
+#[test]
+fn webtransport_takes_the_mtu_settings_of_the_entry_and_of_the_flags() {
+    let world = World::new(
+        "[[listen]]\nendpoint = \"webtransport://127.0.0.1:0\"\nmtu_upper_bound = 1300\nmtu_discovery = false\nmtu_initial = 1250\n",
+    );
+    let (mut host, bound) = world.serve_listed("warn");
+    let hash = host
+        .expect_line("certificate ")
+        .split(' ')
+        .next()
+        .unwrap()
+        .to_owned();
+    // The settings are the sizes of the connection, so a link over them still carries the proof and a request.
+    let lowered = world.remote(
+        &[
+            "--cert-hash",
+            &hash,
+            "--mtu-initial",
+            "1250",
+            "--mtu-upper-bound",
+            "1300",
+            "--mtu-discovery",
+            "false",
+            &bound,
+        ],
+        &["info"],
+    );
+    assert!(tls_accepted(&lowered), "{}", lowered.stderr);
+    // A size QUIC cannot start from is refused naming it, and a size for another scheme is refused naming the endpoint.
+    let small = world.remote(
+        &["--cert-hash", &hash, "--mtu-initial", "1100", &bound],
+        &["info"],
+    );
+    assert_eq!(small.code, Some(1));
+    assert!(small.stderr.contains("1100"), "{}", small.stderr);
+    let tcp = world.remote(&["--mtu-min", "1300", "tcp://127.0.0.1:1"], &["info"]);
+    assert_eq!(tcp.code, Some(1));
+    assert!(tcp.stderr.contains("webtransport://"), "{}", tcp.stderr);
+}
+
+#[test]
+fn an_mtu_key_for_another_scheme_or_below_the_least_is_refused_naming_it() {
+    let world = World::new("");
+    let config = world.path("bad.cfg");
+    for (text, key) in [
+        (
+            "[[listen]]\nendpoint = \"tcp://127.0.0.1:1\"\nmtu_min = 1300\n",
+            "listen.mtu_min",
+        ),
+        (
+            "[[listen]]\nendpoint = \"webtransport://127.0.0.1:1\"\nmtu_initial = 1199\n",
+            "listen.mtu_initial",
+        ),
+    ] {
+        std::fs::write(&config, text).unwrap();
+        let checked = run(&["config", "check", "--config", &config.to_string_lossy()]);
+        assert_eq!(checked.code, Some(1), "{}", checked.stdout);
+        assert!(checked.stderr.contains(key), "{}", checked.stderr);
+    }
+}

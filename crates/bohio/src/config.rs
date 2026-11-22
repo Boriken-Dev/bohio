@@ -219,6 +219,27 @@ pub struct ListenConfig {
     /// is refused until its clock reaches the start (see `bohio remote --clock-skew`).
     #[serde(default)]
     pub tls_backdate: Option<Span>,
+    /// `webtransport`: the UDP payload size, in bytes, a connection starts from before it has measured the path. Default `1200`,
+    /// the smallest QUIC allows (a lower value is refused). A larger one sends bigger packets from the start, which is
+    /// efficient where the path carries them; where it does not they are dropped until black-hole detection falls to
+    /// `mtu_min`, and the connection stalls meanwhile.
+    #[serde(default)]
+    pub mtu_initial: Option<u16>,
+    /// `webtransport`: the size the path is known to carry, in bytes, to which Initial packets are padded and below which
+    /// black-hole detection never goes. Default `1200`, the smallest QUIC allows (a lower value is refused). A value above
+    /// what the path carries means no connection opens.
+    #[serde(default)]
+    pub mtu_min: Option<u16>,
+    /// `webtransport`: whether the host searches for a larger size than `mtu_initial` (path-MTU discovery, RFC 8899).
+    /// Default `true`. Off, the size stays at `mtu_initial`: no probe is lost, and a path that could carry more is used less
+    /// fully (more packets per megabyte).
+    #[serde(default)]
+    pub mtu_discovery: Option<bool>,
+    /// `webtransport`: the largest size discovery searches for, in bytes. Default `1452`, an Ethernet path; QUIC caps it at
+    /// 65527. Each probe above the path's size is lost, and a host may log that as a send error, so set it to the path's
+    /// size (a tunnel's MTU less 28) where the path is smaller. Higher finds a path of jumbo frames.
+    #[serde(default)]
+    pub mtu_upper_bound: Option<u16>,
     /// `serial`: bits per second. Not zero. Default `115200`.
     #[serde(default)]
     pub baud: Option<u32>,
@@ -242,6 +263,29 @@ impl ListenConfig {
         self.endpoint
             .split_once("://")
             .map_or("", |(scheme, _)| scheme)
+    }
+
+    /// The UDP payload sizes and path-MTU discovery the keys give (quinn's defaults for a key not set).
+    ///
+    /// # Errors
+    ///
+    /// The key and why its value is refused: `mtu_initial` or `mtu_min` below the 1200 bytes QUIC requires, naming the value.
+    pub fn web_mtu(&self) -> Result<bohio_client::dial::Mtu, (&'static str, String)> {
+        let mut mtu = bohio_client::dial::Mtu::default();
+        if let Some(initial) = self.mtu_initial {
+            mtu.initial = initial;
+        }
+        if let Some(min) = self.mtu_min {
+            mtu.min = min;
+        }
+        if let Some(discovery) = self.mtu_discovery {
+            mtu.discovery = discovery;
+        }
+        if let Some(upper_bound) = self.mtu_upper_bound {
+            mtu.upper_bound = upper_bound;
+        }
+        check_mtu(&mtu)?;
+        Ok(mtu)
     }
 
     /// The serial settings the keys give, each read as the endpoint's query would be.
@@ -454,6 +498,23 @@ pub struct DialConfig {
     /// For a `webtransport://` endpoint, a `ws://` or `wss://` endpoint of the same host tried when the QUIC path
     /// fails before anything crossed. Default none.
     pub fallback: Option<String>,
+    /// For a `webtransport://` endpoint: the UDP payload size, in bytes, a connection starts from before it has measured the
+    /// path. Default `1200`, the smallest QUIC allows (a lower value is refused). A larger one sends bigger packets from the
+    /// start; where the path does not carry them they are dropped until black-hole detection falls to `mtu_min`, and the
+    /// link stalls meanwhile.
+    pub mtu_initial: u16,
+    /// For a `webtransport://` endpoint: the size the path is known to carry, in bytes; Initial packets are padded to it and
+    /// black-hole detection never goes below it. Default `1200`, the smallest QUIC allows (a lower value is refused). Above
+    /// what the path carries, no connection opens.
+    pub mtu_min: u16,
+    /// For a `webtransport://` endpoint: whether the dialer searches for a larger size than `mtu_initial` (path-MTU
+    /// discovery). Default `true`. Off, the size stays at `mtu_initial`: no probe is lost, and a path that could carry more is
+    /// used less fully.
+    pub mtu_discovery: bool,
+    /// For a `webtransport://` endpoint: the largest size discovery searches for, in bytes. Default `1452`, an Ethernet
+    /// path; QUIC caps it at 65527. Each probe above the path's size is lost and may be logged as a send error: on a
+    /// tunnel set it to the tunnel's MTU less 28.
+    pub mtu_upper_bound: u16,
     /// How long opening the path may take (the socket, the WebSocket handshake, the program); the proof has
     /// `[link] proof_timeout` besides. Not zero. Default `10s`.
     pub timeout: Span,
@@ -473,6 +534,10 @@ impl Default for DialConfig {
             ca: Vec::new(),
             cert_hash: Vec::new(),
             fallback: None,
+            mtu_initial: bohio_client::dial::MIN_MTU,
+            mtu_min: bohio_client::dial::MIN_MTU,
+            mtu_discovery: true,
+            mtu_upper_bound: bohio_client::dial::Mtu::default().upper_bound,
             timeout: Span(Duration::from_secs(10)),
             retry_min: Span(Duration::from_secs(1)),
             retry_max: Span(Duration::from_secs(60)),
@@ -483,6 +548,22 @@ impl Default for DialConfig {
 }
 
 impl DialConfig {
+    /// The UDP payload sizes and path-MTU discovery the `mtu_` keys give.
+    ///
+    /// # Errors
+    ///
+    /// The key (relative to `[peer."<id>".dial]`) and why: `mtu_initial` or `mtu_min` below the 1200 bytes QUIC requires,
+    /// naming the value.
+    pub fn web_mtu(&self) -> Result<bohio_client::dial::Mtu, (&'static str, String)> {
+        let mut mtu = bohio_client::dial::Mtu::default();
+        mtu.initial = self.mtu_initial;
+        mtu.min = self.mtu_min;
+        mtu.discovery = self.mtu_discovery;
+        mtu.upper_bound = self.mtu_upper_bound;
+        check_mtu(&mtu)?;
+        Ok(mtu)
+    }
+
     /// Checks the settings: the key of a bad one (relative to `[peer."<id>".dial]`) and why.
     ///
     /// # Errors
@@ -1407,6 +1488,18 @@ impl Config {
                     "webtransport",
                     listen.tls_backdate.is_some(),
                 ),
+                ("mtu_initial", "webtransport", listen.mtu_initial.is_some()),
+                ("mtu_min", "webtransport", listen.mtu_min.is_some()),
+                (
+                    "mtu_discovery",
+                    "webtransport",
+                    listen.mtu_discovery.is_some(),
+                ),
+                (
+                    "mtu_upper_bound",
+                    "webtransport",
+                    listen.mtu_upper_bound.is_some(),
+                ),
                 ("baud", "serial", listen.baud.is_some()),
                 ("data_bits", "serial", listen.data_bits.is_some()),
                 ("parity", "serial", listen.parity.is_some()),
@@ -1461,6 +1554,9 @@ impl Config {
                 }
                 _ => {}
             }
+            if let Err((key, reason)) = listen.web_mtu() {
+                return Err(invalid(&format!("listen.{key}"), &reason));
+            }
             if let Err((key, reason)) = listen.serial_options() {
                 return Err(invalid(&format!("listen.{key}"), &reason));
             }
@@ -1483,6 +1579,19 @@ impl Config {
             if let Err((key, reason)) = dial.validate() {
                 return Err(invalid(&format!("peer.{name}.dial.{key}"), reason));
             }
+            if let Err((key, reason)) = dial.web_mtu() {
+                return Err(invalid(&format!("peer.{name}.dial.{key}"), &reason));
+            }
+            if dial
+                .web_mtu()
+                .is_ok_and(|mtu| mtu != bohio_client::dial::Mtu::default())
+                && !endpoint.starts_with("webtransport://")
+            {
+                return Err(invalid(
+                    &format!("peer.{name}.dial"),
+                    "the `mtu_` keys are for a `webtransport://` endpoint",
+                ));
+            }
             if let Err(reason) = check_dialed(endpoint, dial.fallback.as_deref()) {
                 return Err(invalid(&format!("peer.{name}.endpoint"), &reason));
             }
@@ -1495,6 +1604,24 @@ impl Config {
         }
         Ok(())
     }
+}
+
+/// Whether `mtu` can be used: the `mtu_` key that is too small, and why, naming its value.
+fn check_mtu(mtu: &bohio_client::dial::Mtu) -> Result<(), (&'static str, String)> {
+    mtu.check().map_err(|error| {
+        (
+            if error.key() == "initial" {
+                "mtu_initial"
+            } else {
+                "mtu_min"
+            },
+            format!(
+                "is {}, below the {} bytes QUIC requires",
+                error.value(),
+                bohio_client::dial::MIN_MTU
+            ),
+        )
+    })
 }
 
 /// Whether `endpoint` (and `fallback` after it) could be dialed, without resolving a name: a name is resolved at

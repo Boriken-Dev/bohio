@@ -234,6 +234,56 @@ pub struct PairArgs {
     pub timeout: Option<std::time::Duration>,
 }
 
+/// For a `webtransport://` host: the UDP payload sizes and path-MTU discovery of the QUIC connection. A flag not given
+/// keeps quinn's default (start at 1200, probe up to 1452). On a path with a smaller MTU, such as a tunnel, each probe
+/// above it is lost and the OS may report a send error: lower `--mtu-upper-bound` to the path's size, or turn discovery
+/// off. A flag with another endpoint is refused.
+#[derive(Debug, Args, Default)]
+pub struct MtuArgs {
+    /// The UDP payload size, in bytes, the connection starts from. Default `1200`, the least QUIC allows. A size above
+    /// what the path carries stalls the link until black-hole detection falls to `--mtu-min`.
+    #[arg(long, value_name = "BYTES")]
+    pub mtu_initial: Option<u16>,
+    /// The size the path is known to carry, in bytes: Initial packets are padded to it, and it is the floor. Default `1200`,
+    /// the least QUIC allows. Above what the path carries, no connection opens.
+    #[arg(long, value_name = "BYTES")]
+    pub mtu_min: Option<u16>,
+    /// Whether to search for a larger size than `--mtu-initial` (`true` or `false`). Default `true`. Off, no probe is lost
+    /// and the size stays at the initial one.
+    #[arg(long, value_name = "BOOL")]
+    pub mtu_discovery: Option<bool>,
+    /// The largest size the search tries, in bytes. Default `1452`; QUIC caps it at 65527. Each probe above the path's
+    /// size is lost: set it to the path's size (a tunnel's MTU less 28).
+    #[arg(long, value_name = "BYTES")]
+    pub mtu_upper_bound: Option<u16>,
+}
+
+impl MtuArgs {
+    /// `endpoint` with the sizes the flags give, or as it is when none is given.
+    ///
+    /// # Errors
+    ///
+    /// Why a flag is refused: the endpoint is not a `webtransport://` one, or a size is below the 1200 bytes QUIC requires.
+    pub fn apply(
+        &self,
+        endpoint: bohio_client::dial::Endpoint,
+    ) -> Result<bohio_client::dial::Endpoint, String> {
+        if self.mtu_initial.is_none()
+            && self.mtu_min.is_none()
+            && self.mtu_discovery.is_none()
+            && self.mtu_upper_bound.is_none()
+        {
+            return Ok(endpoint);
+        }
+        let mut mtu = bohio_client::dial::Mtu::default();
+        mtu.initial = self.mtu_initial.unwrap_or(mtu.initial);
+        mtu.min = self.mtu_min.unwrap_or(mtu.min);
+        mtu.discovery = self.mtu_discovery.unwrap_or(mtu.discovery);
+        mtu.upper_bound = self.mtu_upper_bound.unwrap_or(mtu.upper_bound);
+        endpoint.with_mtu(mtu)
+    }
+}
+
 /// `bohio join`.
 #[derive(Debug, Args)]
 pub struct JoinArgs {
@@ -261,6 +311,9 @@ pub struct JoinArgs {
     /// For a `webtransport://` host: a `ws://` or `wss://` endpoint to dial when the UDP path is blocked.
     #[arg(long, value_name = "ENDPOINT")]
     pub fallback: Option<String>,
+    /// The QUIC sizes of a `webtransport://` host.
+    #[command(flatten)]
+    pub mtu: MtuArgs,
 }
 
 /// A time as the configuration writes it: seconds, or a number with `ms`, `s`, `m` or `h`.
@@ -316,6 +369,9 @@ pub struct RemoteArgs {
     /// link's proof has run, and one on another host sends the proof there: naming either is the choice.
     #[arg(long, value_name = "ENDPOINT")]
     pub fallback: Option<String>,
+    /// The QUIC sizes of a `webtransport://` host.
+    #[command(flatten)]
+    pub mtu: MtuArgs,
     /// What to ask of it.
     #[command(subcommand)]
     pub action: RemoteAction,

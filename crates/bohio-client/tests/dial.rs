@@ -141,3 +141,36 @@ fn webtransport_needs_a_udp_port_and_takes_a_websocket_fallback_wherever_it_is_a
     );
     assert!(ws.clone().with_fallback(ws).is_err());
 }
+
+#[test]
+fn webtransport_takes_mtu_sizes_that_quic_can_start_from_and_no_other_endpoint_does() {
+    use bohio_client::dial::{MIN_MTU, Mtu};
+    let wt = Endpoint::parse("webtransport://127.0.0.1:4433").unwrap();
+    let mut mtu = Mtu::default();
+    mtu.upper_bound = 1300;
+    mtu.discovery = false;
+    let lowered = wt.clone().with_mtu(mtu).unwrap();
+    // The size is a setting of the connection: the endpoint still reads the same, and a fallback keeps it.
+    assert_eq!(lowered.to_string(), wt.to_string());
+    let ws = Endpoint::parse("ws://127.0.0.1:7621").unwrap();
+    assert_eq!(
+        lowered.clone().with_fallback(ws.clone()).unwrap(),
+        wt.clone()
+            .with_fallback(ws.clone())
+            .unwrap()
+            .with_mtu(mtu)
+            .unwrap()
+    );
+    assert_ne!(lowered, wt);
+    mtu.initial = MIN_MTU - 1;
+    let refused = wt.with_mtu(mtu).unwrap_err();
+    assert!(
+        refused.contains("1199") && refused.contains("1200"),
+        "{refused}"
+    );
+    assert!(
+        ws.with_mtu(Mtu::default())
+            .unwrap_err()
+            .contains("webtransport://")
+    );
+}

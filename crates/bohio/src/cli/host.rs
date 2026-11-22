@@ -604,6 +604,7 @@ pub(super) fn join(args: &JoinArgs, environment: &Environment) -> Result<(), Str
         Some(text) => endpoint.with_fallback(Endpoint::parse(text)?)?,
         None => endpoint,
     };
+    let endpoint = args.mtu.apply(endpoint)?;
     let text = match &args.pin {
         Some(pin) => pin.clone(),
         None => {

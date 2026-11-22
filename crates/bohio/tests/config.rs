@@ -832,3 +832,74 @@ fn zstd_worker_threads_need_a_build_that_has_them() {
         other => panic!("expected Invalid, got {other:?}"),
     }
 }
+
+#[test]
+fn the_mtu_settings_default_to_quinns_and_are_read_for_a_listener_and_a_dialer() {
+    let defaults = bohio::config::DialConfig::default();
+    let mtu = defaults.web_mtu().unwrap();
+    assert_eq!(
+        (mtu.initial, mtu.min, mtu.discovery, mtu.upper_bound),
+        (1200, 1200, true, 1452)
+    );
+    let config = parse(
+        "[[listen]]\nendpoint = \"webtransport://127.0.0.1:7622\"\n\
+         mtu_initial = 1280\nmtu_min = 1250\nmtu_discovery = false\nmtu_upper_bound = 1400\n",
+    )
+    .unwrap();
+    let mtu = config.listen[0].web_mtu().unwrap();
+    assert_eq!(
+        (mtu.initial, mtu.min, mtu.discovery, mtu.upper_bound),
+        (1280, 1250, false, 1400)
+    );
+    assert_eq!(
+        parse("[[listen]]\nendpoint = \"webtransport://127.0.0.1:7622\"\n")
+            .unwrap()
+            .listen[0]
+            .web_mtu()
+            .unwrap(),
+        bohio_client::dial::Mtu::default()
+    );
+    let id = peer_id();
+    let config = parse(&format!(
+        "[peer.\"{id}\"]\nendpoint = \"webtransport://host.example:7622\"\n\
+         [peer.\"{id}\".dial]\nmtu_initial = 1300\nmtu_discovery = false\nmtu_upper_bound = 1300\n"
+    ))
+    .unwrap();
+    let mtu = config.peer.table(&id).unwrap().dial().web_mtu().unwrap();
+    assert_eq!(
+        (mtu.initial, mtu.min, mtu.discovery, mtu.upper_bound),
+        (1300, 1200, false, 1300)
+    );
+}
+
+#[test]
+fn an_mtu_below_the_least_or_for_another_endpoint_is_refused_naming_it() {
+    let id = peer_id();
+    let table = |dial: &str, endpoint: &str| {
+        format!("[peer.\"{id}\"]\nendpoint = \"{endpoint}\"\n[peer.\"{id}\".dial]\n{dial}\n")
+    };
+    let web = "webtransport://host.example:7622";
+    for (text, key, value) in [
+        (table("mtu_initial = 1100", web), "mtu_initial", "1100"),
+        (table("mtu_min = 900", web), "mtu_min", "900"),
+    ] {
+        match parse(&text) {
+            Err(ConfigError::Invalid {
+                key: found,
+                message: reason,
+                ..
+            }) => {
+                assert_eq!(found, format!("peer.{id}.dial.{key}"), "{text}");
+                assert!(
+                    reason.contains(value) && reason.contains("1200"),
+                    "{reason}"
+                );
+            }
+            other => panic!("{text}: {other:?}"),
+        }
+    }
+    match parse(&table("mtu_upper_bound = 1300", "tcp://host.example:7620")) {
+        Err(ConfigError::Invalid { key, .. }) => assert_eq!(key, format!("peer.{id}.dial")),
+        other => panic!("{other:?}"),
+    }
+}
