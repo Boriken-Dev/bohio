@@ -332,21 +332,62 @@ foreach ($rule in $acl.GetAccessRules($true, $true, $sid)) {
             .join("WindowsPowerShell")
             .join("v1.0")
             .join("powershell.exe");
-        let output = std::process::Command::new(shell)
-            .args([
+        // Through the host's own process start, which hands the child nothing but its standard streams: a
+        // connection this process is serving must not be held by a PowerShell that outlives it.
+        let mut env = bohio_proto::exec::Env::default();
+        env.set.insert(
+            "BOHIO_CHECKED_PATH".to_owned(),
+            path.to_string_lossy().into_owned(),
+        );
+        env.remove.push("PSModulePath".to_owned());
+        let started = crate::platform::spawn(crate::platform::Spec {
+            program: shell.into_os_string(),
+            args: [
                 "-NoLogo",
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
                 SCRIPT,
-            ])
-            .env("BOHIO_CHECKED_PATH", path)
-            .env_remove("PSModulePath")
-            .stdin(std::process::Stdio::null())
-            .output()
-            .map_err(|error| format!("PowerShell could not be started: {error}"))?;
-        if !output.status.success() {
-            let said = String::from_utf8_lossy(&output.stderr);
+            ]
+            .map(std::ffi::OsString::from)
+            .to_vec(),
+            raw_args: None,
+            cwd: None,
+            env,
+            stdin: false,
+        })
+        .map_err(|error| format!("PowerShell could not be started: {error}"))?;
+        let crate::platform::Spawned {
+            control,
+            stdout,
+            stderr,
+            ..
+        } = started;
+        let read = |mut stream: crate::platform::Stdout| {
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                let _ = std::io::Read::read_to_end(&mut stream, &mut bytes);
+                bytes
+            })
+        };
+        let (out, err) = (read(stdout), read(stderr));
+        let (out, err) = (
+            out.join().unwrap_or_default(),
+            err.join().unwrap_or_default(),
+        );
+        // Both streams ended, so the process has or is about to; the tree ends with the handle either way.
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let exit = loop {
+            match control.try_wait() {
+                Ok(Some(exit)) => break Some(exit),
+                Ok(None) if std::time::Instant::now() < until => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                _ => break None,
+            }
+        };
+        if exit.is_none_or(|exit| exit.code != Some(0)) {
+            let said = String::from_utf8_lossy(&err);
             let first = said
                 .lines()
                 .find(|line| !line.trim().is_empty())
@@ -356,7 +397,7 @@ foreach ($rule in $acl.GetAccessRules($true, $true, $sid)) {
                 first.trim()
             ));
         }
-        parse(&String::from_utf8_lossy(&output.stdout))
+        parse(&String::from_utf8_lossy(&out))
     }
 }
 
