@@ -493,6 +493,10 @@ ends at once instead of waiting out `accept_timeout`. The listener's end by the 
 revoke, or a failure it reports with `0x05`) ends the connections it handed over: a stream of `bohio-accept/1` that is still
 running ends with the same reason.
 
+### Retrying an open
+
+Nothing on the wire says "try again", and the client does not need it to: a host that is full answers in the words it always had, and a client that was built to wait tells them apart. A host over `[link] max_pending_opens`, `max_streams`, `max_per_protocol` or `max_opens_per_minute` closes the new stream with the reason `refused` and the text `over a limit` (`coqui-link`'s words; a grant's refusal has no such text). A client that sees that, a link whose queue is full when the open is sent, or an answer `busy` to `bohio-connect/1` or `bohio-accept/1`, opens the same stream again every `[forward] open_retry_interval` for `[forward] open_retry`, and only then fails the connection it was opening. A `denied`, a revoke or any other error is final at once, and so is a `busy` answer to `bohio-listen/1` (a kept `remote` entry asks again for the port the host chose, with the `[dial]` waits).
+
 ## Capability negotiation
 
 Nothing is negotiated before a stream opens, and nothing falls back. A client learns what a host does in this order:

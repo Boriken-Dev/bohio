@@ -125,6 +125,21 @@ bohio remote tcp://host.example:7620 listen 127.0.0.1:18090 --keep          # ea
 
 Every kind of end pairs with every kind on the other side: a TCP port, a Unix socket, a Windows named pipe, or standard input and output, in either direction (`-L`, `-R`, `connect` and `listen`). A socket or pipe the host makes is for the host's own account. [The protocol](protocol.md#remote-forwards-bohio-listen1-and-bohio-accept1) has the wire, and [Security](security.md#what-a-remote-forward-gives-a-peer) what a remote forward gives a peer.
 
+## Forwards that survive a lost link
+
+A forward declared in `bohio.cfg` is kept by the node, as a WireGuard peer is: it is made again when the other side comes back, and nothing is run. On the node that dials (or is dialed by) the host:
+
+```toml
+[peer."<host id>"]
+endpoint = "tcp://host.example:7620"          # this node dials it, and dials again after a loss
+
+[peer."<host id>".forward]
+local  = ["127.0.0.1:5432=db.lan:5432", "unix:/run/app.sock=pipe:app"]   # -L: this machine listens, the host connects
+remote = ["127.0.0.1:0=127.0.0.1:8080"]                                    # -R: the host listens, this machine connects
+```
+
+A `local` listener stays bound while the link is down; a connection that arrives then waits up to `[forward] wait_for_link` (30 s) and is closed after. Each `remote` entry is asked of the host again whenever the link is up, for the port the host chose the first time. The host must grant it (`forward.connect` and a `connect` rule for the targets, `forward.listen` and a `listen` rule that covers the port, such as `127.0.0.1:*`). Entries are read again every `[link] recheck`. `bohio remote ... forward`, `connect` and `listen` do the same for one run, and end when the link does only with `--once`; a connection that is running still ends with its link. [Security](security.md#what-a-kept-forward-costs) says what a standing forward costs.
+
 ## Configuration
 
 `bohio.cfg` is read as layers: the system file (`/etc/bohio/bohio.cfg`, `%ProgramData%\bohio\bohio.cfg`) and then the user's (`~/.config/bohio/bohio.cfg`, `%APPDATA%\bohio\bohio.cfg`) merged over it, or the files `--config` names, alone. Tables merge by key and lists and values replace, so a higher layer can narrow a list. Every setting, with its default, is in [`examples/bohio.cfg`](https://github.com/Boriken-Dev/bohio/blob/main/examples/bohio.cfg); the `[peer.*]` tables are read again at every decision, the rest when the node starts.
