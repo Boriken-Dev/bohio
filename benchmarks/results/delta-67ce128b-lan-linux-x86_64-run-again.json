@@ -1,0 +1,112 @@
+{
+  "name": "delta-run-256MiB-again",
+  "raw": {
+    "commit": "67ce128b9",
+    "rustc": "",
+    "os": "linux",
+    "arch": "x86_64",
+    "processor": "Intel(R) Xeon(R) Gold 6138 CPU @ 2.00GHz",
+    "transport": "tcp",
+    "link": "lan",
+    "settings": {},
+    "label": "x86-64 Linux loopback, unprivileged, files in tmpfs, local sanity check"
+  },
+  "metrics": {
+    "cpu_sha256_64MiB_tcp_lan": {
+      "min_ms": 303.288846,
+      "median_ms": 307.44962799999996,
+      "max_ms": 325.361225,
+      "samples": 5,
+      "bytes": 67108864
+    },
+    "delta_pull_256MiB_1pct_host_cpu_tcp_lan": {
+      "min_ms": 390.0,
+      "median_ms": 420.0,
+      "max_ms": 430.0,
+      "samples": 5
+    },
+    "delta_pull_256MiB_1pct_tcp_lan": {
+      "min_ms": 803.357997,
+      "median_ms": 833.064485,
+      "max_ms": 856.869969,
+      "samples": 5,
+      "bytes": 268435456
+    },
+    "delta_pull_256MiB_1pct_wire_bytes_tcp_lan": {
+      "min_ms": 3047791.0,
+      "median_ms": 3047791.0,
+      "max_ms": 3047791.0,
+      "samples": 5
+    },
+    "delta_push_256MiB_1pct_host_cpu_tcp_lan": {
+      "min_ms": 820.0,
+      "median_ms": 900.0,
+      "max_ms": 980.0,
+      "samples": 5
+    },
+    "delta_push_256MiB_1pct_tcp_lan": {
+      "min_ms": 846.6577159999999,
+      "median_ms": 903.922951,
+      "max_ms": 971.3481320000001,
+      "samples": 5,
+      "bytes": 268435456
+    },
+    "delta_push_256MiB_1pct_wire_bytes_tcp_lan": {
+      "min_ms": 3047956.0,
+      "median_ms": 3047956.0,
+      "max_ms": 3047956.0,
+      "samples": 5
+    },
+    "full_pull_256MiB_1pct_host_cpu_tcp_lan": {
+      "min_ms": 1420.0,
+      "median_ms": 1460.0,
+      "max_ms": 1550.0,
+      "samples": 5
+    },
+    "full_pull_256MiB_1pct_tcp_lan": {
+      "min_ms": 343.548068,
+      "median_ms": 377.54560599999996,
+      "max_ms": 382.24502,
+      "samples": 5,
+      "bytes": 268435456
+    },
+    "full_pull_256MiB_1pct_wire_bytes_tcp_lan": {
+      "min_ms": 268435456.0,
+      "median_ms": 268435456.0,
+      "max_ms": 268435456.0,
+      "samples": 5
+    },
+    "full_push_256MiB_1pct_host_cpu_tcp_lan": {
+      "min_ms": 1570.0,
+      "median_ms": 1620.0,
+      "max_ms": 1650.0,
+      "samples": 5
+    },
+    "full_push_256MiB_1pct_tcp_lan": {
+      "min_ms": 344.808957,
+      "median_ms": 360.672589,
+      "max_ms": 393.681966,
+      "samples": 5,
+      "bytes": 268435456
+    },
+    "full_push_256MiB_1pct_wire_bytes_tcp_lan": {
+      "min_ms": 268439553.0,
+      "median_ms": 268439553.0,
+      "max_ms": 268439553.0,
+      "samples": 5
+    },
+    "raw_warm_down_256MiB_host_cpu_tcp_lan": {
+      "min_ms": 0.0,
+      "median_ms": 0.0,
+      "max_ms": 0.0,
+      "samples": 5
+    },
+    "raw_warm_down_256MiB_tcp_lan": {
+      "min_ms": 57.815796000000006,
+      "median_ms": 61.675695000000005,
+      "max_ms": 64.593277,
+      "samples": 5,
+      "bytes": 268435456
+    }
+  }
+}
