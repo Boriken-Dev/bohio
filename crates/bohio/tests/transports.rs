@@ -187,6 +187,13 @@ struct World {
 
 impl World {
     fn new(host_extra: &str) -> Self {
+        Self::proving_within(host_extra, "5s")
+    }
+
+    /// As [`World::new`], with `proof_timeout` as the bound on a proof. A stdio host is started by
+    /// the client, and starting a process is part of what the proof waits for: on a loaded machine
+    /// that takes seconds, so the stdio test allows far more than the other transports' five.
+    fn proving_within(host_extra: &str, proof_timeout: &str) -> Self {
         let dir = tempfile::tempdir().expect("a directory");
         let mut configs = Vec::new();
         for (name, extra) in [("host", host_extra), ("client", "")] {
@@ -195,7 +202,7 @@ impl World {
             std::fs::write(
                 &config,
                 format!(
-                    "[service]\nname = \"{name}\"\ndata_dir = {}\n{extra}\n[link]\nrecheck = \"1s\"\nproof_timeout = \"5s\"\n",
+                    "[service]\nname = \"{name}\"\ndata_dir = {}\n{extra}\n[link]\nrecheck = \"1s\"\nproof_timeout = \"{proof_timeout}\"\n",
                     toml_path(&data)
                 ),
             )
@@ -423,7 +430,7 @@ fn websocket_info_and_exec() {
 
 #[test]
 fn stdio_info_and_exec_and_no_program_is_left() {
-    let world = World::new("");
+    let world = World::proving_within("", "60s");
     let marker = world.host.clone();
     let command = format!(
         "\"{}\" serve --stdio --config \"{}\"",
