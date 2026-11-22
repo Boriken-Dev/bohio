@@ -16,8 +16,9 @@ use bohio_proto::forward::{
     ListenRequest, Listening, Target,
 };
 use bohio_proto::fs::{
-    Entry, FileKind, Listing, Metadata, ReadDone, ReadHeader, ReadOutput, ReadRequest, Timestamp,
-    WriteDone, WriteInput, WriteMode, WriteOutput, WriteRequest,
+    DeltaBase, DeltaCopy, Entry, FileKind, Listing, Metadata, ReadDelta, ReadDone, ReadHeader,
+    ReadInput, ReadOutput, ReadRequest, SignatureBatch, Timestamp, WriteDone, WriteInput,
+    WriteMode, WriteOutput, WriteRequest,
 };
 use bohio_proto::gui::{
     ApproveInput, ApproveOutput, Button, ButtonAction, ClipboardGet, ClipboardSet, ClipboardText,
@@ -30,8 +31,8 @@ use bohio_proto::hash::{
     HashRequest, HashResult, ItemError,
 };
 use bohio_proto::info::{
-    CompressionInfo, ExecInfo, FilesystemInfo, HashLimits, Info, Levels, Limits, PROTOCOL_VERSION,
-    Service, SessionInfo, ShellInfo, TransferInfo,
+    CompressionInfo, DeltaInfo, ExecInfo, FilesystemInfo, HashLimits, Info, Levels, Limits,
+    PROTOCOL_VERSION, Service, SessionInfo, ShellInfo, TransferInfo,
 };
 use bohio_proto::shell::{self, ShellKind, Size};
 use bohio_proto::{Error, ErrorBody, ErrorCode, decode, encode};
@@ -287,6 +288,13 @@ fn sample_transfer() -> TransferInfo {
         ],
         compression_default: Some(Compression::new(Codec::Zstd).level(3)),
         prepared: true,
+        delta: DeltaInfo {
+            weak: vec!["rsync".into()],
+            min_block: 2048,
+            max_block: 1_048_576,
+            min_size: 1_048_576,
+            max_signature_bytes: 67_108_864,
+        },
     }
 }
 
@@ -790,6 +798,11 @@ fn read_cases() -> Vec<Case> {
         compression: Some(Compression::new(Codec::Zstd).level(19).window_log(23)),
         compressed_length: None,
         token: None,
+        delta: false,
+    };
+    let delta_header = ReadHeader {
+        delta: true,
+        ..ReadHeader::raw(9_000_000, 9_000_300)
     };
     let prepared_header = ReadHeader {
         size: 9_000_000,
@@ -797,6 +810,12 @@ fn read_cases() -> Vec<Case> {
         compression: Some(Compression::new(Codec::Zstd).level(3)),
         compressed_length: Some(1_200_000),
         token: Some("0123456789abcdef0123456789abcdef".into()),
+        delta: false,
+    };
+    let signature_batch = SignatureBatch {
+        first: 0,
+        weak: vec![0x0001_0002, 7],
+        strong: vec![0xde, 0xad, 0xbe, 0xef, 0x01, 0x02, 0x03, 0x04],
     };
     vec![
         message(
@@ -871,6 +890,54 @@ fn read_cases() -> Vec<Case> {
             "header_compressed",
             ReadOutput::Header(compressed_header.clone()),
             to_json(&compressed_header),
+        ),
+        message(
+            "open_delta",
+            OPEN,
+            "open",
+            "fs.ReadRequest",
+            &ReadRequest {
+                delta: Some(ReadDelta {
+                    block_size: 8192,
+                    weak: "rsync".into(),
+                    strong: Algorithm::Blake3,
+                    strong_len: 16,
+                    base_size: 64_000_000,
+                }),
+                ..ReadRequest::whole("/srv/big.bin")
+            },
+        ),
+        output(
+            "header_delta",
+            ReadOutput::Header(delta_header.clone()),
+            to_json(&delta_header),
+        ),
+        output(
+            "copy",
+            ReadOutput::Copy(DeltaCopy {
+                block: 4096,
+                count: 12,
+            }),
+            to_json(&DeltaCopy {
+                block: 4096,
+                count: 12,
+            }),
+        ),
+        frame(
+            "signature",
+            TO_HOST,
+            "fs.ReadInput",
+            ReadInput::Signature(signature_batch.clone())
+                .encode()
+                .unwrap(),
+            to_json(&signature_batch),
+        ),
+        frame(
+            "signature_end",
+            TO_HOST,
+            "fs.ReadInput",
+            ReadInput::SignatureEnd.encode().unwrap(),
+            Value::Null,
         ),
         output(
             "header_prepared",
@@ -998,6 +1065,27 @@ fn write_cases() -> Vec<Case> {
                 ..WriteRequest::replace("/srv/new.txt")
             },
         ),
+        message(
+            "open_delta",
+            OPEN,
+            "open",
+            "fs.WriteRequest",
+            &WriteRequest {
+                mode: WriteMode::Delta {
+                    block_size: 8192,
+                    base: DeltaBase {
+                        size: 64_000_000,
+                        modified: Some(Timestamp {
+                            secs: 1_700_000_000,
+                            nanos: 5,
+                        }),
+                        hashes: Digests::new(),
+                    },
+                },
+                expect: Digests::from([(Algorithm::Sha256, sha256.into())]),
+                ..WriteRequest::replace("/srv/big.bin")
+            },
+        ),
         output("ready", WriteOutput::Ready, Value::Null),
         output("done", WriteOutput::Done(done.clone()), to_json(&done)),
         output(
@@ -1010,6 +1098,17 @@ fn write_cases() -> Vec<Case> {
             "compressed",
             WriteInput::Compressed(unhex(ZSTD_PIECE)),
             raw(&unhex(ZSTD_PIECE)),
+        ),
+        input(
+            "copy",
+            WriteInput::Copy(DeltaCopy {
+                block: 3,
+                count: 40,
+            }),
+            to_json(&DeltaCopy {
+                block: 3,
+                count: 40,
+            }),
         ),
         input("end", WriteInput::End, Value::Null),
     ]
@@ -1041,6 +1140,13 @@ fn hash_cases() -> Vec<Case> {
             (Algorithm::Md5, "900150983cd24fb0d6963f7d28e17f72".into()),
             (Algorithm::Crc32c, "364b3fb7".into()),
         ]),
+        block_size: None,
+        strong_len: None,
+    };
+    let blocked = HashResult {
+        block_size: Some(2048),
+        strong_len: Some(16),
+        ..result.clone()
     };
     let unchanged = HashResult {
         index: 1,
@@ -1049,6 +1155,8 @@ fn hash_cases() -> Vec<Case> {
         length: 0,
         unchanged: true,
         hashes: Digests::new(),
+        block_size: None,
+        strong_len: None,
     };
     let blocks = HashBlocks {
         index: 2,
@@ -1104,6 +1212,11 @@ fn hash_cases() -> Vec<Case> {
             "result",
             HashOutput::Result(result.clone()),
             to_json(&result),
+        ),
+        output(
+            "result_with_blocks",
+            HashOutput::Result(blocked.clone()),
+            to_json(&blocked),
         ),
         output(
             "result_unchanged",
@@ -1611,6 +1724,7 @@ fn decode_error(ty: &str, bytes: &[u8]) -> Result<(), Error> {
         "shell.Input" => shell::Input::decode(bytes).map(|_| ()),
         "fs.ReadRequest" => ReadRequest::from_metadata(bytes).map(|_| ()),
         "fs.ReadOutput" => ReadOutput::decode(bytes).map(|_| ()),
+        "fs.ReadInput" => ReadInput::decode(bytes).map(|_| ()),
         "fs.WriteRequest" => WriteRequest::from_metadata(bytes).map(|_| ()),
         "fs.WriteOutput" => WriteOutput::decode(bytes).map(|_| ()),
         "fs.WriteInput" => WriteInput::decode(bytes).map(|_| ()),
@@ -1680,6 +1794,7 @@ fn check(entry: &Value) {
         }),
         "shell.Input" => check_frame(entry, &bytes, shell::Input::decode, |v| v.encode().unwrap()),
         "fs.ReadOutput" => check_frame(entry, &bytes, ReadOutput::decode, |v| v.encode().unwrap()),
+        "fs.ReadInput" => check_frame(entry, &bytes, ReadInput::decode, |v| v.encode().unwrap()),
         "fs.WriteOutput" => {
             check_frame(entry, &bytes, WriteOutput::decode, |v| v.encode().unwrap())
         }

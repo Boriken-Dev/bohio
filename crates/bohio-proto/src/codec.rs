@@ -83,6 +83,7 @@ pub(crate) mod bytes {
             }
         }
 
-        deserializer.deserialize_bytes(Bytes)
+        // Not `deserialize_bytes`: ciborium reads only a byte string that fits its 4 KiB scratch buffer that way.
+        deserializer.deserialize_byte_buf(Bytes)
     }
 }

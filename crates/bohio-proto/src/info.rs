@@ -127,6 +127,25 @@ pub struct TransferInfo {
     pub compression_default: Option<Compression>,
     /// Whether the host compresses a whole range first when a read says `prepare`.
     pub prepared: bool,
+    /// What the host offers for deltas and block signatures.
+    pub delta: DeltaInfo,
+}
+
+/// What the host offers for deltas (`bohio-read/1` with `delta`, `bohio-write/1` in mode `delta`, and block
+/// hashes from `bohio-hash/1`). A host that serves none reports `weak` empty.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DeltaInfo {
+    /// The weak checksums it computes: `rsync`. Empty when it serves no deltas.
+    pub weak: Vec<String>,
+    /// The smallest block size it chooses for a signature, and the largest it accepts or chooses.
+    pub min_block: u64,
+    /// See `min_block`.
+    pub max_block: u64,
+    /// The size of file from which a client's `auto` uses a delta.
+    pub min_size: u64,
+    /// The most bytes of signature a read's client may send.
+    pub max_signature_bytes: u64,
 }
 
 /// One compression algorithm a host offers.

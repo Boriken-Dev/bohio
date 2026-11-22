@@ -107,6 +107,32 @@
     },
     {
       "direction": "host_to_client",
+      "hex": "01a865696e646578006473697a6503686d6f646966696564a264736563731a6553f100656e616e6f7305666c656e6774680369756e6368616e676564f466686173686573a2636d643578203930303135303938336364323466623064363936336637643238653137663732666372633332636833363462336662376a626c6f636b5f73697a651908006a7374726f6e675f6c656e10",
+      "kind": "frame",
+      "name": "result_with_blocks",
+      "type": "hash.Output",
+      "value": {
+        "message": {
+          "block_size": 2048,
+          "hashes": {
+            "crc32c": "364b3fb7",
+            "md5": "900150983cd24fb0d6963f7d28e17f72"
+          },
+          "index": 0,
+          "length": 3,
+          "modified": {
+            "nanos": 5,
+            "secs": 1700000000
+          },
+          "size": 3,
+          "strong_len": 16,
+          "unchanged": false
+        },
+        "tag": 1
+      }
+    },
+    {
+      "direction": "host_to_client",
       "hex": "01a665696e646578016473697a6503686d6f646966696564a264736563731a6553f100656e616e6f7305666c656e6774680069756e6368616e676564f566686173686573a0",
       "kind": "frame",
       "name": "result_unchanged",

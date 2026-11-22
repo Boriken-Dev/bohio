@@ -176,17 +176,17 @@ impl HashRequest {
     }
 }
 
-/// How block hashes are made. The host does not serve them yet: a request that sets this is
-/// `unsupported`.
+/// How block hashes are made: the signature of each item, for a delta. The strong hash is the request's
+/// first algorithm, cut to `strong_len` bytes.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct BlockOptions {
-    /// The block size in bytes; the host chooses when absent.
+    /// The block size in bytes; the host chooses from the item's size when absent.
     #[serde(default)]
     pub size: Option<u64>,
-    /// The weak hash's name; the host chooses when absent.
+    /// The weak hash's name, `rsync`; the host's only one when absent.
     #[serde(default)]
     pub weak: Option<String>,
-    /// How many bytes of each strong hash are kept; the host chooses when absent.
+    /// How many bytes of each strong hash are kept: the digest's length up to 16 when absent.
     #[serde(default)]
     pub strong_len: Option<u64>,
 }
@@ -243,6 +243,13 @@ pub struct HashResult {
     /// The digests of the bytes hashed.
     #[serde(default)]
     pub hashes: Digests,
+    /// With block hashes asked for: the block size they were made with, and `strong_len` the length
+    /// of each strong hash. The blocks come in `hash-blocks` frames before this result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_size: Option<u64>,
+    /// See `block_size`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strong_len: Option<u64>,
 }
 
 /// Block hashes of one item: the host's `0x02` frame.

@@ -132,6 +132,92 @@
       }
     },
     {
+      "direction": "client_to_host",
+      "hex": "a564706174686c2f7372762f6269672e62696e666f666673657400666c656e677468f666686173686573806564656c7461a56a626c6f636b5f73697a65192000647765616b657273796e63667374726f6e6766626c616b65336a7374726f6e675f6c656e1069626173655f73697a651a03d09000",
+      "kind": "open",
+      "name": "open_delta",
+      "type": "fs.ReadRequest",
+      "value": {
+        "delta": {
+          "base_size": 64000000,
+          "block_size": 8192,
+          "strong": "blake3",
+          "strong_len": 16,
+          "weak": "rsync"
+        },
+        "hashes": [],
+        "length": null,
+        "offset": 0,
+        "path": "/srv/big.bin"
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "01a36473697a651a00895440666c656e6774681a0089556c6564656c7461f5",
+      "kind": "frame",
+      "name": "header_delta",
+      "type": "fs.ReadOutput",
+      "value": {
+        "message": {
+          "delta": true,
+          "length": 9000300,
+          "size": 9000000
+        },
+        "tag": 1
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "09a265626c6f636b19100065636f756e740c",
+      "kind": "frame",
+      "name": "copy",
+      "type": "fs.ReadOutput",
+      "value": {
+        "message": {
+          "block": 4096,
+          "count": 12
+        },
+        "tag": 9
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "12a365666972737400647765616b821a0001000207667374726f6e6748deadbeef01020304",
+      "kind": "frame",
+      "name": "signature",
+      "type": "fs.ReadInput",
+      "value": {
+        "message": {
+          "first": 0,
+          "strong": [
+            222,
+            173,
+            190,
+            239,
+            1,
+            2,
+            3,
+            4
+          ],
+          "weak": [
+            65538,
+            7
+          ]
+        },
+        "tag": 18
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "13",
+      "kind": "frame",
+      "name": "signature_end",
+      "type": "fs.ReadInput",
+      "value": {
+        "tag": 19
+      }
+    },
+    {
       "direction": "host_to_client",
       "hex": "01a56473697a651a00895440666c656e6774681a008954406b636f6d7072657373696f6ea369616c676f726974686d647a737464656c6576656c036a77696e646f775f6c6f67f671636f6d707265737365645f6c656e6774681a00124f8065746f6b656e78203031323334353637383961626364656630313233343536373839616263646566",
       "kind": "frame",

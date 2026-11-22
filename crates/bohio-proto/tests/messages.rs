@@ -74,6 +74,7 @@ fn sample_transfer() -> TransferInfo {
         compression: Vec::new(),
         compression_default: None,
         prepared: false,
+        delta: bohio_proto::info::DeltaInfo::default(),
     }
 }
 
@@ -178,6 +179,7 @@ fn every_error_code_round_trips() {
         ErrorCode::Timeout,
         ErrorCode::Unavailable,
         ErrorCode::InUse,
+        ErrorCode::Changed,
         ErrorCode::Internal,
         ErrorCode::Other,
     ] {
@@ -425,8 +427,8 @@ fn every_filesystem_call_and_reply_round_trips() {
 #[test]
 fn every_transfer_message_round_trips() {
     use bohio_proto::fs::{
-        ReadDone, ReadHeader, ReadOutput, ReadRequest, WriteDone, WriteInput, WriteMode,
-        WriteOutput, WriteRequest,
+        DeltaBase, DeltaCopy, ReadDelta, ReadDone, ReadHeader, ReadInput, ReadOutput, ReadRequest,
+        SignatureBatch, WriteDone, WriteInput, WriteMode, WriteOutput, WriteRequest,
     };
     let read = ReadRequest {
         path: "f".into(),
@@ -439,6 +441,13 @@ fn every_transfer_message_round_trips() {
             token: "ab".into(),
             offset: 7,
         }),
+        delta: Some(ReadDelta {
+            block_size: 2048,
+            weak: "rsync".into(),
+            strong: Algorithm::Blake3,
+            strong_len: 16,
+            base_size: 99,
+        }),
     };
     assert_eq!(
         ReadRequest::from_metadata(&read.to_metadata().unwrap()).unwrap(),
@@ -449,6 +458,14 @@ fn every_transfer_message_round_trips() {
         WriteMode::Create,
         WriteMode::Append,
         WriteMode::At { offset: 9 },
+        WriteMode::Delta {
+            block_size: 4096,
+            base: DeltaBase {
+                size: 5,
+                modified: Some(bohio_proto::fs::Timestamp { secs: 3, nanos: 4 }),
+                hashes: Digests::from([(Algorithm::Crc32c, "e3069283".into())]),
+            },
+        },
     ] {
         let write = WriteRequest {
             path: "f".into(),
@@ -473,7 +490,9 @@ fn every_transfer_message_round_trips() {
             compression: Some(Compression::new(Codec::Zstd).level(3).window_log(21)),
             compressed_length: Some(4),
             token: Some("ab".into()),
+            delta: true,
         }),
+        ReadOutput::Copy(DeltaCopy { block: 7, count: 2 }),
         ReadOutput::Data(vec![0, 1, 255]),
         ReadOutput::Compressed(vec![9, 8]),
         ReadOutput::Progress(Progress { prepared: 3 }),
@@ -503,10 +522,25 @@ fn every_transfer_message_round_trips() {
     for input in [
         WriteInput::Data(vec![9, 8]),
         WriteInput::Compressed(vec![7]),
+        WriteInput::Copy(DeltaCopy {
+            block: u64::MAX,
+            count: 1,
+        }),
         WriteInput::End,
     ] {
         assert_eq!(WriteInput::decode(&input.encode()).unwrap(), input);
     }
+    for input in [
+        ReadInput::Signature(SignatureBatch {
+            first: 4,
+            weak: vec![1, u32::MAX],
+            strong: vec![1, 2, 3, 4],
+        }),
+        ReadInput::SignatureEnd,
+    ] {
+        assert_eq!(ReadInput::decode(&input.encode().unwrap()).unwrap(), input);
+    }
+    assert_eq!(ReadInput::decode(&[0x7f]), Err(Error::Tag(0x7f)));
     assert_eq!(ReadOutput::decode(&[]), Err(Error::Short));
     assert_eq!(ReadOutput::decode(&[0x7f]), Err(Error::Tag(0x7f)));
     assert_eq!(WriteInput::decode(&[0x7f]), Err(Error::Tag(0x7f)));
@@ -622,6 +656,8 @@ fn every_hash_message_round_trips() {
             length: 7,
             unchanged: false,
             hashes: digests,
+            block_size: Some(2048),
+            strong_len: Some(16),
         }),
         HashOutput::Result(HashResult {
             index: 1,
@@ -630,6 +666,8 @@ fn every_hash_message_round_trips() {
             length: 0,
             unchanged: true,
             hashes: Digests::new(),
+            block_size: None,
+            strong_len: None,
         }),
         HashOutput::Blocks(HashBlocks {
             index: 1,
@@ -700,4 +738,32 @@ fn a_hash_stream_decodes_whatever_bytes_it_is_given_without_panicking() {
         let _ = HashInput::decode(&bytes);
         let _ = HashRequest::from_metadata(&bytes);
     });
+}
+
+#[test]
+fn a_byte_string_longer_than_the_decoders_scratch_buffer_round_trips() {
+    use bohio_proto::fs::SignatureBatch;
+    use bohio_proto::hash::{HashBlocks, HashOutput};
+    // ciborium reads a byte string only through its 4 KiB buffer unless it is asked for an owned one.
+    let strong: Vec<u8> = (0..200_000_u32).map(|n| n.to_le_bytes()[0]).collect();
+    let blocks = HashOutput::Blocks(HashBlocks {
+        index: 0,
+        first: 0,
+        size: 2048,
+        weak: vec![7; 12_500],
+        strong: strong.clone(),
+    });
+    assert_eq!(
+        HashOutput::decode(&blocks.encode().unwrap()).unwrap(),
+        blocks
+    );
+    let batch = bohio_proto::fs::ReadInput::Signature(SignatureBatch {
+        first: 9,
+        weak: vec![1, 2],
+        strong,
+    });
+    assert_eq!(
+        bohio_proto::fs::ReadInput::decode(&batch.encode().unwrap()).unwrap(),
+        batch
+    );
 }

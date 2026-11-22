@@ -55,6 +55,8 @@ pub enum ErrorCode {
     Unavailable,
     /// A remote forward's address, socket or pipe is already bound.
     InUse,
+    /// A precondition no longer holds: the file a delta write was made against changed since the client looked.
+    Changed,
     /// The host failed in a way the request did not cause.
     Internal,
     /// A code this version does not know.

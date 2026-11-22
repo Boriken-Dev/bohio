@@ -14,6 +14,9 @@
 //! | host to client | `0x05` | [`ReadOutput::Error`] | CBOR [`ErrorBody`] |
 //! | host to client | `0x06` | [`ReadOutput::Compressed`] | a piece of the compressed stream |
 //! | host to client | `0x08` | [`ReadOutput::Progress`] | CBOR [`Progress`] |
+//! | host to client | `0x09` | [`ReadOutput::Copy`] | CBOR [`DeltaCopy`] (a delta read) |
+//! | client to host | `0x12` | [`ReadInput::Signature`] | CBOR [`SignatureBatch`] (a delta read) |
+//! | client to host | `0x13` | [`ReadInput::SignatureEnd`] | empty (a delta read) |
 //!
 //! `bohio-write/1`: the open's metadata is a [`WriteRequest`].
 //!
@@ -25,13 +28,69 @@
 //! | client to host | `0x10` | [`WriteInput::Data`] | raw bytes |
 //! | client to host | `0x11` | [`WriteInput::End`] | empty |
 //! | client to host | `0x14` | [`WriteInput::Compressed`] | a piece of the compressed stream |
+//! | client to host | `0x15` | [`WriteInput::Copy`] | CBOR [`DeltaCopy`] (a delta write) |
 
 use serde::{Deserialize, Serialize};
 
+use crate::codec::bytes;
 use crate::compress::{Compression, Progress, Resume};
 use crate::error::{Error, ErrorBody};
 use crate::hash::{Algorithm, Digests};
 use crate::{decode, encode};
+
+/// The name of the weak checksum a delta uses: rsync's rolling sum of two 16-bit halves.
+pub const WEAK_RSYNC: &str = "rsync";
+
+/// Consecutive blocks of the old file a delta takes as they are: the host's `0x09` frame of a delta read
+/// and the client's `0x15` frame of a delta write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeltaCopy {
+    /// The first block, from `0`.
+    pub block: u64,
+    /// How many blocks, at least 1. The old file's last block may be shorter than the block size.
+    pub count: u64,
+}
+
+/// How a read matches the client's old copy: the open's `delta` option. The client then sends its signature.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadDelta {
+    /// The bytes in each block of the client's old copy but the last.
+    pub block_size: u64,
+    /// The weak checksum, `rsync`.
+    pub weak: String,
+    /// The strong hash of each block.
+    pub strong: Algorithm,
+    /// How many leading bytes of each strong hash the signature keeps.
+    pub strong_len: u64,
+    /// The size of the client's old copy: what tells a block from the shorter last one.
+    pub base_size: u64,
+}
+
+/// One batch of the client's signature: the client's `0x12` frame of a delta read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignatureBatch {
+    /// The number of the first block of this batch, from `0`; batches arrive in order.
+    pub first: u64,
+    /// The weak value of each block.
+    #[serde(default)]
+    pub weak: Vec<u32>,
+    /// The strong hashes, joined: each block's is `strong_len` bytes.
+    #[serde(with = "bytes", default)]
+    pub strong: Vec<u8>,
+}
+
+/// What a delta write is made against: the file as the client saw it.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct DeltaBase {
+    /// The target's size.
+    pub size: u64,
+    /// The target's modification time, when the client knows it.
+    #[serde(default)]
+    pub modified: Option<Timestamp>,
+    /// Digests of the target the host checks too, by algorithm (lowercase hex).
+    #[serde(default)]
+    pub hashes: Digests,
+}
 
 /// A point in time: seconds since the Unix epoch (negative before it) and nanoseconds within the second.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -137,6 +196,11 @@ pub struct ReadRequest {
     /// `compression` are then taken from the prepared file, which only the peer that made it may use.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume: Option<Resume>,
+    /// Send only what differs from the client's old copy, whose signature the client sends after the
+    /// open. The host answers `copy` frames for the blocks the copy has and data for the rest. Needs
+    /// `info.transfer.delta`; not with a prepared read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delta: Option<ReadDelta>,
 }
 
 impl ReadRequest {
@@ -150,6 +214,7 @@ impl ReadRequest {
             compression: None,
             prepare: false,
             resume: None,
+            delta: None,
         }
     }
 
@@ -190,6 +255,9 @@ pub struct ReadHeader {
     /// For a prepared read, the name to resume it by, for as long as the host keeps the file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+    /// The read is a delta: `copy` frames and data frames add up to `length` bytes.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub delta: bool,
 }
 
 impl ReadHeader {
@@ -201,6 +269,7 @@ impl ReadHeader {
             compression: None,
             compressed_length: None,
             token: None,
+            delta: false,
         }
     }
 }
@@ -214,7 +283,7 @@ pub struct ReadDone {
 }
 
 /// How a `bohio-write/1` stream puts the bytes in place.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum WriteMode {
@@ -233,6 +302,15 @@ pub enum WriteMode {
         /// The first byte written.
         offset: u64,
     },
+    /// Build the new file from the target and what the client sends: `copy` frames name blocks of the
+    /// target, data frames carry the rest, and the result replaces the target as `replace` does. The
+    /// target must be as `base` says, or the write is `changed`. Needs `fs.read` as well as `fs.write`.
+    Delta {
+        /// The block size the client's copies are counted in.
+        block_size: u64,
+        /// The target as the client saw it.
+        base: DeltaBase,
+    },
 }
 
 /// What a `bohio-write/1` stream does: the open's metadata.
@@ -250,8 +328,8 @@ pub struct WriteRequest {
     /// replaced file keeps the mode of the one it replaces unless this is given.
     #[serde(default)]
     pub file_mode: Option<u32>,
-    /// The digests (lowercase hex) the data must have, by algorithm; only for `replace` and
-    /// `create`: after the data ends each is checked, and on a mismatch nothing is put in place.
+    /// The digests (lowercase hex) the data must have, by algorithm; only for `replace`, `create` and
+    /// `delta` (of the whole new file): after the data ends each is checked, and on a mismatch nothing is put in place.
     #[serde(default)]
     pub expect: Digests,
     /// The digests of the data written to answer in `write-done`. When absent the host's
@@ -317,6 +395,10 @@ const WRITE_END: u8 = 0x11;
 const COMPRESSED: u8 = 0x06;
 const PROGRESS: u8 = 0x08;
 const WRITE_COMPRESSED: u8 = 0x14;
+const COPY: u8 = 0x09;
+const WRITE_COPY: u8 = 0x15;
+const SIGNATURE: u8 = 0x12;
+const SIGNATURE_END: u8 = 0x13;
 
 fn tagged(tag: u8, body: &[u8]) -> Vec<u8> {
     let mut frame = Vec::with_capacity(body.len() + 1);
@@ -345,6 +427,8 @@ pub enum ReadOutput {
     Compressed(Vec<u8>),
     /// The host is still compressing a prepared read.
     Progress(Progress),
+    /// A delta read: these blocks of the client's old copy stand here.
+    Copy(DeltaCopy),
     /// Every byte was sent; the last frame.
     Done(ReadDone),
     /// The read failed; the last frame.
@@ -363,6 +447,7 @@ impl ReadOutput {
             Self::Data(bytes) => tagged(DATA, bytes),
             Self::Compressed(bytes) => tagged(COMPRESSED, bytes),
             Self::Progress(body) => tagged(PROGRESS, &encode(body)?),
+            Self::Copy(body) => tagged(COPY, &encode(body)?),
             Self::Done(body) => tagged(DONE, &encode(body)?),
             Self::Error(body) => tagged(ERROR, &encode(body)?),
         })
@@ -381,8 +466,48 @@ impl ReadOutput {
             DATA => Ok(Self::Data(body.to_vec())),
             COMPRESSED => Ok(Self::Compressed(body.to_vec())),
             PROGRESS => decode(body).map(Self::Progress),
+            COPY => decode(body).map(Self::Copy),
             DONE => decode(body).map(Self::Done),
             ERROR => decode(body).map(Self::Error),
+            other => Err(Error::Tag(other)),
+        }
+    }
+}
+
+/// A frame of a read, from the client: only a delta read has any.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ReadInput {
+    /// The next blocks of the signature of the client's old copy.
+    Signature(SignatureBatch),
+    /// The signature is complete.
+    SignatureEnd,
+}
+
+impl ReadInput {
+    /// The frame as one stream message.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Encode`] when a CBOR body cannot be written.
+    pub fn encode(&self) -> Result<Vec<u8>, Error> {
+        Ok(match self {
+            Self::Signature(body) => tagged(SIGNATURE, &encode(body)?),
+            Self::SignatureEnd => tagged(SIGNATURE_END, &[]),
+        })
+    }
+
+    /// Reads one stream message.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Short`] for an empty message, [`Error::Tag`] for a tag this version does not know,
+    /// [`Error::Decode`] for a CBOR body that is not what its tag says.
+    pub fn decode(frame: &[u8]) -> Result<Self, Error> {
+        let (tag, body) = split(frame)?;
+        match tag {
+            SIGNATURE => decode(body).map(Self::Signature),
+            SIGNATURE_END => Ok(Self::SignatureEnd),
             other => Err(Error::Tag(other)),
         }
     }
@@ -439,6 +564,9 @@ pub enum WriteInput {
     Data(Vec<u8>),
     /// A piece of the compressed stream. A `data` frame ends the compression context.
     Compressed(Vec<u8>),
+    /// A delta write: these blocks of the target stand here. It neither ends nor disturbs a compression
+    /// context, since every compressed piece decodes completely.
+    Copy(DeltaCopy),
     /// No more data: put it in place.
     End,
 }
@@ -449,6 +577,7 @@ impl WriteInput {
         match self {
             Self::Data(bytes) => tagged(WRITE_DATA, bytes),
             Self::Compressed(bytes) => tagged(WRITE_COMPRESSED, bytes),
+            Self::Copy(body) => tagged(WRITE_COPY, &encode(body).unwrap_or_default()),
             Self::End => tagged(WRITE_END, &[]),
         }
     }
@@ -457,12 +586,14 @@ impl WriteInput {
     ///
     /// # Errors
     ///
-    /// [`Error::Short`] for an empty message, [`Error::Tag`] for a tag this version does not know.
+    /// [`Error::Short`] for an empty message, [`Error::Tag`] for a tag this version does not know,
+    /// [`Error::Decode`] for a copy that is not one.
     pub fn decode(frame: &[u8]) -> Result<Self, Error> {
         let (tag, body) = split(frame)?;
         match tag {
             WRITE_DATA => Ok(Self::Data(body.to_vec())),
             WRITE_COMPRESSED => Ok(Self::Compressed(body.to_vec())),
+            WRITE_COPY => decode(body).map(Self::Copy),
             WRITE_END => Ok(Self::End),
             other => Err(Error::Tag(other)),
         }

@@ -116,6 +116,34 @@
       }
     },
     {
+      "direction": "client_to_host",
+      "hex": "a664706174686c2f7372762f6269672e62696e646d6f6465a364747970656564656c74616a626c6f636b5f73697a651920006462617365a36473697a651a03d09000686d6f646966696564a264736563731a6553f100656e616e6f730566686173686573a067706172656e7473f46966696c655f6d6f6465f666657870656374a16673686132353678403263663234646261356662306133306532366538336232616335623965323965316231363165356331666137343235653733303433333632393338623938323466686173686573f6",
+      "kind": "open",
+      "name": "open_delta",
+      "type": "fs.WriteRequest",
+      "value": {
+        "expect": {
+          "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        },
+        "file_mode": null,
+        "hashes": null,
+        "mode": {
+          "base": {
+            "hashes": {},
+            "modified": {
+              "nanos": 5,
+              "secs": 1700000000
+            },
+            "size": 64000000
+          },
+          "block_size": 8192,
+          "type": "delta"
+        },
+        "parents": false,
+        "path": "/srv/big.bin"
+      }
+    },
+    {
       "direction": "host_to_client",
       "hex": "01",
       "kind": "frame",
@@ -176,6 +204,20 @@
       "value": {
         "data_hex": "28b52ffd00586c00003868656c6c6f200a0100b94b11",
         "tag": 20
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "15a265626c6f636b0365636f756e741828",
+      "kind": "frame",
+      "name": "copy",
+      "type": "fs.WriteInput",
+      "value": {
+        "message": {
+          "block": 3,
+          "count": 40
+        },
+        "tag": 21
       }
     },
     {

@@ -36,7 +36,7 @@ does not name, refuses trailing bytes and nesting past `depth` (`Error::Decode`)
 
 ```rust
 #[non_exhaustive] pub enum Error { Encode, Decode, Tag(u8), Short }        // Copy, std::error::Error; never quotes input
-#[non_exhaustive] pub enum ErrorCode { BadRequest, Denied, NotFound, Exists, Unsupported, Busy, OutsideRoot, Io, Refused, Unreachable, Timeout, Unavailable, Internal, Other }   // `Unavailable`: a desktop that exists and cannot be used now (locked for input, not at the screen); `Refused`, `Unreachable` and `Timeout` are a forward's connect failing
+#[non_exhaustive] pub enum ErrorCode { BadRequest, Denied, NotFound, Exists, Unsupported, Busy, OutsideRoot, Io, Refused, Unreachable, Timeout, Unavailable, InUse, Changed, Internal, Other }   // `Unavailable`: a desktop that exists and cannot be used now (locked for input, not at the screen); `Refused`, `Unreachable` and `Timeout` are a forward's connect failing
 pub struct ErrorBody { pub code: ErrorCode, pub message: String }          // Error; ErrorBody::new(code, message)
 ```
 
@@ -70,15 +70,21 @@ pub struct Metadata { kind, size: u64, modified/accessed/created: Option<Timesta
                       readonly: bool, attributes: Option<u32> /* windows */ }
 pub struct Entry { pub name: String, pub metadata: Metadata }                            // not following a link
 pub struct Listing { pub entries: Vec<Entry>, pub next: Option<String>, pub skipped: u64 }   // ascending by name; `next` = pass as `after`
-pub struct ReadRequest { path, offset: u64 /* 0 */, length: Option<u64>, hashes: Vec<Algorithm>, compression: Option<Compression>, prepare: bool, resume: Option<Resume> }   // open metadata of bohio-read/1; ReadRequest::whole(path)
-pub struct ReadHeader { size: u64, length: u64 /* decompressed */, compression: Option<Compression> /* what the host used, never auto */, compressed_length: Option<u64>, token: Option<String> }   // ReadHeader::raw(size, length)
+pub struct ReadRequest { path, offset: u64 /* 0 */, length: Option<u64>, hashes: Vec<Algorithm>, compression: Option<Compression>, prepare: bool, resume: Option<Resume>, delta: Option<ReadDelta> }   // open metadata of bohio-read/1; ReadRequest::whole(path)
+pub struct ReadHeader { size: u64, length: u64 /* decompressed */, compression: Option<Compression> /* what the host used, never auto */, compressed_length: Option<u64>, token: Option<String>, delta: bool /* copy frames and data add up to length */ }   // ReadHeader::raw(size, length)
+pub const WEAK_RSYNC: &str = "rsync";
+pub struct DeltaCopy { pub block: u64, pub count: u64 }                              // consecutive blocks of the old file; the last block may be shorter
+pub struct ReadDelta { block_size: u64, weak: String /* "rsync" */, strong: Algorithm, strong_len: u64, base_size: u64 }   // `delta` of a ReadRequest: the client sends its signature after the open
+pub struct SignatureBatch { first: u64, weak: Vec<u32>, strong: Vec<u8> /* strong_len bytes per block, joined */ }
+pub struct DeltaBase { size: u64, modified: Option<Timestamp>, hashes: Digests }   // what a delta write was made against
 #[non_exhaustive] pub struct ReadDone { pub hashes: Digests }                        // the digests the request named, of the bytes sent
-#[non_exhaustive] pub enum ReadOutput { Header(ReadHeader), Data(Vec<u8>), Compressed(Vec<u8>) /* 0x06 */, Progress(Progress) /* 0x08 */, Done(ReadDone), Error(ErrorBody) }
-#[non_exhaustive] pub enum WriteMode { Replace /* default */, Create, Append, At { offset: u64 } }   // tagged by "type"
+#[non_exhaustive] pub enum ReadOutput { Header(ReadHeader), Data(Vec<u8>), Compressed(Vec<u8>) /* 0x06 */, Progress(Progress) /* 0x08 */, Copy(DeltaCopy) /* 0x09 */, Done(ReadDone), Error(ErrorBody) }
+#[non_exhaustive] pub enum ReadInput { Signature(SignatureBatch) /* 0x12 */, SignatureEnd /* 0x13 */ }   // client to host, a delta read only
+#[non_exhaustive] pub enum WriteMode { Replace /* default */, Create, Append, At { offset: u64 }, Delta { block_size: u64, base: DeltaBase } }   // tagged by "type"; no longer Copy (Delta holds digests); a delta needs fs.read as well
 pub struct WriteRequest { path, mode: WriteMode, parents: bool, file_mode: Option<u32>, expect: Digests, hashes: Option<Vec<Algorithm>>, compression: Option<Compression> }   // WriteRequest::replace(path); hashes None: the host's write_hashes; compression: what the client sends, never Auto
 pub struct WriteDone { pub written: u64, pub hashes: Digests }
 #[non_exhaustive] pub enum WriteOutput { Ready, Done(WriteDone), Error(ErrorBody) }
-#[non_exhaustive] pub enum WriteInput { Data(Vec<u8>), Compressed(Vec<u8>) /* 0x14 */, End }
+#[non_exhaustive] pub enum WriteInput { Data(Vec<u8>), Compressed(Vec<u8>) /* 0x14 */, Copy(DeltaCopy) /* 0x15 */, End }
 // each Request: to_metadata() / from_metadata(&[u8]); each frame enum: encode() / decode(&[u8]) (Error::Tag for an unknown tag)
 ```
 
@@ -95,8 +101,9 @@ impl Algorithm { pub const KNOWN: [Algorithm; 10]; pub fn name(&self) -> &str; p
 pub type Digests = BTreeMap<Algorithm, String>;                // lowercase hex in the byte order md5sum, b3sum, xxhsum print
 pub struct HashRequest { algorithms: Vec<Algorithm>, blocks: Option<BlockOptions> }   // open metadata of bohio-hash/1; HashRequest::new(algorithms)
 pub struct HashItem { path, offset: u64, length: Option<u64>, if_size: Option<u64>, if_modified: Option<Timestamp> }   // HashItem::whole(path)
-pub struct HashResult { index: u64, size: u64, modified: Option<Timestamp>, length: u64, unchanged: bool, hashes: Digests }
-pub struct HashBlocks { index, first, size: u64, weak: Vec<u32>, strong: Vec<u8> }   // reserved: the host sends none yet
+pub struct HashResult { index: u64, size: u64, modified: Option<Timestamp>, length: u64, unchanged: bool, hashes: Digests, block_size: Option<u64>, strong_len: Option<u64> }   // the last two with `blocks` asked for
+pub struct BlockOptions { size: Option<u64>, weak: Option<String>, strong_len: Option<u64> }   // the signature of each item: strong hash = the request's first algorithm cut to strong_len
+pub struct HashBlocks { index, first, size: u64, weak: Vec<u32>, strong: Vec<u8> }   // 0x02: the next blocks of an item's signature, before that item's result
 pub struct ItemError { index: u64, code: ErrorCode, message: String }               // ItemError::new(index, body), .body()
 pub struct HashDone { pub items: u64 }
 #[non_exhaustive] pub enum HashOutput { Result(HashResult), Blocks(HashBlocks), ItemError(ItemError), Done(HashDone), Error(ErrorBody) }   // tags 0x01..0x05
@@ -159,7 +166,8 @@ pub struct Info { protocol, service: Service{name, version}, host_id: Option<Str
                   exec: ExecInfo{enabled}, shell: SessionInfo{enabled}, limits: Limits{max_streams, max_processes, max_sessions: Option<u64>},
                   transfer: TransferInfo{hashes: Vec<Algorithm>, hash_limits: HashLimits{max_streams: u64, rate: u64 /* 0 unlimited */},
                          compression: Vec<CompressionInfo{algorithm: Codec, levels: Levels{min, max}, default_level: i32, window_log_max: u32}>,
-                         compression_default: Option<Compression>, prepared: bool},
+                         compression_default: Option<Compression>, prepared: bool,
+                         delta: DeltaInfo{weak: Vec<String>, min_block, max_block, min_size, max_signature_bytes: u64}},
                   forward: ForwardInfo{enabled, connect, listen}, gui: GuiInfo }
 ```
 

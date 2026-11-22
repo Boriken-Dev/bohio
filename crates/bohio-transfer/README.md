@@ -6,7 +6,7 @@
 [![Docs](https://img.shields.io/docsrs/bohio-transfer)](https://docs.rs/bohio-transfer)
 [![CI](https://img.shields.io/github/actions/workflow/status/Boriken-Dev/bohio/test.yml)](https://github.com/Boriken-Dev/bohio/actions/workflows/test.yml)
 
-The byte-level work of Bohío, a remote host runtime: digests of several algorithms in one pass, and compression (zstd, LZ4 and deflate) piece by piece. **It does no I/O of
+The byte-level work of Bohío, a remote host runtime: digests of several algorithms in one pass, compression (zstd, LZ4 and deflate) piece by piece, and rsync's rolling checksum, block signatures and deltas. **It does no I/O of
 its own**: it takes the bytes a caller feeds it, or a `Read` a caller passes. Documentation: <https://docs.rs/bohio-transfer>.
 
 ## Features

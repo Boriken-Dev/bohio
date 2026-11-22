@@ -5,7 +5,7 @@ Header-file-style reference for the `bohio-transfer` crate: the byte-level work 
 <https://github.com/Boriken-Dev/bohio>.
 
 MSRV Rust 1.89. Depends on `bohio-proto` (the `Algorithm` and `Codec` names), `sha2`, `sha1`, `md-5` (RustCrypto), `blake3`, `xxhash-rust`, `crc32c`, `lz4_flex`, `flate2` and, with the default Cargo feature `zstd`, `zstd` (the C library). Features: `zstd` (default), `zstdmt`.
-Version `0.0.0-alpha.0`, not published. `unsafe` is forbidden in this crate; the digest crates' own code is theirs. Public modules: `hash`, `compress`.
+Version `0.0.0-alpha.0`, not published. `unsafe` is forbidden in this crate; the digest crates' own code is theirs. Public modules: `hash`, `compress`, `rolling`, `signature`, `delta`, `apply`.
 
 ## Hash (`bohio_transfer::hash`)
 
@@ -27,6 +27,29 @@ Hex is in the byte order the reference tools print (`md5sum`, `sha256sum`, `b3su
 the published vectors of each: the empty input, `abc` and, for `crc32c`, `123456789` (`e3069283`). `md5` and `sha1` are not collision resistant.
 
 `blake3` compiles C or assembly through `cc` for its SIMD code unless built with its `pure` feature, which this crate does not set.
+
+## Deltas (`rolling`, `signature`, `delta`, `apply`)
+
+rsync's algorithm, streamed, specified in `docs/protocol.md` "Deltas" (no maintained crate does it without whole files in memory: `fast_rsync` takes buffers and MD4 only).
+
+```rust
+pub struct Rolling;                                         // Copy; the weak checksum: a = sum x[i], b = sum (L - i) x[i], both mod 2^16, value a + 2^16 b
+impl Rolling { pub fn new(window: &[u8]) -> Self; pub fn roll(&mut self, out: u8, incoming: u8); pub const fn value(&self) -> u32; }
+pub fn block_size_for(size: u64, min: u32, max: u32) -> u32;   // clamp(next_power_of_two(isqrt(size)), min, max); min wins over a smaller max
+pub use bohio_proto::fs::WEAK_RSYNC;
+pub struct SignatureSpec { pub block_size: u32, pub strong: Algorithm, pub strong_len: usize }   // SignatureSpec::new(..) checks; digest_len(&Algorithm); strong_of(&[u8]) -> Vec<u8>
+pub struct BlockSig { pub weak: u32, pub strong: Vec<u8> }
+pub struct SignatureBuilder;                                // new(spec); update(&[u8]) -> Vec<BlockSig> (the blocks the bytes complete); finish() -> Option<BlockSig> (the short last block); holds one block
+pub struct Signature;                                       // new(spec, size); push(&BlockSig); push_batch(&[u32], &[u8]); blocks(), blocks_needed(), is_complete(), wire_len(), last_len(); PartialEq
+pub struct Matcher;                                         // new(Signature, frame) (must be complete); feed(&[u8]) -> Vec<Op>; finish(self) -> Vec<Op>
+pub enum Op { Copy { block: u64, count: u64 }, Literal(Vec<u8>) }    // copies merged; literals at most `frame`; among equal blocks the one that continues the last copy
+pub fn apply(base: &mut (impl Read + Seek), op: &Op, block_size: u32, out: &mut impl Write) -> Result<u64, ApplyError>;   // PastEnd for a copy the base lacks
+pub fn copy_len(base_len: u64, block_size: u32, block: u64, count: u64) -> Option<u64>;   // the bytes a copy is; None past the end (the last block may be short)
+#[non_exhaustive] pub enum SpecError { BlockSize, Algorithm(Algorithm), StrongLen(usize), Weak(String), Batch, TooMany, Incomplete }
+```
+
+Memory is the signature (`4 + strong_len` bytes a block, plus 8 for the matcher's index), a window of one block, the pieces not yet matched and one literal of at most `frame` bytes; never the file.
+`tests/delta.rs` holds the property test (random edits against random files, block sizes 2 KiB to 1 MiB, the weak sum against its definition).
 
 ## Compress (`bohio_transfer::compress`)
 
