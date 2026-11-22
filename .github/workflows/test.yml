@@ -29,6 +29,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         toolchain: [stable, "1.89"]
+    timeout-minutes: 45
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -61,6 +62,7 @@ jobs:
   # deps branch commit the lock pins covers Cargo.lock and passes the scanner.
   tools:
     name: Build tool checks
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -86,6 +88,7 @@ jobs:
   # interface but a down loopback, so a build that reached for the network fails instead of passing quietly.
   offline:
     name: Offline build
+    timeout-minutes: 45
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -123,6 +126,7 @@ jobs:
 
   release-matrix:
     name: Release matrix
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     outputs:
       binaries: ${{ steps.matrix.outputs.binaries }}
@@ -145,6 +149,7 @@ jobs:
   release-build:
     name: Release ${{ matrix.target }}
     needs: release-matrix
+    timeout-minutes: 60
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -178,6 +183,7 @@ jobs:
   release-universal:
     name: Release universal-apple-darwin
     needs: release-matrix
+    timeout-minutes: 60
     runs-on: ${{ fromJSON(needs.release-matrix.outputs.universal).include[0].runner }}
     steps:
       - uses: actions/checkout@v4
@@ -205,6 +211,7 @@ jobs:
   release-image:
     name: Release image ${{ matrix.arch }}
     needs: release-matrix
+    timeout-minutes: 60
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false

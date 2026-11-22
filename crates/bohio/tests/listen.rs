@@ -1501,6 +1501,19 @@ fn connect_and_pipe_helpers_agree_on_the_one_connect_api() {
 
 // Many forwards at once.
 
+/// Drops `conn` with no end sent, where that is the ending under test. A Windows loopback connection closed that way is reset
+/// while another thread starts processes (reproduced with plain `std` sockets and no forwarding), so there the side ends its
+/// direction and reads the other's end first, as the matrix does.
+fn drop_or_end(mut conn: Conn) -> Result<(), String> {
+    if cfg!(windows) {
+        conn.send_end();
+        conn.expect_end()
+    } else {
+        drop(conn);
+        Ok(())
+    }
+}
+
 /// Bytes each way in a stress forward: sixteen run together, and a debug build on a slow disk moves them in a few seconds.
 const STRESS_LEN: usize = 1024 * 1024;
 
@@ -1562,12 +1575,15 @@ fn one_forward(link: &dyn Open, ending: Ending, index: u64) -> Result<(), String
                 Ending::TargetCloses | Ending::SlowClient => {
                     // Sends at the same time as it reads, then closes at once: nothing is left unread.
                     conn.exchange_len(seed_server, seed_client, STRESS_LEN)?;
-                    drop(conn);
-                    Ok(())
+                    drop_or_end(conn)
                 }
                 Ending::ClientDrops => {
                     conn.exchange_len(seed_server, seed_client, STRESS_LEN)?;
-                    conn.expect_end()
+                    let seen = conn.expect_end();
+                    if cfg!(windows) {
+                        conn.send_end();
+                    }
+                    seen
                 }
             }
         });
@@ -1600,15 +1616,18 @@ fn one_forward(link: &dyn Open, ending: Ending, index: u64) -> Result<(), String
                 }
                 Ending::ClientDrops => {
                     conn.exchange_len(seed_client, seed_server, STRESS_LEN)?;
-                    drop(conn);
-                    Ok(())
+                    drop_or_end(conn)
                 }
                 Ending::TargetCloses | Ending::SlowClient => {
                     if matches!(ending, Ending::SlowClient) {
                         thread::sleep(Duration::from_millis(300));
                     }
                     conn.exchange_len(seed_client, seed_server, STRESS_LEN)?;
-                    conn.expect_end()
+                    let seen = conn.expect_end();
+                    if cfg!(windows) {
+                        conn.send_end();
+                    }
+                    seen
                 }
             }
         });
