@@ -53,6 +53,8 @@ pub enum ErrorCode {
     /// The thing exists but cannot be used now: a desktop that is locked for input, a session that is not at the screen, a
     /// permission of the operating system that is missing.
     Unavailable,
+    /// A remote forward's address, socket or pipe is already bound.
+    InUse,
     /// The host failed in a way the request did not cause.
     Internal,
     /// A code this version does not know.

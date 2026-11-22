@@ -1,6 +1,7 @@
 //! Helpers the integration tests share: an in-process link, the helper program, process checks.
 #![allow(dead_code, reason = "each test binary uses some of these")]
 
+pub mod embedded;
 pub mod procs;
 
 use std::path::PathBuf;

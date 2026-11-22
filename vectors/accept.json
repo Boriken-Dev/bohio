@@ -1,0 +1,44 @@
+{
+  "encoding": "hex is the stream message exactly as it travels: open metadata and control messages are bare CBOR, a frame is one tag byte then its body",
+  "protocol": "bohio-accept/1",
+  "vectors": [
+    {
+      "direction": "client_to_host",
+      "hex": "a265746f6b656e7820303031313232333334343535363637373838393961616262636364646565666662696403",
+      "kind": "open",
+      "name": "open",
+      "type": "forward.AcceptRequest",
+      "value": {
+        "id": 3,
+        "token": "00112233445566778899aabbccddeeff"
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "01a16761646472657373703139322e302e322e34303a3531323334",
+      "kind": "frame",
+      "name": "connected",
+      "type": "forward.Answer",
+      "value": {
+        "message": {
+          "address": "192.0.2.40:51234"
+        },
+        "tag": 1
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "05a264636f6465696e6f745f666f756e64676d6573736167656f6e6f2073756368206172726976616c",
+      "kind": "frame",
+      "name": "error_not_found",
+      "type": "forward.Answer",
+      "value": {
+        "message": {
+          "code": "not_found",
+          "message": "no such arrival"
+        },
+        "tag": 5
+      }
+    }
+  ]
+}

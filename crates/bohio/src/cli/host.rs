@@ -22,7 +22,7 @@ use super::{
     ApproveArgs, JoinArgs, PairArgs, PeerAction, PeerArgs, RevokeArgs, ServeArgs, StatusArgs,
 };
 use crate::config::{Config, DialConfig, Environment, ListenConfig};
-use crate::forward::ConnectRule;
+use crate::forward::{ConnectRule, ListenRule};
 use crate::link::{Grants, Keys, KeysError, MemoryGrants};
 use crate::listen::Listening;
 use crate::local::{ANOTHER_ACCOUNT, Local, LocalLink, Server};
@@ -338,6 +338,9 @@ fn describe(grant: &Grant) -> String {
     if !grant.forward().connect().is_empty() {
         text.push_str(&format!(" connect={}", grant.forward().connect().join(",")));
     }
+    if !grant.forward().listen().is_empty() {
+        text.push_str(&format!(" listen={}", grant.forward().listen().join(",")));
+    }
     text
 }
 
@@ -381,7 +384,7 @@ fn peer_approve(args: &ApproveArgs, environment: &Environment) -> Result<(), Str
         }
         permissions.push(Permission::from_name(name).ok_or_else(|| {
             format!(
-                "`{name}` is not a permission: info, fs.read, fs.write, exec, shell, admin, forward.connect, gui.view, gui.input, gui.clipboard"
+                "`{name}` is not a permission: info, fs.read, fs.write, exec, shell, admin, forward.connect, gui.view, gui.input, gui.clipboard, forward.listen"
             )
         })?);
     }
@@ -389,20 +392,29 @@ fn peer_approve(args: &ApproveArgs, environment: &Environment) -> Result<(), Str
         rule.parse::<ConnectRule>()
             .map_err(|error| format!("--connect `{rule}`: {error}"))?;
     }
+    for rule in &args.listen {
+        rule.parse::<ListenRule>()
+            .map_err(|error| format!("--listen `{rule}`: {error}"))?;
+    }
     // A rule that the permission does not accompany would allow nothing, so naming rules grants the permission.
     if !args.connect.is_empty() && !permissions.contains(&Permission::ForwardConnect) {
         permissions.push(Permission::ForwardConnect);
     }
+    if !args.listen.is_empty() && !permissions.contains(&Permission::ForwardListen) {
+        permissions.push(Permission::ForwardListen);
+    }
     let grant = (!permissions.is_empty()
         || !args.fs_root.is_empty()
         || !args.program.is_empty()
-        || !args.connect.is_empty())
+        || !args.connect.is_empty()
+        || !args.listen.is_empty())
     .then(|| {
         Grant::allowing(permissions)
             .with_fs_roots(args.fs_root.iter().cloned())
             .with_programs(args.program.iter().cloned())
             .with_env(args.env.iter().cloned())
             .with_connect(args.connect.iter().cloned())
+            .with_listen(args.listen.iter().cloned())
     });
     let approved = peer::approve(
         &found.layered.files,

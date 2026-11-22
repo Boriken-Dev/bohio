@@ -7,7 +7,11 @@
 //!
 //! The pump is `coqui_link::forward::pump_with` for TCP and [`bohio_client::forward::ipc::pump`] for a Unix socket or a
 //! Windows named pipe, both over the stream itself with no relay in between.
+//!
+//! [`serve_listen`] and [`serve_accept`] are the other direction (`bohio-listen/1` and `bohio-accept/1`): the host listens for
+//! the peer and hands it each connection, which the peer claims on a stream of its own and which then moves as above.
 
+mod listen;
 mod rules;
 
 use std::io;
@@ -27,7 +31,8 @@ use crate::limit::{Counted, Slots};
 use crate::link::{ForwardKind, ForwardOutcome, NodeEvent, NodeEvents};
 use crate::policy::Grant;
 
-pub use rules::{BadRule, ConnectRule, tcp_target};
+pub use listen::{Listeners, covers_listen, listen_kinds, serve_accept, serve_listen};
+pub use rules::{Addresses, BadRule, ConnectRule, ListenRule, PortSet, tcp_target};
 
 /// The kinds of target this host connects to, as `info` lists them: TCP everywhere, a Unix socket on Unix and a named pipe on
 /// Windows.
@@ -48,6 +53,8 @@ pub struct Context<'a> {
     pub slots: &'a Slots,
     /// The forwarded connections each peer has open: `[forward] max_connections_per_peer`.
     pub per_peer: &'a Counted<String>,
+    /// The remote forwards' listeners.
+    pub listeners: &'a Listeners,
     /// The peer.
     pub peer: PeerId,
     /// Where `forwarded` events go.
@@ -129,7 +136,7 @@ pub fn serve_connect(stream: &dyn LinkStream, metadata: &[u8], context: &Context
             if !answer_connected(stream, Some(address.to_string())) {
                 return;
             }
-            context.event(&text, ForwardOutcome::Connected);
+            context.event(ForwardKind::Connect, &text, ForwardOutcome::Connected);
             coqui_link::forward::pump_with(stream, &connection, &options);
         }
         Target::Unix { .. } | Target::Pipe { .. } => {
@@ -140,7 +147,7 @@ pub fn serve_connect(stream: &dyn LinkStream, metadata: &[u8], context: &Context
             if !answer_connected(stream, None) {
                 return;
             }
-            context.event(&text, ForwardOutcome::Connected);
+            context.event(ForwardKind::Connect, &text, ForwardOutcome::Connected);
             ipc::pump(stream, connection, &options);
         }
         // A kind this version does not know cannot have been decoded.
@@ -162,20 +169,32 @@ pub fn serve_tcp(stream: &dyn LinkStream, metadata: &[u8], context: &Context<'_>
     };
     let text = target.to_string();
     if !context.config.enabled || !context.grant.permits_connect(&target) {
-        context.event(&text, ForwardOutcome::Failed(ErrorCode::Denied));
+        context.event(
+            ForwardKind::Connect,
+            &text,
+            ForwardOutcome::Failed(ErrorCode::Denied),
+        );
         return stream.close_with(CloseReason::Refused, "this peer may not reach that");
     }
     let Some(_held) = hold(context) else {
-        context.event(&text, ForwardOutcome::Failed(ErrorCode::Busy));
+        context.event(
+            ForwardKind::Connect,
+            &text,
+            ForwardOutcome::Failed(ErrorCode::Busy),
+        );
         return stream.close_with(CloseReason::Refused, "too many forwarded connections");
     };
     match connect_tcp(&target, context.config.connect_timeout.0) {
         Ok((connection, _)) => {
-            context.event(&text, ForwardOutcome::Connected);
+            context.event(ForwardKind::Connect, &text, ForwardOutcome::Connected);
             coqui_link::forward::pump_with(stream, &connection, &context.config.options());
         }
         Err(body) => {
-            context.event(&text, ForwardOutcome::Failed(body.code));
+            context.event(
+                ForwardKind::Connect,
+                &text,
+                ForwardOutcome::Failed(body.code),
+            );
             stream.close_with(CloseReason::Refused, "that target cannot be reached");
         }
     }
@@ -197,10 +216,10 @@ fn hold<'a>(context: &Context<'a>) -> Option<Held<'a>> {
 }
 
 impl Context<'_> {
-    fn event(&self, target: &str, outcome: ForwardOutcome) {
+    fn event(&self, kind: ForwardKind, target: &str, outcome: ForwardOutcome) {
         self.events.event(&NodeEvent::Forwarded {
             peer: self.peer,
-            kind: ForwardKind::Connect,
+            kind,
             target: target.to_owned(),
             outcome,
         });
@@ -209,7 +228,16 @@ impl Context<'_> {
 
 /// Tells the peer nothing was connected, and ends the stream.
 fn refuse(stream: &dyn LinkStream, context: &Context<'_>, target: &str, body: ErrorBody) {
-    context.event(target, ForwardOutcome::Failed(body.code));
+    context.event(
+        ForwardKind::Connect,
+        target,
+        ForwardOutcome::Failed(body.code),
+    );
+    refuse_with(stream, body);
+}
+
+/// As [`refuse`], with no event.
+fn refuse_with(stream: &dyn LinkStream, body: ErrorBody) {
     if let Ok(frame) = (Answer::Error(body)).encode() {
         send_waiting(stream, &frame);
     }

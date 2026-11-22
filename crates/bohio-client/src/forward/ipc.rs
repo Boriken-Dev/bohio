@@ -36,22 +36,25 @@ pub fn connect(name: &PipeName, timeout: Duration, options: &Options) -> Result<
         })
 }
 
-/// Binds the socket or pipe `name` for a local forward, with the crate's defaults (this user alone, mode `0o600`) and the
-/// reads and writes of [`connect`].
+/// Binds the socket or pipe `name`, with the crate's defaults (this user alone, mode `0o600`; `mode` replaces the mode of a Unix
+/// socket and has no effect on a pipe) and the reads and writes of [`connect`].
 ///
 /// # Errors
 ///
 /// What [`Listener::builder`] reports.
-pub fn listener(name: &PipeName, options: &Options) -> Result<Listener, Error> {
-    Listener::builder()
+pub fn listener(name: &PipeName, options: &Options, mode: Option<u32>) -> Result<Listener, Error> {
+    let builder = Listener::builder()
         .name(name)
         .read_timeout(Some(options.watch))
-        .write_timeout(Some(options.stalled))
-        .build()
-        .map_err(|error| match error {
-            coqui_transport_pipe::BuildError::Failed(error) => error,
-            other => Error::Io(io::Error::other(other.to_string())),
-        })
+        .write_timeout(Some(options.stalled));
+    let builder = match mode {
+        Some(mode) => builder.socket_mode(mode),
+        None => builder,
+    };
+    builder.build().map_err(|error| match error {
+        coqui_transport_pipe::BuildError::Failed(error) => error,
+        other => Error::Io(io::Error::other(other.to_string())),
+    })
 }
 
 /// Moves bytes between `stream` and `ipc` until both directions have ended, as [`coqui_link::forward::pump_with`] does for

@@ -1,0 +1,129 @@
+{
+  "encoding": "hex is the stream message exactly as it travels: open metadata and control messages are bare CBOR, a frame is one tag byte then its body",
+  "protocol": "bohio-listen/1",
+  "vectors": [
+    {
+      "direction": "client_to_host",
+      "hex": "a26462696e64a364747970656374637064686f7374693132372e302e302e3164706f727400676261636b6c6f67f6",
+      "kind": "open",
+      "name": "open_tcp_loopback_any_port",
+      "type": "forward.ListenRequest",
+      "value": {
+        "backlog": null,
+        "bind": {
+          "host": "127.0.0.1",
+          "port": 0,
+          "type": "tcp"
+        }
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a26462696e64a364747970656374637064686f7374633a3a3164706f7274191f90676261636b6c6f6704",
+      "kind": "open",
+      "name": "open_tcp_with_backlog",
+      "type": "forward.ListenRequest",
+      "value": {
+        "backlog": 4,
+        "bind": {
+          "host": "::1",
+          "port": 8080,
+          "type": "tcp"
+        }
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a26462696e64a2647479706564756e69786470617468772f72756e2f757365722f313030302f6170702e736f636b676261636b6c6f67f6",
+      "kind": "open",
+      "name": "open_unix",
+      "type": "forward.ListenRequest",
+      "value": {
+        "backlog": null,
+        "bind": {
+          "path": "/run/user/1000/app.sock",
+          "type": "unix"
+        }
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a26462696e64a264747970656470697065646e616d6563617070676261636b6c6f67f6",
+      "kind": "open",
+      "name": "open_pipe",
+      "type": "forward.ListenRequest",
+      "value": {
+        "backlog": null,
+        "bind": {
+          "name": "app",
+          "type": "pipe"
+        }
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "01a267616464726573736f3132372e302e302e313a343031323365746f6b656e78203030313132323333343435353636373738383939616162626363646465656666",
+      "kind": "frame",
+      "name": "listening",
+      "type": "forward.ListenFrame",
+      "value": {
+        "message": {
+          "address": "127.0.0.1:40123",
+          "token": "00112233445566778899aabbccddeeff"
+        },
+        "tag": 1
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "02a26269640366736f75726365703139322e302e322e34303a3531323334",
+      "kind": "frame",
+      "name": "arrival",
+      "type": "forward.ListenFrame",
+      "value": {
+        "message": {
+          "id": 3,
+          "source": "192.0.2.40:51234"
+        },
+        "tag": 2
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "02a26269640466736f75726365f6",
+      "kind": "frame",
+      "name": "arrival_without_source",
+      "type": "forward.ListenFrame",
+      "value": {
+        "message": {
+          "id": 4,
+          "source": null
+        },
+        "tag": 2
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "05a264636f646566696e5f757365676d657373616765781e74686174206164647265737320697320616c726561647920696e20757365",
+      "kind": "frame",
+      "name": "error_in_use",
+      "type": "forward.ListenFrame",
+      "value": {
+        "message": {
+          "code": "in_use",
+          "message": "that address is already in use"
+        },
+        "tag": 5
+      }
+    },
+    {
+      "decode_only": true,
+      "direction": "host_to_client",
+      "error": "tag",
+      "hex": "7f",
+      "kind": "frame",
+      "name": "unknown_tag",
+      "type": "forward.ListenFrame"
+    }
+  ]
+}

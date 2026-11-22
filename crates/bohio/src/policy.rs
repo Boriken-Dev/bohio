@@ -13,6 +13,7 @@
 //!
 //! [peer.<id>.forward]
 //! connect = ["db.lan:5432", "10.0.0.0/8:22", "unix:/run/docker.sock"]
+//! listen = ["127.0.0.1:0", "127.0.0.1:18090-18099", "unix:/run/user/*/app.sock"]
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -59,11 +60,15 @@ pub enum Permission {
     /// Read and write the desktop's clipboard text, beside `gui.view` or `gui.input`. A password manager's copy is in it.
     #[serde(rename = "gui.clipboard")]
     GuiClipboard,
+    /// Have the host listen where `[peer.<id>.forward] listen` allows (a TCP address, a Unix socket or a Windows named
+    /// pipe) and hand each connection it takes to the peer.
+    #[serde(rename = "forward.listen")]
+    ForwardListen,
 }
 
 impl Permission {
     /// Every permission, in order.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Info,
         Self::FsRead,
         Self::FsWrite,
@@ -74,6 +79,7 @@ impl Permission {
         Self::GuiView,
         Self::GuiInput,
         Self::GuiClipboard,
+        Self::ForwardListen,
     ];
 
     /// The permission named `name` as `bohio.cfg` writes it.
@@ -96,6 +102,7 @@ impl Permission {
             Self::GuiView => "gui.view",
             Self::GuiInput => "gui.input",
             Self::GuiClipboard => "gui.clipboard",
+            Self::ForwardListen => "forward.listen",
         }
     }
 }
@@ -112,7 +119,7 @@ pub struct Grant {
     /// Limits on `exec`.
     #[serde(skip_serializing_if = "ExecGrant::is_unlimited")]
     exec: ExecGrant,
-    /// Where `forward.connect` reaches.
+    /// Where `forward.connect` reaches and what `forward.listen` binds.
     #[serde(skip_serializing_if = "ForwardGrant::is_empty")]
     forward: ForwardGrant,
 }
@@ -125,17 +132,28 @@ pub struct ForwardGrant {
     /// `*`, an address or a CIDR network and PORT is `N`, `A-B` or `*` (`coqui_link::forward::Rule`); `unix:PATH` and
     /// `pipe:NAME`, exactly or with `*` and `?`, which match within one path component. The peer needs `forward.connect`
     /// as well as a rule that matches; an empty list allows nothing.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     connect: Vec<String>,
+    /// What the peer may have the host bind, as rules: `BIND:PORT` where BIND is an address, a CIDR network or `*` and PORT
+    /// is `N`, `A-B` or `*` (`0` asks the host for a free port and is allowed only when a rule names it, or `*`);
+    /// `unix:PATH` and `pipe:NAME` as in `connect`. The peer needs `forward.listen` as well; an empty list allows nothing.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    listen: Vec<String>,
 }
 
 impl ForwardGrant {
     fn is_empty(&self) -> bool {
-        self.connect.is_empty()
+        self.connect.is_empty() && self.listen.is_empty()
     }
 
     /// The rule texts, in order.
     pub fn connect(&self) -> &[String] {
         &self.connect
+    }
+
+    /// The `listen` rule texts, in order.
+    pub fn listen(&self) -> &[String] {
+        &self.listen
     }
 }
 
@@ -255,6 +273,13 @@ impl Grant {
     #[must_use]
     pub fn with_connect(mut self, rules: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.forward.connect = rules.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Lets the peer have the host bind what `rules` match; the peer also needs [`Permission::ForwardListen`].
+    #[must_use]
+    pub fn with_listen(mut self, rules: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.forward.listen = rules.into_iter().map(Into::into).collect();
         self
     }
 

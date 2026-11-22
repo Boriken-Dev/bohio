@@ -24,7 +24,7 @@ use bohio_proto::protocol;
 use crate::policy::{Grant, Permission};
 
 /// The protocols a host serves, each with the permissions of which a peer needs at least one to open it.
-pub const PROTOCOLS: [(&str, &[Permission]); 9] = [
+pub const PROTOCOLS: [(&str, &[Permission]); 11] = [
     (
         protocol::CONTROL,
         &[Permission::Info, Permission::FsRead, Permission::FsWrite],
@@ -37,6 +37,8 @@ pub const PROTOCOLS: [(&str, &[Permission]); 9] = [
     (protocol::CONNECT, &[Permission::ForwardConnect]),
     (protocol::TCP, &[Permission::ForwardConnect]),
     (protocol::GUI, &[Permission::GuiView, Permission::GuiInput]),
+    (protocol::LISTEN, &[Permission::ForwardListen]),
+    (protocol::ACCEPT, &[Permission::ForwardListen]),
 ];
 
 /// Which keys a node accepts.
@@ -291,7 +293,7 @@ pub enum NodeEvent {
         peer: PeerId,
         /// What kind of forward.
         kind: ForwardKind,
-        /// The target, as `HOST:PORT`, `unix:PATH` or `pipe:NAME`.
+        /// The target or bind, as `HOST:PORT`, `unix:PATH` or `pipe:NAME`.
         target: String,
         /// How it went.
         outcome: ForwardOutcome,
@@ -349,6 +351,10 @@ pub enum GuiChange {
 pub enum ForwardKind {
     /// The host connected to a target for the peer.
     Connect,
+    /// The host bound a listener for the peer (the event's target is what was bound).
+    Listen,
+    /// The peer claimed a connection one of its listeners took (the event's target is the listener's address).
+    Accept,
 }
 
 /// How a forward began.
@@ -555,6 +561,7 @@ pub fn covers(grant: &Grant, protocol: &str, metadata: &[u8]) -> bool {
         protocol::CONNECT => crate::forward::covers(grant, metadata),
         protocol::TCP => crate::forward::covers_tcp(grant, metadata),
         protocol::GUI => crate::gui::covers(grant, metadata),
+        protocol::LISTEN => crate::forward::covers_listen(grant, metadata),
         _ => true,
     }
 }

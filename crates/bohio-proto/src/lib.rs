@@ -39,4 +39,8 @@ pub mod protocol {
     pub const TCP: &str = "tcp/1";
     /// One view of a desktop: snapshots, keyboard and mouse input and the clipboard's text.
     pub const GUI: &str = "bohio-gui/1";
+    /// One listener on the host for a peer; each arrival is announced on the stream.
+    pub const LISTEN: &str = "bohio-listen/1";
+    /// One arrival of a [`LISTEN`] listener, then its raw bytes both ways.
+    pub const ACCEPT: &str = "bohio-accept/1";
 }

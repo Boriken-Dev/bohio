@@ -6,6 +6,12 @@
 //! [`listen_tcp`] and [`listen_ipc`] make one per connection a local listener accepts (`ssh -L`).
 
 pub mod ipc;
+mod remote;
+
+pub use remote::{
+    Arrival, Bind, ListenRequest, LocalConnection, RemoteForward, RemoteListener, connect_local,
+    listen,
+};
 
 use std::io::{self, Read, Write};
 use std::net::TcpListener;
@@ -76,7 +82,23 @@ pub fn connect(
     settings: &ForwardSettings,
 ) -> Result<Tunnel, Error> {
     let request = ConnectRequest::new(target.clone());
-    let stream = link.open(bohio_proto::protocol::CONNECT, &request.to_metadata()?)?;
+    open_answered(
+        link,
+        bohio_proto::protocol::CONNECT,
+        &request.to_metadata()?,
+        settings,
+    )
+}
+
+/// Opens `protocol` with `metadata` and waits for the host's one answer, `connected` or an error: what `bohio-connect/1` and
+/// `bohio-accept/1` both begin with.
+fn open_answered(
+    link: &dyn Open,
+    protocol: &str,
+    metadata: &[u8],
+    settings: &ForwardSettings,
+) -> Result<Tunnel, Error> {
+    let stream = link.open(protocol, metadata)?;
     let frame = match stream.receive(Some(settings.answer_timeout)) {
         Ok(Some(frame)) => frame,
         Ok(None) => return Err(Error::Closed),
@@ -199,6 +221,9 @@ pub enum Ended {
     Stopped,
     /// The link to the host ended.
     LinkLost,
+    /// The host ended a remote listener while the link stayed up: its grant no longer covers the bind, or the listener
+    /// failed (the reason went to the forward's `report`).
+    Closed,
 }
 
 /// Serves `listener` until `stop` is set or the link ends: each connection is a [`connect`] to `target` and a

@@ -177,6 +177,7 @@ fn every_error_code_round_trips() {
         ErrorCode::Unreachable,
         ErrorCode::Timeout,
         ErrorCode::Unavailable,
+        ErrorCode::InUse,
         ErrorCode::Internal,
         ErrorCode::Other,
     ] {

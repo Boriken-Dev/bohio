@@ -114,6 +114,7 @@ struct Shared {
     sessions: Slots,
     forwards: Slots,
     forwards_per_peer: Counted<String>,
+    listeners: forward::Listeners,
     events: Arc<EventCell>,
     gui: Arc<GuiState>,
 }
@@ -143,6 +144,7 @@ impl Shared {
             sessions: Slots::new(config.shell.max_sessions),
             forwards: Slots::new(config.forward.max_connections),
             forwards_per_peer: Counted::new(config.forward.max_connections_per_peer),
+            listeners: forward::Listeners::new(&config.forward),
             events: Arc::clone(events),
             gui: Arc::clone(gui),
             config: config.clone(),
@@ -1105,7 +1107,7 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
     // A forward carries a connection's bytes on the stream itself, with no relay in between.
     if matches!(
         accepted.protocol.as_str(),
-        protocol::CONNECT | protocol::TCP
+        protocol::CONNECT | protocol::TCP | protocol::LISTEN | protocol::ACCEPT
     ) {
         let Ok(peer) = accepted.peer.parse::<PeerId>() else {
             return stream.close_with(CloseReason::Refused, "that is not a peer id");
@@ -1115,13 +1117,15 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
             config: &shared.config.forward,
             slots: &shared.forwards,
             per_peer: &shared.forwards_per_peer,
+            listeners: &shared.listeners,
             peer,
             events: shared.events.as_ref(),
         };
-        if accepted.protocol == protocol::CONNECT {
-            forward::serve_connect(stream, &accepted.metadata, &context);
-        } else {
-            forward::serve_tcp(stream, &accepted.metadata, &context);
+        match accepted.protocol.as_str() {
+            protocol::CONNECT => forward::serve_connect(stream, &accepted.metadata, &context),
+            protocol::LISTEN => forward::serve_listen(stream, &accepted.metadata, &context),
+            protocol::ACCEPT => forward::serve_accept(stream, &accepted.metadata, &context),
+            _ => forward::serve_tcp(stream, &accepted.metadata, &context),
         }
         return;
     }

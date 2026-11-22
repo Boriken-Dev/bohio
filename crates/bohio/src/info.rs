@@ -90,7 +90,11 @@ pub fn collect(config: &NodeConfig, path: &OsStr) -> Info {
             } else {
                 Vec::new()
             },
-            listen: Vec::new(),
+            listen: if config.forward.enabled {
+                crate::forward::listen_kinds()
+            } else {
+                Vec::new()
+            },
         },
         gui: bohio_proto::gui::GuiInfo {
             enabled: config.gui.enabled,

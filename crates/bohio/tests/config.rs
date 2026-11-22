@@ -213,6 +213,13 @@ fn values_out_of_range_name_their_key() {
             "[forward]\nmax_local_connections = 0\n",
             "forward.max_local_connections",
         ),
+        ("[forward]\nmax_listeners = 0\n", "forward.max_listeners"),
+        (
+            "[forward]\nmax_listeners_per_peer = 0\n",
+            "forward.max_listeners_per_peer",
+        ),
+        ("[forward]\nmax_pending = 0\n", "forward.max_pending"),
+        ("[forward]\naccept_timeout = 0\n", "forward.accept_timeout"),
         (
             "[forward]\nidle_min = \"5ms\"\nidle_max = \"1ms\"\n",
             "forward.idle_max",

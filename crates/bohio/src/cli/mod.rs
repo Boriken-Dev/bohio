@@ -181,8 +181,9 @@ pub struct ApproveArgs {
     pub config: ConfigOption,
     /// The peer's id, as `bohio peer list` prints it.
     pub id: String,
-    /// What the peer may do: info, fs.read, fs.write, exec, shell, admin, forward.connect (repeat or separate with
-    /// commas). Setting any of `--allow`, `--fs-root`, `--program` and `--connect` replaces the peer's whole table;
+    /// What the peer may do: info, fs.read, fs.write, exec, shell, admin, forward.connect, forward.listen (repeat or
+    /// separate with commas). Setting any of `--allow`, `--fs-root`, `--program`, `--connect` and `--listen` replaces the
+    /// peer's whole table;
     /// without them an existing table stays and a new peer holds nothing.
     #[arg(long, value_delimiter = ',', value_name = "PERMISSION")]
     pub allow: Vec<String>,
@@ -198,6 +199,12 @@ pub struct ApproveArgs {
     /// rule needs; a name is matched as a name and never resolved, so an address rule matches only an address target.
     #[arg(long, value_name = "RULE")]
     pub connect: Vec<String>,
+    /// A bind the host may make for the peer (repeat; with none, the peer's list is empty): `BIND:PORT` where BIND is an
+    /// address, a CIDR network or `*` and PORT is `N`, `A-B` or `*` (a host-chosen port, `0`, is allowed only by a rule that
+    /// names it, or `*`); `unix:PATH` or `pipe:NAME`, exactly or with `*` and `?`. Naming a rule grants `forward.listen`.
+    /// A rule on a non-loopback address lets the peer open a port on the host's network.
+    #[arg(long, value_name = "RULE")]
+    pub listen: Vec<String>,
     /// With `--program`: an environment variable the peer's requests may set or remove (repeat);
     /// with none, they may change none. A request may change PATH only when it is named here: a program that
     /// starts others then runs what the peer's PATH finds.
@@ -395,10 +402,14 @@ pub enum RemoteAction {
     /// Have the host connect to a target and bridge it to standard input and output (netcat); `ssh -o ProxyCommand` can
     /// use it.
     Connect(RemoteConnectArgs),
-    /// Listen on this machine and have the host connect to a target for each connection (`ssh -L`).
+    /// Forward a port: listen on this machine and have the host connect to a target for each connection (`ssh -L`), or have
+    /// the host listen and bring each connection to a target on this side (`ssh -R`).
     Forward(RemoteForwardArgs),
     /// Look at and drive the host's desktop: snapshots, clicks, keys, text and the clipboard.
     Gui(gui::RemoteGuiArgs),
+    /// Have the host listen and bridge one arriving connection to standard input and output (netcat `-l` on the far side);
+    /// `--keep` takes the next one after each ends.
+    Listen(RemoteListenArgs),
 }
 
 /// `bohio remote ... info`.
@@ -511,8 +522,39 @@ pub struct RemoteForwardArgs {
     /// `non-default: bind ADDRESS`: whoever can reach it has what this peer is granted. A local socket or pipe is for this
     /// user alone, mode `0o600`. Prints `local BOUND -> TARGET` for each, then runs until interrupted or the link ends
     /// (status 1).
-    #[arg(short = 'L', long = "local", value_name = "SPEC", required = true)]
+    #[arg(
+        short = 'L',
+        long = "local",
+        value_name = "SPEC",
+        required_unless_present = "remote"
+    )]
     pub local: Vec<String>,
+    /// Have the host listen and bring each connection to a target on this side: `[BIND:]PORT=LOCAL`, `unix:PATH=LOCAL` or
+    /// `pipe:NAME=LOCAL`, where LOCAL is `HOST:PORT`, `unix:PATH` or `pipe:NAME`, connected from this machine (repeat; mix
+    /// with `-L`). BIND is an address on the host and defaults to `127.0.0.1`; port 0 lets the host choose. Prints
+    /// `remote ADDRESS -> LOCAL` for each, then runs until interrupted or the link ends (status 1). The peer needs
+    /// `forward.listen` and a `listen` rule that covers the bind; a bind beyond loopback opens the host's network to this
+    /// side's target and is reported as `non-default: bind ADDRESS`. A socket or pipe the host creates is for the host's
+    /// own account.
+    #[arg(
+        short = 'R',
+        long = "remote",
+        value_name = "SPEC",
+        required_unless_present = "local"
+    )]
+    pub remote: Vec<String>,
+}
+
+/// `bohio remote ... listen`.
+#[derive(Debug, Args)]
+pub struct RemoteListenArgs {
+    /// What the host binds: `BIND:PORT` (an IPv6 address in brackets; port 0 lets the host choose), `unix:PATH` or
+    /// `pipe:NAME`. The peer's grant must hold `forward.listen` and a rule that covers it.
+    pub bind: String,
+    /// Take the next arrival after each connection ends, until interrupted or the link ends. Without it, the first
+    /// connection ends the command: status 0 when both directions ended in order.
+    #[arg(long)]
+    pub keep: bool,
 }
 
 /// `bohio remote ... shell`.

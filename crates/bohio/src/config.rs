@@ -976,8 +976,9 @@ pub struct ForwardConfig {
     pub idle_max: Span,
     /// How often a pump looks at its stream and its connection for an end while it waits for a message. Not zero. Default `50ms`.
     pub watch: Span,
-    /// How often a local listener (`bohio remote ... forward`) looks for a connection and for the link's end. Not zero.
-    /// Default `50ms`.
+    /// How often a local listener (`bohio remote ... forward`) looks for a connection and for the link's end, and how often a
+    /// listener the host binds for a peer looks for one and for the end of its stream: the first byte of a remote forward's
+    /// connection waits at most this long. Not zero. Default `50ms`.
     pub listen_poll: Span,
     /// How long `bohio remote` waits for the host to answer a connect, which covers the host's `connect_timeout` and the
     /// link's round trip. Not zero. Default `30s`.
@@ -985,6 +986,22 @@ pub struct ForwardConfig {
     /// The most connections one local listener of `bohio remote ... forward` serves at once; one past it is closed at once.
     /// At least 1. Default `64`.
     pub max_local_connections: usize,
+    /// The most listeners (`bohio-listen/1`) open at once, across peers; one past it is `busy`. At least 1. Default `16`.
+    pub max_listeners: usize,
+    /// The most listeners one peer has open at once; one past it is `busy`. At least 1. Default `8`.
+    pub max_listeners_per_peer: usize,
+    /// The most arrivals one listener holds waiting for their `bohio-accept/1`; a connection past it is closed at once. A
+    /// peer's `backlog` may lower it for its own listener. At least 1. Default `16`.
+    pub max_pending: usize,
+    /// How long an arrival waits to be claimed before the host closes it. Not zero. Default `10s`.
+    pub accept_timeout: Span,
+    /// The mode of a Unix socket a listener creates: this account alone by default. A wider mode is the operator's choice
+    /// and is listed as `non-default` in the log; `ipc_same_user` still decides who is served. Default `"0o600"`.
+    pub socket_mode: Mode,
+    /// Whether a socket or pipe listener closes, unread, a connection from another account (as the operating system names
+    /// it: the peer's user id on Unix, its SID on Windows). `false` serves any account that can reach the socket or pipe,
+    /// which the mode, or on Windows the pipe's access list, would then be the only guard of. Default `true`.
+    pub ipc_same_user: bool,
 }
 
 impl Default for ForwardConfig {
@@ -1002,6 +1019,12 @@ impl Default for ForwardConfig {
             listen_poll: Span(Duration::from_millis(50)),
             answer_timeout: Span(Duration::from_secs(30)),
             max_local_connections: 64,
+            max_listeners: 16,
+            max_listeners_per_peer: 8,
+            max_pending: 16,
+            accept_timeout: Span(Duration::from_secs(10)),
+            socket_mode: Mode(0o600),
+            ipc_same_user: true,
         }
     }
 }
@@ -1136,6 +1159,49 @@ impl<'de> Deserialize<'de> for Span {
                 Span::parse(value).ok_or_else(|| {
                     E::custom("not a time: use a number of seconds or a unit of ms, s, m or h")
                 })
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+/// Permission bits for a Unix socket, written in octal with a `0o` prefix (`"0o600"`) or as a TOML octal integer (`0o600`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Mode(pub u32);
+
+impl fmt::Debug for Mode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "0o{:o}", self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for Mode {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl de::Visitor<'_> for Visitor {
+            type Value = Mode;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("permission bits such as `\"0o600\"` or `0o660`")
+            }
+            fn visit_u64<E: de::Error>(self, value: u64) -> Result<Mode, E> {
+                u32::try_from(value)
+                    .ok()
+                    .filter(|bits| *bits <= 0o7777)
+                    .map(Mode)
+                    .ok_or_else(|| E::custom("permission bits are at most 0o7777"))
+            }
+            fn visit_i64<E: de::Error>(self, value: i64) -> Result<Mode, E> {
+                u64::try_from(value)
+                    .map_err(|_| E::custom("permission bits cannot be negative"))
+                    .and_then(|bits| self.visit_u64(bits))
+            }
+            fn visit_str<E: de::Error>(self, value: &str) -> Result<Mode, E> {
+                value
+                    .strip_prefix("0o")
+                    .and_then(|digits| u32::from_str_radix(digits, 8).ok())
+                    .filter(|bits| *bits <= 0o7777)
+                    .map(Mode)
+                    .ok_or_else(|| E::custom("not permission bits: write them as `\"0o600\"`"))
             }
         }
         deserializer.deserialize_any(Visitor)
@@ -1353,6 +1419,12 @@ impl NodeConfig {
                 "forward.max_local_connections",
                 forward.max_local_connections == 0,
             ),
+            ("forward.max_listeners", forward.max_listeners == 0),
+            (
+                "forward.max_listeners_per_peer",
+                forward.max_listeners_per_peer == 0,
+            ),
+            ("forward.max_pending", forward.max_pending == 0),
         ] {
             if zero {
                 return Err(invalid(key, "must be at least 1"));
@@ -1368,6 +1440,7 @@ impl NodeConfig {
             ("forward.watch", forward.watch.0.is_zero()),
             ("forward.listen_poll", forward.listen_poll.0.is_zero()),
             ("forward.answer_timeout", forward.answer_timeout.0.is_zero()),
+            ("forward.accept_timeout", forward.accept_timeout.0.is_zero()),
         ] {
             if zero {
                 return Err(invalid(key, "must not be zero"));
@@ -1455,6 +1528,14 @@ impl Config {
                 if let Err(error) = rule.parse::<crate::forward::ConnectRule>() {
                     return Err(invalid(
                         &format!("peer.{id}.forward.connect"),
+                        &format!("`{rule}`: {error}"),
+                    ));
+                }
+            }
+            for rule in self.peer.grant_for(id).forward().listen() {
+                if let Err(error) = rule.parse::<crate::forward::ListenRule>() {
+                    return Err(invalid(
+                        &format!("peer.{id}.forward.listen"),
                         &format!("`{rule}`: {error}"),
                     ));
                 }

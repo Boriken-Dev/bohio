@@ -11,7 +11,10 @@ use std::path::{Path, PathBuf};
 use bohio_proto::compress::{Codec, Compression, Progress, Resume};
 use bohio_proto::control::{Call, Reply, Request as ControlRequest, Response};
 use bohio_proto::exec::{self, Env, Stdin};
-use bohio_proto::forward::{Answer, ConnectRequest, Connected, ForwardInfo, Target};
+use bohio_proto::forward::{
+    AcceptRequest, Answer, Arrival, Bind, ConnectRequest, Connected, ForwardInfo, ListenFrame,
+    ListenRequest, Listening, Target,
+};
 use bohio_proto::fs::{
     Entry, FileKind, Listing, Metadata, ReadDone, ReadHeader, ReadOutput, ReadRequest, Timestamp,
     WriteDone, WriteInput, WriteMode, WriteOutput, WriteRequest,
@@ -204,7 +207,7 @@ fn sample_info() -> Info {
         forward: ForwardInfo {
             enabled: true,
             connect: vec!["tcp".into(), "unix".into()],
-            listen: Vec::new(),
+            listen: vec!["tcp".into(), "unix".into()],
         },
         gui: sample_gui_info(),
     }
@@ -1451,6 +1454,121 @@ fn gui_cases() -> Vec<Case> {
     ]
 }
 
+fn listen_cases() -> Vec<Case> {
+    let listen_frame = |name: &str, value: ListenFrame, body: Value| {
+        frame(
+            name,
+            TO_CLIENT,
+            "forward.ListenFrame",
+            value.encode().unwrap(),
+            body,
+        )
+    };
+    let listening = Listening {
+        address: "127.0.0.1:40123".into(),
+        token: "00112233445566778899aabbccddeeff".into(),
+    };
+    let arrival = Arrival {
+        id: 3,
+        source: Some("192.0.2.40:51234".into()),
+    };
+    let no_source = Arrival {
+        id: 4,
+        source: None,
+    };
+    let in_use = ErrorBody::new(ErrorCode::InUse, "that address is already in use");
+    let open = |name: &str, request: ListenRequest| {
+        message(name, OPEN, "open", "forward.ListenRequest", &request)
+    };
+    vec![
+        open(
+            "open_tcp_loopback_any_port",
+            ListenRequest::new(Bind::Tcp {
+                host: "127.0.0.1".into(),
+                port: 0,
+            }),
+        ),
+        open(
+            "open_tcp_with_backlog",
+            ListenRequest {
+                bind: Bind::Tcp {
+                    host: "::1".into(),
+                    port: 8080,
+                },
+                backlog: Some(4),
+            },
+        ),
+        open(
+            "open_unix",
+            ListenRequest::new(Bind::Unix {
+                path: "/run/user/1000/app.sock".into(),
+            }),
+        ),
+        open(
+            "open_pipe",
+            ListenRequest::new(Bind::Pipe { name: "app".into() }),
+        ),
+        listen_frame(
+            "listening",
+            ListenFrame::Listening(listening.clone()),
+            to_json(&listening),
+        ),
+        listen_frame(
+            "arrival",
+            ListenFrame::Arrival(arrival.clone()),
+            to_json(&arrival),
+        ),
+        listen_frame(
+            "arrival_without_source",
+            ListenFrame::Arrival(no_source.clone()),
+            to_json(&no_source),
+        ),
+        listen_frame(
+            "error_in_use",
+            ListenFrame::Error(in_use.clone()),
+            to_json(&in_use),
+        ),
+        Case {
+            name: "unknown_tag".into(),
+            direction: TO_CLIENT,
+            kind: "frame",
+            ty: "forward.ListenFrame",
+            bytes: vec![0x7f],
+            value: None,
+            decode_only: true,
+            error: Some("tag"),
+        },
+    ]
+}
+
+fn accept_cases() -> Vec<Case> {
+    let request = AcceptRequest {
+        token: "00112233445566778899aabbccddeeff".into(),
+        id: 3,
+    };
+    let connected = Connected {
+        address: Some("192.0.2.40:51234".into()),
+    };
+    let not_found = ErrorBody::new(ErrorCode::NotFound, "no such arrival");
+    vec![
+        message("open", OPEN, "open", "forward.AcceptRequest", &request),
+        frame(
+            "connected",
+            TO_CLIENT,
+            "forward.Answer",
+            Answer::Connected(connected.clone()).encode().unwrap(),
+            to_json(&connected),
+        ),
+        frame(
+            "error_not_found",
+            TO_CLIENT,
+            "forward.Answer",
+            Answer::Error(not_found.clone()).encode().unwrap(),
+            to_json(&not_found),
+        ),
+    ]
+}
+
 fn files() -> Vec<(&'static str, &'static str, Vec<Case>)> {
     vec![
         ("control.json", "bohio/1", control()),
@@ -1461,6 +1579,8 @@ fn files() -> Vec<(&'static str, &'static str, Vec<Case>)> {
         ("hash.json", "bohio-hash/1", hash_cases()),
         ("forward.json", "bohio-connect/1", forward_cases()),
         ("gui.json", "bohio-gui/1", gui_cases()),
+        ("listen.json", "bohio-listen/1", listen_cases()),
+        ("accept.json", "bohio-accept/1", accept_cases()),
     ]
 }
 
@@ -1499,6 +1619,9 @@ fn decode_error(ty: &str, bytes: &[u8]) -> Result<(), Error> {
         "hash.Input" => HashInput::decode(bytes).map(|_| ()),
         "forward.ConnectRequest" => ConnectRequest::from_metadata(bytes).map(|_| ()),
         "forward.Answer" => Answer::decode(bytes).map(|_| ()),
+        "forward.ListenRequest" => ListenRequest::from_metadata(bytes).map(|_| ()),
+        "forward.ListenFrame" => ListenFrame::decode(bytes).map(|_| ()),
+        "forward.AcceptRequest" => AcceptRequest::from_metadata(bytes).map(|_| ()),
         "gui.Request" => GuiRequest::from_metadata(bytes).map(|_| ()),
         "gui.Output" => GuiOutput::decode(bytes).map(|_| ()),
         "gui.Input" => GuiInput::decode(bytes).map(|_| ()),
@@ -1565,6 +1688,11 @@ fn check(entry: &Value) {
         "hash.Input" => check_frame(entry, &bytes, HashInput::decode, |v| v.encode().unwrap()),
         "forward.ConnectRequest" => check_message::<ConnectRequest>(entry, &bytes),
         "forward.Answer" => check_frame(entry, &bytes, Answer::decode, |v| v.encode().unwrap()),
+        "forward.ListenRequest" => check_message::<ListenRequest>(entry, &bytes),
+        "forward.ListenFrame" => {
+            check_frame(entry, &bytes, ListenFrame::decode, |v| v.encode().unwrap())
+        }
+        "forward.AcceptRequest" => check_message::<AcceptRequest>(entry, &bytes),
         "gui.Request" => check_message::<GuiRequest>(entry, &bytes),
         "gui.ApproveOutput" => check_message::<ApproveOutput>(entry, &bytes),
         "gui.ApproveInput" => check_message::<ApproveInput>(entry, &bytes),
