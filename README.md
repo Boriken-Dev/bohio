@@ -84,7 +84,7 @@ Every transport is one endpoint scheme; the proof, the grants and the engines ar
 | `tcp://host:port` | a TCP socket |
 | `pipe://name`, `pipe:///path/to.sock` | a Windows named pipe, a Unix domain socket |
 | `ws://host:port`, `wss://host:port` | a WebSocket (binary messages), with TLS for `wss`: the host's `tls_cert` and `tls_key`; a client's `--ca FILE` or `--cert-hash HASH` |
-| `webtransport://host:port` | WebTransport over QUIC (UDP), always TLS: files, or a certificate the host makes and prints the hash of; a client's `--fallback ws://...` for a blocked UDP path |
+| `webtransport://host:port` | WebTransport over QUIC (UDP), always TLS: files, or a certificate the host makes and prints the hash of; a client's `--fallback ws://...` for a blocked UDP path; `mtu_*` settings (`--mtu-*` flags) for a path of a smaller MTU such as a tunnel |
 | `serial://PORT?baud=115200` | a serial line (`serial:///dev/ttyUSB0`, `serial://COM3`), COBS frames with a CRC |
 | `bohio serve --stdio` | one link on standard input and output, for `docker exec -i NAME bohio serve --stdio` |
 | `stdio://program args`, `bohio remote --command "program args"` | the client starts a program and uses its standard streams |

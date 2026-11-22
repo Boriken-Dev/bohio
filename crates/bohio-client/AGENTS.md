@@ -207,12 +207,14 @@ place for `replace` and `create`.
 ## Endpoints and dialing (`bohio_client::dial`)
 
 ```rust
-#[non_exhaustive] pub enum Endpoint { Tcp(SocketAddr), Pipe(PipeName), WebSocket(Url), WebTransport { url: Url, fallback: Option<Url> }, Serial { path: String, options: SerialOptions }, Command(Vec<String>) }   // Clone, Eq, Display; WebSocket is `ws` or `wss`
+pub use coqui_transport_web::webtransport::{MIN_MTU, Mtu};   // Mtu { initial, min, discovery, upper_bound } (non_exhaustive, Copy, Default = quinn's), MIN_MTU = 1200
+#[non_exhaustive] pub enum Endpoint { Tcp(SocketAddr), Pipe(PipeName), WebSocket(Url), WebTransport { url: Url, fallback: Option<Url>, mtu: Mtu }, Serial { path: String, options: SerialOptions }, Command(Vec<String>) }   // Clone, Eq, Display; WebSocket is `ws` or `wss`
 impl Endpoint {
     pub fn parse(text: &str) -> Result<Endpoint, String>;     // the reason, for an unknown scheme or a bad address; `webtransport://` needs a UDP port
     pub fn dial(&self, timeout: Duration, settings: &Settings) -> Result<Box<dyn Channel>, Error>;   // an unproven channel; Error::Transport(why); dial_with and the default trust
     pub fn dial_with(&self, timeout: Duration, settings: &Settings, trust: &ServerTrust) -> Result<Box<dyn Channel>, Error>;   // a refused certificate is Transport(Failure::Certificate); Error::Link when the trust cannot be set up (an unreadable CA file)
     pub fn with_fallback(self, fallback: Endpoint) -> Result<Endpoint, String>;   // a `ws://` or `wss://` endpoint, on any host, after a `webtransport://` one; the caller naming it is the choice (a plain one is readable until the proof, one elsewhere sends the proof there)
+    pub fn with_mtu(self, mtu: Mtu) -> Result<Endpoint, String>;   // the UDP payload sizes and path-MTU discovery of a `webtransport://` endpoint's QUIC connection, default quinn's (1200, 1200, discovery on, up to 1452); Err for another endpoint or an `initial` or `min` below 1200, naming the value. A tunnel with a smaller MTU loses each probe above it (a send error in the host's log): lower `upper_bound` to its size or turn `discovery` off
 }
 #[non_exhaustive] pub struct ServerTrust { pub ca_files: Vec<PathBuf>, pub pins: Vec<PeerId>, pub clock_skew: Duration /* default zero */ }   // Default, Clone, Eq; who a TLS client accepts as the host's certificate; a pinned or chained certificate is held to its dates, `clock_skew` is how far from this clock a start or end is still accepted (a certificate made just now by a host whose clock is ahead is refused until this clock reaches its start)
 impl ServerTrust { pub fn pin(&mut self, text: &str) -> Result<(), String>; pub fn client_config(&self) -> Result<Arc<rustls::ClientConfig>, String>; pub fn refusal(&self) -> Option<String>; }   // pin: `sha256:` and 64 hex digits; refusal: why the last certificate a config from this trust refused was refused (the presented certificate's hash, and for its dates the start or end and how far this clock is from it), for the message of a `Failure::Certificate`
