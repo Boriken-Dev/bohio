@@ -16,8 +16,8 @@ MSRV Rust 1.89. A library-only build (`default-features = false`) depends on `bo
 `win32job` (Windows). Version `0.0.0-alpha.0`, not published.
 
 Imports: the root holds `Config`, `ConfigError`, `Environment`, `Grant`, `Peers`, `Permission`. Public modules:
-`config`, `control`, `exec`, `forward`, `fs`, `gui`, `info`, `limit`, `link`, `listen`, `node`, `peer`, `policy`, `shell`, `cli` (feature `cli`). No `unsafe` code
-(`#![forbid(unsafe_code)]`). The library prints nothing, reads no environment variable and installs no logger; it starts threads only inside
+`config`, `control`, `exec`, `forward`, `fs`, `gui`, `info`, `limit`, `link`, `listen`, `node`, `peer`, `policy`, `shell`, `cli` (feature `cli`). `unsafe_code` is denied crate-wide and allowed in one file,
+`platform/winproc.rs` (starting a Windows process with a handle list; `tests/unsafe_files.rs` lists it and why). The library prints nothing, reads no environment variable and installs no logger; it starts threads only inside
 `exec::serve`, `shell::serve`, the transfer and control engines, `node::Node` (a thread per connection, per stream and per relay) and
 `pair::Armed` waits and the pairing a node answers.
 
@@ -606,8 +606,13 @@ Exit status: 0 success, 1 the operation failed (one line on standard error), 2 t
   when the stream closes.
 - Standard input sent to a request that asked for `Stdin::Closed` is ignored.
 - Without a program list the name is looked up as the host's `PATH` finds it, with the request's own `PATH` if it sets one (on Windows
-  also the application's directory and the current one): such a peer may run anything anyway. `programs` compares the name exactly as
+  also the application's directory and the system directories, never the current one): such a peer may run anything anyway. `programs` compares the name exactly as
   requested, so `git` and `/usr/bin/git` are different entries.
+- Windows: a process started by `exec` holds exactly its three standard streams of the host (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`); the
+  standard library's `Command` would pass every inheritable handle, and `TcpStream::try_clone` makes inheritable sockets, so a connection a
+  child held neither closed when its owner dropped it nor closed cleanly when the child was killed. A batch file (`.bat`, `.cmd`) is not
+  started directly (its arguments would be read by `cmd`): run `cmd /C` on it, or use a `cmd` shell command. A shell's terminal (ConPTY)
+  inherits no handle either. A program that the `stdio://` transport of a client starts is `coqui-transport`'s, and still inherits.
 - Windows: a process starts a moment before it joins its job object; a process it starts in that instant is outside the tree. A
   shell's terminal (ConPTY) starts the child itself, so the same moment applies to a shell session.
 - Windows ConPTY asks the terminal for its cursor position before the program's first output and holds that output until it is

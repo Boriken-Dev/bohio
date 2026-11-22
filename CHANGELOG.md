@@ -116,6 +116,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Windows: a process `exec` starts holds only its three standard streams of the host. It used to inherit every inheritable handle, among them the sockets `TcpStream::try_clone` makes, so a connection the host had dropped stayed open until the process ended and then read as a reset (os error 10054) on the other side. A batch file is no longer started directly (its arguments would be read by `cmd`); run `cmd /C` on it.
 - A configuration layer another account owns can no longer turn its own check off. `[service] check_access = false` in the lowest layer
   waived every finding, so on Windows any local user who created `%ProgramData%ohioohio.cfg` (every user may, while the folder does not
   exist) could write that line beside a `[peer.<id>]` table of their own and be served by every `bohio serve` and service that reads the

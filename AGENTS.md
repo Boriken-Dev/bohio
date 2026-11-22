@@ -71,7 +71,8 @@ built `bohio` binary (cargo builds it for the test): `bohio serve` runs as a chi
   that leaves a process behind fails.
 - Tests that start processes use the `exec_helper` example, read with timeouts, and kill what they start.
 - Nothing logs a key, a PIN or a token; argument vectors are never logged.
-- `unsafe` is forbidden in every crate.
+- `unsafe` is used only where no safe API does the job, and only in the files `crates/bohio/tests/unsafe_files.rs` lists with the reason each
+  needed it; every other crate and module forbids or denies it. A file that gains or loses `unsafe` changes that list in the same commit.
 - Only text and images are committed.
 
 ## CI and release
