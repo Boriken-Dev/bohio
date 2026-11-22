@@ -52,6 +52,7 @@ A stream's `open` carries a protocol token and metadata. A client ignores a toke
 | `bohio-hash/1` | digests of many files, computed on the host | CBOR [`hash-request`](#hashing-bohio-hash1) | `fs.read` |
 | `bohio-connect/1` | one connection from the host to a target, then its bytes | CBOR [`connect-request`](#forwarding-bohio-connect1-and-tcp1) | `forward.connect` and a rule that matches the target |
 | `tcp/1` | the same, as [coqui-link](https://github.com/Boriken-Dev/coqui-link) defines it | the text `HOST:PORT` | `forward.connect` and a rule that matches the target |
+| `bohio-gui/1` | a view of the host's desktop: snapshots, keyboard and mouse, the clipboard's text | CBOR [`gui-request`](#desktop-bohio-gui1) | one of `gui.view`, `gui.input`, and each thing the request wants |
 
 Each `open` is decided against the peer's grant, and each running stream again at the host's recheck interval. Removing a grant closes the stream with reason `revoked`; the reason text reaches the peer.
 
@@ -75,7 +76,7 @@ Every error is `{code, message}`:
 error-body = { code: error-code, ? message: text }
 error-code = "bad_request" / "denied" / "not_found" / "exists" / "unsupported"
            / "busy" / "outside_root" / "io" / "refused" / "unreachable" / "timeout"
-           / "internal" / "other"   ; unknown text decodes as "other"
+           / "unavailable" / "internal" / "other"   ; unknown text decodes as "other"
 ```
 
 | Code | Means |
@@ -91,6 +92,7 @@ error-code = "bad_request" / "denied" / "not_found" / "exists" / "unsupported"
 | `refused` | a forward's target refused the connection |
 | `unreachable` | a forward's target cannot be reached: no route, or a network that is down |
 | `timeout` | a forward's target did not answer within `[forward] connect_timeout` |
+| `unavailable` | the thing exists but cannot be used now: a desktop that is locked for input, a session that is not at the screen, a permission of the operating system that is missing (`unsupported` is a host with no desktop backend, or `[gui] enabled = false`) |
 | `internal` | a bug or a reply that does not fit the stream |
 | `other` | a code this version does not know |
 
@@ -156,7 +158,8 @@ info = { ? protocol: uint, ? service: { ? name: text, ? version: text }, ? host_
          ? exec: { ? enabled: bool }, ? shell: { ? enabled: bool },
          ? limits: { ? max_streams: opt<uint>, ? max_processes: opt<uint>, ? max_sessions: opt<uint> },
          ? transfer: transfer-info,
-         ? forward: forward-info }
+         ? forward: forward-info, ? gui: gui-info }
+gui-info = { ... }   ; see "Desktop: bohio-gui/1"
 forward-info = { ? enabled: bool, ? connect: [* text], ? listen: [* text] }   ; the target kinds `bohio-connect/1` reaches: "tcp", and "unix" (Unix hosts) or "pipe" (Windows hosts); `listen` is empty
 transfer-info = { ? hashes: [* text],                        ; the algorithms the host computes, empty when none
                   ? hash_limits: { ? max_streams: uint, ? rate: uint },    ; hash streams at once; bytes a second one stream reads, 0 unlimited
@@ -362,6 +365,73 @@ The error codes of a refused connect: `denied` (the grant stopped covering the t
 
 `tcp/1` is `coqui-link`'s own forward and the host serves it as that crate specifies, under the same grant and `[forward]` bounds, so a `coqui-link` peer (`coqui_link::forward::connect` or `listen`) uses a Bohío host unchanged: the open's metadata is the text `HOST:PORT`, there is no answer before the bytes, and a refusal or a failed connect is a close with a reason. `bohio-connect/1` is what Bohío's client opens, because its `connected` answer is what a SOCKS or `--check` client needs and `tcp/1` has none.
 
+## Desktop: `bohio-gui/1`
+
+One stream is one view of one desktop session. The open's metadata is a `gui-request`; the host answers with `ready`, or with an `error` frame and the end. A client then sends requests, each with a `seq` of its own, and the host answers each with frames that carry the same `seq`. A request that fails is a `request_error` and the stream goes on. Coordinates are physical pixels of one display with its top-left corner as the origin; `display` defaults to the primary one.
+
+```text
+gui-request = { ? session: opt<text>, ? want: [+ ("view" / "input" / "clipboard")] }   ; want defaults to ["view"]; a wanted item the grant lacks is "denied"
+display     = { id: text, ? name: opt<text>, ? primary: bool, x: int, y: int, width: uint, height: uint, ? scale: float, ? rotation: opt<uint> }
+state       = { ? active: bool, ? locked: opt<bool>, ? displays: [* display] }
+ready       = { session: text, granted: [* ("view" / "input" / "clipboard")], state: state }
+rect        = { x: uint, y: uint, width: uint, height: uint }
+snapshot    = { seq: uint, ? display: opt<text>, ? region: opt<rect>, ? format: opt<"png" / "jpeg" / "webp">, ? quality: opt<uint>,
+                ? max_width: opt<uint>, ? max_height: opt<uint>, ? cursor: bool, ? settle: opt<{ ? quiet_ms: opt<uint>, ? timeout_ms: opt<uint> }> }
+image       = { seq: uint, display: text, format: text, width: uint, height: uint, region: rect, scale: float,
+                ? cursor: opt<{ x: int, y: int }>, length: uint, ? settled: opt<{ settled: bool, waited_ms: uint }> }
+input       = { seq: uint, events: [+ input-event] }
+input-event = { type: "move", ? display: opt<text>, x: int, y: int }
+            / { type: "button", button: "left" / "right" / "middle" / "back" / "forward", ? action: "press" / "release" / "click",
+                ? count: opt<uint>, ? display: opt<text>, ? x: opt<int>, ? y: opt<int> }
+            / { type: "scroll", ? display: opt<text>, ? x: opt<int>, ? y: opt<int>, ? dx: int, ? dy: int }   ; wheel notches; positive dy scrolls the content down
+            / { type: "key", key: text, ? action: "press" / "release" / "click" }   ; a name of the list below, or exactly one character
+            / { type: "text", text: text }
+            / { type: "wait", ms: uint }
+input-done  = { seq: uint, applied: uint }
+settle      = { seq: uint, ? display: opt<text>, ? region: opt<rect>, ? quiet_ms: opt<uint>, ? timeout_ms: opt<uint> }
+settled     = { seq: uint, settled: bool, waited_ms: uint }
+clipboard   = { seq: uint, text: text }   ; the host's answer to both clipboard requests (the text is empty for a write)
+request-error = { seq: uint, code: error-code, ? message: text }
+```
+
+Key names, snake case: `enter`, `tab`, `escape`, `backspace`, `delete`, `insert`, `home`, `end`, `page_up`, `page_down`, `up`, `down`, `left`, `right`, `space`, `shift`, `control`, `alt`, `meta`, `caps_lock`, `print_screen`, `menu` and `f1` to `f24`; any other key is one character. An unknown name is `bad_request`.
+
+| Direction | Tag | Frame | Body |
+| --- | --- | --- | --- |
+| host to client | `0x01` | `ready` | CBOR `ready`, first |
+| host to client | `0x02` | `image` | CBOR `image`; the image's `length` bytes follow in `0x03` frames |
+| host to client | `0x03` | `data` | raw bytes of the image |
+| host to client | `0x05` | `error` | CBOR `error-body`; the last frame |
+| host to client | `0x06` | `input_done` | CBOR `input-done` |
+| host to client | `0x07` | `settled` | CBOR `settled` |
+| host to client | `0x08` | `clipboard` | CBOR `clipboard` |
+| host to client | `0x09` | `state` | CBOR `state`, whenever it changes |
+| host to client | `0x0b` | `request_error` | CBOR `request-error`; the stream goes on |
+| client to host | `0x10` | `snapshot` | CBOR `snapshot` |
+| client to host | `0x14` | `input` | CBOR `input` |
+| client to host | `0x15` | `settle` | CBOR `settle` |
+| client to host | `0x16` | `clipboard_get` | CBOR `{ seq: uint }` |
+| client to host | `0x17` | `clipboard_set` | CBOR `{ seq: uint, text: text }` |
+
+`0x04`, `0x0a`, `0x11` to `0x13` are reserved for a screen stream. A frame with another tag is skipped.
+
+The host decides the open in this order: the request (`bad_request`), `[gui] enabled` and a desktop (`unsupported`), each wanted item against the grant (`denied`; the link refuses an open the grant does not cover before the engine sees it), the session (`not_found`), a free slot (`busy`), and, with `[gui] approval = "local"`, the person at the desk (`denied`, "not approved"). Each request is then decided by the grant as it is at that moment, so a narrowed grant refuses the next frame at once and ends the stream at the next `[link] recheck`.
+
+- **Snapshot.** The host captures the display or the region, scales it down with the same proportions to fit `max_width` and `max_height` (never up) and encodes it. `scale` is image pixels per display pixel. `png` and `webp` (lossless) reproduce the pixels exactly; `jpeg` takes a `quality`. A region outside the display, or with more pixels than `[gui] max_snapshot_pixels`, is `bad_request`. With `settle` the host waits first, as below.
+- **Input.** The events are applied in order and `applied` counts them. A frame holds at most `max_batch_events` events, its `wait` events add up to at most `max_batch_wait`, a `text` event holds at most `max_text` characters, and a stream sends at most `max_input_rate` events a second: a frame that would pass the rate is `busy` and none of it is applied. A click counts as its `count`. While the session is not at the screen, or the screen is locked and `input_when_locked` is false, input is `unavailable`.
+- **Settle.** The host captures every `settle_interval`, compares the 64 by 64 pixel tiles (XXH3) and answers when no more than `settle_ignore_tiles` tiles changed between captures for `quiet_ms`, or with `settled: false` at `timeout_ms`: one round trip, not one per poll.
+- **Clipboard.** Text only, at most `clipboard_max_bytes`; each read is an event the owner hears.
+
+`info` reports the desktop in `gui`:
+
+```text
+gui-info = { ? enabled: bool, ? available: bool, ? reason: opt<text>, ? backend: opt<text>, ? input: bool, ? clipboard: bool,
+             ? lock_detection: bool, ? formats: [* text], ? sessions: [* gui-session] }
+gui-session = { id: text, ? user: opt<text>, ? active: bool, ? locked: opt<bool>, ? displays: [* display] }
+```
+
+It is asked again at every `info`. `sessions` and `user` are sent only to a peer that holds `gui.view` or `gui.input`. A host that already runs a VNC server is reached with `forward -L 5900=127.0.0.1:5900` under a `forward.connect` rule for `127.0.0.1:5900`; nothing here builds on it.
+
 ## Capability negotiation
 
 Nothing is negotiated before a stream opens, and nothing falls back. A client learns what a host does in this order:
@@ -376,7 +446,7 @@ A client reads `info` and adapts: it takes the path separator from `filesystem.s
 
 A link has two ends and no fixed roles: either side may open streams on it, and either may answer them. Which side dialed (the carrier's direction) decides nothing; a firewalled host can dial out and be controlled over the link it made. Each side hosts what it offers and controls what it opens:
 
-- **What a side offers a peer** is the `offers` of the `link/1` document that side answers: the protocol tokens for which that peer's current grant holds a permission (`bohio/1` for `info`, `fs.read` or `fs.write`; `bohio-exec/1` for `exec`; `bohio-shell/1` for `shell`; `bohio-read/1` and `bohio-hash/1` for `fs.read`; `bohio-write/1` for `fs.write`; `bohio-connect/1` and `tcp/1` for `forward.connect`). A node that grants a peer nothing offers it nothing, and may still open streams on that peer.
+- **What a side offers a peer** is the `offers` of the `link/1` document that side answers: the protocol tokens for which that peer's current grant holds a permission (`bohio/1` for `info`, `fs.read` or `fs.write`; `bohio-exec/1` for `exec`; `bohio-shell/1` for `shell`; `bohio-read/1` and `bohio-hash/1` for `fs.read`; `bohio-write/1` for `fs.write`; `bohio-connect/1` and `tcp/1` for `forward.connect`; `bohio-gui/1` for `gui.view` or `gui.input`). A node that grants a peer nothing offers it nothing, and may still open streams on that peer.
 - **How a side learns its role** is by opening `link/1` on the link and reading the peer's `offers`. The intersection of those tokens and what the side wants to do is what it can do on that link; opening a token that is not offered is refused (a `Permission` failure), as it always was.
 - **Re-evaluation**: `offers` is computed each time the document is read, and admission is decided at every open and every `[link] recheck`, both from the peer's grants as they are then, so a grant added or removed on a live link changes the next document and ends what it no longer covers. Nothing is pushed to the peer.
 - **Nothing is stated on the wire** beyond `link/1`: there is no request for a role, and what a side asks for is only what it opens. A peer that is only a controller offers nothing and opens streams; a peer that is only a host offers its tokens and opens none; either can do both on one link.
@@ -403,11 +473,21 @@ link-entry    = { peer: text, side: "dialed" / "answered", ? endpoint: opt<text>
 
 `bohio-pair/1`: the open's metadata is a `pair-request`. The node arms one PIN, in memory, replacing the one armed before (that request then ends as `replaced`), and sends `armed` with the PIN and how long it lasts (`lifetime_ms` of the request, else `[pairing] timeout`). A joiner on any of the node's listeners may then try it; when a peer pairs the node writes its `[peer.<id>]` table, holding nothing, and sends `paired`; otherwise it sends `ended` with why (expired, used up by `max_attempts` wrong guesses, replaced, or withdrawn) and finishes the stream. A client that closes the stream withdraws the PIN. A node that cannot pair answers `ended` at once. The PIN is in no log or event.
 
+`bohio-gui-approve/1`: the node holds the requests of peers waiting for the person at the desk (`[gui] approval = "local"`). The stream opens with no metadata; the node sends `pending` at once, and again whenever the list changes, and answers each `decide` with `decided`.
+
+```text
+pending-request = { id: uint, peer: text, session: text, want: [* ("view" / "input" / "clipboard")], since: uint }
+approve-output  = { pending: { requests: [* pending-request] } } / { decided: { id: uint, found: bool } }
+approve-input   = { decide: { id: uint, allow: bool } }
+```
+
+`found` is false for a request that timed out or was answered already. An allowed peer is not asked again on that session for `[gui] approval_ttl`; a denied or unanswered request ends the peer's open with `denied` and the text "not approved". `bohio gui pending`, `allow ID` and `deny ID` speak it.
+
 A joiner on a listener sends one message first, `coqui-link/pairing/1`, which is neither a Noise first message (32 bytes) nor a WebCrypto one (JSON): the node reads the first message of every connection and runs a pairing on that marker and a proof on anything else.
 
 ## Vectors
 
-`vectors/control.json`, `exec.json`, `shell.json`, `read.json`, `write.json`, `hash.json` and `forward.json` hold one entry per message. Each file is:
+`vectors/control.json`, `exec.json`, `shell.json`, `read.json`, `write.json`, `hash.json`, `forward.json` and `gui.json` hold one entry per message. Each file is:
 
 ```json
 { "protocol": "bohio-exec/1", "encoding": "...", "vectors": [ { "name": "stdout", "direction": "host_to_client", "kind": "frame",

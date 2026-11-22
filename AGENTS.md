@@ -16,6 +16,7 @@ One Cargo workspace (`Cargo.toml`, one committed `Cargo.lock`: the repository bu
 | Path | What |
 | --- | --- |
 | `crates/bohio-proto/` | wire types and codec, no I/O, for any client |
+| `crates/bohio/examples/support/painted.rs` | the in-memory desktop the GUI tests paint on (included with `#[path]`; no screen is touched) |
 | `crates/bohio-transfer/` | byte-level work with no I/O: digests of ten algorithms in one pass, and zstd, LZ4 and deflate compression |
 | `crates/bohio-client/` | Rust client over a `coqui_transport::Channel`; the link is an `Open`, a caller's or `connect::Connection` |
 | `crates/bohio/` | host library (engines, `platform`, configuration, grants, `link`, `peer`, `serve`) and the `bohio` binary behind feature `cli` |

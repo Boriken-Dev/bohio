@@ -97,6 +97,19 @@ bohio remote tcp://host.example:7620 connect --check db.example:5432   # connect
 
 A target the grant does not cover is refused before the host connects to anything. [The protocol](protocol.md#forwarding-bohio-connect1-and-tcp1) has the wire and the rules, and [Security](security.md#what-a-forward-gives-a-peer) what a forward gives a peer.
 
+## A host's desktop
+
+A host that runs in, or is attached to, a graphical session can show it and be driven. It is off until the owner enables `[gui]` and grants a peer `gui.view`, `gui.input` or `gui.clipboard`; `bohio peer approve ID --allow gui.view,gui.input` writes the grant. The person at the screen gets a notice while someone views or controls it, and `approval = "local"` makes each peer wait for `bohio gui allow`.
+
+```bash
+bohio remote tcp://host.example:7620 gui info
+bohio remote tcp://host.example:7620 gui snapshot --max-size 1280x800 --settle -o screen.png
+bohio remote tcp://host.example:7620 gui click 640 400
+bohio remote tcp://host.example:7620 gui type "hello" && bohio remote tcp://host.example:7620 gui key ctrl+s
+```
+
+[The protocol](protocol.md#desktop-bohio-gui1) has the wire and [Security](security.md#what-gui-access-gives-a-peer) what a view of the screen gives a peer. A host that already runs a VNC server is reached with `forward -L` under a `forward.connect` rule for it.
+
 ## Configuration
 
 `bohio.cfg` is read as layers: the system file (`/etc/bohio/bohio.cfg`, `%ProgramData%\bohio\bohio.cfg`) and then the user's (`~/.config/bohio/bohio.cfg`, `%APPDATA%\bohio\bohio.cfg`) merged over it, or the files `--config` names, alone. Tables merge by key and lists and values replace, so a higher layer can narrow a list. Every setting, with its default, is in [`examples/bohio.cfg`](https://github.com/Boriken-Dev/bohio/blob/main/examples/bohio.cfg); the `[peer.*]` tables are read again at every decision, the rest when the node starts.
