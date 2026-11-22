@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-# From Boriken-Dev/agent-overlays, overlays/release/repo/tools/build.py, at commit 9229d7e97ce15327fb57b6fe9dc301ee0d3fde9f.
+# From Boriken-Dev/agent-overlays, overlays/release/repo/tools/build.py, at commit 975cac17c5c7b464125d0adf0330df1bb7e6eb35.
 # Copyright (c) 2026 Jose A.
 """One build tool for a repository: vendored crates, scans, SDK lock, offline and release builds.
 
@@ -458,6 +458,31 @@ def entropy(data: bytes) -> float:
     return -sum(v / len(data) * math.log2(v / len(data)) for v in counts.values()) if data else 0.0
 
 
+# Text in a single-byte encoding (ISO-8859-1, Windows-1252), or UTF-8 holding a stray such byte, reads
+# as text to any scanner. It has no NUL, no control character but tab, LF, FF and CR, and at most this
+# share of bytes from 0x80 up (prose in a Latin script is 1 to 5%; random bytes and code are far above).
+LEGACY_TEXT_HIGH = 0.10
+LEGACY_TEXT_CONTROLS = bytes([*range(0x09), 0x0B, *range(0x0E, 0x20), 0x7F])
+
+
+def legacy_text(body: bytes) -> bool:
+    """Whether body that is not UTF-8 is still text: mostly printable ASCII, no control characters."""
+    if not body or body.translate(None, LEGACY_TEXT_CONTROLS) != body:
+        return False
+    return sum(b >= 0x80 for b in body) <= len(body) * LEGACY_TEXT_HIGH
+
+
+def text_note(body: bytes) -> str | None:
+    """A note for text that passes though it is not UTF-8, else None."""
+    if body.isascii() or not legacy_text(body):
+        return None
+    try:
+        body.decode("utf-8")
+    except UnicodeDecodeError:
+        return "text, not UTF-8"
+    return None
+
+
 def flagged_kind(body: bytes, name: str) -> str | None:
     """The kind of data a branch must not hold in a file's bytes, or None.
 
@@ -483,6 +508,8 @@ def flagged_kind(body: bytes, name: str) -> str | None:
         return "private key in text" if PRIVATE_KEY.search(body) else None
     except UnicodeDecodeError:
         pass
+    if legacy_text(body):
+        return "private key in text" if PRIVATE_KEY.search(body) else None
     return "opaque high-entropy data" if entropy(body[:65536]) > 7.5 else "unrecognised binary"
 
 
@@ -1745,8 +1772,14 @@ def deps_init(ctx: Ctx, args: argparse.Namespace) -> int:
 SCAN_LIST = 25
 
 
-def report_scan(found: dict[str, list[tuple[str, int, str]]], scanned: int) -> int:
+def report_scan(found: dict[str, list[tuple[str, int, str]]], scanned: int, notes: list[tuple[str, int, str]] | None = None) -> int:
     flagged = 0
+    if notes:
+        print(f"NOTE text, not UTF-8: {len(notes)}")
+        for sha, size, path in notes[:SCAN_LIST]:
+            print(f"  {sha[:10]} {size:>10}  {path}")
+        if len(notes) > SCAN_LIST:
+            print(f"  ... {len(notes) - SCAN_LIST} more")
     for kind in sorted(found):
         items = found[kind]
         flagged += len(items)
@@ -1763,6 +1796,7 @@ def scan_command(ctx: Ctx, args: argparse.Namespace) -> int:
     """`blob_scan.py`'s contract: what is flagged, then `PASS|FAIL: N flagged, M paths scanned`."""
     allow = Allow(ctx.cfg.deps.allow)
     found: dict[str, list[tuple[str, int, str]]] = collections.defaultdict(list)
+    notes: list[tuple[str, int, str]] = []
     chosen = sum(bool(x) for x in (args.refs, args.all_refs, args.tree))
     if chosen > 1:
         raise Usage("name refs, --all-refs or --tree, not several")
@@ -1781,9 +1815,12 @@ def scan_command(ctx: Ctx, args: argparse.Namespace) -> int:
                 body = file.read_bytes()
                 if any(part.lower() == ".git" for part in rel.split("/")):
                     found["a path below .git"].append((sha256(body), len(body), rel))
-                if (kind := flagged_kind(body, name)) and not allow.permits(rel, kind):
+                kind = flagged_kind(body, name)
+                if kind and not allow.permits(rel, kind):
                     found[kind].append((sha256(body), len(body), rel))
-        return report_scan(found, scanned)
+                elif not kind and text_note(body):
+                    notes.append((sha256(body), len(body), rel))
+        return report_scan(found, scanned, notes)
     if args.all_refs:
         names: dict[str, set[str]] = collections.defaultdict(set)
         listing = run_git("rev-list", "--objects", "--all", cwd=ctx.root, binary=True).decode("utf-8", "replace")
@@ -1808,7 +1845,9 @@ def scan_command(ctx: Ctx, args: argparse.Namespace) -> int:
                 kind = flagged_kind(body, path.rsplit("/", 1)[-1])
                 if kind and not allow.permits(path, kind):
                     found[kind].append((sha, len(body), path))
-        return report_scan(found, len(names))
+                elif not kind and text_note(body):
+                    notes.append((sha, len(body), path))
+        return report_scan(found, len(names), notes)
     refs = args.refs or ["HEAD"]
     seen: set[tuple[str, str]] = set()
     scanned = 0
@@ -1828,7 +1867,9 @@ def scan_command(ctx: Ctx, args: argparse.Namespace) -> int:
                     found["a symbolic link"].append((sha, len(body), path))
                 elif (kind := flagged_kind(body, path.rsplit("/", 1)[-1])) and not allow.permits(path, kind):
                     found[kind].append((sha, len(body), path))
-    return report_scan(found, scanned)
+                elif not kind and text_note(body):
+                    notes.append((sha, len(body), path))
+    return report_scan(found, scanned, notes)
 
 
 def add_deps(sub: argparse._SubParsersAction) -> None:
