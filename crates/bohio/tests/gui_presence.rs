@@ -116,6 +116,9 @@ fn config() -> GuiConfig {
     GuiConfig {
         enabled: true,
         indicator_linger: Span(Duration::from_millis(400)),
+        // A stream that was just closed holds its slot until its engine next looks at the connection.
+        max_streams: 32,
+        max_streams_per_peer: 32,
         ..GuiConfig::default()
     }
 }
