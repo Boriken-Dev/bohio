@@ -36,10 +36,10 @@ fn definition(window: &[u8]) -> (u64, u64, u64) {
     (a, b, a + 65_536 * b)
 }
 
-/// The generated input of the rolled vector: byte `i` is `(i * i + 5 * i + 11) mod 256`.
+/// The generated input of the rolled vector: byte `i` is `(i * i / 7 + 5 * i + 11) mod 256`.
 fn generated(length: u64) -> Vec<u8> {
     (0..length)
-        .map(|i| ((i * i + 5 * i + 11) % 256) as u8)
+        .map(|i| ((i * i / 7 + 5 * i + 11) % 256) as u8)
         .collect()
 }
 
@@ -111,7 +111,7 @@ fn document() -> Value {
         ],
         "rolled": {
             "name": "a 64 KiB window rolled one byte",
-            "generator": "byte i is (i * i + 5 * i + 11) mod 256, for i from 0 to 65536 inclusive",
+            "generator": "byte i is (i * i / 7 + 5 * i + 11) mod 256, for i from 0 to 65536 inclusive",
             "window": 65_536,
             "weak_at_0": format!("{rolled_before:08x}"),
             "weak_at_1": format!("{rolled_after:08x}"),

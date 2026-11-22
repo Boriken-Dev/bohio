@@ -366,7 +366,10 @@ fn an_algorithm_the_host_does_not_offer_is_unsupported_before_any_item() {
         ErrorCode::BadRequest
     );
     let blocks = HashRequest {
-        blocks: Some(BlockOptions::default()),
+        blocks: Some(BlockOptions {
+            weak: Some("adler".into()),
+            ..BlockOptions::default()
+        }),
         ..HashRequest::new([Algorithm::Sha256])
     };
     assert_eq!(
