@@ -32,7 +32,6 @@ use std::process::Command;
 use std::sync::OnceLock;
 
 use libc::c_int;
-use rustix::pipe::{PipeFlags, pipe_with};
 
 use crate::config::HostDeath;
 
@@ -49,11 +48,28 @@ fn lifeline() -> io::Result<&'static Lifeline> {
     if let Some(lifeline) = LIFELINE.get() {
         return Ok(lifeline);
     }
-    let (read, write) = pipe_with(PipeFlags::CLOEXEC)?;
+    let (read, write) = pipe()?;
     Ok(LIFELINE.get_or_init(|| Lifeline {
         read,
         _write: write,
     }))
+}
+
+/// A pipe whose ends close on `exec`. Apple's systems have no atomic way to ask for that, so a
+/// program started by another thread between the two calls could keep an end open.
+fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
+    #[cfg(not(target_vendor = "apple"))]
+    {
+        Ok(rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC)?)
+    }
+    #[cfg(target_vendor = "apple")]
+    {
+        let (read, write) = rustix::pipe::pipe()?;
+        for end in [&read, &write] {
+            rustix::io::fcntl_setfd(end, rustix::io::FdFlags::CLOEXEC)?;
+        }
+        Ok((read, write))
+    }
 }
 
 /// The signal a guardian sends, or `None` for a host that leaves its programs running.
@@ -115,7 +131,7 @@ pub(super) fn watch_session(session: u32, on_death: HostDeath) -> io::Result<Opt
         return Ok(None);
     };
     let session = c_int::try_from(session).map_err(|_| io::Error::other("not a process id"))?;
-    let (read, done) = pipe_with(PipeFlags::CLOEXEC)?;
+    let (read, done) = pipe()?;
     fork_guardian(read.as_raw_fd(), signal, Target::Session(session))?;
     Ok(Some(Watch { done }))
 }

@@ -1698,6 +1698,13 @@ fn a_host_killed_with_sigkill_leaves_no_exec_tree() {
 #[cfg(unix)]
 #[test]
 fn a_host_killed_with_sigkill_leaves_no_shell_tree() {
+    // On Linux a shell's whole session is ended, so the job a shell with job control puts in a group of
+    // its own is too. Elsewhere only the shell's group is: the job stays in it with job control off.
+    let monitor = if cfg!(any(target_os = "linux", target_os = "android")) {
+        ""
+    } else {
+        "set +m\r"
+    };
     let world = World::new("");
     let mut host = world.serve("warn");
     let client = approved(&world, "ops", &["--allow", "shell"]);
@@ -1712,7 +1719,7 @@ fn a_host_killed_with_sigkill_leaves_no_shell_tree() {
             "--kind",
             "sh",
         ],
-        Some(&format!("sleep {ms} &\recho $((40 + 2))\r")),
+        Some(&format!("{monitor}sleep {ms} &\recho $((40 + 2))\r")),
         true,
         "warn",
     );
