@@ -6,7 +6,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -29,6 +29,28 @@ pub const RECHECK: Duration = Duration::from_millis(500);
 /// What scheduling and a busy machine may add to "within `2 x recheck`".
 pub const SLACK: Duration = Duration::from_secs(3);
 
+/// How long one forwarding test may run before it is ended as hung.
+pub const DEADLINE: Duration = Duration::from_secs(300);
+
+/// Ends the whole test process, naming the test, when the test that holds it is still running after [`DEADLINE`]: a forward
+/// that waits on a peer that will never answer fails the run at once, with the name of what hung, instead of holding it until
+/// the job's own limit. A test names itself through its thread, which the harness names after it.
+pub struct Deadline(mpsc::Sender<()>);
+
+impl Deadline {
+    pub fn start() -> Self {
+        let name = thread::current().name().unwrap_or("a test").to_owned();
+        let (done, waiting) = mpsc::channel::<()>();
+        thread::spawn(move || {
+            if waiting.recv_timeout(DEADLINE) == Err(mpsc::RecvTimeoutError::Timeout) {
+                eprintln!("{name} was still running after {DEADLINE:?}: it is hung");
+                std::process::exit(101);
+            }
+        });
+        Self(done)
+    }
+}
+
 /// A running node, stopped and joined when dropped.
 pub struct Running {
     pub stop: Arc<AtomicBool>,
@@ -46,10 +68,15 @@ impl Running {
     }
 
     pub fn with(forward: ForwardConfig) -> Self {
+        Self::with_link(forward, LinkConfig::default())
+    }
+
+    /// As [`Running::with`], with `link` as the link's settings (its re-check interval is the tests').
+    pub fn with_link(forward: ForwardConfig, link: LinkConfig) -> Self {
         let config = NodeConfig {
             link: LinkConfig {
                 recheck: Span(RECHECK),
-                ..LinkConfig::default()
+                ..link
             },
             forward,
             ..NodeConfig::default()

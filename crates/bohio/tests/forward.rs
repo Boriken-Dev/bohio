@@ -22,8 +22,8 @@ use coqui_peer::PeerId;
 use coqui_transport::Channel;
 use coqui_transport::Failure;
 use support::embedded::{
-    Dialed, RECHECK, Running, SLACK, Spawned, WAIT, bohio, client_config, closed_port, dialed_with,
-    id_of, listening, read_all, remote_args, serve_once,
+    Deadline, Dialed, RECHECK, Running, SLACK, Spawned, WAIT, bohio, client_config, closed_port,
+    dialed_with, id_of, listening, read_all, remote_args, serve_once,
 };
 
 /// A grant that lets the peer reach `rules`.
@@ -45,6 +45,7 @@ fn permission_refused(error: &Error) -> bool {
 
 #[test]
 fn a_connect_echoes_with_a_half_close() {
+    let _deadline = Deadline::start();
     let node = Running::start();
     let (listener, port) = listening();
     // The target answers only after it has read the end of what the client sent.
@@ -72,6 +73,7 @@ fn a_connect_echoes_with_a_half_close() {
 
 #[test]
 fn a_target_the_grant_does_not_cover_is_refused_before_anything_connects() {
+    let _deadline = Deadline::start();
     let node = Running::start();
     let (listener, port) = listening();
     listener.set_nonblocking(true).expect("non-blocking");
@@ -98,6 +100,7 @@ fn a_target_the_grant_does_not_cover_is_refused_before_anything_connects() {
 
 #[test]
 fn a_closed_port_is_refused_with_its_reason() {
+    let _deadline = Deadline::start();
     let node = Running::start();
     let port = closed_port();
     let rule = format!("127.0.0.1:{port}");
@@ -112,6 +115,7 @@ fn a_closed_port_is_refused_with_its_reason() {
 
 #[test]
 fn a_name_that_does_not_resolve_is_not_found() {
+    let _deadline = Deadline::start();
     let node = Running::start();
     let (link, _) = node.link(granting(&["*.invalid:*"]));
     let target = Target::Tcp {
@@ -127,6 +131,7 @@ fn a_name_that_does_not_resolve_is_not_found() {
 
 #[test]
 fn rules_match_networks_ranges_and_names_and_nothing_else() {
+    let _deadline = Deadline::start();
     let node = Running::start();
     let (listener, port) = listening();
     let accepted = Arc::new(AtomicUsize::new(0));
@@ -202,6 +207,7 @@ fn rules_match_networks_ranges_and_names_and_nothing_else() {
 #[cfg(unix)]
 #[test]
 fn a_unix_socket_target_echoes_with_a_half_close() {
+    let _deadline = Deadline::start();
     use coqui_transport_pipe::{Listener, PipeName};
     let dir = tempfile::tempdir().expect("a directory");
     let path = dir.path().join("echo.sock");
@@ -255,6 +261,7 @@ fn a_unix_socket_target_echoes_with_a_half_close() {
 #[cfg(windows)]
 #[test]
 fn a_named_pipe_target_echoes() {
+    let _deadline = Deadline::start();
     use coqui_transport_pipe::{Listener, PipeName};
     let name = format!("bohio-forward-test-{}", std::process::id());
     let pipe = PipeName::at(format!(r"\\.\pipe\{name}")).expect("a pipe name");
@@ -300,6 +307,7 @@ fn a_named_pipe_target_echoes() {
 
 #[test]
 fn a_revoke_ends_a_running_forward_within_two_rechecks_and_the_target_sees_a_reset() {
+    let _deadline = Deadline::start();
     let node = Running::start();
     let (listener, port) = listening();
     let (ended, outcome) = mpsc::channel();
@@ -343,6 +351,7 @@ fn a_revoke_ends_a_running_forward_within_two_rechecks_and_the_target_sees_a_res
 
 #[test]
 fn a_coqui_link_peer_uses_the_nodes_tcp_1_with_the_same_grant() {
+    let _deadline = Deadline::start();
     use coqui_link::auth::{Sealed, prove_out};
     use coqui_link::forward::{Target as LinkTarget, connect as link_connect};
     use coqui_link::mux::{Mux, Side};
@@ -395,6 +404,7 @@ fn a_coqui_link_peer_uses_the_nodes_tcp_1_with_the_same_grant() {
 
 #[test]
 fn the_bounds_are_settings_one_past_them_is_busy_and_forwarding_can_be_off() {
+    let _deadline = Deadline::start();
     let node = Running::with(ForwardConfig {
         max_connections_per_peer: 1,
         ..ForwardConfig::default()
@@ -437,6 +447,7 @@ fn the_bounds_are_settings_one_past_them_is_busy_and_forwarding_can_be_off() {
 /// What the library peer's `info` says of forwarding.
 #[test]
 fn info_says_what_the_host_connects_to() {
+    let _deadline = Deadline::start();
     use bohio_client::control::Control;
     let node = Running::start();
     let (link, _) = node.link(Grant::allowing([Permission::Info]));
@@ -470,6 +481,7 @@ fn node_and_peer(dir: &Path, rules: &[&str]) -> (Running, String, String, PeerId
 
 #[test]
 fn connect_bridges_standard_input_and_output_and_check_prints_the_address() {
+    let _deadline = Deadline::start();
     let dir = tempfile::tempdir().expect("a directory");
     let (listener, port) = listening();
     let rule = format!("127.0.0.1:{port}");
@@ -523,6 +535,7 @@ fn connect_bridges_standard_input_and_output_and_check_prints_the_address() {
 
 #[test]
 fn forward_dash_l_listens_and_reaches_the_target() {
+    let _deadline = Deadline::start();
     let dir = tempfile::tempdir().expect("a directory");
     let (listener, port) = listening();
     let rule = format!("127.0.0.1:{port}");
@@ -559,6 +572,7 @@ fn forward_dash_l_listens_and_reaches_the_target() {
 
 #[test]
 fn forward_binds_to_loopback_by_default_and_says_when_another_address_is_named() {
+    let _deadline = Deadline::start();
     let dir = tempfile::tempdir().expect("a directory");
     let (_listener, port) = listening();
     let rule = format!("127.0.0.1:{port}");
@@ -581,6 +595,7 @@ fn forward_binds_to_loopback_by_default_and_says_when_another_address_is_named()
 
 #[test]
 fn peer_approve_writes_connect_rules_and_a_bad_rule_is_named_by_config_check() {
+    let _deadline = Deadline::start();
     let dir = tempfile::tempdir().expect("a directory");
     let config = client_config(dir.path(), "host");
     let peer = id_of(&client_config(dir.path(), "other"));
@@ -663,6 +678,7 @@ fn dialed(rule: &str) -> Dialed {
 
 #[test]
 fn connect_and_forward_work_over_a_link_the_host_made_through_via() {
+    let _deadline = Deadline::start();
     let (listener, port) = listening();
     let rule = format!("127.0.0.1:{port}");
     let linked = dialed(&rule);
@@ -749,6 +765,7 @@ fn connect_and_forward_work_over_a_link_the_host_made_through_via() {
 
 #[test]
 fn forward_dash_l_listens_on_a_local_socket_or_pipe() {
+    let _deadline = Deadline::start();
     use coqui_transport_pipe::{PipeName, Stream};
     let dir = tempfile::tempdir().expect("a directory");
     let (listener, port) = listening();
