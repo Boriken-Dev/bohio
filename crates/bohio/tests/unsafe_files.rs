@@ -27,18 +27,34 @@ struct Allowed {
 const ALLOWED: &[Allowed] = &[
     Allowed {
         file: "crates/bohio/src/platform/guard.rs",
-        reason: "ending a program's process group when the host dies without ending it (Unix): a guardian \n             process, made with fork between the child's fork and exec, reads a pipe only the host holds \n             the write end of and signals the group on end-of-file. Ruled out: PR_SET_PDEATHSIG and \n             procctl(PROC_PDEATHSIG_CTL) signal only the child they are set on, never its descendants \n             (measured: the child died and its own child lived on), and macOS has neither; a kqueue \n             watcher or a supervisor process needs the same fork and a program to run it; no maintained \n             crate makes a guardian. std's `pre_exec` is itself unsafe, and rustix offers no fork",
-        miri: "not reachable: Miri does not run fork, waitpid or close_range; covered by the host-death \n           tests of tests/link.rs, which SIGKILL `serve` and look for the exec tree, on Linux (and \n           macOS or FreeBSD where run)",
+        reason: "ending a program's process group, and a shell's session, when the host dies \
+                 without ending it (Unix): a guardian process, made with fork (between the child's \
+                 fork and exec for an exec program; right after the start for a shell), reads a \
+                 pipe only the host holds the write end of and signals the group or session on \
+                 end-of-file. Ruled out: PR_SET_PDEATHSIG and procctl(PROC_PDEATHSIG_CTL) signal \
+                 only the child they are set on, never its descendants (measured: the child died \
+                 and its own child lived on), and macOS has neither; a terminal's hangup reaches \
+                 only a shell's foreground group (measured on Debian's dash: a background job \
+                 survived); a kqueue watcher or a supervisor process needs the same fork and a \
+                 program to run it; portable-pty offers no hook between fork and exec; no \
+                 maintained crate makes a guardian. std's `pre_exec` is itself unsafe, and rustix \
+                 offers no fork",
+        miri: "not reachable: Miri does not run fork, waitpid, close_range or /proc; covered by \
+               the host-death tests of tests/link.rs, which SIGKILL `serve` and look for the exec \
+               and shell trees, on Linux and macOS",
     },
     Allowed {
         file: "crates/bohio/src/platform/winproc.rs",
-        reason: "starting a process on Windows with a handle list (CreateProcessW, STARTUPINFOEX, \
-             PROC_THREAD_ATTRIBUTE_HANDLE_LIST), so a child holds only its three standard streams: \
-             std's Command inherits every inheritable handle, and TcpStream::try_clone makes \
-             inheritable sockets, which a killed child resets. Ruled out: std offers the attribute \
-             only on nightly (raw_attribute); portable-pty starts its child without inheriting \
-             handles but cannot start a pipe-only process; no maintained crate wraps a handle list \
-             over pipes",
+        reason: "starting a process on Windows with a handle list and a job list (CreateProcessW, \
+             STARTUPINFOEX, PROC_THREAD_ATTRIBUTE_HANDLE_LIST and PROC_THREAD_ATTRIBUTE_JOB_LIST), so \
+             a child holds only its three standard streams and starts inside its job object, with no \
+             moment in which a process it starts is outside the tree: std's Command inherits every \
+             inheritable handle, and TcpStream::try_clone makes inheritable sockets, which a killed \
+             child resets. Ruled out: std offers the handle-list attribute only on nightly \
+             (raw_attribute) and no job list; portable-pty starts its child without inheriting \
+             handles but cannot start a pipe-only process and offers no job; assigning the job after \
+             the start leaves the window the job list closes; no maintained crate wraps a handle \
+             list or a job list over pipes",
         miri: "not reachable: every unsafe call is a Win32 call (CreateProcessW, handle and attribute \
            list functions), which Miri does not run; covered by tests/exec.rs and \
            platform/inherit_tests.rs on Windows",

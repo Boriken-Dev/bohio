@@ -631,3 +631,30 @@ fn a_listed_name_that_the_host_cannot_find_is_not_found_and_a_relative_directory
         ErrorCode::NotFound
     );
 }
+
+/// A program that starts a child as its first act, many times over: the child must be in the program's tree
+/// every time, not only when the host was quicker than the program. (The tree is the job object on Windows,
+/// which holds the program from its first instruction; a process group on Unix.)
+#[test]
+fn a_child_a_program_starts_at_once_is_ended_with_the_program_every_time() {
+    let link = runner();
+    for round in 0..12 {
+        let exec =
+            Exec::start(&link, &Request::argv([helper().as_str(), "tree", "60000"])).unwrap();
+        let mut grandchild = None;
+        while grandchild.is_none() {
+            if let Some(Event::Stdout(bytes)) = exec.next(WAIT).unwrap() {
+                grandchild = text(&bytes).parse::<u32>().ok();
+            }
+        }
+        let grandchild = grandchild.unwrap();
+        assert!(alive(grandchild), "round {round}: the child is running");
+        exec.kill().unwrap();
+        let done = exec.wait(WAIT).unwrap();
+        assert!(done.exit.killed, "round {round}");
+        assert!(
+            gone_within(grandchild, Duration::from_secs(10)),
+            "round {round}: the child {grandchild} outlived its program's tree"
+        );
+    }
+}

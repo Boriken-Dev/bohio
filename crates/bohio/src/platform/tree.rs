@@ -34,7 +34,7 @@ pub(super) fn exit_of(status: std::process::ExitStatus) -> super::ProcessExit {
 #[cfg(unix)]
 pub(super) use self::unix::{Tree, contain, end, end_group, poll, poll_id, prepare};
 #[cfg(windows)]
-pub(super) use self::windows::{Tree, contain, contain_handle, end, end_tree, poll};
+pub(super) use self::windows::{Tree, contain_handle, end, end_tree, job, poll};
 
 #[cfg(unix)]
 mod unix {
@@ -209,20 +209,27 @@ mod windows {
     /// handle closes, which the operating system does too when this process ends.
     pub(in crate::platform) struct Tree(Mutex<Option<win32job::Job>>);
 
-    /// Puts the child in a job of its own. A process it starts in the instant before it joins is
-    /// outside the job.
-    pub(in crate::platform) fn contain(child: &Child) -> io::Result<Tree> {
-        use std::os::windows::io::AsRawHandle;
-        contain_handle(child.as_raw_handle() as isize)
-    }
-
-    /// As [`contain`], for a process this module did not start, named by its handle.
-    pub(in crate::platform) fn contain_handle(process: isize) -> io::Result<Tree> {
+    /// A job for a process of this module's own to start in (`winproc::start`): nothing it
+    /// starts at once is outside it.
+    pub(in crate::platform) fn job() -> io::Result<win32job::Job> {
         let mut limits = win32job::ExtendedLimitInfo::new();
         limits.limit_kill_on_job_close();
-        let job = win32job::Job::create_with_limit_info(&limits).map_err(io::Error::other)?;
+        win32job::Job::create_with_limit_info(&limits).map_err(io::Error::other)
+    }
+
+    impl Tree {
+        /// The tree of the process that started in `job`.
+        pub(in crate::platform) fn holding(job: win32job::Job) -> Self {
+            Self(Mutex::new(Some(job)))
+        }
+    }
+
+    /// Puts a process this module did not start, named by its handle, in a job of its own. A
+    /// process it starts in the instant before it joins is outside the job.
+    pub(in crate::platform) fn contain_handle(process: isize) -> io::Result<Tree> {
+        let job = job()?;
         job.assign_process(process).map_err(io::Error::other)?;
-        Ok(Tree(Mutex::new(Some(job))))
+        Ok(Tree::holding(job))
     }
 
     /// Closing the job ends everything in it.

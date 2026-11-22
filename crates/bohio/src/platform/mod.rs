@@ -124,12 +124,21 @@ pub fn spawn(spec: Spec) -> io::Result<Spawned> {
         command.spawn()?
     };
     #[cfg(windows)]
-    let winproc::Started {
-        mut child,
-        stdin,
-        stdout,
-        stderr,
-    } = winproc::start(&spec)?;
+    let (
+        tree,
+        winproc::Started {
+            child,
+            stdin,
+            stdout,
+            stderr,
+        },
+    ) = {
+        // The process starts inside the job, so nothing it starts at once is outside it.
+        let job = tree::job()?;
+        let started = winproc::start(&spec, &job)?;
+        (Tree::holding(job), started)
+    };
+    #[cfg(unix)]
     let tree = match tree::contain(&child) {
         Ok(tree) => tree,
         Err(error) => {

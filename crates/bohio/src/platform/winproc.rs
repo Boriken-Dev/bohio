@@ -5,7 +5,9 @@
 //! inheritable sockets, and a connection a child holds neither closes when its owner drops it nor
 //! closes cleanly when the child is killed (its peer reads a reset). A handle list
 //! (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`) limits what the child inherits to what it names, which
-//! `Command` can only do on a nightly compiler. This module is one of the files that hold `unsafe`.
+//! `Command` can only do on a nightly compiler. The process also starts inside its job object
+//! (`PROC_THREAD_ATTRIBUTE_JOB_LIST`), so nothing it starts in its first instructions is outside the
+//! job. This module is one of the files that hold `unsafe`.
 
 #![allow(unsafe_code)]
 
@@ -25,9 +27,9 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::System::Threading::{
     CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
     EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, INFINITE, InitializeProcThreadAttributeList,
-    LPPROC_THREAD_ATTRIBUTE_LIST, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION,
-    STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute,
-    WaitForSingleObject,
+    LPPROC_THREAD_ATTRIBUTE_LIST, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+    PROC_THREAD_ATTRIBUTE_JOB_LIST, PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+    UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
 use super::Spec;
@@ -65,25 +67,6 @@ impl Child {
             .ok_or_else(|| io::Error::other("the process did not end"))
     }
 
-    /// Ends the process alone (its tree is the job's); no error when it had ended already.
-    pub(super) fn kill(&mut self) -> io::Result<()> {
-        if self.try_wait()?.is_some() {
-            return Ok(());
-        }
-        // SAFETY: the handle is a process handle this value owns and keeps open until it drops.
-        let ended = unsafe { TerminateProcess(self.process.as_raw_handle(), 1) };
-        if ended != 0 {
-            return Ok(());
-        }
-        let error = io::Error::last_os_error();
-        // A process that ended since the check above refuses to be terminated.
-        if self.try_wait()?.is_some() {
-            Ok(())
-        } else {
-            Err(error)
-        }
-    }
-
     fn wait_for(&mut self, milliseconds: u32) -> io::Result<Option<ExitStatus>> {
         if let Some(status) = self.status {
             return Ok(Some(status));
@@ -111,8 +94,12 @@ impl AsRawHandle for Child {
     }
 }
 
-/// Starts `spec`; the child inherits its three standard streams and nothing else.
-pub(super) fn start(spec: &Spec) -> io::Result<Started> {
+/// Starts `spec` inside `job`; the child inherits its three standard streams and nothing else.
+///
+/// The job holds the process from its first instruction: a process it starts at once is in the job
+/// too. A system that cannot put a process in a job at its creation (before Windows 10) makes the
+/// start fail.
+pub(super) fn start(spec: &Spec, job: &win32job::Job) -> io::Result<Started> {
     let program = resolve(spec)?;
     let mut line = Vec::new();
     append_arg(&mut line, &spec.program, false)?;
@@ -149,7 +136,8 @@ pub(super) fn start(spec: &Spec) -> io::Result<Started> {
         make_inheritable(handle)?;
     }
 
-    let attributes = AttributeList::handles(&mut handles)?;
+    let mut jobs: [HANDLE; 1] = [job.handle() as HANDLE];
+    let attributes = AttributeList::new(&mut handles, &mut jobs)?;
     // SAFETY: an all-zero STARTUPINFOEXW is the documented starting value (every field a number or a null pointer).
     let mut info: STARTUPINFOEXW = unsafe { mem::zeroed() };
     info.StartupInfo.cb = u32::try_from(mem::size_of::<STARTUPINFOEXW>()).unwrap_or(0);
@@ -162,7 +150,8 @@ pub(super) fn start(spec: &Spec) -> io::Result<Started> {
     let mut created: PROCESS_INFORMATION = unsafe { mem::zeroed() };
     // SAFETY: `program`, `line` (mutable, as the call may edit it) and the optional `environment`
     // and `directory` are NUL-terminated UTF-16 that outlive the call; `info` carries the attribute
-    // list, which holds the three inheritable handles that `handles` owns until the call returns.
+    // list, which holds the three inheritable handles that `handles` owns and the job that `job`
+    // keeps open, until the call returns.
     let ok = unsafe {
         CreateProcessW(
             program.as_ptr(),
@@ -209,35 +198,42 @@ fn make_inheritable(handle: HANDLE) -> io::Result<()> {
     Ok(())
 }
 
-/// A process attribute list holding one handle list.
+/// A process attribute list holding a handle list and a job list.
 struct AttributeList {
     /// Aligned storage the operating system fills.
     storage: Vec<usize>,
 }
 
 impl AttributeList {
-    /// A list that limits the inherited handles to `handles`, which must stay open and in place
-    /// until the process is created.
-    fn handles(handles: &mut [HANDLE]) -> io::Result<Self> {
+    /// A list that limits the inherited handles to `handles` and puts the process in `jobs`; both
+    /// arrays must stay open and in place until the process is created.
+    fn new(handles: &mut [HANDLE], jobs: &mut [HANDLE]) -> io::Result<Self> {
         let mut size = 0_usize;
         // SAFETY: a null list with a size place asks for the size the list needs; it fails by design.
-        unsafe { InitializeProcThreadAttributeList(ptr::null_mut(), 1, 0, &raw mut size) };
+        unsafe { InitializeProcThreadAttributeList(ptr::null_mut(), 2, 0, &raw mut size) };
         let mut storage = vec![0_usize; size.div_ceil(mem::size_of::<usize>())];
         let pointer: LPPROC_THREAD_ATTRIBUTE_LIST = storage.as_mut_ptr().cast();
         // SAFETY: `pointer` addresses `size` bytes, aligned for a pointer, which this value keeps.
-        if unsafe { InitializeProcThreadAttributeList(pointer, 1, 0, &raw mut size) } == 0 {
+        if unsafe { InitializeProcThreadAttributeList(pointer, 2, 0, &raw mut size) } == 0 {
             return Err(io::Error::last_os_error());
         }
         let list = Self { storage };
-        // SAFETY: the list is initialised; the handle array outlives the process creation the
-        // caller does with it, and the attribute is copied into the list by value of its pointer.
+        list.set(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handles)?;
+        list.set(PROC_THREAD_ATTRIBUTE_JOB_LIST, jobs)?;
+        Ok(list)
+    }
+
+    /// Sets `attribute` to the handles `values`, which the caller keeps open and in place.
+    fn set(&self, attribute: u32, values: &mut [HANDLE]) -> io::Result<()> {
+        // SAFETY: the list is initialised with room for this attribute; `values` outlives the
+        // process creation the caller does with the list, which reads the array through its pointer.
         let updated = unsafe {
             UpdateProcThreadAttribute(
-                list.pointer(),
+                self.pointer(),
                 0,
-                PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
-                handles.as_mut_ptr().cast::<c_void>(),
-                mem::size_of_val(handles),
+                attribute as usize,
+                values.as_mut_ptr().cast::<c_void>(),
+                mem::size_of_val(values),
                 ptr::null_mut(),
                 ptr::null(),
             )
@@ -245,7 +241,7 @@ impl AttributeList {
         if updated == 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(list)
+        Ok(())
     }
 
     fn pointer(&self) -> LPPROC_THREAD_ATTRIBUTE_LIST {
@@ -256,7 +252,7 @@ impl AttributeList {
 impl Drop for AttributeList {
     fn drop(&mut self) {
         if !self.storage.is_empty() {
-            // SAFETY: the list was initialised by `handles` and is deleted once.
+            // SAFETY: the list was initialised by `new` and is deleted once.
             unsafe { DeleteProcThreadAttributeList(self.pointer()) };
         }
     }
