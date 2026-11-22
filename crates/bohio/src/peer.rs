@@ -233,6 +233,14 @@ impl Keys for LayeredPeers {
     }
 }
 
+impl crate::forward::Declarations for LayeredPeers {
+    fn declared(&self) -> Result<Vec<crate::forward::Declared>, String> {
+        self.current()
+            .map(|peers| crate::forward::Declared::from_peers(&peers))
+            .map_err(|error| error.to_string())
+    }
+}
+
 impl Grants for LayeredPeers {
     fn grant(&self, peer: &PeerId) -> Result<Grant, GrantsError> {
         Ok(self.current()?.grant_for(&peer.to_string()))
@@ -446,6 +454,22 @@ fn set_peer(
                 for key in ["endpoint", "dial"] {
                     if let Some(kept) = old.get(key) {
                         table.insert(key, kept.clone());
+                    }
+                }
+                // As are the forwards this node keeps toward the peer: they are not part of what the peer may do.
+                for key in ["local", "remote"] {
+                    if let Some(kept) = old
+                        .get("forward")
+                        .and_then(Item::as_table)
+                        .and_then(|forward| forward.get(key))
+                    {
+                        if table.get("forward").and_then(Item::as_table).is_none() {
+                            table.insert("forward", Item::Table(Table::new()));
+                        }
+                        if let Some(forward) = table.get_mut("forward").and_then(Item::as_table_mut)
+                        {
+                            forward.insert(key, kept.clone());
+                        }
                     }
                 }
             }

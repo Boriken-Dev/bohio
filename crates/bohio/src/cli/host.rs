@@ -23,7 +23,10 @@ use super::{
 };
 use crate::config::{Config, DialConfig, Environment, ListenConfig};
 use crate::forward::{ConnectRule, ListenRule};
-use crate::link::{Grants, Keys, KeysError, MemoryGrants};
+use crate::link::{
+    Grants, KeptDirection, KeptState, Keys, KeysError, LogEvents, MemoryGrants, NodeEvent,
+    NodeEvents,
+};
 use crate::listen::Listening;
 use crate::local::{ANOTHER_ACCOUNT, Local, LocalLink, Server};
 use crate::node::{Endpoint, Node};
@@ -45,7 +48,11 @@ fn parse_id(text: &str) -> Result<PeerId, String> {
 }
 
 /// The node `config` describes, with the identity of its data directory and the peers of the layers `watch`.
-fn node(found: &Found, watch: Vec<PathBuf>, environment: &Environment) -> Result<Node, String> {
+fn node(
+    found: &Found,
+    watch: Vec<PathBuf>,
+    environment: &Environment,
+) -> Result<(Node, Arc<LayeredPeers>), String> {
     let config = found.config();
     let data = Data::new(config.data_dir(environment));
     let identity = data.identity().map_err(|error| error.to_string())?;
@@ -59,7 +66,7 @@ fn node(found: &Found, watch: Vec<PathBuf>, environment: &Environment) -> Result
         node_settings(config, environment),
         identity,
         peers.clone(),
-        peers,
+        peers.clone(),
     )
     .map_err(|error| error.to_string())?
     .with_pairing(data.store().map_err(|error| error.to_string())?)
@@ -67,7 +74,36 @@ fn node(found: &Found, watch: Vec<PathBuf>, environment: &Environment) -> Result
     let node = node.with_path(environment.path.clone().unwrap_or_default());
     #[cfg(feature = "notify")]
     let node = node.with_notifier(Arc::new(crate::gui::DesktopNotifier::new()));
-    Ok(node)
+    Ok((node, peers))
+}
+
+/// A node's events as log lines, and the forwards it keeps as lines on standard output: a person or a test reads where each
+/// one listens, and that it came back, as it happens.
+struct Printed;
+
+impl NodeEvents for Printed {
+    fn event(&self, event: &NodeEvent) {
+        if let NodeEvent::Kept {
+            peer,
+            direction,
+            spec,
+            state,
+        } = event
+        {
+            let (word, to) = match direction {
+                KeptDirection::Local => ("local", spec.split_once('=').map_or("", |(_, to)| to)),
+                _ => ("remote", spec.split_once('=').map_or("", |(_, to)| to)),
+            };
+            match state {
+                KeptState::Up { address } => say!("{word} {address} -> {to} peer {peer}"),
+                KeptState::Down => say!("{word} down {spec} peer {peer}"),
+                KeptState::Failed { reason, retry_in } => {
+                    say!("{word} failed {spec} peer {peer}: {reason} (retry in {retry_in:?})");
+                }
+            }
+        }
+        LogEvents.event(event);
+    }
 }
 
 /// `bohio serve`.
@@ -80,7 +116,7 @@ pub(super) fn serve(args: &ServeArgs, environment: &Environment) -> Result<(), S
         }
         // Standard output is the link: nothing else is written to it, and [[listen]] entries are not bound.
         let watch = guard(&found, environment)?;
-        let server = node(&found, watch, environment)?;
+        let (server, _) = node(&found, watch, environment)?;
         tracing::info!(host = %server.host(), "serving standard input and output");
         return server.serve_stdio().map_err(|error| error.to_string());
     }
@@ -178,7 +214,8 @@ pub(super) fn serve_endpoints(
         );
     }
     let watch = guard(found, environment)?;
-    let server = node(found, watch, environment)?;
+    let (server, peers) = node(found, watch, environment)?;
+    let server = server.with_events(Arc::new(Printed));
     let settings = config.link.settings();
     let mut listeners = Vec::new();
     for entry in entries {
@@ -226,6 +263,10 @@ pub(super) fn serve_endpoints(
             let server = &server;
             scope.spawn(move || server.run_dial(id, endpoint, dial, stop));
         }
+        {
+            let (server, peers) = (&server, &peers);
+            scope.spawn(move || server.run_forwards(&**peers, stop));
+        }
         for handle in handles {
             if let Ok(Err(error)) = handle.join() {
                 tracing::error!("a listener failed: {error}");
@@ -265,6 +306,14 @@ pub(super) fn status(args: &StatusArgs, environment: &Environment) -> Result<(),
     }
     for (id, endpoint, _) in dial_targets(found.config())? {
         say!("dial: {endpoint} peer {id}");
+    }
+    for (id, table) in found.config().peer.declared() {
+        for entry in table.forward_local() {
+            say!("keeps: local {entry} peer {id}");
+        }
+        for entry in table.forward_remote() {
+            say!("keeps: remote {entry} peer {id}");
+        }
     }
     Ok(())
 }

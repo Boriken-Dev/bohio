@@ -20,6 +20,8 @@ pub trait Open: Send + Sync {
     fn open_with(&self, protocol: &str, metadata: &[u8], options: &OpenOptions) -> Result<Box<dyn LinkStream>, Error>;   // provided: `open`, ignoring the options
     fn bulk_window(&self) -> Option<u32>;                          // provided: None; what `Reader::start` asks for, `Some` only when above the link's `window`
     fn is_up(&self) -> bool;                                       // provided: true; whether the link can still open streams (a local listener of a forward ends when it cannot)
+    fn open_cause(&self, protocol: &str, metadata: &[u8]) -> Result<(Box<dyn LinkStream>, connect::Cause), Error>;   // provided: `open` and `Cause::unknown()`; `Opener`, `Connection` and `PeerLink` give the cause that says, once the stream ended, whether the host refused it as over a limit
+    fn relink_wait(&self) -> Option<Duration>;                     // provided: None; Some for a `keep::Relink`: a forward retries a connect whose link was lost before the answer for that long
 }
 #[derive(Default)] #[non_exhaustive] pub struct OpenOptions { pub receive_window: Option<u32> }   // None: the link's window; `OpenOptions::receive_window(bytes)`. A link grants the difference on the new stream, up to its `max_window`
 #[non_exhaustive] pub enum Error { Remote(ErrorBody), Transport(Failure), Protocol(bohio_proto::Error), Link(String), Timeout, Closed }   // Clone, Eq, std::error::Error
@@ -34,7 +36,9 @@ An implementation over plain channels (a test's memory pair) wraps each in `rela
 
 ```rust
 pub use bohio_proto::forward::{ConnectRequest, Connected, Target};   pub use coqui_link::forward::Options;   // Options: chunk, stalled, idle_min/idle_max, watch, listen_poll, connect_timeout (the host's); validate() refuses zeros
-#[non_exhaustive] pub struct ForwardSettings { pub options: Options, pub answer_timeout: Duration /*30 s*/, pub max_connections: usize /*64, a local listener's*/ }   // Default, Copy
+#[non_exhaustive] pub struct ForwardSettings { pub options: Options, pub answer_timeout: Duration /*30 s*/, pub max_connections: usize /*64, a local listener's*/,
+    pub open_retry: Duration /*10 s; zero never retries*/, pub open_retry_interval: Duration /*100 ms, moved by up to a quarter of itself*/, pub wait_for_link: Duration /*30 s*/ }   // Default, Copy
+// `connect`, `RemoteListener::accept` and `listen` try an open again for `open_retry` when the host refused it as over a limit (`Cause::over_a_limit`, the text `OVER_A_LIMIT`), `connect` and `accept` also when the host answered `busy`; a `Relink` link lost before the host answered is retried for `wait_for_link`; every other refusal or error is final
 pub struct Tunnel;                                                                      // Debug; one connected `bohio-connect/1`; dropping it closes the stream
 pub fn connect(link: &dyn Open, target: &Target, settings: &ForwardSettings) -> Result<Tunnel, Error>;   // waits `answer_timeout` for the host's answer
 impl Tunnel {
@@ -79,6 +83,21 @@ An error from `listen`: `Error::Remote(body)` (`in_use`, `busy`, `unsupported`, 
 An error from `connect`: `Error::Remote(body)` when the host did not connect (`refused`, `unreachable`, `timeout`, `not_found`, `busy`, `unsupported`, `bad_request`),
 `Error::Transport(Failure::Permission)` when the peer's grant does not cover the target (refused before the host connects) or was revoked, `Error::Timeout` and
 `Error::Closed`. A stream that ends any way but in order resets the host's connection.
+
+## Keeping a link (`bohio_client::keep`, `connect::Cause`)
+
+```rust
+#[non_exhaustive] pub struct Backoff { pub min: Duration /*1 s*/, pub max: Duration /*60 s*/, pub factor: f64 /*2*/, pub jitter: f64 /*0.1*/ }   // Default, Copy; wait(failures, random) -> Duration: min x factor^failures up to max, moved by jitter x random (-1 to 1)
+pub struct Jitter;   impl Jitter { pub fn new() -> Self; pub fn sample(&mut self) -> f64 }   // numbers from -1 to 1, seeded by the process's hasher
+pub trait Links: Send + Sync { fn current(&self) -> Option<Arc<dyn Open>>; }   // the link to use now; implemented for `Fn() -> Option<Arc<dyn Open>>`
+pub struct Relink;   impl Relink { pub fn new(links: Arc<dyn Links>, wait: Duration, poll: Duration) -> Self }   // an Open over Links: an open uses the link that is up and, with none (or one that ended as it opened), waits up to `wait` looking every `poll`, then Error::Link; is_up is always true; relink_wait is Some(wait)
+pub struct Reconnecting;   impl Reconnecting { pub fn start(first: Arc<dyn Open>, make: Make, backoff: Backoff, poll: Duration, report: Box<dyn Fn(&Kept) + Send + Sync>) -> Self; pub fn current(&self) -> Option<Arc<dyn Open>> }   // Links; a thread makes the next link with `make` after each Backoff wait once the held one is not up; Drop stops it
+#[non_exhaustive] pub enum Kept { Lost, Failed { reason: String, retry_in: Duration }, Restored }   // what `report` hears, on the thread
+pub type Make = Box<dyn Fn() -> Result<Arc<dyn Open>, String> + Send + Sync>;
+pub struct connect::Cause;   // Clone, Default: Cause::unknown(); end() -> Option<StreamEnd>; over_a_limit() -> bool (the host refused the open with the text `connect::OVER_A_LIMIT`, "over a limit", which coqui-link writes for max_pending_opens, max_streams, max_per_protocol and max_opens_per_minute); Opened::cause() gives one
+```
+
+A listener of `-L` over a `Relink` stays up while the link is away, and a connection that arrives then waits for it; `RemoteForward` and a `listen` over a `Reconnecting` are asked for again by whoever holds them (`bohio::forward::keep_remote`).
 
 ## Execution (`bohio_client::exec`)
 

@@ -191,6 +191,17 @@ impl Open for Opener {
             .map(|opened| Box::new(opened) as Box<dyn LinkStream>)
     }
 
+    fn open_cause(
+        &self,
+        protocol: &str,
+        metadata: &[u8],
+    ) -> Result<(Box<dyn LinkStream>, Cause), Error> {
+        self.open_stream(protocol, metadata).map(|opened| {
+            let cause = opened.cause();
+            (Box::new(opened) as Box<dyn LinkStream>, cause)
+        })
+    }
+
     fn open_with(
         &self,
         protocol: &str,
@@ -422,6 +433,14 @@ impl Open for Connection {
         self.opener.open(protocol, metadata)
     }
 
+    fn open_cause(
+        &self,
+        protocol: &str,
+        metadata: &[u8],
+    ) -> Result<(Box<dyn LinkStream>, Cause), Error> {
+        self.opener.open_cause(protocol, metadata)
+    }
+
     fn open_with(
         &self,
         protocol: &str,
@@ -505,6 +524,40 @@ impl Opened {
     /// Why the stream ended, with the text its peer gave (a refusal, a revoke), once it has.
     pub fn end(&self) -> Option<StreamEnd> {
         self.0.end()
+    }
+
+    /// A handle that says the same after the stream itself has been boxed as a `dyn LinkStream`.
+    pub fn cause(&self) -> Cause {
+        Cause(Some(Arc::clone(&self.0)))
+    }
+}
+
+/// The text a link's host gives when it refuses an open because a limit is full (`[link] max_pending_opens`, `max_streams`,
+/// `max_per_protocol` or `max_opens_per_minute`), as `coqui_link` writes it. A refusal for a grant says something else.
+pub const OVER_A_LIMIT: &str = "over a limit";
+
+/// Why a stream ended, kept apart from the stream (which a caller holds as a `dyn LinkStream`): see [`Open::open_cause`].
+#[derive(Debug, Clone, Default)]
+pub struct Cause(Option<Arc<Relay>>);
+
+impl Cause {
+    /// A cause that never says anything: for a link that cannot tell.
+    #[must_use]
+    pub const fn unknown() -> Self {
+        Self(None)
+    }
+
+    /// Why the stream ended, with the text its peer gave, once it has.
+    #[must_use]
+    pub fn end(&self) -> Option<StreamEnd> {
+        self.0.as_ref().and_then(|relay| relay.end())
+    }
+
+    /// Whether the host refused the stream because a limit was full ([`OVER_A_LIMIT`]): the same open may succeed a moment
+    /// later.
+    #[must_use]
+    pub fn over_a_limit(&self) -> bool {
+        matches!(self.end(), Some(StreamEnd::Refused(text)) if text == OVER_A_LIMIT)
     }
 }
 

@@ -511,6 +511,32 @@ pub struct RemoteConnectArgs {
     /// Connect, print `connected ADDRESS` and end, with status 0 when the host connected and 1 when it did not.
     #[arg(long)]
     pub check: bool,
+    /// Whether and how the link is made again when it is lost.
+    #[command(flatten)]
+    pub persist: KeepArgs,
+}
+
+/// What a `bohio remote` command that stays up does when its link is lost: it makes a new one, with the waits of the peer's
+/// `[dial]` table (or the dial defaults), and the listeners it holds stay up meanwhile. A running bridged connection still
+/// ends with the link.
+#[derive(Debug, Args)]
+pub struct KeepArgs {
+    /// End when the link is lost (status 1) instead of making a new one. The first link is always made once: a host that
+    /// cannot be reached, or that does not trust this key, ends the command at once.
+    #[arg(long)]
+    pub once: bool,
+    /// The first wait before making the link again, as `retry_min` of `[peer."<id>".dial]` (`1s`).
+    #[arg(long, value_name = "TIME")]
+    pub retry_min: Option<String>,
+    /// The longest wait, as `retry_max` (`60s`).
+    #[arg(long, value_name = "TIME")]
+    pub retry_max: Option<String>,
+    /// What each further failure multiplies the wait by, as `retry_factor` (`2`).
+    #[arg(long, value_name = "FACTOR")]
+    pub retry_factor: Option<f64>,
+    /// How far a wait may move, as a fraction of itself from 0 to 1, as `retry_jitter` (`0.1`).
+    #[arg(long, value_name = "FRACTION")]
+    pub retry_jitter: Option<f64>,
 }
 
 /// `bohio remote ... forward`.
@@ -543,6 +569,9 @@ pub struct RemoteForwardArgs {
         required_unless_present = "local"
     )]
     pub remote: Vec<String>,
+    /// Whether and how the link is made again when it is lost.
+    #[command(flatten)]
+    pub persist: KeepArgs,
 }
 
 /// `bohio remote ... listen`.
@@ -555,6 +584,9 @@ pub struct RemoteListenArgs {
     /// connection ends the command: status 0 when both directions ended in order.
     #[arg(long)]
     pub keep: bool,
+    /// Whether and how the link is made again when it is lost.
+    #[command(flatten)]
+    pub persist: KeepArgs,
 }
 
 /// `bohio remote ... shell`.

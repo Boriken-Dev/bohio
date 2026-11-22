@@ -14,6 +14,9 @@
 //! [peer.<id>.forward]
 //! connect = ["db.lan:5432", "10.0.0.0/8:22", "unix:/run/docker.sock"]
 //! listen = ["127.0.0.1:0", "127.0.0.1:18090-18099", "unix:/run/user/*/app.sock"]
+//! # What this node does toward the peer, kept up across link losses (`connect` and `listen` above are what the peer may do here):
+//! local = ["127.0.0.1:5432=db.lan:5432"]
+//! remote = ["127.0.0.1:0=127.0.0.1:8080"]
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -155,6 +158,17 @@ impl ForwardGrant {
     pub fn listen(&self) -> &[String] {
         &self.listen
     }
+}
+
+/// `[peer.<id>.forward]` as a table holds it: what the peer may do here (the grant's `connect` and `listen`) and what this node
+/// keeps up toward the peer (`local` and `remote`, which are not part of a grant).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+struct ForwardTable {
+    connect: Vec<String>,
+    listen: Vec<String>,
+    local: Vec<String>,
+    remote: Vec<String>,
 }
 
 /// `[peer.<id>.exec]`.
@@ -309,7 +323,7 @@ pub struct PeerTable {
     allow: BTreeSet<Permission>,
     fs_roots: Vec<PathBuf>,
     exec: ExecGrant,
-    forward: ForwardGrant,
+    forward: ForwardTable,
     /// Where this node dials the peer, any endpoint `bohio remote` takes. The table's name pins the key
     /// that must answer there. Absent: this node does not dial the peer.
     endpoint: Option<String>,
@@ -323,8 +337,21 @@ impl PeerTable {
             allow: self.allow.clone(),
             fs_roots: self.fs_roots.clone(),
             exec: self.exec.clone(),
-            forward: self.forward.clone(),
+            forward: ForwardGrant {
+                connect: self.forward.connect.clone(),
+                listen: self.forward.listen.clone(),
+            },
         }
+    }
+
+    /// The `-L` forwards this node keeps toward the peer (`[peer."<id>".forward] local`), as written: `LISTEN=TARGET`.
+    pub fn forward_local(&self) -> &[String] {
+        &self.forward.local
+    }
+
+    /// The `-R` forwards this node keeps toward the peer (`[peer."<id>".forward] remote`), as written: `LISTEN=LOCAL`.
+    pub fn forward_remote(&self) -> &[String] {
+        &self.forward.remote
     }
 
     /// Where this node dials the peer, when it does.
@@ -362,6 +389,17 @@ impl Peers {
                 .endpoint()
                 .map(|endpoint| (name.as_str(), endpoint, table.dial()))
         })
+    }
+
+    /// The peers whose table keeps forwards up toward them (`local` or `remote` under `[forward]`): each id with its table, in
+    /// id order.
+    pub fn declared(&self) -> impl Iterator<Item = (&str, &PeerTable)> {
+        self.0
+            .iter()
+            .filter(|(_, table)| {
+                !table.forward_local().is_empty() || !table.forward_remote().is_empty()
+            })
+            .map(|(name, table)| (name.as_str(), table))
     }
 
     /// Whether `peer` has a table, even one that grants nothing: whether its key is accepted.

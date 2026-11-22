@@ -258,6 +258,14 @@ impl OpenStreams for PeerLink {
         self.opener.open_with(protocol, metadata, options)
     }
 
+    fn open_cause(
+        &self,
+        protocol: &str,
+        metadata: &[u8],
+    ) -> Result<(Box<dyn LinkStream>, bohio_client::connect::Cause), bohio_client::Error> {
+        self.opener.open_cause(protocol, metadata)
+    }
+
     fn bulk_window(&self) -> Option<u32> {
         self.opener.bulk_window()
     }
@@ -875,7 +883,7 @@ impl Node {
         let poll = self.shared.settings.poll_interval;
         let mut failures = 0u32;
         let mut told: Option<String> = None;
-        let mut jitter = Jitter::new();
+        let mut jitter = bohio_client::keep::Jitter::new();
         let not_accepted = "the peer's key is not accepted: no dial until it is".to_owned();
         while !stop.load(Ordering::SeqCst) {
             if self.peer(peer).is_some() {
@@ -941,7 +949,7 @@ impl Node {
                     other => other.to_string(),
                 }),
             };
-            let wait = backoff(dial, failures, jitter.next());
+            let wait = dial.backoff().wait(failures, jitter.sample());
             if let Some(reason) = reason {
                 failures = failures.saturating_add(1);
                 if told.as_ref() != Some(&reason) {
@@ -959,6 +967,32 @@ impl Node {
                 thread::sleep(poll.min(until.saturating_duration_since(Instant::now())));
             }
         }
+    }
+
+    /// Keeps the forwards `declarations` lists (`[peer."<id>".forward] local` and `remote`) up until `stop` is set: each local
+    /// entry's listener is bound once and kept, a connection that arrives while there is no link to the peer waits up to `[forward]
+    /// wait_for_link` for one, and each remote entry is asked of the peer's host again, for the same port, whenever a link to
+    /// the peer comes up. `declarations` is read again every `[link] recheck`: an entry added is started and an entry removed
+    /// stops, as grants follow the file. Progress is told as [`NodeEvent::Kept`]. The links are the ones this node holds, dialed
+    /// by [`Node::run_dial`] or by the peer.
+    pub fn run_forwards(&self, declarations: &dyn forward::Declarations, stop: &AtomicBool) {
+        let registry = Arc::clone(&self.registry);
+        let links_for = move |peer: PeerId| -> Arc<dyn bohio_client::keep::Links> {
+            let registry = Arc::clone(&registry);
+            Arc::new(move || {
+                registry
+                    .find(&peer)
+                    .map(|link| Arc::new(link) as Arc<dyn OpenStreams>)
+            })
+        };
+        let keeper = forward::Keeper {
+            links_for: &links_for,
+            settings: self.shared.config.forward.client(),
+            recheck: self.shared.config.link.recheck.0,
+            poll: self.shared.settings.poll_interval,
+            events: &*self.events,
+        };
+        forward::keep_forwards(&keeper, declarations, stop);
     }
 
     /// Serves the link of a peer that has proved itself, on whichever side it was made: the same
@@ -1217,51 +1251,6 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
         }
         relay.close();
     });
-}
-
-/// How long to wait after `failures` failures in a row: `retry_min` times `retry_factor` that many times, up to
-/// `retry_max`, then moved by `retry_jitter` of itself in the direction `random` (from -1 to 1) says.
-fn backoff(dial: &DialConfig, failures: u32, random: f64) -> Duration {
-    let min = dial.retry_min.0.as_secs_f64();
-    let max = dial.retry_max.0.as_secs_f64();
-    let grown = min
-        * dial
-            .retry_factor
-            .powi(i32::try_from(failures).unwrap_or(i32::MAX));
-    let base = if grown.is_finite() {
-        grown.min(max)
-    } else {
-        max
-    };
-    let moved = base * (1.0 + dial.retry_jitter * random);
-    Duration::from_secs_f64(moved.max(0.001))
-}
-
-/// Numbers from -1 to 1 for jitter, seeded by the process's own hasher randomness: nothing depends on them
-/// being unpredictable, only on different nodes not retrying in step.
-struct Jitter(u64);
-
-impl Jitter {
-    fn new() -> Self {
-        use std::hash::{BuildHasher, Hasher};
-        let seed = std::collections::hash_map::RandomState::new()
-            .build_hasher()
-            .finish();
-        Self(seed | 1)
-    }
-
-    fn next(&mut self) -> f64 {
-        // xorshift64
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        #[allow(
-            clippy::cast_precision_loss,
-            reason = "a fraction of 2^53 steps is all jitter needs"
-        )]
-        let unit = (self.0 >> 11) as f64 / (1u64 << 53) as f64;
-        unit.mul_add(2.0, -1.0)
-    }
 }
 
 impl Node {

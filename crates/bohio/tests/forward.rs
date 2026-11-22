@@ -423,7 +423,9 @@ fn the_bounds_are_settings_one_past_them_is_busy_and_forwarding_can_be_off() {
     let rule = format!("127.0.0.1:{port}");
     let (link, _) = node.link(granting(&[rule.as_str()]));
     let first = connect(&link, &loopback(port), &ForwardSettings::default()).expect("the first");
-    let error = connect(&link, &loopback(port), &ForwardSettings::default()).expect_err("one past");
+    let mut no_retry = ForwardSettings::default();
+    no_retry.open_retry = Duration::ZERO;
+    let error = connect(&link, &loopback(port), &no_retry).expect_err("one past");
     assert!(
         matches!(&error, Error::Remote(body) if body.code == ErrorCode::Busy),
         "{error:?}"

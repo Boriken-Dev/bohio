@@ -11,6 +11,7 @@ pub mod forward;
 pub mod fs;
 pub mod gui;
 pub mod hash;
+pub mod keep;
 pub mod link;
 pub mod relay;
 pub mod shell;
@@ -80,5 +81,28 @@ pub trait Open: Send + Sync {
     /// a link that cannot tell finds out when an open fails.
     fn is_up(&self) -> bool {
         true
+    }
+
+    /// As [`Open::open`], with a [`connect::Cause`] that says, once the stream ends, why: whether the host refused it because
+    /// it was over a limit (which a caller may retry) or for another reason. The default cannot tell and answers an
+    /// [`connect::Cause::unknown`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Open::open`].
+    fn open_cause(
+        &self,
+        protocol: &str,
+        metadata: &[u8],
+    ) -> Result<(Box<dyn LinkStream>, connect::Cause), Error> {
+        self.open(protocol, metadata)
+            .map(|stream| (stream, connect::Cause::unknown()))
+    }
+
+    /// How long an open waits for a link to come back when there is none, for a link that is kept ([`keep::Relink`]); `None`
+    /// for a link that is what it is. A forward retries a connect whose link was lost before the host answered only when
+    /// this is `Some`.
+    fn relink_wait(&self) -> Option<std::time::Duration> {
+        None
     }
 }

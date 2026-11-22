@@ -298,6 +298,17 @@ pub enum NodeEvent {
         /// How it went.
         outcome: ForwardOutcome,
     },
+    /// A forward this node keeps toward a peer (`[peer."<id>".forward] local` or `remote`) changed state.
+    Kept {
+        /// The peer.
+        peer: PeerId,
+        /// Whether the entry is a `local` or a `remote` one.
+        direction: KeptDirection,
+        /// The entry as written in the file.
+        spec: String,
+        /// What it is now.
+        state: KeptState,
+    },
     /// Something happened on a peer's view of the desktop. Counts and ids only: never pixels, typed text, key names or
     /// clipboard content.
     Gui {
@@ -307,6 +318,37 @@ pub enum NodeEvent {
         session: String,
         /// What happened.
         change: GuiChange,
+    },
+}
+
+/// Which list of `[peer."<id>".forward]` a [`NodeEvent::Kept`] entry is from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum KeptDirection {
+    /// `local`: this node listens and the peer's host connects.
+    Local,
+    /// `remote`: the peer's host listens and this node connects.
+    Remote,
+}
+
+/// What a forward this node keeps is doing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum KeptState {
+    /// It listens (a local entry, bound for as long as the entry stays) or the host listens for it (a remote entry, asked
+    /// again after each loss): `address` is where, with the port the system or the host chose.
+    Up {
+        /// The bound address, as `HOST:PORT`, `unix:PATH` or `pipe:NAME`.
+        address: String,
+    },
+    /// It is not listening: its link ended (a remote entry), or the entry was removed or the node stopped.
+    Down,
+    /// It could not listen: the reason holds no key or request. Told once per change of reason.
+    Failed {
+        /// Why.
+        reason: String,
+        /// How long until it is tried again.
+        retry_in: Duration,
     },
 }
 
@@ -415,6 +457,12 @@ impl NodeEvents for LogEvents {
                 target,
                 outcome,
             } => tracing::info!(%peer, ?kind, %target, ?outcome, "forward"),
+            NodeEvent::Kept {
+                peer,
+                direction,
+                spec,
+                state,
+            } => tracing::info!(%peer, ?direction, %spec, ?state, "kept forward"),
             NodeEvent::Gui {
                 peer,
                 session,

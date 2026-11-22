@@ -11,8 +11,10 @@
 //! [`serve_listen`] and [`serve_accept`] are the other direction (`bohio-listen/1` and `bohio-accept/1`): the host listens for
 //! the peer and hands it each connection, which the peer claims on a stream of its own and which then moves as above.
 
+mod keep;
 mod listen;
 mod rules;
+mod spec;
 
 use std::io;
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs as _};
@@ -31,8 +33,11 @@ use crate::limit::{Counted, Slots};
 use crate::link::{ForwardKind, ForwardOutcome, NodeEvent, NodeEvents};
 use crate::policy::Grant;
 
+pub use keep::{Declarations, Declared, RemoteKeep, keep_remote};
+pub(crate) use keep::{Keeper, run as keep_forwards, same_port};
 pub use listen::{Listeners, covers_listen, listen_kinds, serve_accept, serve_listen};
 pub use rules::{Addresses, BadRule, ConnectRule, ListenRule, PortSet, tcp_target};
+pub use spec::{BadSpec, Bound, LocalSpec, RemoteSpec};
 
 /// The kinds of target this host connects to, as `info` lists them: TCP everywhere, a Unix socket on Unix and a named pipe on
 /// Windows.

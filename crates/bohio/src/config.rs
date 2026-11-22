@@ -548,6 +548,16 @@ impl Default for DialConfig {
 }
 
 impl DialConfig {
+    /// The waits between attempts: `retry_min`, `retry_max`, `retry_factor` and `retry_jitter`.
+    pub fn backoff(&self) -> bohio_client::keep::Backoff {
+        let mut backoff = bohio_client::keep::Backoff::default();
+        backoff.min = self.retry_min.0;
+        backoff.max = self.retry_max.0;
+        backoff.factor = self.retry_factor;
+        backoff.jitter = self.retry_jitter;
+        backoff
+    }
+
     /// The UDP payload sizes and path-MTU discovery the `mtu_` keys give.
     ///
     /// # Errors
@@ -986,6 +996,18 @@ pub struct ForwardConfig {
     /// The most connections one local listener of `bohio remote ... forward` serves at once; one past it is closed at once.
     /// At least 1. Default `64`.
     pub max_local_connections: usize,
+    /// How long a connection that arrives at a local listener while the link to the host is down waits for it to come back
+    /// (`[peer."<id>".forward] local`, and `bohio remote ... forward`, which reconnect), and how long a connect waits for the
+    /// host's answer on a link that ended before it came. After it the connection is closed. `0` closes it at once. A longer
+    /// wait hides a longer outage from a client that would retry itself, and holds its connection, a thread and a slot of
+    /// `max_local_connections` meanwhile. Default `30s`.
+    pub wait_for_link: Span,
+    /// How long an open the host refused because it was over a limit (`[link] max_pending_opens`, `max_streams`,
+    /// `max_per_protocol`, `max_opens_per_minute`) is tried again before the connection fails: a burst of connections through
+    /// one forward opens more streams at once than the host holds pending. `0` never retries. Default `10s`.
+    pub open_retry: Span,
+    /// How long to wait between those attempts, each moved by up to a quarter of itself either way. Not zero. Default `100ms`.
+    pub open_retry_interval: Span,
     /// The most listeners (`bohio-listen/1`) open at once, across peers; one past it is `busy`. At least 1. Default `16`.
     pub max_listeners: usize,
     /// The most listeners one peer has open at once; one past it is `busy`. At least 1. Default `8`.
@@ -1019,6 +1041,9 @@ impl Default for ForwardConfig {
             listen_poll: Span(Duration::from_millis(50)),
             answer_timeout: Span(Duration::from_secs(30)),
             max_local_connections: 64,
+            wait_for_link: Span(Duration::from_secs(30)),
+            open_retry: Span(Duration::from_secs(10)),
+            open_retry_interval: Span(Duration::from_millis(100)),
             max_listeners: 16,
             max_listeners_per_peer: 8,
             max_pending: 16,
@@ -1049,6 +1074,9 @@ impl ForwardConfig {
         settings.options = self.options();
         settings.answer_timeout = self.answer_timeout.0;
         settings.max_connections = self.max_local_connections;
+        settings.wait_for_link = self.wait_for_link.0;
+        settings.open_retry = self.open_retry.0;
+        settings.open_retry_interval = self.open_retry_interval.0;
         settings
     }
 }
@@ -1441,6 +1469,10 @@ impl NodeConfig {
             ("forward.listen_poll", forward.listen_poll.0.is_zero()),
             ("forward.answer_timeout", forward.answer_timeout.0.is_zero()),
             ("forward.accept_timeout", forward.accept_timeout.0.is_zero()),
+            (
+                "forward.open_retry_interval",
+                forward.open_retry_interval.0.is_zero(),
+            ),
         ] {
             if zero {
                 return Err(invalid(key, "must not be zero"));
@@ -1655,6 +1687,33 @@ impl Config {
         }
         if let Err(reason) = self.control.socket_mode_bits() {
             return Err(invalid("control.socket_mode", &reason));
+        }
+        for (name, table) in self.peer.declared() {
+            let key = format!("peer.{name}.forward");
+            if name.parse::<coqui_peer::PeerId>().is_err() {
+                return Err(invalid(
+                    &key,
+                    "`local` and `remote` need the peer's id as the table's name",
+                ));
+            }
+            for (list, entries) in [
+                ("local", table.forward_local()),
+                ("remote", table.forward_remote()),
+            ] {
+                for entry in entries {
+                    let parsed = if list == "local" {
+                        entry.parse::<crate::forward::LocalSpec>().map(|_| ())
+                    } else {
+                        entry.parse::<crate::forward::RemoteSpec>().map(|_| ())
+                    };
+                    if let Err(reason) = parsed {
+                        return Err(invalid(
+                            &format!("{key}.{list}"),
+                            &format!("`{entry}`: {reason}"),
+                        ));
+                    }
+                }
+            }
         }
         for (name, endpoint, dial) in self.peer.dials() {
             if let Err((key, reason)) = dial.validate() {

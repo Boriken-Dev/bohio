@@ -13,6 +13,8 @@ use bohio_client::exec::{Event, Exec};
 use bohio_client::forward::ForwardSettings;
 use bohio_client::fs::{PutOptions, ReadOptions, Reader, put, resolve_auto};
 use bohio_client::hash::hash_many;
+use bohio_client::keep::{Backoff, Kept, Links, Reconnecting, Relink};
+use bohio_client::link::Settings;
 use bohio_client::shell::{Event as ShellEvent, Shell};
 use bohio_client::{Error, Open};
 use bohio_proto::compress::{Codec, Compression};
@@ -26,10 +28,12 @@ use coqui_peer::PeerId;
 
 use super::commands::{print_info, source};
 use super::{
-    Format, RemoteAction, RemoteArgs, RemoteConnectArgs, RemoteExecArgs, RemoteForwardArgs,
-    RemoteHashArgs, RemoteListenArgs, RemoteShellArgs, RemoteWriteArgs,
+    Format, KeepArgs, RemoteAction, RemoteArgs, RemoteConnectArgs, RemoteExecArgs,
+    RemoteForwardArgs, RemoteHashArgs, RemoteListenArgs, RemoteShellArgs, RemoteWriteArgs,
 };
-use crate::config::{Environment, Layers};
+use crate::config::{DialConfig, Environment, Layers};
+use crate::forward::{BadSpec, LocalSpec, RemoteKeep, RemoteSpec, keep_remote};
+use crate::link::KeptState;
 use crate::local::{ANOTHER_ACCOUNT, Server, Via};
 use crate::node::Endpoint;
 
@@ -44,7 +48,7 @@ pub(super) fn explain(error: &Error) -> String {
     }
 }
 
-fn connect(args: &RemoteArgs, environment: &Environment) -> Result<Connection, String> {
+fn direct_plan(args: &RemoteArgs, environment: &Environment) -> Result<Plan, String> {
     let (found, data) = source(&args.config, environment)?;
     let config = found.config();
     let endpoint = match (&args.endpoint, &args.command) {
@@ -76,19 +80,12 @@ fn connect(args: &RemoteArgs, environment: &Environment) -> Result<Connection, S
         .map_err(|error| error.to_string())?;
     let settings = config.link.settings();
     let trust = tls_trust(&endpoint, &args.ca, &args.cert_hash, args.clock_skew)?;
-    Connection::connect_with(&endpoint, settings.proof_timeout, &proof, &settings, &trust).map_err(
-        |error| match error {
-            Error::Transport(coqui_transport::Failure::Certificate) => {
-                certificate_refused(&endpoint, &trust)
-            }
-            Error::Transport(_) | Error::Closed => format!(
-                "the link to {endpoint} ended before it was proven: the host may not be listening, \
-                 may not trust this key yet (it waits for `bohio peer approve`), or this side does \
-                 not trust the host (`bohio join`, or --server ID)"
-            ),
-            other => other.to_string(),
-        },
-    )
+    Ok(Plan::Direct {
+        endpoint,
+        proof: Arc::new(proof),
+        settings,
+        trust,
+    })
 }
 
 /// How the TLS host of `endpoint` is trusted: the PEM files, the hashes and the clock difference the operator gave. The set is
@@ -131,9 +128,32 @@ pub(super) fn certificate_refused(endpoint: &Endpoint, trust: &ServerTrust) -> S
 
 /// `bohio remote`.
 pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCode, String> {
-    let link: Arc<dyn Open> = match &args.via {
-        Some(id) => Arc::new(connect_via(id, args, environment)?),
-        None => Arc::new(connect(args, environment)?),
+    let plan = match &args.via {
+        Some(id) => via_plan(id, args, environment)?,
+        None => direct_plan(args, environment)?,
+    };
+    let link: Arc<dyn Open> = plan.dial()?;
+    // A command that stays up makes the link again when it ends, unless `--once`.
+    let persist = match &args.action {
+        RemoteAction::Connect(connect) => Some(&connect.persist),
+        RemoteAction::Forward(forward) => Some(&forward.persist),
+        RemoteAction::Listen(listen) => Some(&listen.persist),
+        _ => None,
+    };
+    let settings = source(&args.config, environment)?
+        .0
+        .config()
+        .forward
+        .client();
+    let kept = match persist {
+        Some(persist) => keeping(
+            plan,
+            &link,
+            persist,
+            backoff(args, persist, environment)?,
+            settings.options.listen_poll,
+        ),
+        None => None,
     };
     match &args.action {
         RemoteAction::Info(info) => {
@@ -175,19 +195,189 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
         RemoteAction::Hash(hash) => hash_command(&*link, hash),
         RemoteAction::Shell(shell) => shell_command(&*link, shell),
         RemoteAction::Connect(connect) => {
-            let (found, _) = source(&args.config, environment)?;
-            connect_command(&*link, connect, &found.config().forward.client())
+            let open = relinked(&link, kept.as_ref(), &settings);
+            connect_command(&*open, connect, &settings)
         }
         RemoteAction::Gui(gui) => super::gui::run(&*link, gui),
-        RemoteAction::Forward(forward) => {
-            let (found, _) = source(&args.config, environment)?;
-            forward_command(&link, forward, &found.config().forward.client())
-        }
-        RemoteAction::Listen(listen) => {
-            let (found, _) = source(&args.config, environment)?;
-            listen_command(&*link, listen, &found.config().forward.client())
+        RemoteAction::Forward(forward) => forward_command(
+            &link,
+            kept.as_ref(),
+            &backoff(args, &forward.persist, environment)?,
+            forward,
+            &settings,
+        ),
+        RemoteAction::Listen(listen) => listen_command(
+            &link,
+            kept.as_ref(),
+            &backoff(args, &listen.persist, environment)?,
+            listen,
+            &settings,
+        ),
+    }
+}
+
+/// What opens a command's streams: the link, or with a kept link whichever is up when the stream is opened.
+fn relinked(
+    link: &Arc<dyn Open>,
+    kept: Option<&Arc<Reconnecting>>,
+    settings: &ForwardSettings,
+) -> Arc<dyn Open> {
+    match kept {
+        Some(kept) => Arc::new(Relink::new(
+            Arc::clone(kept) as Arc<dyn Links>,
+            settings.wait_for_link,
+            settings.options.listen_poll,
+        )),
+        None => Arc::clone(link),
+    }
+}
+
+/// How the link to the host is made again after it ends: what `connect` and `connect_via` did, kept.
+enum Plan {
+    /// A link of its own to an endpoint.
+    Direct {
+        endpoint: Endpoint,
+        proof: Arc<Proof>,
+        settings: Settings,
+        trust: ServerTrust,
+    },
+    /// The node's link to a peer, through the node's local control endpoint.
+    Via {
+        endpoint: Endpoint,
+        settings: Settings,
+        server: Server,
+        peer: PeerId,
+    },
+}
+
+impl Plan {
+    fn dial(&self) -> Result<Arc<dyn Open>, String> {
+        match self {
+            Self::Direct {
+                endpoint,
+                proof,
+                settings,
+                trust,
+            } => Connection::connect_with(endpoint, settings.proof_timeout, proof, settings, trust)
+                .map(|connection| Arc::new(connection) as Arc<dyn Open>)
+                .map_err(|error| match error {
+                    Error::Transport(coqui_transport::Failure::Certificate) => {
+                        certificate_refused(endpoint, trust)
+                    }
+                    Error::Transport(_) | Error::Closed => format!(
+                        "the link to {endpoint} ended before it was proven: the host may not be listening, \
+                         may not trust this key yet (it waits for `bohio peer approve`), or this side does \
+                         not trust the host (`bohio join`, or --server ID)"
+                    ),
+                    other => other.to_string(),
+                }),
+            Self::Via {
+                endpoint,
+                settings,
+                server,
+                peer,
+            } => {
+                let via = Via::connect_to(endpoint, peer, settings, *server)
+                    .map_err(|error| unreachable(&error))?;
+                let listed = via
+                    .links(Duration::from_millis(50))
+                    .map_err(|error| explain(&error))?;
+                if !listed
+                    .links
+                    .iter()
+                    .any(|link| link.peer == peer.to_string())
+                {
+                    return Err(format!(
+                        "no link to {peer}: the node holds none (`bohio links` lists them); a peer that dials in must have connected"
+                    ));
+                }
+                Ok(Arc::new(via))
+            }
         }
     }
+}
+
+/// The waits between attempts to make the link again: the `[dial]` table of the peer the command reaches when a configured one
+/// is named (`--server`, `--via`, or the endpoint of a `[peer."<id>"]` table), else the dial defaults, then the flags.
+fn backoff(
+    args: &RemoteArgs,
+    keep: &KeepArgs,
+    environment: &Environment,
+) -> Result<Backoff, String> {
+    let (found, _) = source(&args.config, environment)?;
+    let peers = &found.config().peer;
+    let named = args
+        .via
+        .as_deref()
+        .or(args.server.as_deref())
+        .and_then(|id| peers.table(id))
+        .or_else(|| {
+            let endpoint = args.endpoint.as_deref()?;
+            peers
+                .dials()
+                .find(|(_, text, _)| *text == endpoint)
+                .and_then(|(id, _, _)| peers.table(id))
+        });
+    let mut backoff = named.map_or_else(
+        || DialConfig::default().backoff(),
+        |table| table.dial().backoff(),
+    );
+    let span = |text: &str, flag: &str| {
+        crate::config::Span::parse(text)
+            .map(|span| span.0)
+            .ok_or_else(|| format!("{flag} is a time such as `1s` or `500ms`"))
+    };
+    if let Some(text) = &keep.retry_min {
+        backoff.min = span(text, "--retry-min")?;
+    }
+    if let Some(text) = &keep.retry_max {
+        backoff.max = span(text, "--retry-max")?;
+    }
+    if let Some(factor) = keep.retry_factor {
+        backoff.factor = factor;
+    }
+    if let Some(jitter) = keep.retry_jitter {
+        backoff.jitter = jitter;
+    }
+    if backoff.min.is_zero() || backoff.max < backoff.min || backoff.factor < 1.0 {
+        return Err(
+            "--retry-min is not zero, --retry-max at least --retry-min and --retry-factor at least 1"
+                .to_owned(),
+        );
+    }
+    if !(0.0..=1.0).contains(&backoff.jitter) {
+        return Err("--retry-jitter is from 0 to 1".to_owned());
+    }
+    Ok(backoff)
+}
+
+/// The link a command that stays up keeps: it is made again each time it ends, and each change is told on standard error.
+/// `None` with `--once`: the first link is the only one.
+fn keeping(
+    plan: Plan,
+    first: &Arc<dyn Open>,
+    keep: &KeepArgs,
+    backoff: Backoff,
+    poll: Duration,
+) -> Option<Arc<Reconnecting>> {
+    if keep.once {
+        return None;
+    }
+    let report: Box<dyn Fn(&Kept) + Send + Sync> = Box::new(|change| match change {
+        Kept::Lost => eprintln!("bohio: the link to the host was lost; making a new one"),
+        Kept::Failed { reason, retry_in } => {
+            eprintln!("bohio: no link yet ({reason}); trying again in {retry_in:?}");
+        }
+        Kept::Restored => eprintln!("bohio: the link to the host is back"),
+        _ => {}
+    });
+    Some(Arc::new(Reconnecting::start(
+        Arc::clone(first),
+        Box::new(move || plan.dial()),
+        backoff,
+        poll,
+        report,
+    )))
 }
 
 /// `bohio remote ... connect`: the host connects to a target and its bytes meet standard input and output.
@@ -241,119 +431,40 @@ fn explain_with(error: &Error, permission: &str, verb: &str) -> String {
     }
 }
 
-/// A local listener of `bohio remote ... forward`.
-enum Listener {
-    Tcp(std::net::TcpListener),
-    Ipc(coqui_transport_pipe::Listener),
-}
-
-/// One `-L` entry, bound.
-struct Bound {
-    listener: Listener,
-    shown: String,
-    target: Target,
-}
-
-/// Reads `[BIND:]PORT=TARGET`, `unix:PATH=TARGET` or `pipe:NAME=TARGET` and binds the local side.
-fn bind_local(spec: &str, settings: &ForwardSettings) -> Result<Bound, String> {
-    let (listen, target) = spec
-        .split_once('=')
-        .ok_or_else(|| format!("-L `{spec}`: write LISTEN=TARGET"))?;
-    let target: Target = target
-        .parse()
-        .map_err(|error: bohio_proto::forward::BadTarget| format!("-L `{spec}`: {error}"))?;
-    if listen.starts_with("unix:") || listen.starts_with("pipe:") {
-        let name: coqui_transport_pipe::PipeName = listen
-            .parse()
-            .map_err(|error: coqui_transport_pipe::Error| format!("-L `{spec}`: {error}"))?;
-        let listener = bohio_client::forward::ipc::listener(&name, &settings.options, None)
-            .map_err(|error| format!("-L `{spec}`: {error}"))?;
-        return Ok(Bound {
-            shown: listener.name().to_string(),
-            listener: Listener::Ipc(listener),
-            target,
-        });
-    }
-    let (bind, port) = match listen.rsplit_once(':') {
-        Some((bind, port)) => (Some(bind), port),
-        None => (None, listen),
-    };
-    let port: u16 = port
-        .parse()
-        .map_err(|_| format!("-L `{spec}`: the port is a number from 0 to 65535"))?;
-    let address: std::net::IpAddr = match bind {
-        None => std::net::Ipv4Addr::LOCALHOST.into(),
-        Some(bind) => bind
-            .strip_prefix('[')
-            .and_then(|inner| inner.strip_suffix(']'))
-            .unwrap_or(bind)
-            .parse()
-            .map_err(|_| format!("-L `{spec}`: BIND is an address (an IPv6 one in brackets)"))?,
-    };
-    if !address.is_loopback() {
-        println!("non-default: bind {address}");
-    }
-    let listener = std::net::TcpListener::bind((address, port))
-        .map_err(|error| format!("-L `{spec}`: {error}"))?;
-    let shown = listener
-        .local_addr()
-        .map_or_else(|_| listen.to_owned(), |bound| bound.to_string());
-    Ok(Bound {
-        listener: Listener::Tcp(listener),
-        shown,
-        target,
-    })
-}
-
-/// Reads `[BIND:]PORT=LOCAL`, `unix:PATH=LOCAL` or `pipe:NAME=LOCAL` of `-R`: what the host binds and where each arrival goes.
-fn parse_remote(spec: &str) -> Result<(Bind, Target), String> {
-    let (listen, local) = spec
-        .split_once('=')
-        .ok_or_else(|| format!("-R `{spec}`: write LISTEN=LOCAL"))?;
-    let local: Target = local
-        .parse()
-        .map_err(|error: bohio_proto::forward::BadTarget| format!("-R `{spec}`: {error}"))?;
-    let bind = if listen.starts_with("unix:") || listen.starts_with("pipe:") || listen.contains(':')
-    {
-        listen
-            .parse::<Bind>()
-            .map_err(|error: bohio_proto::forward::BadTarget| format!("-R `{spec}`: {error}"))?
-    } else {
-        Bind::Tcp {
-            host: "127.0.0.1".to_owned(),
-            port: listen
-                .parse()
-                .map_err(|_| format!("-R `{spec}`: the port is a number from 0 to 65535"))?,
-        }
-    };
-    if let Bind::Tcp { host, .. } = &bind
-        && !host
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|address| address.is_loopback())
-    {
-        println!("non-default: bind {host}");
-    }
-    Ok((bind, local))
-}
-
-/// `bohio remote ... forward`: `-L` listens here and `-R` has the host listen, until interrupted or the link ends (status 1).
+/// `bohio remote ... forward`: `-L` listens here and `-R` has the host listen. With a kept link they run until interrupted, the
+/// listeners staying up while the link is made again; with `--once`, until the link ends (status 1).
 fn forward_command(
     link: &Arc<dyn Open>,
+    kept: Option<&Arc<Reconnecting>>,
+    backoff: &Backoff,
     args: &RemoteForwardArgs,
     settings: &ForwardSettings,
 ) -> Result<ExitCode, String> {
-    let bound = args
-        .local
-        .iter()
-        .map(|spec| bind_local(spec, settings))
-        .collect::<Result<Vec<_>, _>>()?;
-    let remote = args
-        .remote
-        .iter()
-        .map(|spec| parse_remote(spec))
-        .collect::<Result<Vec<_>, _>>()?;
-    for entry in &bound {
-        println!("local {} -> {}", entry.shown, entry.target);
+    let mut bound = Vec::new();
+    for text in &args.local {
+        let spec: LocalSpec = text
+            .parse()
+            .map_err(|error: BadSpec| format!("-L `{text}`: {error}"))?;
+        let (listener, shown) = spec
+            .bind(settings)
+            .map_err(|error| format!("-L `{text}`: {error}"))?;
+        if let Some(address) = spec.non_default() {
+            println!("non-default: bind {address}");
+        }
+        bound.push((spec, listener, shown));
+    }
+    let mut remote = Vec::new();
+    for text in &args.remote {
+        let spec: RemoteSpec = text
+            .parse()
+            .map_err(|error: BadSpec| format!("-R `{text}`: {error}"))?;
+        if let Some(host) = spec.non_default() {
+            println!("non-default: bind {host}");
+        }
+        remote.push(spec);
+    }
+    for (spec, _, shown) in &bound {
+        println!("local {shown} -> {}", spec.target());
     }
     let _ = std::io::stdout().flush();
     let stop = std::sync::atomic::AtomicBool::new(false);
@@ -369,66 +480,110 @@ fn forward_command(
             explain_listen(error)
         );
     });
+    // What opens a local listener's connections: the link, or whichever link is up when a connection arrives.
+    let open = relinked(link, kept, settings);
+    let refused: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
     let mut forwards = Vec::new();
-    for (bind, local) in &remote {
+    for spec in &remote {
         let forward = bohio_client::forward::RemoteForward::open(
             Arc::clone(link),
-            bind,
-            local,
+            spec.bind(),
+            spec.local(),
             settings,
             Arc::clone(&reporter),
         )
-        .map_err(|error| format!("-R `{bind}={local}`: {}", explain_listen(&error)))?;
-        println!("remote {} -> {local}", forward.address());
+        .map_err(|error| {
+            format!(
+                "-R `{}={}`: {}",
+                spec.bind(),
+                spec.local(),
+                explain_listen(&error)
+            )
+        })?;
         forwards.push(forward);
     }
-    let _ = std::io::stdout().flush();
-    let link: &dyn Open = &**link;
+    let open: &dyn Open = &*open;
     let lost = thread::scope(|scope| {
-        let watcher = (!forwards.is_empty()).then(|| {
-            let (stop, forwards) = (&stop, &forwards);
-            scope.spawn(move || {
-                let mut failure = None;
-                while !stop.load(std::sync::atomic::Ordering::SeqCst) {
-                    if let Some(ended) = forwards.iter().find_map(|forward| forward.ended()) {
-                        failure = Some(match ended {
-                            bohio_client::forward::Ended::Closed => {
-                                "the host ended a remote listener: its access was revoked or it failed"
-                                    .to_owned()
-                            }
-                            _ => "the link to the host ended".to_owned(),
-                        });
+        // With a kept link each remote forward is asked for again after a loss, for the same port; with `--once` a watcher
+        // ends the command when one ends.
+        let mut watcher = None;
+        let mut asking = Vec::new();
+        if let Some(kept) = kept {
+            let (stop, reporter, refused) = (&stop, &reporter, &refused);
+            for (spec, forward) in remote.iter().zip(forwards.drain(..)) {
+                let local = spec.local().clone();
+                asking.push(scope.spawn(move || {
+                    let tell = |state: KeptState| match state {
+                        KeptState::Up { address } => {
+                            println!("remote {address} -> {local}");
+                            let _ = std::io::stdout().flush();
+                        }
+                        KeptState::Down => {
+                            eprintln!("bohio: a remote forward ended; asking for it again");
+                        }
+                        KeptState::Failed { reason, retry_in } => {
+                            eprintln!(
+                                "bohio: a remote forward could not be made again ({reason}); trying again in {retry_in:?}"
+                            );
+                        }
+                    };
+                    let ended = keep_remote(
+                        &RemoteKeep {
+                            links: &**kept,
+                            settings,
+                            backoff,
+                            poll: settings.options.listen_poll,
+                            stop,
+                            retry_closed: false,
+                            tell: &tell,
+                            report: Arc::clone(reporter),
+                        },
+                        spec,
+                        Some(forward),
+                    );
+                    if ended.is_some() {
+                        // The host said no with the link up (a revoke): that ends the command, as it always did.
+                        *refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(
+                            "the host ended a remote listener: its access was revoked or it failed"
+                                .to_owned(),
+                        );
                         stop.store(true, std::sync::atomic::Ordering::SeqCst);
-                        break;
                     }
-                    thread::sleep(settings.options.listen_poll);
-                }
-                failure
-            })
-        });
+                }));
+            }
+        } else {
+            for (spec, forward) in remote.iter().zip(&forwards) {
+                println!("remote {} -> {}", forward.address(), spec.local());
+            }
+            watcher = (!forwards.is_empty()).then(|| {
+                let (stop, forwards) = (&stop, &forwards);
+                scope.spawn(move || {
+                    let mut failure = None;
+                    while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                        if let Some(ended) = forwards.iter().find_map(|forward| forward.ended()) {
+                            failure = Some(match ended {
+                                bohio_client::forward::Ended::Closed => {
+                                    "the host ended a remote listener: its access was revoked or it failed"
+                                        .to_owned()
+                                }
+                                _ => "the link to the host ended".to_owned(),
+                            });
+                            stop.store(true, std::sync::atomic::Ordering::SeqCst);
+                            break;
+                        }
+                        thread::sleep(settings.options.listen_poll);
+                    }
+                    failure
+                })
+            });
+        }
+        let _ = std::io::stdout().flush();
         let handles: Vec<_> = bound
             .iter()
-            .map(|entry| {
+            .map(|(spec, listener, _)| {
                 let (stop, report) = (&stop, &report);
                 scope.spawn(move || {
-                    let ended = match &entry.listener {
-                        Listener::Tcp(listener) => bohio_client::forward::listen_tcp(
-                            link,
-                            listener,
-                            &entry.target,
-                            settings,
-                            stop,
-                            report,
-                        ),
-                        Listener::Ipc(listener) => bohio_client::forward::listen_ipc(
-                            link,
-                            listener,
-                            &entry.target,
-                            settings,
-                            stop,
-                            report,
-                        ),
-                    };
+                    let ended = listener.serve(open, spec.target(), settings, stop, report);
                     // One listener ending ends them all: the link is gone, or this one could not go on.
                     stop.store(true, std::sync::atomic::Ordering::SeqCst);
                     ended
@@ -444,6 +599,9 @@ fn forward_command(
                 Err(_) => failure = Some("a listener failed".to_owned()),
             }
         }
+        for handle in asking {
+            let _ = handle.join();
+        }
         if let Some(watcher) = watcher {
             // With no local listener nothing has ended yet: the watcher is what the command waits for.
             if !bound.is_empty() {
@@ -452,6 +610,13 @@ fn forward_command(
             if let Ok(Some(reason)) = watcher.join() {
                 failure = Some(reason);
             }
+        }
+        if let Some(reason) = refused
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            failure = Some(reason);
         }
         failure
     });
@@ -620,57 +785,123 @@ impl Read for ConnectionInput {
     }
 }
 
-/// `bohio remote ... listen`: the host binds, and an arriving connection meets standard input and output.
+/// What a command that waits for a link does when there is none: waits, saying so once.
+fn next_link(kept: &Reconnecting, poll: Duration) -> Arc<dyn Open> {
+    let mut told = false;
+    loop {
+        if let Some(link) = kept.current() {
+            return link;
+        }
+        if !told {
+            eprintln!("bohio: waiting for the link to the host");
+            told = true;
+        }
+        thread::sleep(poll);
+    }
+}
+
+/// Whether `error` says the link ended: what a kept link is made again for.
+const fn link_lost(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::Closed | Error::Transport(coqui_transport::Failure::PathLost) | Error::Link(_)
+    )
+}
+
+/// `bohio remote ... listen`: the host binds, and an arriving connection meets standard input and output. With a kept link, a
+/// link that ends is made again and the host is asked to listen again, for the same port.
 fn listen_command(
-    link: &dyn Open,
+    link: &Arc<dyn Open>,
+    kept: Option<&Arc<Reconnecting>>,
+    backoff: &Backoff,
     args: &RemoteListenArgs,
     settings: &ForwardSettings,
 ) -> Result<ExitCode, String> {
-    let bind: Bind = args
+    let mut bind: Bind = args
         .bind
         .parse()
         .map_err(|error: bohio_proto::forward::BadTarget| error.to_string())?;
-    let listener = bohio_client::forward::listen(link, &bind, None, settings)
-        .map_err(|error| explain_listen(&error))?;
-    // On standard error: standard output is the connection's bytes.
-    eprintln!("listening {}", listener.address());
-    let _ = std::io::stdout().flush();
+    let poll = settings.options.listen_poll;
     let shared = args.keep.then(SharedInput::start);
+    let mut current = Arc::clone(link);
+    let mut first = true;
+    let mut failures = 0_u32;
+    let mut jitter = bohio_client::keep::Jitter::new();
     loop {
-        let arrival = match listener.next_arrival(Some(settings.options.listen_poll)) {
-            Ok(Some(arrival)) => arrival,
-            Ok(None) if link.is_up() => continue,
-            Ok(None) => return Err("the link to the host ended".to_owned()),
-            Err(error) => return Err(explain_listen(&error)),
+        let listener = match bohio_client::forward::listen(&*current, &bind, None, settings) {
+            Ok(listener) => listener,
+            Err(error) => match kept {
+                // After the first, a refusal is asked again as a lost link is: the host may not have noticed the old listener
+                // is gone, and holds its port until it does.
+                Some(kept) if !first => {
+                    failures = failures.saturating_add(1);
+                    let wait = backoff.wait(failures, jitter.sample());
+                    if !link_lost(&error) {
+                        eprintln!(
+                            "bohio: could not listen again ({}); trying again in {wait:?}",
+                            explain_listen(&error)
+                        );
+                    }
+                    thread::sleep(wait);
+                    current = next_link(kept, poll);
+                    continue;
+                }
+                _ => return Err(explain_listen(&error)),
+            },
         };
-        let tunnel = match listener.accept(link, &arrival, settings) {
-            Ok(tunnel) => tunnel,
-            Err(error) if args.keep => {
-                eprintln!(
-                    "bohio: an arrival could not be claimed: {}",
+        first = false;
+        failures = 0;
+        bind = crate::forward::same_port(&bind, listener.address());
+        // On standard error: standard output is the connection's bytes.
+        eprintln!("listening {}", listener.address());
+        let _ = std::io::stdout().flush();
+        loop {
+            let arrival = match listener.next_arrival(Some(poll)) {
+                Ok(Some(arrival)) => arrival,
+                Ok(None) if current.is_up() => continue,
+                Ok(None) => break,
+                Err(error) if kept.is_some() && link_lost(&error) => break,
+                Err(error) => return Err(explain_listen(&error)),
+            };
+            let tunnel = match listener.accept(&*current, &arrival, settings) {
+                Ok(tunnel) => tunnel,
+                Err(error) if kept.is_some() && link_lost(&error) => break,
+                Err(error) if args.keep => {
+                    eprintln!(
+                        "bohio: an arrival could not be claimed: {}",
+                        explain_listen(&error)
+                    );
+                    continue;
+                }
+                Err(error) => return Err(explain_listen(&error)),
+            };
+            let mut out = std::io::stdout().lock();
+            let retired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let result = match &shared {
+                Some(shared) => tunnel.bridge(shared.reader(&retired), &mut out),
+                None => tunnel.bridge(std::io::stdin(), &mut out),
+            };
+            retired.store(true, std::sync::atomic::Ordering::SeqCst);
+            drop(out);
+            match result {
+                Ok(()) if !args.keep => return Ok(ExitCode::SUCCESS),
+                Ok(()) => {}
+                Err(error) if !args.keep => return Err(explain_listen(&error)),
+                Err(error) => eprintln!(
+                    "bohio: a connection ended badly: {}",
                     explain_listen(&error)
-                );
-                continue;
+                ),
             }
-            Err(error) => return Err(explain_listen(&error)),
-        };
-        let mut out = std::io::stdout().lock();
-        let retired = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let result = match &shared {
-            Some(shared) => tunnel.bridge(shared.reader(&retired), &mut out),
-            None => tunnel.bridge(std::io::stdin(), &mut out),
-        };
-        retired.store(true, std::sync::atomic::Ordering::SeqCst);
-        drop(out);
-        match result {
-            Ok(()) if !args.keep => return Ok(ExitCode::SUCCESS),
-            Ok(()) => {}
-            Err(error) if !args.keep => return Err(explain_listen(&error)),
-            Err(error) => eprintln!(
-                "bohio: a connection ended badly: {}",
-                explain_listen(&error)
-            ),
+            if !current.is_up() {
+                break;
+            }
         }
+        let Some(kept) = kept else {
+            return Err("the link to the host ended".to_owned());
+        };
+        drop(listener);
+        eprintln!("bohio: the link to the host ended; listening again when it is back");
+        current = next_link(kept, poll);
     }
 }
 
@@ -901,26 +1132,17 @@ pub(super) fn unreachable(error: &bohio_client::Error) -> String {
 const NO_NODE: &str = "the node's local control endpoint does not answer: `bohio serve` must be running with this configuration and `[control] enabled` not false";
 
 /// The link a running node holds to `id`, through its local control endpoint.
-fn connect_via(id: &str, args: &RemoteArgs, environment: &Environment) -> Result<Via, String> {
+fn via_plan(id: &str, args: &RemoteArgs, environment: &Environment) -> Result<Plan, String> {
     let peer = id
         .parse::<PeerId>()
         .map_err(|_| "that is not a peer id".to_owned())?;
     let (endpoint, settings, server) = control_endpoint(&args.config, environment)?;
-    let via = Via::connect_to(&endpoint, &peer, &settings, server)
-        .map_err(|error| unreachable(&error))?;
-    let listed = via
-        .links(Duration::from_millis(50))
-        .map_err(|error| explain(&error))?;
-    if !listed
-        .links
-        .iter()
-        .any(|link| link.peer == peer.to_string())
-    {
-        return Err(format!(
-            "no link to {peer}: the node holds none (`bohio links` lists them); a peer that dials in must have connected"
-        ));
-    }
-    Ok(via)
+    Ok(Plan::Via {
+        endpoint,
+        settings,
+        server,
+        peer,
+    })
 }
 
 /// `bohio links`.

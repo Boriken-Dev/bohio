@@ -134,6 +134,30 @@ impl Proc {
         }
     }
 
+    /// The child's exit code once it has ended (`Some(-1)` when it ended with none), `None` while it runs.
+    pub fn exited(&mut self) -> Option<i32> {
+        self.child
+            .try_wait()
+            .expect("the child can be asked")
+            .map(|status| status.code().unwrap_or(-1))
+    }
+
+    /// How many lines of standard output start with `prefix`.
+    pub fn stdout_count(&self, prefix: &str) -> usize {
+        text(&self.stdout)
+            .lines()
+            .filter(|line| line.starts_with(prefix))
+            .count()
+    }
+
+    /// The rest of each standard-output line that starts with `prefix`, in order.
+    pub fn stdout_lines(&self, prefix: &str) -> Vec<String> {
+        text(&self.stdout)
+            .lines()
+            .filter_map(|line| line.strip_prefix(prefix).map(|rest| rest.trim().to_owned()))
+            .collect()
+    }
+
     /// Kills the child and waits for it, so its port is free.
     pub fn kill(&mut self) {
         let _ = self.child.kill();

@@ -18,7 +18,7 @@ use std::net::TcpListener;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bohio_proto::forward::Answer;
 pub use bohio_proto::forward::{ConnectRequest, Connected, Target};
@@ -26,6 +26,7 @@ pub use coqui_link::forward::Options;
 use coqui_link::mux::LinkStream;
 use coqui_transport::Failure;
 
+use crate::keep::Jitter;
 use crate::{Error, Open};
 
 /// What a forward waits for and how its pump moves bytes. Every value has a default; a zero in [`ForwardSettings::options`]
@@ -40,6 +41,14 @@ pub struct ForwardSettings {
     pub answer_timeout: Duration,
     /// The most connections a local listener serves at once; one past it is closed at once. At least 1. Default 64.
     pub max_connections: usize,
+    /// How long an open the host refused because it was over a limit (`[link] max_pending_opens` and the like) is tried
+    /// again before the connection fails. Zero never retries. Default 10 seconds.
+    pub open_retry: Duration,
+    /// How long to wait between those attempts, each moved by up to half of itself. Not zero. Default 100 milliseconds.
+    pub open_retry_interval: Duration,
+    /// How long a connect waits for a link to be up, and for the host's answer on a link that ended before it came, when the
+    /// link is kept ([`keep::Relink`](crate::keep::Relink)). Default 30 seconds.
+    pub wait_for_link: Duration,
 }
 
 impl Default for ForwardSettings {
@@ -48,6 +57,9 @@ impl Default for ForwardSettings {
             options: Options::default(),
             answer_timeout: Duration::from_secs(30),
             max_connections: 64,
+            open_retry: Duration::from_secs(10),
+            open_retry_interval: Duration::from_millis(100),
+            wait_for_link: Duration::from_secs(30),
         }
     }
 }
@@ -98,28 +110,88 @@ fn open_answered(
     metadata: &[u8],
     settings: &ForwardSettings,
 ) -> Result<Tunnel, Error> {
-    let stream = link.open(protocol, metadata)?;
-    let frame = match stream.receive(Some(settings.answer_timeout)) {
-        Ok(Some(frame)) => frame,
-        Ok(None) => return Err(Error::Closed),
-        Err(failure) => {
-            stream.close();
-            return Err(Error::from(failure));
+    let began = Instant::now();
+    let mut jitter = Jitter::new();
+    loop {
+        let (stream, frame) = open_first(link, protocol, metadata, settings)?;
+        match Answer::decode(&frame) {
+            Ok(Answer::Connected(connected)) => {
+                return Ok(Tunnel {
+                    stream,
+                    address: connected.address,
+                    options: settings.options,
+                });
+            }
+            // The host's own bounds on forwarded connections are full: a burst is served as it drains.
+            Ok(Answer::Error(body))
+                if body.code == bohio_proto::ErrorCode::Busy
+                    && began.elapsed() < settings.open_retry =>
+            {
+                stream.close();
+                thread::sleep(retry_pause(settings, &mut jitter));
+            }
+            Ok(Answer::Error(body)) => {
+                stream.close();
+                return Err(Error::Remote(body));
+            }
+            Ok(_) | Err(_) => {
+                stream.close();
+                return Err(Error::Protocol(bohio_proto::Error::Decode));
+            }
         }
-    };
-    match Answer::decode(&frame) {
-        Ok(Answer::Connected(connected)) => Ok(Tunnel {
-            stream,
-            address: connected.address,
-            options: settings.options,
-        }),
-        Ok(Answer::Error(body)) => {
-            stream.close();
-            Err(Error::Remote(body))
-        }
-        Ok(_) | Err(_) => {
-            stream.close();
-            Err(Error::Protocol(bohio_proto::Error::Decode))
+    }
+}
+
+/// How long to wait before an open is tried again: `open_retry_interval`, moved by up to a quarter of itself.
+fn retry_pause(settings: &ForwardSettings, jitter: &mut Jitter) -> Duration {
+    settings
+        .open_retry_interval
+        .mul_f64(1.0 + 0.25 * jitter.sample())
+}
+
+/// Opens `protocol` with `metadata` and reads the host's first frame, trying again where trying again can help: the host
+/// refused the open because it was over a limit (for [`ForwardSettings::open_retry`]), or a kept link ended before the
+/// host answered (for [`ForwardSettings::wait_for_link`]). Anything else is the answer.
+pub(crate) fn open_first(
+    link: &dyn Open,
+    protocol: &str,
+    metadata: &[u8],
+    settings: &ForwardSettings,
+) -> Result<(Box<dyn LinkStream>, Vec<u8>), Error> {
+    let began = Instant::now();
+    let mut jitter = Jitter::new();
+    loop {
+        let (stream, cause) = match link.open_cause(protocol, metadata) {
+            Ok(opened) => opened,
+            // The link's queue was full when the open was sent: the same "try again" as below.
+            Err(Error::Transport(Failure::NoProgress)) if began.elapsed() < settings.open_retry => {
+                thread::sleep(retry_pause(settings, &mut jitter));
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        let failure = match stream.receive(Some(settings.answer_timeout)) {
+            Ok(Some(frame)) => return Ok((stream, frame)),
+            Ok(None) => {
+                stream.close();
+                return Err(Error::Closed);
+            }
+            Err(failure) => failure,
+        };
+        stream.close();
+        // `NoProgress` is the link's own "full, try again": the open could not be queued behind the others of a burst.
+        let pause = if (failure == Failure::Permission && cause.over_a_limit())
+            || failure == Failure::NoProgress
+        {
+            (began.elapsed() < settings.open_retry).then(|| retry_pause(settings, &mut jitter))
+        } else if failure == Failure::PathLost && link.relink_wait().is_some() {
+            (began.elapsed() < settings.wait_for_link).then_some(settings.options.listen_poll)
+        } else {
+            None
+        };
+        match pause {
+            Some(pause) => thread::sleep(pause),
+            None => return Err(Error::from(failure)),
         }
     }
 }

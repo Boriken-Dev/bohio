@@ -20,7 +20,7 @@ use coqui_link::mux::LinkStream;
 use coqui_transport::Failure;
 use coqui_transport_pipe::PipeName;
 
-use super::{Ended, ForwardSettings, Tunnel, ipc, open_answered};
+use super::{Ended, ForwardSettings, Tunnel, ipc, open_answered, open_first};
 use crate::{Error, Open};
 
 /// A listener the host bound for this peer.
@@ -55,15 +55,12 @@ pub fn listen(
 ) -> Result<RemoteListener, Error> {
     let mut request = ListenRequest::new(bind.clone());
     request.backlog = backlog;
-    let stream = link.open(bohio_proto::protocol::LISTEN, &request.to_metadata()?)?;
-    let frame = match stream.receive(Some(settings.answer_timeout)) {
-        Ok(Some(frame)) => frame,
-        Ok(None) => return Err(Error::Closed),
-        Err(failure) => {
-            stream.close();
-            return Err(Error::from(failure));
-        }
-    };
+    let (stream, frame) = open_first(
+        link,
+        bohio_proto::protocol::LISTEN,
+        &request.to_metadata()?,
+        settings,
+    )?;
     match ListenFrame::decode(&frame) {
         Ok(ListenFrame::Listening(listening)) => Ok(RemoteListener {
             stream,
@@ -364,11 +361,12 @@ fn serve(
                 }
                 Err(error) => {
                     report(&error);
-                    return if link.is_up() {
-                        Ended::Closed
-                    } else {
-                        Ended::LinkLost
-                    };
+                    // A link that ends fails its streams a moment before it says it is down, so the failure counts too:
+                    // only a refusal, a revoke, an error frame or an orderly end of the stream is the host ending the
+                    // listener while the link stays.
+                    let lost = !link.is_up()
+                        || matches!(&error, Error::Transport(failure) if *failure != Failure::Permission);
+                    return if lost { Ended::LinkLost } else { Ended::Closed };
                 }
             }
         }
