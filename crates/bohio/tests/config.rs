@@ -189,6 +189,16 @@ fn values_out_of_range_name_their_key() {
             "compression.prepare_ttl",
         ),
         ("[compression]\nexclude = [\"[a\"]\n", "compression.exclude"),
+        ("[delta]\nmin_block = 0\n", "delta.min_block"),
+        (
+            "[delta]\nmin_block = 4096\nmax_block = 2048\n",
+            "delta.max_block",
+        ),
+        ("[delta]\nmax_block = 2147483648\n", "delta.max_block"),
+        (
+            "[delta]\nmax_signature_bytes = 0\n",
+            "delta.max_signature_bytes",
+        ),
         ("[shell]\nmax_sessions = 0\n", "shell.max_sessions"),
         ("[shell]\nchunk_size = 0\n", "shell.chunk_size"),
         ("[shell]\npoll_interval = 0\n", "shell.poll_interval"),

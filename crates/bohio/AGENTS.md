@@ -28,9 +28,9 @@ pub struct Environment { pub windows: bool, pub local_app_data: Option<PathBuf>,
     pub path: Option<OsString> }                                  // Default; the binary fills it from the process (cli::capture_environment)
 impl Environment { pub fn default_data_dir(&self) -> PathBuf; }
 
-pub struct Config { pub service: ServiceConfig, pub listen: Vec<ListenConfig>, pub link: LinkConfig, pub filesystem: FilesystemConfig, pub hash: HashConfig, pub gui: GuiConfig,
+pub struct Config { pub service: ServiceConfig, pub listen: Vec<ListenConfig>, pub link: LinkConfig, pub filesystem: FilesystemConfig, pub hash: HashConfig, pub delta: DeltaConfig, pub gui: GuiConfig,
                     pub execution: ExecutionConfig, pub shell: ShellConfig, pub forward: ForwardConfig, pub pairing: PairingConfig, pub control: ControlConfig, pub peer: Peers }     // Default; unknown keys refused; `peer` is `[peer.<id>]`
-pub struct NodeConfig { pub name: String, pub link: LinkConfig, pub filesystem: FilesystemConfig, pub hash: HashConfig,
+pub struct NodeConfig { pub name: String, pub link: LinkConfig, pub filesystem: FilesystemConfig, pub hash: HashConfig, pub delta: DeltaConfig,
                         pub execution: ExecutionConfig, pub shell: ShellConfig, pub forward: ForwardConfig, pub pairing: PairingConfig }   // Default, Deserialize, unknown keys refused: what a Node runs on, read by an app from any section of its own settings
 impl NodeConfig { pub fn validate(&self, label: &str) -> Result<(), ConfigError>; }   // every range check; `Node::new` calls it
 impl Config {
@@ -106,6 +106,11 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[hash] rate` | `0` | most bytes a second one hash stream reads; `0` is unlimited |
 | `[hash] read_size` | `1048576` | the buffer a hash reads with; at least 1 (a `rate` below twenty times it reads smaller pieces) |
 | `[hash] algorithms` | every one | the digests the host computes, for hash streams, reads and writes; at least one, each known to this build |
+| `[delta] min_block` | `2048` | the smallest block a signature the host makes uses; at least 1 |
+| `[delta] max_block` | `1048576` | the largest block a signature uses or a peer may ask for (held in memory twice per stream); at least `min_block`, at most 2^30 |
+| `[delta] max_signature_bytes` | `67108864` | the most signature a delta read takes from the client, decided from `base_size` before a batch is read (`busy` past it); at least 1 |
+| `[delta] min_size` | `1048576` | advertised in `info.transfer.delta`: the size of file from which a client's `auto` uses a delta |
+| `[delta] max_expansion` | `1024` | a delta write's output, once past 1 MiB, may be this many times the target's size plus the bytes received (`bad_request` past it); `0` is off |
 | `[compression] allowed` | every algorithm this build has | which of `zstd`, `lz4`, `deflate` a peer may ask for (`unsupported` otherwise); empty allows none |
 | `[compression] default` | `{algorithm = "zstd", level = 3}` (`lz4` without zstd) | what `auto` means; one of `allowed` |
 | `[compression] max_level` / `deflate_max_level` | `19` / `9` | the highest zstd / deflate level; a higher request is clamped and the header says so |
@@ -246,7 +251,7 @@ reads slowly slows the shell.
 ## Filesystem (`bohio::fs`)
 
 ```rust
-pub struct Context<'a> { pub grant: &'a Grant, pub config: &'a FilesystemConfig, pub hash: &'a HashConfig, pub compression: &'a CompressionConfig, pub peer: &'a str, pub slots: &'a Slots }   // Copy
+pub struct Context<'a> { pub grant: &'a Grant, pub config: &'a FilesystemConfig, pub hash: &'a HashConfig, pub delta: &'a DeltaConfig, pub compression: &'a CompressionConfig, pub peer: &'a str, pub slots: &'a Slots }   // Copy
 pub fn call(context: &Context<'_>, call: &bohio_proto::control::Call, budget: usize) -> Result<Reply, ErrorBody>;
 pub fn serve_read(channel: Arc<dyn Channel>, metadata: &[u8], context: &Context<'_>) -> Result<u64, ErrorBody>;     // bytes sent
 pub fn serve_write(channel: Arc<dyn Channel>, metadata: &[u8], context: &Context<'_>) -> Result<WriteDone, ErrorBody>;

@@ -4,14 +4,19 @@ use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use bohio_proto::fs::{WriteDone, WriteInput, WriteMode, WriteOutput, WriteRequest};
+use bohio_proto::fs::{
+    DeltaBase, Timestamp, WriteDone, WriteInput, WriteMode, WriteOutput, WriteRequest,
+};
 use bohio_proto::hash::Algorithm;
 use bohio_proto::{ErrorBody, ErrorCode};
+use bohio_transfer::apply::{apply, copy_len};
+use bohio_transfer::compress::FREE_OUTPUT;
+use bohio_transfer::delta::Op;
 use coqui_transport::{Channel, Failure};
 
 use super::compress::{Settings, Sink, decode_failure};
 use super::hash::hasher_for;
-use super::ops::Roots;
+use super::ops::{self, Roots};
 use super::stage::Staged;
 use super::{Context, authorize, io_error};
 use crate::policy::Permission;
@@ -40,6 +45,13 @@ fn encode(output: &WriteOutput) -> Vec<u8> {
 /// does not offer), `denied` and `busy` (at `max_transfers`) before any path is looked at; `outside_root`, `not_found`, `exists` (`create`)
 /// and `io` from the path and the file, and `io` for a digest mismatch or a stream that ended
 /// early.
+///
+/// A `delta` write builds the new file in a temporary sibling from `copy` frames (blocks of the target, read
+/// through a handle opened before anything is written) and data frames, and renames it over the target as
+/// `replace` does. It needs `fs.read` as well as `fs.write` (`denied`), and the target must be as the request's
+/// `base` says (its size, its modification time and any digests): else the write is `changed` before `ready`, and
+/// again just before the rename. A copy past the end of the target is `bad_request`, as is an output that
+/// grows past `[delta] max_expansion` times the target's size plus what was received.
 pub fn serve_write(
     channel: Arc<dyn Channel>,
     metadata: &[u8],
@@ -74,11 +86,86 @@ fn check_request(request: &WriteRequest) -> Result<(), ErrorBody> {
             return bad("an expected digest is the algorithm's lowercase hexadecimal digits");
         }
     }
-    if !request.expect.is_empty() && !matches!(request.mode, WriteMode::Replace | WriteMode::Create)
+    if !request.expect.is_empty()
+        && !matches!(
+            request.mode,
+            WriteMode::Replace | WriteMode::Create | WriteMode::Delta { .. }
+        )
     {
-        return bad("a digest is only checked for replace and create");
+        return bad("a digest is only checked for replace, create and delta");
+    }
+    if let WriteMode::Delta { block_size, base } = &request.mode {
+        if *block_size == 0 || u32::try_from(*block_size).is_err() {
+            return bad("a delta's block size is from 1 to 4294967295");
+        }
+        if base.hashes.iter().any(|(algorithm, text)| {
+            algorithm
+                .hex_len()
+                .is_none_or(|length| length != text.len())
+                || !text
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        }) {
+            return bad("a base digest is the algorithm's lowercase hexadecimal digits");
+        }
     }
     Ok(())
+}
+
+/// The target a delta write copies from, opened before anything is written.
+struct Base {
+    file: cap_std::fs::File,
+    length: u64,
+    modified: Option<Timestamp>,
+    block_size: u32,
+}
+
+/// Opens the target of a delta write and holds it to what the client saw.
+fn open_base(
+    roots: &Roots<'_>,
+    context: &Context<'_>,
+    path: &str,
+    block_size: u64,
+    wanted: &DeltaBase,
+) -> Result<Base, ErrorBody> {
+    let block_size = u32::try_from(block_size)
+        .ok()
+        .filter(|size| (1..=context.delta.max_block).contains(size))
+        .ok_or_else(|| {
+            ErrorBody::new(
+                ErrorCode::BadRequest,
+                "the block size is from 1 to this host's [delta] max_block",
+            )
+        })?;
+    let (dir, relative) = roots.resolve(path)?;
+    let (mut file, meta) = ops::open_regular_in(&dir, &relative)?;
+    let modified = meta.modified().ok().map(ops::timestamp);
+    let moved = || ErrorBody::new(ErrorCode::Changed, "the target is not as the client saw it");
+    if meta.len() != wanted.size || (wanted.modified.is_some() && wanted.modified != modified) {
+        return Err(moved());
+    }
+    if !wanted.hashes.is_empty() {
+        let names: Vec<Algorithm> = wanted.hashes.keys().cloned().collect();
+        let mut hasher = hasher_for(context, &names)?;
+        let mut buffer = vec![0_u8; context.hash.read_size.max(1)];
+        loop {
+            match std::io::Read::read(&mut file, &mut buffer) {
+                Ok(0) => break,
+                Ok(count) => hasher.update(&buffer[..count]),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(io_error(&error)),
+            }
+        }
+        if hasher.finish() != wanted.hashes {
+            return Err(moved());
+        }
+    }
+    Ok(Base {
+        length: meta.len(),
+        file,
+        modified,
+        block_size,
+    })
 }
 
 fn run(
@@ -90,7 +177,13 @@ fn run(
     let idle = context.config.idle_timeout.0;
     let request = WriteRequest::from_metadata(metadata)
         .map_err(|_| ErrorBody::new(ErrorCode::BadRequest, "the request cannot be read"))?;
-    authorize(context, &[Permission::FsWrite])?;
+    // A delta copies from the target, so a peer that may only write cannot use one to test guesses about it.
+    let needs: &[Permission] = if matches!(request.mode, WriteMode::Delta { .. }) {
+        &[Permission::FsWrite, Permission::FsRead]
+    } else {
+        &[Permission::FsWrite]
+    };
+    authorize(context, needs)?;
     check_request(&request)?;
     let settings = Settings::new(context.compression);
     let declared = settings.declared(request.compression.as_ref())?;
@@ -117,6 +210,16 @@ fn run(
         )
     })?;
     let roots = Roots::new(context.grant.fs_roots());
+    let mut base = match &request.mode {
+        WriteMode::Delta { block_size, base } => Some(open_base(
+            &roots,
+            context,
+            &request.path,
+            *block_size,
+            base,
+        )?),
+        _ => None,
+    };
     let (dir, relative) = roots.resolve(&request.path)?;
     let mut staged = Staged::open(
         &dir,
@@ -137,10 +240,47 @@ fn run(
     }
 
     let mut written = 0_u64;
+    // What arrived, which bounds what a delta may expand to.
+    let mut received = 0_u64;
     let mut last_progress = Instant::now();
     loop {
         match channel.receive(Some(poll)) {
             Ok(Some(frame)) => match WriteInput::decode(&frame) {
+                Ok(WriteInput::Copy(copy)) => {
+                    received += frame.len() as u64;
+                    let base = base.as_mut().ok_or_else(|| {
+                        ErrorBody::new(ErrorCode::BadRequest, "a copy needs a delta write")
+                    })?;
+                    copy_len(base.length, base.block_size, copy.block, copy.count).ok_or_else(
+                        || {
+                            ErrorBody::new(
+                                ErrorCode::BadRequest,
+                                "a copy reaches past the end of the target",
+                            )
+                        },
+                    )?;
+                    let mut sink = Sink {
+                        out: staged.file(),
+                        hasher: &mut hasher,
+                        written: &mut written,
+                    };
+                    apply(
+                        &mut base.file,
+                        &Op::Copy {
+                            block: copy.block,
+                            count: copy.count,
+                        },
+                        base.block_size,
+                        &mut sink,
+                    )
+                    .map_err(|error| match error {
+                        bohio_transfer::apply::ApplyError::Io(kind) => {
+                            io_error(&std::io::Error::from(kind))
+                        }
+                        _ => ErrorBody::new(ErrorCode::BadRequest, error.to_string()),
+                    })?;
+                    last_progress = Instant::now();
+                }
                 Ok(WriteInput::Compressed(piece)) => {
                     let decoder = decoder.as_mut().ok_or_else(|| {
                         ErrorBody::new(
@@ -153,6 +293,7 @@ fn run(
                         hasher: &mut hasher,
                         written: &mut written,
                     };
+                    received += piece.len() as u64;
                     decoder
                         .feed(&piece, &mut sink)
                         .map_err(|error| decode_failure(&error))?;
@@ -163,6 +304,7 @@ fn run(
                     if let Some(decoder) = decoder.as_mut() {
                         decoder.reset();
                     }
+                    received += bytes.len() as u64;
                     staged
                         .file()
                         .write_all(&bytes)
@@ -187,6 +329,28 @@ fn run(
                 }
             }
             Ok(None) | Err(_) => return Err(ended()),
+        }
+        let allowed = u128::from(context.delta.max_expansion);
+        if let Some(base) = &base
+            && allowed > 0
+            && written > FREE_OUTPUT
+            && u128::from(written) > allowed * u128::from(received + base.length)
+        {
+            return Err(ErrorBody::new(
+                ErrorCode::BadRequest,
+                "the new file grows further than this host allows from what was sent",
+            ));
+        }
+    }
+    // Just before the rename: the target is still what the delta was made against.
+    if let Some(base) = &base {
+        let (dir, relative) = roots.resolve(&request.path)?;
+        let (_, now) = ops::open_regular_in(&dir, &relative)?;
+        if now.len() != base.length || now.modified().ok().map(ops::timestamp) != base.modified {
+            return Err(ErrorBody::new(
+                ErrorCode::Changed,
+                "the target changed while the delta was written",
+            ));
         }
     }
 

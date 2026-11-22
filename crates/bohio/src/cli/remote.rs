@@ -16,6 +16,7 @@ use bohio_client::hash::hash_many;
 use bohio_client::keep::{Backoff, Kept, Links, Reconnecting, Relink};
 use bohio_client::link::Settings;
 use bohio_client::shell::{Event as ShellEvent, Shell};
+use bohio_client::sync::{Compare, DeltaMode, Moved, SyncOptions};
 use bohio_client::{Error, Open};
 use bohio_proto::compress::{Codec, Compression};
 use bohio_proto::exec::{Request, Stdin};
@@ -193,6 +194,18 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
         }
         RemoteAction::Write(write) => write_command(&*link, write),
         RemoteAction::Hash(hash) => hash_command(&*link, hash),
+        RemoteAction::Put(put) => {
+            let options = sync_options(&*link, &put.sync, true)?;
+            let moved = bohio_client::sync::put(&*link, &put.local, &put.remote, &options)
+                .map_err(|error| explain(&error))?;
+            report_moved(&moved)
+        }
+        RemoteAction::Get(get) => {
+            let options = sync_options(&*link, &get.sync, false)?;
+            let moved = bohio_client::sync::get(&*link, &get.remote, &get.local, &options)
+                .map_err(|error| explain(&error))?;
+            report_moved(&moved)
+        }
         RemoteAction::Shell(shell) => shell_command(&*link, shell),
         RemoteAction::Connect(connect) => {
             let open = relinked(&link, kept.as_ref(), &settings);
@@ -653,6 +666,52 @@ fn named(link: &dyn Open, compression: Compression) -> Result<Compression, Strin
         "the host reports no default compression: name an algorithm, such as --compress zstd:3"
             .to_owned()
     })
+}
+
+/// What `put` and `get` ask of the sync functions. A put names its algorithm itself (`auto` is read from the host's
+/// `info`); a get may leave `auto` to the host.
+fn sync_options(
+    link: &dyn Open,
+    args: &super::SyncArgs,
+    sends: bool,
+) -> Result<SyncOptions, String> {
+    let compression = match wanted(args.compress.as_deref(), args.window_log)? {
+        Some(compression) if compression.algorithm == Codec::None => None,
+        Some(compression) if sends => Some(named(link, compression)?),
+        other => other,
+    };
+    Ok(SyncOptions {
+        delta: match args.delta {
+            super::DeltaChoice::Auto => DeltaMode::Auto,
+            super::DeltaChoice::Always => DeltaMode::Always,
+            super::DeltaChoice::Never => DeltaMode::Never,
+        },
+        compare: args.compare.map(|how| match how {
+            super::CompareChoice::Meta => Compare::Meta,
+            super::CompareChoice::Hash => Compare::Hash(Algorithm::Blake3),
+            super::CompareChoice::Blocks => Compare::Blocks,
+        }),
+        compression,
+        block_size: args.block_size,
+        ..SyncOptions::default()
+    })
+}
+
+/// The one line `put` and `get` print.
+fn report_moved(moved: &Moved) -> Result<ExitCode, String> {
+    let line = if moved.skipped {
+        format!("sent 0 of {} (unchanged)", moved.size)
+    } else {
+        format!(
+            "sent {} of {} (copied {}, literal {})",
+            moved.wire_bytes, moved.size, moved.copied_bytes, moved.literal_bytes
+        )
+    };
+    let mut out = std::io::stdout().lock();
+    writeln!(out, "{line}")
+        .and_then(|()| out.flush())
+        .map_err(|error| error.to_string())?;
+    Ok(ExitCode::SUCCESS)
 }
 
 /// `bohio remote ... write`: standard input to a file of the host.

@@ -11,6 +11,7 @@ use bohio_transfer::compress::{Encoder, Piece, ratio};
 use coqui_transport::Channel;
 
 use super::compress::Settings;
+use super::delta;
 use super::hash::hasher_for;
 use super::ops::{self, Roots};
 use super::prepare;
@@ -31,6 +32,11 @@ fn encode(output: &ReadOutput) -> Vec<u8> {
 /// to close. A file that shrinks while it is read ends with an `io` error frame. Returns the number
 /// of data bytes sent. With `hashes` in the request the closing `done` frame carries those digests
 /// of the bytes sent.
+///
+/// With `delta` the client sends the signature of its old copy (`signature` frames, then `signature end`), and
+/// the host answers a header with `delta` true, `copy` frames for the blocks of the old copy that stand in the
+/// file and data (or compressed) frames for the rest, then `done`; the signature is bounded by `[delta]
+/// max_signature_bytes` (`busy`) and the block size by `max_block`.
 ///
 /// With `compression` each chunk is a `compressed` frame when that is smaller and a `data` frame
 /// when it is not (which ends the compression context); the header says what was used, and a file
@@ -80,6 +86,12 @@ fn run(
         return Err(ErrorBody::new(
             ErrorCode::BadRequest,
             "a prepared read needs a compression to prepare with",
+        ));
+    }
+    if request.delta.is_some() && (request.prepare || request.resume.is_some()) {
+        return Err(ErrorBody::new(
+            ErrorCode::BadRequest,
+            "a delta read is neither prepared nor resumed",
         ));
     }
     let mut hasher = hasher_for(context, &request.hashes)?;
@@ -132,6 +144,27 @@ fn run(
     });
     file.seek(SeekFrom::Start(request.offset))
         .map_err(|error| io_error(&error))?;
+
+    if let Some(options) = &request.delta {
+        if request.offset != 0 || request.length.is_some() {
+            return Err(ErrorBody::new(
+                ErrorCode::BadRequest,
+                "a delta read is of the whole file",
+            ));
+        }
+        let job = delta::Pull {
+            channel: channel.as_ref(),
+            context,
+            delta: options,
+            settings: &settings,
+            compression: resolved.as_ref(),
+            size,
+            chunk,
+            poll,
+            idle,
+        };
+        return delta::pull(&job, &mut file, hasher, settings.skips(&request.path));
+    }
 
     if request.prepare {
         let compression = resolved.as_ref().ok_or_else(|| {
@@ -272,6 +305,7 @@ fn send_prepared(
         compression: Some(meta.compression.clone()),
         compressed_length: Some(meta.compressed_length),
         token: Some(token),
+        delta: false,
     };
     if !send(&ReadOutput::Header(header)) {
         return Err(give_up());

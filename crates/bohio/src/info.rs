@@ -6,7 +6,7 @@ use std::path::Path;
 use bohio_proto::PROTOCOL_VERSION;
 use bohio_proto::forward::ForwardInfo;
 use bohio_proto::info::{
-    ExecInfo, FilesystemInfo, HashLimits, Info, Limits, Service, SessionInfo, ShellInfo,
+    DeltaInfo, ExecInfo, FilesystemInfo, HashLimits, Info, Limits, Service, SessionInfo, ShellInfo,
     TransferInfo,
 };
 use bohio_proto::shell::ShellKind;
@@ -82,6 +82,17 @@ pub fn collect(config: &NodeConfig, path: &OsStr) -> Info {
                 .contains(&config.compression.default.algorithm)
                 .then(|| caps_default(&config.compression)),
             prepared: config.filesystem.enabled && config.compression.prepare_dir.is_some(),
+            delta: if config.filesystem.enabled {
+                DeltaInfo {
+                    weak: vec![bohio_proto::fs::WEAK_RSYNC.to_owned()],
+                    min_block: u64::from(config.delta.min_block),
+                    max_block: u64::from(config.delta.max_block),
+                    min_size: config.delta.min_size,
+                    max_signature_bytes: config.delta.max_signature_bytes,
+                }
+            } else {
+                DeltaInfo::default()
+            },
         },
         forward: ForwardInfo {
             enabled: config.forward.enabled,

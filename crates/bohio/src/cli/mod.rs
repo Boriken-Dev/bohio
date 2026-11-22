@@ -397,6 +397,11 @@ pub enum RemoteAction {
     Write(RemoteWriteArgs),
     /// Print digests of files on the host, computed there: `HEX  PATH` for one algorithm, `NAME HEX  PATH` for several.
     Hash(RemoteHashArgs),
+    /// Send a local file to the host, replacing it atomically; only what changed travels when the host has an older copy.
+    Put(RemotePutArgs),
+    /// Fetch a file of the host to a local file, replacing it atomically; only what changed travels when this side has an
+    /// older copy.
+    Get(RemoteGetArgs),
     /// Open an interactive shell on the host.
     Shell(RemoteShellArgs),
     /// Have the host connect to a target and bridge it to standard input and output (netcat); `ssh -o ProxyCommand` can
@@ -488,6 +493,72 @@ pub struct RemoteWriteArgs {
     /// Create missing directories above the file.
     #[arg(long)]
     pub parents: bool,
+}
+
+/// Whether a transfer uses a delta against the copy already at the destination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum DeltaChoice {
+    /// A delta when the destination's copy is at least the host's `[delta] min_size`.
+    Auto,
+    /// A delta whenever the destination has a copy.
+    Always,
+    /// The whole file.
+    Never,
+}
+
+/// How far to compare before a file is moved at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum CompareChoice {
+    /// Size and modification time.
+    Meta,
+    /// Size, then a digest (blake3) of each side.
+    Hash,
+    /// Size, then the block signature of each side.
+    Blocks,
+}
+
+/// The options `put` and `get` share.
+#[derive(Debug, Args)]
+pub struct SyncArgs {
+    /// Whether to send only what differs from the copy already at the destination.
+    #[arg(long, value_enum, default_value = "auto")]
+    pub delta: DeltaChoice,
+    /// Move nothing when the two files are the same by this comparison.
+    #[arg(long, value_enum)]
+    pub compare: Option<CompareChoice>,
+    /// Compress what travels: `ALG` or `ALG:LEVEL`, where ALG is zstd, lz4, deflate or auto (the host's default).
+    #[arg(long, value_name = "ALG[:LEVEL]")]
+    pub compress: Option<String>,
+    /// The zstd window as a power of two; the host clamps it to its own limit.
+    #[arg(long, value_name = "LOG2", requires = "compress")]
+    pub window_log: Option<u32>,
+    /// The size of a block of the signature, in bytes; by default the host's bounds and the file's size choose it.
+    #[arg(long, value_name = "BYTES")]
+    pub block_size: Option<u32>,
+}
+
+/// `bohio remote ... put`.
+#[derive(Debug, Args)]
+pub struct RemotePutArgs {
+    /// The local file.
+    pub local: PathBuf,
+    /// The file on the host, in the host's own path text.
+    pub remote: String,
+    /// The options of a transfer.
+    #[command(flatten)]
+    pub sync: SyncArgs,
+}
+
+/// `bohio remote ... get`.
+#[derive(Debug, Args)]
+pub struct RemoteGetArgs {
+    /// The file on the host, in the host's own path text.
+    pub remote: String,
+    /// The local file.
+    pub local: PathBuf,
+    /// The options of a transfer.
+    #[command(flatten)]
+    pub sync: SyncArgs,
 }
 
 /// `bohio remote ... hash`.

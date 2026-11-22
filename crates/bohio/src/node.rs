@@ -1173,6 +1173,7 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
             grant: &grant,
             config: &config.filesystem,
             hash: &config.hash,
+            delta: &config.delta,
             compression: &config.compression,
             peer: &peer,
             slots: &shared.transfers,

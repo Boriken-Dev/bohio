@@ -10,7 +10,7 @@ use bohio_transfer::compress::{Bounds, Caps, DecodeError, Decoder, Encoder, Piec
 
 use bohio_proto::control::{Call, Reply};
 use bohio_proto::fs::{
-    Entry, Listing, Metadata, ReadHeader, ReadOutput, ReadRequest, Timestamp, WriteDone,
+    DeltaCopy, Entry, Listing, Metadata, ReadHeader, ReadOutput, ReadRequest, Timestamp, WriteDone,
     WriteInput, WriteOutput, WriteRequest,
 };
 use bohio_proto::hash::Digests;
@@ -546,6 +546,8 @@ pub struct Writer {
     chunk: usize,
     /// The encoder of what the request declared it sends compressed.
     encoder: Mutex<Option<Encoder>>,
+    /// The bytes of the frames sent so far, as they travelled.
+    sent: AtomicU64,
 }
 
 impl core::fmt::Debug for Writer {
@@ -620,6 +622,7 @@ impl Writer {
                         channel,
                         chunk: Self::DEFAULT_CHUNK,
                         encoder: Mutex::new(encoder),
+                        sent: AtomicU64::new(0),
                     });
                 }
                 Ok(WriteOutput::Error(body)) => return Err(Error::Remote(body)),
@@ -666,6 +669,22 @@ impl Writer {
             self.send(&frame.encode())?;
         }
         Ok(())
+    }
+
+    /// For a delta write: the host takes `count` blocks of the target from block `block` as they are. A copy
+    /// neither ends nor disturbs the compression context.
+    ///
+    /// # Errors
+    ///
+    /// As [`Writer::write`].
+    pub fn copy(&self, block: u64, count: u64) -> Result<(), Error> {
+        self.send(&WriteInput::Copy(DeltaCopy { block, count }).encode())
+    }
+
+    /// How many bytes of frames this writer sent so far, as they travelled (compressed where they were): with
+    /// the bytes the file holds it is the compression ratio, and for a delta the cost of the write.
+    pub fn wire_bytes(&self) -> u64 {
+        self.sent.load(Ordering::Relaxed)
     }
 
     /// Sends a piece of a stream compressed elsewhere (a prepared transfer), as it is: the request must
@@ -717,7 +736,10 @@ impl Writer {
 
     fn send(&self, message: &[u8]) -> Result<(), Error> {
         match self.channel.send_timeout(message, None) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                self.sent.fetch_add(message.len() as u64, Ordering::Relaxed);
+                Ok(())
+            }
             Err(failure) => {
                 // The host may have sent why it gave up before the stream failed.
                 while let Ok(Some(frame)) = self.channel.receive(Some(Duration::ZERO)) {

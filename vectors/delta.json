@@ -1,0 +1,99 @@
+{
+  "delta": {
+    "literal_frame": 5,
+    "name": "the signature above against a new file, literals cut at 5 bytes",
+    "new_hex": "6162636465666768696a6b6c6d6e6f704e45572d31322d4259544553797a30313233343536373839",
+    "note": "steps are not unique: a receiver applies any steps that rebuild the new file; these are what the Rust matcher emits",
+    "steps": [
+      {
+        "copy": {
+          "block": 0,
+          "count": 2
+        }
+      },
+      {
+        "literal_hex": "4e45572d31"
+      },
+      {
+        "literal_hex": "322d425954"
+      },
+      {
+        "literal_hex": "4553"
+      },
+      {
+        "copy": {
+          "block": 3,
+          "count": 2
+        }
+      }
+    ]
+  },
+  "encoding": "weak is the 32-bit value in 8 hex digits, the checksum a + 65536 * b of docs/protocol.md \"Deltas\"; a vector's input is hex",
+  "protocol": "rsync delta of bohio-read/1 and bohio-write/1",
+  "rolled": {
+    "generator": "byte i is (i * 31 + 7) mod 256, for i from 0 to 65536 inclusive",
+    "name": "a 64 KiB window rolled one byte",
+    "weak_at_0": "00008000",
+    "weak_at_1": "80008000",
+    "window": 65536
+  },
+  "signature": {
+    "base_hex": "6162636465666768696a6b6c6d6e6f707172737475767778797a30313233343536373839",
+    "block_size": 8,
+    "blocks": [
+      {
+        "strong_hex": "ddaa2ac3",
+        "weak": "0df80324"
+      },
+      {
+        "strong_hex": "80f62a92",
+        "weak": "0f180364"
+      },
+      {
+        "strong_hex": "759cf69e",
+        "weak": "103803a4"
+      },
+      {
+        "strong_hex": "7d2aaba0",
+        "weak": "0b310222"
+      },
+      {
+        "strong_hex": "a0f54fa2",
+        "weak": "022600de"
+      }
+    ],
+    "name": "blocks of 8, blake3 cut to 4 bytes",
+    "strong": "blake3",
+    "strong_len": 4
+  },
+  "weak_vectors": [
+    {
+      "a": 0,
+      "b": 0,
+      "input_hex": "",
+      "name": "empty",
+      "weak": "00000000"
+    },
+    {
+      "a": 294,
+      "b": 586,
+      "input_hex": "616263",
+      "name": "abc",
+      "weak": "024a0126"
+    },
+    {
+      "a": 255,
+      "b": 255,
+      "input_hex": "ff",
+      "name": "one_byte",
+      "weak": "00ff00ff"
+    },
+    {
+      "a": 10964,
+      "b": 44450,
+      "input_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "name": "wraps_at_16_bits",
+      "weak": "ada22ad4"
+    }
+  ]
+}

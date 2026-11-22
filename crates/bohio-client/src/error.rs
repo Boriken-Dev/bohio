@@ -29,6 +29,20 @@ pub enum Error {
     /// the client must name one) or a compressed stream that could not be set up.
     #[error("compression cannot be used: {0}")]
     Compression(String),
+    /// A file of this machine could not be read or written; the text says what was being done and the kind of failure,
+    /// never a path.
+    #[error("a local file could not be used: {0}")]
+    Local(String),
+    /// A file rebuilt from a delta does not have the digest the host reported for it: nothing was put in place.
+    #[error("the rebuilt file does not match the digest the host reported")]
+    Mismatch,
+}
+
+impl Error {
+    /// A local file failure: what was being done and why it failed.
+    pub fn local(doing: &str, error: &std::io::Error) -> Self {
+        Self::Local(format!("{doing}: {:?}", error.kind()))
+    }
 }
 
 impl From<Failure> for Error {

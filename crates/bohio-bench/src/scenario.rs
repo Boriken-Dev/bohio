@@ -75,6 +75,15 @@ pub enum Kind {
         size: String,
         algorithm: Option<String>,
     },
+    /// A file of this size changed as `edit` says, moved to or from the host with a delta (`delta_...`) or whole
+    /// (`full_...`), on a ready link.
+    #[cfg(feature = "delta")]
+    Sync {
+        delta: bool,
+        push: bool,
+        size: String,
+        edit: Edit,
+    },
     /// `bohio remote ... read` as a child process.
     RemoteRead { size: String },
     /// `bohio remote ... info` as a child process.
@@ -95,6 +104,33 @@ pub enum Kind {
     TimelineRead { size: String },
     /// The parts of one cold `info`: dial, proof, control open, the call.
     TimelineInfo,
+}
+
+/// What changed between the old file and the new one in a delta scenario.
+#[cfg(feature = "delta")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Edit {
+    /// This many bytes in the middle.
+    Bytes(u64),
+    /// This many percent of the file as one run.
+    Run(u64),
+    /// This many percent of the file as runs of 4 KiB spread over it.
+    Scatter(u64),
+}
+
+#[cfg(feature = "delta")]
+fn edit_of(text: &str, name: &str) -> Result<Edit, String> {
+    let bad = || format!("`{text}` in `{name}` is not an edit like 1byte, 1pct or 1pctscatter");
+    if let Some(count) = text.strip_suffix("byte") {
+        return count.parse().map(Edit::Bytes).map_err(|_| bad());
+    }
+    if let Some(count) = text.strip_suffix("pctscatter") {
+        return count.parse().map(Edit::Scatter).map_err(|_| bad());
+    }
+    text.strip_suffix("pct")
+        .and_then(|count| count.parse().ok())
+        .map(Edit::Run)
+        .ok_or_else(bad)
 }
 
 impl Kind {
@@ -165,6 +201,18 @@ impl Kind {
             ["exec", "text", s, rest @ ..] if rest.len() <= 1 => Self::ExecText {
                 size: size(s)?,
                 algorithm: rest.first().map(|text| (*text).to_owned()),
+            },
+            #[cfg(feature = "delta")]
+            [
+                mode @ ("delta" | "full"),
+                direction @ ("push" | "pull"),
+                s,
+                edit,
+            ] => Self::Sync {
+                delta: *mode == "delta",
+                push: *direction == "push",
+                size: size(s)?,
+                edit: edit_of(edit, name)?,
             },
             ["remote", "read", s] => Self::RemoteRead { size: size(s)? },
             ["remote", "info"] => Self::RemoteInfo,
@@ -515,6 +563,13 @@ impl Runner {
                 })?;
                 self.record(name, &taken, Some(bytes));
             }
+            #[cfg(feature = "delta")]
+            Kind::Sync {
+                delta,
+                push,
+                size,
+                edit,
+            } => self.sync(name, delta, push, &size, edit)?,
             Kind::Checksum { size } => {
                 let file = self.path(&format!("random-{size}"));
                 let link = warm_link(&self.env, &mut self.warm)?;
@@ -660,6 +715,68 @@ impl Runner {
         Ok(())
     }
 
+    /// A delta scenario: the host holds one version of a file and this side the other; each sample puts the files
+    /// back (untimed) and times one transfer. The metrics are the time, and the bytes of frames that travelled.
+    #[cfg(feature = "delta")]
+    fn sync(
+        &mut self,
+        name: &str,
+        delta: bool,
+        push: bool,
+        size: &str,
+        edit: Edit,
+    ) -> Result<(), String> {
+        let bytes = parse_size(size)?;
+        let scratch = Scratch::new(name)?;
+        let (old, new, work) = (
+            scratch.dir.join("old.bin"),
+            scratch.dir.join("new.bin"),
+            scratch.dir.join("work.bin"),
+        );
+        random_file(&old, bytes, 21)?;
+        std::fs::copy(&old, &new).map_err(|error| error.to_string())?;
+        edit_file(&new, bytes, edit)?;
+        let remote = self.path(&format!("written/sync-{size}-{}.bin", std::process::id()));
+        let link = warm_link(&self.env, &mut self.warm)?;
+        let fs = compat::fs(link)?;
+        let mut taken = Samples {
+            wall: Vec::new(),
+            cpu: Vec::new(),
+        };
+        let mut wires = Vec::new();
+        for _ in 0..self.env.samples {
+            // The host and this side start from the two versions; neither step is timed.
+            if push {
+                compat::sync_put(link, &old, &remote, false)?;
+            } else {
+                compat::sync_put(link, &new, &remote, false)?;
+                std::fs::copy(&old, &work).map_err(|error| error.to_string())?;
+            }
+            let before = self.env.cpu.as_mut().map(Cpu::used_ms);
+            let start = Instant::now();
+            let wire = if push {
+                compat::sync_put(link, &new, &remote, delta)?
+            } else {
+                compat::sync_get(link, &remote, &work, delta)?
+            };
+            taken.wall.push(ms(start.elapsed()));
+            if let (Some(cpu), Some(before)) = (self.env.cpu.as_mut(), before) {
+                taken.cpu.push(cpu.used_ms().saturating_sub(before) as f64);
+            }
+            wires.push(wire as f64);
+            let landed = if push { &new } else { &work };
+            if !compat::same_bytes(link, &remote, landed)? {
+                return Err(format!(
+                    "{name}: the file that landed differs from the new one"
+                ));
+            }
+        }
+        compat::remove(&fs, &remote);
+        self.record(name, &taken, Some(bytes));
+        self.record_values(&format!("{name}_wire_bytes"), &wires, None);
+        Ok(())
+    }
+
     fn timeline_info(&mut self, name: &str) -> Result<(), String> {
         let mut parts: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
         for _ in 0..self.env.samples {
@@ -742,6 +859,79 @@ impl Runner {
             .insert(format!("{name}_{}", self.env.suffix), curves);
         Ok(())
     }
+}
+
+/// A scratch directory of a delta scenario, removed when it goes: under the system's temporary directory (`TMPDIR`).
+#[cfg(feature = "delta")]
+struct Scratch {
+    dir: PathBuf,
+}
+
+#[cfg(feature = "delta")]
+impl Scratch {
+    fn new(name: &str) -> Result<Self, String> {
+        let dir = std::env::temp_dir().join(format!("bohio-bench-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+        Ok(Self { dir })
+    }
+}
+
+#[cfg(feature = "delta")]
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Writes `bytes` bytes of a fixed pseudo-random sequence to `path`.
+#[cfg(feature = "delta")]
+fn random_file(path: &std::path::Path, bytes: u64, seed: u64) -> Result<(), String> {
+    use std::io::Write;
+    let mut out =
+        std::io::BufWriter::new(std::fs::File::create(path).map_err(|error| error.to_string())?);
+    let mut random = Xorshift::new(seed);
+    let mut block = vec![0_u8; 1 << 20];
+    let mut left = bytes;
+    while left > 0 {
+        random.fill(&mut block);
+        let take = usize::try_from(left.min(block.len() as u64)).unwrap_or(block.len());
+        out.write_all(&block[..take])
+            .map_err(|error| error.to_string())?;
+        left -= take as u64;
+    }
+    out.flush().map_err(|error| error.to_string())
+}
+
+/// Overwrites parts of `path` with other pseudo-random bytes, as `edit` says.
+#[cfg(feature = "delta")]
+fn edit_file(path: &std::path::Path, size: u64, edit: Edit) -> Result<(), String> {
+    use std::io::{Seek, SeekFrom, Write};
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(|error| error.to_string())?;
+    let mut random = Xorshift::new(99);
+    let mut overwrite = |at: u64, length: u64| -> Result<(), String> {
+        let mut block = vec![0_u8; usize::try_from(length).map_err(|error| error.to_string())?];
+        random.fill(&mut block);
+        file.seek(SeekFrom::Start(at))
+            .map_err(|error| error.to_string())?;
+        file.write_all(&block).map_err(|error| error.to_string())
+    };
+    match edit {
+        Edit::Bytes(count) => overwrite(size / 3, count.min(size))?,
+        Edit::Run(percent) => overwrite(size / 3, (size / 100 * percent).min(size - size / 3))?,
+        Edit::Scatter(percent) => {
+            const RUN: u64 = 4096;
+            let runs = (size / 100 * percent / RUN).max(1);
+            let stride = size / runs;
+            for index in 0..runs {
+                let at = index * stride + stride.saturating_sub(RUN) / 2;
+                overwrite(at, RUN.min(size - at))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `bohio remote ENDPOINT ... action` as a child, its output thrown away; ends when it does.

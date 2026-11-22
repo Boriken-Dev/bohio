@@ -36,6 +36,7 @@
 //! administrator places inside a root is part of the root.
 
 pub(crate) mod compress;
+mod delta;
 mod hash;
 mod ops;
 mod path;
@@ -47,7 +48,7 @@ mod write;
 use bohio_proto::control::{Call, Reply};
 use bohio_proto::{ErrorBody, ErrorCode};
 
-use crate::config::{CompressionConfig, FilesystemConfig, HashConfig};
+use crate::config::{CompressionConfig, DeltaConfig, FilesystemConfig, HashConfig};
 use crate::limit::Slots;
 use crate::policy::{Grant, Permission};
 
@@ -67,6 +68,8 @@ pub struct Context<'a> {
     pub config: &'a FilesystemConfig,
     /// The `[hash]` settings: which digests reads and writes may name, and the hash streams' bounds.
     pub hash: &'a HashConfig,
+    /// The `[delta]` settings: the block bounds of signatures and the bounds of delta reads and writes.
+    pub delta: &'a DeltaConfig,
     /// The `[compression]` settings: what reads and writes may compress and how they are bounded.
     pub compression: &'a CompressionConfig,
     /// The peer's id as text: a prepared read is bound to the peer that made it.
@@ -178,10 +181,14 @@ pub(crate) fn covers_read(grant: &Grant, metadata: &[u8]) -> bool {
         .map_or(true, |request| under_a_root(grant, &request.path))
 }
 
-/// As [`covers_read`], for a `bohio-write/1` stream.
+/// As [`covers_read`], for a `bohio-write/1` stream. A delta write also needs the peer to hold `fs.read`: it
+/// reads the target.
 pub(crate) fn covers_write(grant: &Grant, metadata: &[u8]) -> bool {
-    bohio_proto::fs::WriteRequest::from_metadata(metadata)
-        .map_or(true, |request| under_a_root(grant, &request.path))
+    bohio_proto::fs::WriteRequest::from_metadata(metadata).map_or(true, |request| {
+        under_a_root(grant, &request.path)
+            && (!matches!(request.mode, bohio_proto::fs::WriteMode::Delta { .. })
+                || grant.allows(Permission::FsRead))
+    })
 }
 
 /// Whether `text` lies under a root of `grant` by its words: a path that does not parse is the

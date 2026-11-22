@@ -129,6 +129,8 @@ pub struct Config {
     pub filesystem: FilesystemConfig,
     /// `[hash]`.
     pub hash: HashConfig,
+    /// `[delta]`.
+    pub delta: DeltaConfig,
     /// `[compression]`.
     pub compression: CompressionConfig,
     /// `[execution]`.
@@ -738,6 +740,66 @@ impl Default for HashConfig {
     }
 }
 
+/// `[delta]`: block signatures and deltas, for a client that has an old copy of a file (pull) or a host that
+/// has one (push).
+///
+/// A signature of a file is its blocks' hashes; the size of a block is chosen from the file's size between
+/// `min_block` and `max_block`. A delta write reads the target and writes a new file beside it, so the
+/// peer needs `fs.read` as well as `fs.write`. What a delta read costs the host is the signature it holds
+/// (`max_signature_bytes`) and a window of one block; a write's is the temporary file.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct DeltaConfig {
+    /// The smallest block a signature the host makes uses. At least 1; a small block finds more of what
+    /// stayed and makes a larger signature. Default `2048`.
+    pub min_block: u32,
+    /// The largest block a signature uses, and the largest a peer may ask for; a block is held in
+    /// memory twice per stream. At least `min_block`. Default `1048576`.
+    pub max_block: u32,
+    /// The most bytes of signature a delta read takes from the client (a weak value and a strong hash
+    /// per block); one past it is `busy`. At least 1. Default `67108864` (64 MiB).
+    pub max_signature_bytes: u64,
+    /// The size of file from which a client's `auto` uses a delta instead of a whole transfer: a delta of a
+    /// small file saves less than its round trips cost. Advertised in `info`; the client decides. Default
+    /// `1048576`.
+    pub min_size: u64,
+    /// How many times the target's size plus the bytes a delta write received its output may be, checked once
+    /// more than a mebibyte has been produced, so a peer cannot make a few frames write a disk full; past it
+    /// the write ends with `bad_request`. A file that repeats a small base more often than this is refused, so a
+    /// host that takes such files sets `0`, which turns the check off. Default `1024`.
+    pub max_expansion: u32,
+}
+
+impl Default for DeltaConfig {
+    fn default() -> Self {
+        Self {
+            min_block: 2048,
+            max_block: 1024 * 1024,
+            max_signature_bytes: 64 * 1024 * 1024,
+            min_size: 1024 * 1024,
+            max_expansion: 1024,
+        }
+    }
+}
+
+impl DeltaConfig {
+    fn validate(&self) -> Result<(), (&'static str, &'static str)> {
+        if self.min_block == 0 {
+            return Err(("delta.min_block", "must be at least 1"));
+        }
+        if self.max_block < self.min_block {
+            return Err(("delta.max_block", "must be at least min_block"));
+        }
+        if self.max_block > (1 << 30) {
+            return Err(("delta.max_block", "must be at most 1073741824"));
+        }
+        if self.max_signature_bytes == 0 {
+            return Err(("delta.max_signature_bytes", "must be at least 1"));
+        }
+        Ok(())
+    }
+}
+
 /// `[compression]`: what a host compresses for a peer that asks, and what it accepts compressed.
 ///
 /// A client names the compression of each stream (`read`, `write`, `exec` output and input) and the
@@ -1250,6 +1312,8 @@ pub struct NodeConfig {
     pub filesystem: FilesystemConfig,
     /// `[hash]`.
     pub hash: HashConfig,
+    /// `[delta]`.
+    pub delta: DeltaConfig,
     /// `[compression]`.
     pub compression: CompressionConfig,
     /// `[execution]`.
@@ -1271,6 +1335,7 @@ impl Default for NodeConfig {
             link: LinkConfig::default(),
             filesystem: FilesystemConfig::default(),
             hash: HashConfig::default(),
+            delta: DeltaConfig::default(),
             compression: CompressionConfig::default(),
             execution: ExecutionConfig::default(),
             shell: ShellConfig::default(),
@@ -1426,6 +1491,9 @@ impl NodeConfig {
         if let Err((key, message)) = self.compression.validate() {
             return Err(invalid(key, message));
         }
+        if let Err((key, message)) = self.delta.validate() {
+            return Err(invalid(key, message));
+        }
         if self.shell.max_sessions == 0 {
             return Err(invalid("shell.max_sessions", "must be at least 1"));
         }
@@ -1539,6 +1607,7 @@ impl Config {
             link: self.link.clone(),
             filesystem: self.filesystem.clone(),
             hash: self.hash.clone(),
+            delta: self.delta.clone(),
             compression: self.compression.clone(),
             execution: self.execution.clone(),
             shell: self.shell.clone(),

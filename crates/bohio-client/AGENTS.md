@@ -175,6 +175,27 @@ impl Gui {
 pub struct SnapshotOptions { display, region, format, quality, max_width, max_height, cursor, settle }   // Default
 ```
 
+## Sync (`bohio_client::sync`)
+
+A local file and a file of a host, compared and moved without sending what the other side has (rsync's algorithm; `docs/protocol.md` "Deltas").
+
+```rust
+pub enum Compare { Meta, Hash(Algorithm), Blocks }          // size and time; size then a digest of each side; size then the signatures
+pub enum Verdict { Same, Differs, RemoteMissing, LocalMissing }
+pub fn compare_file(link: &dyn Open, local: &Path, remote: &str, how: Compare) -> Result<Verdict, Error>;   // differing sizes differ at every depth; Meta compares times to the nanosecond
+pub enum DeltaMode { Auto /* default */, Always, Never }    // Auto: a delta when the destination's copy is at least the host's [delta] min_size
+pub struct SyncOptions { delta, compression: Option<Compression>, compare: Option<Compare> /* skip a file that is the same */, caps: Caps, block_size: Option<u32>,
+                         strong: Algorithm /* blake3 */, strong_len: Option<usize>, verify: Option<Algorithm> /* blake3, else sha256 */, chunk: usize /* 64 KiB */,
+                         timeout: Option<Duration> /* 5 min */, transfer: Option<TransferInfo> /* the host's, when the caller has it */, window_log_max: Option<u32> }   // Default; PutOptions and GetOptions are this type
+pub struct Moved { size, literal_bytes, copied_bytes, wire_bytes: u64, delta: bool, skipped: bool }   // wire_bytes: frames in both directions, signature included, as they travelled
+pub fn put(link: &dyn Open, local: &Path, remote: &str, options: &PutOptions) -> Result<Moved, Error>;   // replaces the host's file atomically; a delta needs fs.read as well as fs.write; `changed` when the host's copy moved meanwhile
+pub fn get(link: &dyn Open, remote: &str, local: &Path, options: &GetOptions) -> Result<Moved, Error>;   // rebuilds into a temporary sibling, checks the host's digest (Error::Mismatch), renames
+```
+
+What the host offers is read from its `hello` reply (`Control::transfer`), which needs no `info` permission; a host that serves no deltas gets a whole transfer. A delta `put` asks the host for the target's signature (`hash_blocks`), hashes the local file for
+`expect`, and sends `copy` and literal frames (`Writer::copy`, `Writer::write`); a delta `get` streams the signature of the local file while it reads it and
+rebuilds as the host's copies and data arrive. `Error::Local` is a local file failure (no path in the text); `Error::Mismatch` a rebuilt file that does not match.
+
 ## Hash (`bohio_client::hash`)
 
 ```rust
@@ -182,6 +203,11 @@ pub fn hash_file(link: &dyn Open, path: &str, algorithms: &[Algorithm]) -> Resul
 pub fn hash_range(link: &dyn Open, item: HashItem, algorithms: &[Algorithm]) -> Result<Digests, Error>;
 pub fn hash_many(link: &dyn Open, items: &[HashItem], algorithms: &[Algorithm]) -> Result<Vec<Result<Digests, ErrorBody>>, Error>;   // one stream; a file that fails fails alone
 pub fn hash_items(link: &dyn Open, request: &HashRequest, items: &[HashItem]) -> Result<Vec<Result<HashResult, ErrorBody>>, Error>;   // keeps size, modified, unchanged
+```
+
+```rust
+pub struct Blocks { pub result: HashResult, pub signature: Signature, pub wire_bytes: u64 }   // a file's signature as the host made it, and what it cost on the wire
+pub fn hash_blocks(link: &dyn Open, item: HashItem, algorithms: &[Algorithm], options: &BlockOptions) -> Result<Blocks, Error>;   // the strong hash is algorithms[0] cut to options.strong_len; the host chooses the block size when options.size is None
 ```
 
 One `bohio-hash/1` stream each. Items are sent on one scoped thread and results read on another, so a long batch cannot stop on a full stream. A refusal of

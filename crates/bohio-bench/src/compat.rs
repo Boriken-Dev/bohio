@@ -20,6 +20,66 @@ use bohio_proto::hash::Algorithm;
 use bohio_proto::hash::HashItem;
 use coqui_link::auth::Proof;
 
+/// The options of the transfer a delta scenario times: a delta or the whole file.
+#[cfg(feature = "delta")]
+pub fn sync_options(delta: bool) -> bohio_client::sync::SyncOptions {
+    bohio_client::sync::SyncOptions {
+        delta: if delta {
+            bohio_client::sync::DeltaMode::Always
+        } else {
+            bohio_client::sync::DeltaMode::Never
+        },
+        ..bohio_client::sync::SyncOptions::default()
+    }
+}
+
+/// Sends `local` to `remote`, with a delta or the whole file; returns the bytes of frames that travelled.
+#[cfg(feature = "delta")]
+pub fn sync_put(
+    link: &Connection,
+    local: &std::path::Path,
+    remote: &str,
+    delta: bool,
+) -> Result<u64, String> {
+    let moved = bohio_client::sync::put(link, local, remote, &sync_options(delta))
+        .map_err(|error| error.to_string())?;
+    if delta && !moved.delta {
+        return Err("a delta was asked for and not used".to_owned());
+    }
+    Ok(moved.wire_bytes)
+}
+
+/// Fetches `remote` into `local`, with a delta or the whole file; returns the bytes of frames that travelled.
+#[cfg(feature = "delta")]
+pub fn sync_get(
+    link: &Connection,
+    remote: &str,
+    local: &std::path::Path,
+    delta: bool,
+) -> Result<u64, String> {
+    let moved = bohio_client::sync::get(link, remote, local, &sync_options(delta))
+        .map_err(|error| error.to_string())?;
+    if delta && !moved.delta {
+        return Err("a delta was asked for and not used".to_owned());
+    }
+    Ok(moved.wire_bytes)
+}
+
+/// Whether the host's file and the local file hold the same bytes, by their BLAKE3 digests.
+#[cfg(feature = "delta")]
+pub fn same_bytes(
+    link: &Connection,
+    remote: &str,
+    local: &std::path::Path,
+) -> Result<bool, String> {
+    let algorithm = [Algorithm::Blake3];
+    let theirs = hash_file(link, remote, &algorithm).map_err(|error| error.to_string())?;
+    let mut file = std::fs::File::open(local).map_err(|error| error.to_string())?;
+    let (mine, _) = bohio_transfer::hash::digest_reader(&mut file, &algorithm, 1 << 20)
+        .map_err(|error| error.to_string())?;
+    Ok(theirs.get(&Algorithm::Blake3) == mine.get(&Algorithm::Blake3))
+}
+
 /// How long one call may take before a sample fails.
 pub const LIMIT: Duration = Duration::from_secs(600);
 

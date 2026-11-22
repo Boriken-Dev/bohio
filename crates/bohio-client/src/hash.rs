@@ -4,9 +4,10 @@ use std::thread;
 use std::time::Duration;
 
 use bohio_proto::hash::{
-    Algorithm, Digests, HashInput, HashItem, HashOutput, HashRequest, HashResult,
+    Algorithm, BlockOptions, Digests, HashInput, HashItem, HashOutput, HashRequest, HashResult,
 };
 use bohio_proto::{ErrorBody, protocol};
+use bohio_transfer::signature::{Signature, SignatureSpec, WEAK_RSYNC};
 use coqui_transport::Channel;
 
 use crate::{Error, Open};
@@ -84,6 +85,96 @@ pub fn hash_items(
         let _ = sender.join();
         received
     })
+}
+
+/// The block signature of a file as the host made it, with what the host said about the file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Blocks {
+    /// The host's answer for the item: the file's size and modification time when it was opened, and the digests.
+    pub result: HashResult,
+    /// The weak and strong hash of every block of the hashed range.
+    pub signature: Signature,
+    /// How many bytes of frames arrived: what the signature cost on the wire.
+    pub wire_bytes: u64,
+}
+
+/// The block signature of the file `item` names, made on the host: its blocks' weak and strong hashes
+/// (the strong hash is `algorithms[0]` cut to `options.strong_len`), for matching a local file against it.
+/// `options.size` is the block size, and the host chooses from the file's size when it is absent.
+///
+/// # Errors
+///
+/// As [`hash_file`]; [`Error::Protocol`] for blocks that do not add up to the file.
+pub fn hash_blocks(
+    link: &dyn Open,
+    item: HashItem,
+    algorithms: &[Algorithm],
+    options: &BlockOptions,
+) -> Result<Blocks, Error> {
+    let strong = algorithms
+        .first()
+        .cloned()
+        .ok_or(Error::Protocol(bohio_proto::Error::Decode))?;
+    let request = HashRequest {
+        algorithms: algorithms.to_vec(),
+        blocks: Some(BlockOptions {
+            weak: Some(WEAK_RSYNC.to_owned()),
+            ..options.clone()
+        }),
+    };
+    let channel = link.open(protocol::HASH, &request.to_metadata()?)?;
+    let channel: &dyn Channel = channel.as_ref();
+    let bad = || Error::Protocol(bohio_proto::Error::Decode);
+    let outcome = (|| {
+        channel.send_timeout(&HashInput::Item(item).encode()?, None)?;
+        channel.send_timeout(&HashInput::End.encode()?, None)?;
+        let mut weak: Vec<u32> = Vec::new();
+        let mut hashes: Vec<u8> = Vec::new();
+        let mut wire = 0_u64;
+        let mut result = None;
+        loop {
+            let Some(frame) = channel.receive(None::<Duration>)? else {
+                return Err(Error::Closed);
+            };
+            wire += frame.len() as u64;
+            match HashOutput::decode(&frame) {
+                Ok(HashOutput::Blocks(batch)) => {
+                    if batch.first != weak.len() as u64 {
+                        return Err(bad());
+                    }
+                    weak.extend_from_slice(&batch.weak);
+                    hashes.extend_from_slice(&batch.strong);
+                }
+                Ok(HashOutput::Result(found)) => result = Some(found),
+                Ok(HashOutput::ItemError(failure)) => return Err(Error::Remote(failure.body())),
+                Ok(HashOutput::Done(_)) => break,
+                Ok(HashOutput::Error(body)) => return Err(Error::Remote(body)),
+                Ok(_) | Err(bohio_proto::Error::Tag(_)) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        let result = result.ok_or_else(bad)?;
+        let (size, strong_len) = result.block_size.zip(result.strong_len).ok_or_else(bad)?;
+        let block_size = u32::try_from(size).map_err(|_| bad())?;
+        let spec = SignatureSpec::new(
+            block_size,
+            strong,
+            usize::try_from(strong_len).map_err(|_| bad())?,
+        )
+        .map_err(|_| bad())?;
+        let mut signature = Signature::new(spec, result.length).map_err(|_| bad())?;
+        signature.push_batch(&weak, &hashes).map_err(|_| bad())?;
+        if !signature.is_complete() {
+            return Err(bad());
+        }
+        Ok(Blocks {
+            result,
+            signature,
+            wire_bytes: wire,
+        })
+    })();
+    channel.close();
+    outcome
 }
 
 fn send_items(channel: &dyn Channel, items: &[HashItem]) -> Result<(), Error> {

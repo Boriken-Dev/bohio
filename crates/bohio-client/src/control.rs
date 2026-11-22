@@ -88,6 +88,28 @@ impl Control {
         }
     }
 
+    /// What the host offers for transfers (hashes, compression, deltas), from the `hello` reply: a peer needs no `info`
+    /// permission for it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Control::call`]; a host that answers anything but a hello is [`Error::Protocol`].
+    pub fn transfer(
+        &self,
+        timeout: Option<Duration>,
+    ) -> Result<bohio_proto::info::TransferInfo, Error> {
+        match self.call(
+            Call::Hello {
+                version: bohio_proto::PROTOCOL_VERSION,
+                client: "bohio-client".to_owned(),
+            },
+            timeout,
+        )? {
+            Reply::Hello { transfer, .. } => Ok(transfer),
+            _ => Err(Error::Protocol(bohio_proto::Error::Decode)),
+        }
+    }
+
     /// The host's capabilities.
     ///
     /// # Errors

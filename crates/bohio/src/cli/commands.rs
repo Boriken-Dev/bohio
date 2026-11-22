@@ -267,6 +267,18 @@ pub(super) fn print_info(info: &Info) {
         );
     }
     println!("prepared reads: {}", enabled(transfer.prepared));
+    if transfer.delta.weak.is_empty() {
+        println!("deltas: off");
+    } else {
+        println!(
+            "deltas: {} (blocks {} to {} bytes, automatic from {} bytes, signature up to {} bytes)",
+            transfer.delta.weak.join(", "),
+            transfer.delta.min_block,
+            transfer.delta.max_block,
+            transfer.delta.min_size,
+            transfer.delta.max_signature_bytes
+        );
+    }
     let gui = &info.gui;
     if gui.enabled {
         println!(

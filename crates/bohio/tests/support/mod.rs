@@ -10,7 +10,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use bohio::config::{
-    CompressionConfig, ExecutionConfig, FilesystemConfig, HashConfig, ShellConfig,
+    CompressionConfig, DeltaConfig, ExecutionConfig, FilesystemConfig, HashConfig, ShellConfig,
 };
 use bohio::exec::{self, Context};
 use bohio::limit::Slots;
@@ -45,6 +45,8 @@ pub struct Link {
     pub slots: Arc<Slots>,
     pub files: Arc<FilesystemConfig>,
     pub hash: Arc<HashConfig>,
+    /// The `[delta]` settings of the host; a test changes them with [`Link::deltaing`].
+    pub delta: Arc<DeltaConfig>,
     /// The `[compression]` settings of the host; a test changes them with [`Link::compressing`].
     pub compression: Arc<CompressionConfig>,
     /// The peer id the host sees; a prepared read is bound to it.
@@ -104,6 +106,13 @@ impl Link {
         link
     }
 
+    /// This host with the `[delta]` settings `delta`.
+    #[must_use]
+    pub fn deltaing(mut self, delta: DeltaConfig) -> Self {
+        self.delta = Arc::new(delta);
+        self
+    }
+
     /// This host with the `[compression]` settings `compression`.
     #[must_use]
     pub fn compressing(mut self, compression: CompressionConfig) -> Self {
@@ -131,6 +140,7 @@ impl Link {
             slots: Arc::new(slots),
             hash_slots: Arc::new(Slots::new(HashConfig::default().max_streams)),
             hash: Arc::new(HashConfig::default()),
+            delta: Arc::new(DeltaConfig::default()),
             compression: Arc::new(CompressionConfig::default()),
             peer: "test-peer".to_owned(),
             live: Arc::new(Mutex::new(None)),
@@ -248,17 +258,19 @@ impl Open for Link {
                 Arc::clone(&self.info),
             );
             let peer = self.peer.clone();
-            let (hash, hash_slots, live, compression) = (
+            let (hash, hash_slots, live, compression, delta) = (
                 Arc::clone(&self.hash),
                 Arc::clone(&self.hash_slots),
                 Arc::clone(&self.live),
                 Arc::clone(&self.compression),
+                Arc::clone(&self.delta),
             );
             let handle = std::thread::spawn(move || {
                 let context = fs::Context {
                     grant: &grant,
                     config: &files,
                     hash: &hash,
+                    delta: &delta,
                     compression: &compression,
                     peer: &peer,
                     slots: &transfers,

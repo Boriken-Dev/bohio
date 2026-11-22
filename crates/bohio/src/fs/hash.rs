@@ -6,10 +6,12 @@ use std::time::{Duration, Instant};
 
 use bohio_proto::fs::Timestamp;
 use bohio_proto::hash::{
-    Algorithm, HashDone, HashInput, HashItem, HashOutput, HashRequest, HashResult, ItemError,
+    Algorithm, BlockOptions, HashBlocks, HashDone, HashInput, HashItem, HashOutput, HashRequest,
+    HashResult, ItemError,
 };
 use bohio_proto::{ErrorBody, ErrorCode};
 use bohio_transfer::hash::Hasher;
+use bohio_transfer::signature::{SignatureBuilder, SignatureSpec, WEAK_RSYNC, block_size_for};
 use coqui_transport::{Channel, Failure};
 
 use super::ops::{self, Roots};
@@ -17,7 +19,7 @@ use super::{Context, authorize, io_error};
 use crate::control::Current;
 use crate::limit::Slots;
 use crate::policy::{Grant, Permission};
-use crate::stream::send_waiting;
+use crate::stream::{chunk_size, send_waiting};
 
 /// What the hash engine needs besides the stream.
 #[derive(Debug, Clone, Copy)]
@@ -73,8 +75,13 @@ fn encode(output: &HashOutput) -> Vec<u8> {
 /// # Errors
 ///
 /// The [`ErrorBody`] sent as the stream's `error` frame: `bad_request` for an undecodable request or
-/// no algorithm, `unsupported` for an algorithm the host does not offer or for block hashes, `denied`
-/// before any item, and `busy` at `[hash] max_streams`.
+/// no algorithm or block options the host cannot use (a block size past `[delta] max_block`, a strong hash
+/// length past the digest), `unsupported` for an algorithm the host does not offer or a weak checksum it does
+/// not know, `denied` before any item, and `busy` at `[hash] max_streams`.
+///
+/// With `blocks` each item's `result` is preceded by `blocks` frames: the weak and strong hash of every block of
+/// the hashed range (the block size from the options, else from the range's length within `[delta] min_block` and
+/// `max_block`), `[delta]`'s signature of the file.
 pub fn serve_hash(
     channel: Arc<dyn Channel>,
     metadata: &[u8],
@@ -109,13 +116,12 @@ fn run(
             "name at least one algorithm",
         ));
     }
-    if request.blocks.is_some() {
-        return Err(ErrorBody::new(
-            ErrorCode::Unsupported,
-            "this host does not serve block hashes",
-        ));
-    }
     allowed(files, &request.algorithms)?;
+    let plan = request
+        .blocks
+        .as_ref()
+        .map(|options| BlockPlan::new(files, options, &request.algorithms[0]))
+        .transpose()?;
     Hasher::new(&request.algorithms)
         .map_err(|error| ErrorBody::new(ErrorCode::Unsupported, error.to_string()))?;
     let _permit = context.slots.acquire().ok_or_else(|| {
@@ -137,6 +143,7 @@ fn run(
                         channel.as_ref(),
                         context,
                         &request.algorithms,
+                        plan.as_ref(),
                         &item,
                         index,
                         &mut pace,
@@ -190,10 +197,135 @@ impl From<ErrorBody> for ItemFailure {
     }
 }
 
+/// What the block hashes of a stream are made with.
+struct BlockPlan {
+    /// The block size every item uses; per item from its length when absent.
+    size: Option<u32>,
+    strong: Algorithm,
+    strong_len: usize,
+    min: u32,
+    max: u32,
+}
+
+impl BlockPlan {
+    fn new(
+        files: &Context<'_>,
+        options: &BlockOptions,
+        strong: &Algorithm,
+    ) -> Result<Self, ErrorBody> {
+        if options
+            .weak
+            .as_deref()
+            .is_some_and(|name| name != WEAK_RSYNC)
+        {
+            return Err(ErrorBody::new(
+                ErrorCode::Unsupported,
+                "this host knows only the rsync weak checksum",
+            ));
+        }
+        let (min, max) = (files.delta.min_block, files.delta.max_block);
+        let size = options
+            .size
+            .map(|wanted| {
+                u32::try_from(wanted)
+                    .ok()
+                    .filter(|size| (1..=max).contains(size))
+                    .ok_or_else(|| {
+                        ErrorBody::new(
+                            ErrorCode::BadRequest,
+                            "the block size is from 1 to this host's [delta] max_block",
+                        )
+                    })
+            })
+            .transpose()?;
+        let digest = SignatureSpec::digest_len(strong).ok_or_else(|| {
+            ErrorBody::new(
+                ErrorCode::Unsupported,
+                format!("this host does not offer {strong}"),
+            )
+        })?;
+        let strong_len = match options.strong_len {
+            None => digest.min(16),
+            Some(wanted) => usize::try_from(wanted)
+                .ok()
+                .filter(|length| (1..=digest).contains(length))
+                .ok_or_else(|| {
+                    ErrorBody::new(
+                        ErrorCode::BadRequest,
+                        "the strong hash length is from 1 to the digest's length",
+                    )
+                })?,
+        };
+        Ok(Self {
+            size,
+            strong: strong.clone(),
+            strong_len,
+            min,
+            max,
+        })
+    }
+
+    fn spec(&self, length: u64) -> Result<SignatureSpec, ErrorBody> {
+        let block = self
+            .size
+            .unwrap_or_else(|| block_size_for(length, self.min, self.max));
+        SignatureSpec::new(block, self.strong.clone(), self.strong_len)
+            .map_err(|error| ErrorBody::new(ErrorCode::BadRequest, error.to_string()))
+    }
+}
+
+/// Sends the blocks of a batch.
+struct Batches<'a> {
+    channel: &'a dyn Channel,
+    index: u64,
+    first: u64,
+    size: u64,
+    weak: Vec<u32>,
+    strong: Vec<u8>,
+    per_frame: usize,
+    poll: Duration,
+    idle: Duration,
+}
+
+impl Batches<'_> {
+    fn push(&mut self, weak: u32, strong: &[u8]) -> Result<(), ItemFailure> {
+        self.weak.push(weak);
+        self.strong.extend_from_slice(strong);
+        if self.weak.len() >= self.per_frame {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<(), ItemFailure> {
+        if self.weak.is_empty() {
+            return Ok(());
+        }
+        let blocks = HashBlocks {
+            index: self.index,
+            first: self.first,
+            size: self.size,
+            weak: std::mem::take(&mut self.weak),
+            strong: std::mem::take(&mut self.strong),
+        };
+        self.first += blocks.weak.len() as u64;
+        let frame = encode(&HashOutput::Blocks(blocks));
+        if send_waiting(self.channel, &frame, self.poll, self.idle) {
+            Ok(())
+        } else {
+            Err(ItemFailure::Stream(ErrorBody::new(
+                ErrorCode::Io,
+                "the stream ended before the items were done",
+            )))
+        }
+    }
+}
+
 fn item_result(
     channel: &dyn Channel,
     context: &HashContext<'_>,
     algorithms: &[Algorithm],
+    plan: Option<&BlockPlan>,
     item: &HashItem,
     index: u64,
     pace: &mut Pace,
@@ -224,6 +356,8 @@ fn item_result(
             length: 0,
             unchanged: true,
             hashes: bohio_proto::hash::Digests::new(),
+            block_size: None,
+            strong_len: None,
         });
     }
     if item.offset > size {
@@ -243,6 +377,32 @@ fn item_result(
     let piece = pace.piece(files.hash.read_size);
     let mut buffer = vec![0_u8; piece];
     let mut remaining = length;
+    let poll = files.config.poll_interval.0;
+    let idle = files.config.idle_timeout.0;
+    // With blocks: the signature builder and the frames it fills.
+    let mut blocks = match plan {
+        Some(plan) => {
+            let spec = plan.spec(length)?;
+            let per_frame = (chunk_size(channel, files.config.chunk_size).saturating_sub(128)
+                / (5 + plan.strong_len))
+                .max(1);
+            let batches = Batches {
+                channel,
+                index,
+                first: 0,
+                size: u64::from(spec.block_size),
+                weak: Vec::new(),
+                strong: Vec::new(),
+                per_frame,
+                poll,
+                idle,
+            };
+            let builder = SignatureBuilder::new(spec)
+                .map_err(|error| ErrorBody::new(ErrorCode::BadRequest, error.to_string()))?;
+            Some((builder, batches))
+        }
+        None => None,
+    };
     while remaining > 0 {
         if channel.is_closed() {
             return Err(ItemFailure::Stream(ErrorBody::new(
@@ -262,8 +422,23 @@ fn item_result(
             Err(error) => return Err(io_error(&error).into()),
         };
         hasher.update(&buffer[..count]);
+        if let Some((builder, batches)) = blocks.as_mut() {
+            for block in builder.update(&buffer[..count]) {
+                batches.push(block.weak, &block.strong)?;
+            }
+        }
         remaining -= count as u64;
         pace.spent(channel, count as u64);
+    }
+    let mut block_size = None;
+    let mut strong_len = None;
+    if let Some((builder, mut batches)) = blocks {
+        block_size = Some(batches.size);
+        strong_len = plan.map(|plan| plan.strong_len as u64);
+        if let Some(block) = builder.finish() {
+            batches.push(block.weak, &block.strong)?;
+        }
+        batches.flush()?;
     }
     Ok(HashResult {
         index,
@@ -272,6 +447,8 @@ fn item_result(
         length,
         unchanged: false,
         hashes: hasher.finish(),
+        block_size,
+        strong_len,
     })
 }
 

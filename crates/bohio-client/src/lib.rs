@@ -15,6 +15,7 @@ pub mod keep;
 pub mod link;
 pub mod relay;
 pub mod shell;
+pub mod sync;
 
 pub use error::Error;
 

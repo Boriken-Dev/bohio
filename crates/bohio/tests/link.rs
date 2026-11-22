@@ -635,6 +635,126 @@ fn the_command_reads_writes_and_runs_programs_compressed() {
     assert_eq!(echoed.stdout, text);
 }
 
+/// The SHA-256 of a file's bytes.
+fn sha256_of(path: &Path) -> String {
+    let mut hash = Hasher::new(&[Algorithm::Sha256]).unwrap();
+    hash.update(&std::fs::read(path).expect("the file reads"));
+    hash.finish()[&Algorithm::Sha256].clone()
+}
+
+/// The numbers of `sent W of S (copied C, literal L)`.
+fn sent_line(output: &str) -> (u64, u64, u64, u64) {
+    let line = output.trim();
+    let numbers: Vec<u64> = line
+        .split(|c: char| !c.is_ascii_digit())
+        .filter_map(|word| word.parse().ok())
+        .collect();
+    assert!(line.starts_with("sent "), "{line}");
+    (numbers[0], numbers[1], numbers[2], numbers[3])
+}
+
+#[test]
+fn the_command_puts_and_gets_a_file_sending_only_what_changed() {
+    let world = World::new("");
+    let root = world.path("files");
+    std::fs::create_dir_all(&root).unwrap();
+    // A peer with no `info`: what the host offers comes from the `hello` reply.
+    let host = world.serve("warn");
+    let client = approved(
+        &world,
+        "syncer",
+        &[
+            "--allow",
+            "fs.read,fs.write",
+            "--fs-root",
+            &root.to_string_lossy(),
+        ],
+    );
+    let size: u64 = 3 << 20;
+    let local = world.path("local.bin");
+    let theirs = root.join("remote.bin");
+    let remote_text = theirs.to_string_lossy().into_owned();
+    let local_text = local.to_string_lossy().into_owned();
+    big_file(&local, size);
+
+    // No copy on the host: the whole file goes.
+    let first = remote(&client, &host, &["put", &local_text, &remote_text]);
+    assert_eq!(first.code, Some(0), "{}", first.stderr);
+    let (wire, total, copied, literal) = sent_line(&first.stdout);
+    assert_eq!(
+        (total, copied, literal),
+        (size, 0, size),
+        "{}",
+        first.stdout
+    );
+    assert!(wire >= size);
+    assert_eq!(sha256_of(&theirs), sha256_of(&local));
+
+    // One byte changed: a delta moves a block and the signature, not the file.
+    let mut bytes = std::fs::read(&local).unwrap();
+    bytes[1_500_000] ^= 0x5a;
+    std::fs::write(&local, &bytes).unwrap();
+    let again = remote(&client, &host, &["put", &local_text, &remote_text]);
+    assert_eq!(again.code, Some(0), "{}", again.stderr);
+    let (wire, total, copied, literal) = sent_line(&again.stdout);
+    assert_eq!(total, size);
+    assert!(wire * 20 < size, "{}", again.stdout);
+    assert!(
+        literal <= 4096 && copied + literal == size,
+        "{}",
+        again.stdout
+    );
+    assert_eq!(sha256_of(&theirs), sha256_of(&local));
+
+    // The same in the other direction.
+    let mut bytes = std::fs::read(&theirs).unwrap();
+    bytes[2_000_000] ^= 0xa5;
+    std::fs::write(&theirs, &bytes).unwrap();
+    let pulled = remote(&client, &host, &["get", &remote_text, &local_text]);
+    assert_eq!(pulled.code, Some(0), "{}", pulled.stderr);
+    let (wire, total, _, literal) = sent_line(&pulled.stdout);
+    assert_eq!(total, size);
+    assert!(wire * 20 < size && literal <= 4096, "{}", pulled.stdout);
+    assert_eq!(sha256_of(&local), sha256_of(&theirs));
+
+    // Two identical files with --compare: nothing moves; --delta never moves it all.
+    let same = remote(
+        &client,
+        &host,
+        &["get", "--compare", "hash", &remote_text, &local_text],
+    );
+    assert_eq!(same.code, Some(0), "{}", same.stderr);
+    assert!(same.stdout.contains("(unchanged)"), "{}", same.stdout);
+    let whole = remote(
+        &client,
+        &host,
+        &[
+            "get",
+            "--delta",
+            "never",
+            "--compress",
+            "lz4",
+            &remote_text,
+            &local_text,
+        ],
+    );
+    assert_eq!(whole.code, Some(0), "{}", whole.stderr);
+    let (_, _, copied, literal) = sent_line(&whole.stdout);
+    assert_eq!((copied, literal), (0, size), "{}", whole.stdout);
+    assert_eq!(sha256_of(&local), sha256_of(&theirs));
+    // No temporary file stays behind on either side.
+    let strays = |dir: &Path, keep: &str| {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".bohio-") || name.ends_with(".tmp"))
+            .filter(|name| name != keep)
+            .count()
+    };
+    assert_eq!(strays(&root, ""), 0);
+    assert_eq!(strays(&world.path(""), ""), 0);
+}
+
 #[test]
 fn an_unknown_proven_key_is_refused_and_listed_as_waiting() {
     let world = World::new("");

@@ -70,14 +70,14 @@ impl Staged {
         let mut staged = Self {
             parent,
             name: name.clone(),
-            mode: *mode,
+            mode: mode.clone(),
             file: None,
             temp: None,
             made: false,
             committed: false,
         };
         match mode {
-            WriteMode::Replace => staged.open_temp(file_mode)?,
+            WriteMode::Replace | WriteMode::Delta { .. } => staged.open_temp(file_mode)?,
             WriteMode::Create => {
                 let file = open_with(&staged.parent, &name, create_new(file_mode))?;
                 staged.made = true;
