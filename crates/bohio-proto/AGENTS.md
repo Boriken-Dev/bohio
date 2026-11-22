@@ -15,7 +15,7 @@ Imports: the root holds `decode`, `decode_with_depth`, `encode`, `DEFAULT_DEPTH`
 ```rust
 pub const CONTROL: &str = "bohio/1";   pub const EXEC: &str = "bohio-exec/1";   pub const SHELL: &str = "bohio-shell/1";
 pub const READ: &str = "bohio-read/1"; pub const WRITE: &str = "bohio-write/1"; pub const HASH: &str = "bohio-hash/1";
-pub const CONNECT: &str = "bohio-connect/1"; pub const TCP: &str = "tcp/1";   // `tcp/1` is coqui-link's: metadata is the text HOST:PORT, raw bytes at once, no answer
+pub const CONNECT: &str = "bohio-connect/1"; pub const TCP: &str = "tcp/1"; pub const LISTEN: &str = "bohio-listen/1"; pub const ACCEPT: &str = "bohio-accept/1";   // `tcp/1` is coqui-link's: metadata is the text HOST:PORT, raw bytes at once, no answer
 ```
 
 One stream per operation; the stream's open metadata is the request (CBOR). `PROTOCOL_VERSION` is `1`.
@@ -115,7 +115,13 @@ pub struct ConnectRequest { pub target: Target }                                
 impl ConnectRequest { pub const fn new(Target) -> Self; pub fn to_metadata(&self) -> Result<Vec<u8>, Error>; pub fn from_metadata(&[u8]) -> Result<Self, Error> }   // an unknown kind is Error::Decode
 pub struct Connected { pub address: Option<String> }                                    // Default; the address a TCP connection reached
 #[non_exhaustive] pub enum Answer { Connected(Connected), Error(ErrorBody) }            // tags 0x01 and 0x05, the host's first frame; encode() -> Result<Vec<u8>, Error>, decode(&[u8])
-pub struct ForwardInfo { pub enabled: bool, pub connect: Vec<String>, pub listen: Vec<String> }   // `info.forward`: the target kinds the host connects to ("tcp", "unix" or "pipe")
+pub struct ForwardInfo { pub enabled: bool, pub connect: Vec<String>, pub listen: Vec<String> }   // `info.forward`: the target kinds the host connects to and the listener kinds it binds ("tcp", "unix" or "pipe")
+#[non_exhaustive] pub enum Bind { Tcp { host: String, port: u16 /* 0 = the host chooses */ }, Unix { path: String }, Pipe { name: String } }   // Target's shape and spelling (FromStr/Display, BadTarget); a TCP host is an IP address
+pub struct ListenRequest { pub bind: Bind, pub backlog: Option<u32> }                  // the open's metadata of `bohio-listen/1`; new(Bind), to_metadata(), from_metadata()
+pub struct Listening { pub address: String, pub token: String }                        // `0x01`: what was bound (a TCP address with the chosen port, `unix:PATH`, `pipe:NAME`); a 128-bit hex token
+pub struct Arrival { pub id: u64, pub source: Option<String> }                         // `0x02`
+#[non_exhaustive] pub enum ListenFrame { Listening(Listening), Arrival(Arrival), Error(ErrorBody) }   // tags 0x01, 0x02, 0x05; encode(), decode(&[u8])
+pub struct AcceptRequest { pub token: String, pub id: u64 }                            // the open's metadata of `bohio-accept/1`; the host answers with `Answer`
 ```
 
 `bohio-connect/1`: after `Connected` the stream is raw bytes both ways, untagged, a `finish` a half-close; an `Error` is the last frame. See `docs/protocol.md`.

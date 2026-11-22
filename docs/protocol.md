@@ -53,6 +53,8 @@ A stream's `open` carries a protocol token and metadata. A client ignores a toke
 | `bohio-connect/1` | one connection from the host to a target, then its bytes | CBOR [`connect-request`](#forwarding-bohio-connect1-and-tcp1) | `forward.connect` and a rule that matches the target |
 | `tcp/1` | the same, as [coqui-link](https://github.com/Boriken-Dev/coqui-link) defines it | the text `HOST:PORT` | `forward.connect` and a rule that matches the target |
 | `bohio-gui/1` | a view of the host's desktop: snapshots, keyboard and mouse, the clipboard's text | CBOR [`gui-request`](#desktop-bohio-gui1) | one of `gui.view`, `gui.input`, and each thing the request wants |
+| `bohio-listen/1` | one listener the host binds for the peer, each arrival announced on the stream | CBOR [`listen-request`](#remote-forwards-bohio-listen1-and-bohio-accept1) | `forward.listen` and a `listen` rule that matches the bind |
+| `bohio-accept/1` | one arrival of the peer's own listener, then its bytes | CBOR [`accept-request`](#remote-forwards-bohio-listen1-and-bohio-accept1) | `forward.listen` |
 
 Each `open` is decided against the peer's grant, and each running stream again at the host's recheck interval. Removing a grant closes the stream with reason `revoked`; the reason text reaches the peer.
 
@@ -75,7 +77,7 @@ Every error is `{code, message}`:
 ```text
 error-body = { code: error-code, ? message: text }
 error-code = "bad_request" / "denied" / "not_found" / "exists" / "unsupported"
-           / "busy" / "outside_root" / "io" / "refused" / "unreachable" / "timeout"
+           / "busy" / "outside_root" / "io" / "refused" / "unreachable" / "timeout" / "in_use"
            / "unavailable" / "internal" / "other"   ; unknown text decodes as "other"
 ```
 
@@ -93,6 +95,7 @@ error-code = "bad_request" / "denied" / "not_found" / "exists" / "unsupported"
 | `unreachable` | a forward's target cannot be reached: no route, or a network that is down |
 | `timeout` | a forward's target did not answer within `[forward] connect_timeout` |
 | `unavailable` | the thing exists but cannot be used now: a desktop that is locked for input, a session that is not at the screen, a permission of the operating system that is missing (`unsupported` is a host with no desktop backend, or `[gui] enabled = false`) |
+| `in_use` | a remote forward's address, socket path or pipe name is already bound |
 | `internal` | a bug or a reply that does not fit the stream |
 | `other` | a code this version does not know |
 
@@ -160,7 +163,7 @@ info = { ? protocol: uint, ? service: { ? name: text, ? version: text }, ? host_
          ? transfer: transfer-info,
          ? forward: forward-info, ? gui: gui-info }
 gui-info = { ... }   ; see "Desktop: bohio-gui/1"
-forward-info = { ? enabled: bool, ? connect: [* text], ? listen: [* text] }   ; the target kinds `bohio-connect/1` reaches: "tcp", and "unix" (Unix hosts) or "pipe" (Windows hosts); `listen` is empty
+forward-info = { ? enabled: bool, ? connect: [* text], ? listen: [* text] }   ; the target kinds `bohio-connect/1` reaches and the listener kinds `bohio-listen/1` binds: "tcp", and "unix" (Unix hosts) or "pipe" (Windows hosts)
 transfer-info = { ? hashes: [* text],                        ; the algorithms the host computes, empty when none
                   ? hash_limits: { ? max_streams: uint, ? rate: uint },    ; hash streams at once; bytes a second one stream reads, 0 unlimited
                   ? compression: [* compression-info],                     ; the algorithms the host compresses with, empty when none
@@ -431,6 +434,64 @@ gui-session = { id: text, ? user: opt<text>, ? active: bool, ? locked: opt<bool>
 ```
 
 It is asked again at every `info`. `sessions` and `user` are sent only to a peer that holds `gui.view` or `gui.input`. A host that already runs a VNC server is reached with `forward -L 5900=127.0.0.1:5900` under a `forward.connect` rule for `127.0.0.1:5900`; nothing here builds on it.
+## Remote forwards: `bohio-listen/1` and `bohio-accept/1`
+
+A remote forward has the host listen for the peer and hand over each connection it takes: the peer's own side connects it to
+something there (`ssh -R`), or to its standard input and output. Two protocols make it. The peer opens `bohio-listen/1` once,
+and that stream is the listener: it lives exactly as long as the stream does. The peer then opens one `bohio-accept/1` per
+connection the host announces, and that stream carries the connection's bytes. The peer is always the one that opens streams, so
+a controller that serves nothing and grants nothing can use it.
+
+```text
+listen-request = { bind: bind, ? backlog: opt<uint> }
+bind           = { type: "tcp", host: text, port: uint }       ; an IP address (an IPv6 one without brackets); port 0 lets the host choose
+               / { type: "unix", path: text }                   ; a Unix domain socket the host creates
+               / { type: "pipe", name: text }                   ; a Windows named pipe, NAME of \\.\pipe\NAME
+listening      = { address: text, token: text }                 ; `address`: what was bound, "ADDR:PORT", "unix:PATH" or "pipe:NAME"; `token`: 128 random bits in hex
+arrival        = { id: uint, ? source: opt<text> }              ; `source`: "ADDR:PORT" of a TCP connection, null for a socket or a pipe
+accept-request = { token: text, id: uint }
+```
+
+| Stream | Direction | Tag | Body |
+| --- | --- | --- | --- |
+| `bohio-listen/1` | host to client | `0x01` | CBOR `listening`: the listener is bound; the first frame |
+| `bohio-listen/1` | host to client | `0x02` | CBOR `arrival`: a connection arrived and waits to be claimed |
+| `bohio-listen/1` | host to client | `0x05` | CBOR `error-body`: nothing was bound, or the listener failed; the last frame |
+| `bohio-accept/1` | host to client | `0x01` | CBOR `connected` (as `bohio-connect/1`; `address` is the arrival's `source`) |
+| `bohio-accept/1` | host to client | `0x05` | CBOR `error-body`; the last frame |
+| `bohio-accept/1` | either way, after `0x01` | none | the connection's bytes, raw, a `finish` a half-close, any other end a reset |
+
+The client sends nothing on a listen stream and nothing on an accept stream before `0x01`. The host decides the bind from the
+peer's grant before it binds anything: the peer needs `forward.listen` and a rule of its `[peer.<id>.forward] listen` list that
+matches. A TCP rule is `BIND:PORT`, `BIND` an address (an IPv6 one in brackets; `0.0.0.0` and `::` too), a CIDR network or `*`,
+and `PORT` a number, a range `A-B` or `*`; the port `0`, a host-chosen one, matches only a rule that names `0` or `*`, so
+`127.0.0.1:18090-18099` allows those ports and no host-chosen one. A `unix:PATH` or `pipe:NAME` rule matches the text exactly,
+or with `*` and `?`, which match within one path component, and a path with a `..` part never matches. Nothing is resolved: a
+bind is an address, and a name there is `bad_request`. A bind no rule covers is refused as the stream opens, as a protocol the
+peer may not use is, so the client sees the stream refused and nothing listens. The grant is asked again at every
+`[link] recheck`: when it stops covering the bind, the host closes the listener, closes the connections still waiting and
+resets the ones already handed over, and the peer hears `revoked` on every stream.
+
+**Binding.** A TCP listener binds the address the request names, so a request for `127.0.0.1` is loopback and one for `0.0.0.0` is
+every interface of the host; the bind is the peer's, within its rule. A Unix socket is created with `[forward] socket_mode`
+(`0o600`: the host's own account) and a Windows pipe with the access list `coqui-transport-pipe` gives its creator alone;
+whichever the mode, `[forward] ipc_same_user` (default on) closes, unread, a connection to a socket or pipe listener from
+another account, as the operating system names it. An address, socket or pipe that is taken is `in_use`; a bind past
+`[forward] max_listeners` or `max_listeners_per_peer` is `busy`; a kind the host does not offer is `unsupported`.
+
+**Arrivals.** Each connection the listener takes is held and announced with `0x02`, its `id` counting up from 1 within the
+listener. The peer claims it with `bohio-accept/1` and the listener's token, and the host answers `connected` and carries the
+bytes as `bohio-connect/1` does. At most `[forward] max_pending` arrivals wait for one listener (a request's `backlog` may lower
+that for its own); a connection past it is closed at once, and one nobody claims within `[forward] accept_timeout` is closed. A
+claim is answered `not_found` for a token that is unknown, an id that is unknown, already claimed or expired, and a token that
+belongs to another peer, in the same words each time, so a peer learns nothing of another's listeners. A claim is a forwarded
+connection like a connect and holds one of `max_connections` and `max_connections_per_peer` while it runs. A Windows named pipe
+has no half-close, so a `finish` there ends both directions, as it does for `bohio-connect/1`.
+
+A client that cannot bridge an arrival (its local target refused) still claims it and closes it, so the connection to the host
+ends at once instead of waiting out `accept_timeout`. The listener's end by the peer (closing the listen stream) or the host (a
+revoke, or a failure it reports with `0x05`) ends the connections it handed over: a stream of `bohio-accept/1` that is still
+running ends with the same reason.
 
 ## Capability negotiation
 
@@ -487,7 +548,7 @@ A joiner on a listener sends one message first, `coqui-link/pairing/1`, which is
 
 ## Vectors
 
-`vectors/control.json`, `exec.json`, `shell.json`, `read.json`, `write.json`, `hash.json`, `forward.json` and `gui.json` hold one entry per message. Each file is:
+`vectors/control.json`, `exec.json`, `shell.json`, `read.json`, `write.json`, `hash.json`, `forward.json`, `gui.json`, `listen.json` and `accept.json` hold one entry per message. Each file is:
 
 ```json
 { "protocol": "bohio-exec/1", "encoding": "...", "vectors": [ { "name": "stdout", "direction": "host_to_client", "kind": "frame",
@@ -499,7 +560,7 @@ A joiner on a listener sends one message first, `coqui-link/pairing/1`, which is
 | `name` | what the vector shows |
 | `direction` | `client_to_host` or `host_to_client`; an open's metadata is `client_to_host` |
 | `kind` | `open` (the open's metadata), `message` (a control message) or `frame` (a tag byte, then the body) |
-| `type` | the message's name in this page: `control.Request`, `control.Response`, `exec.Request`, `exec.Output`, `exec.Input`, `shell.Request`, `shell.Output`, `shell.Input`, `fs.ReadRequest`, `fs.ReadOutput`, `fs.WriteRequest`, `fs.WriteOutput`, `fs.WriteInput`, `hash.Request`, `hash.Output`, `hash.Input`, `forward.ConnectRequest`, `forward.Answer` |
+| `type` | the message's name in this page: `control.Request`, `control.Response`, `exec.Request`, `exec.Output`, `exec.Input`, `shell.Request`, `shell.Output`, `shell.Input`, `fs.ReadRequest`, `fs.ReadOutput`, `fs.WriteRequest`, `fs.WriteOutput`, `fs.WriteInput`, `hash.Request`, `hash.Output`, `hash.Input`, `forward.ConnectRequest`, `forward.Answer`, `forward.ListenRequest`, `forward.ListenFrame`, `forward.AcceptRequest` |
 | `hex` | the stream message exactly as it travels |
 | `value` | its meaning: the decoded CBOR as JSON for a message; for a frame, `tag`, and `message` (the CBOR body as JSON) or `data_hex` (the raw body) |
 | `decode_only` | the bytes are not what a writer produces (a message with a key this version does not know): a decoder accepts them and finds `value`, and a test does not compare a re-encoding |

@@ -45,15 +45,36 @@ impl Tunnel {
     pub fn pump_ipc(self, connection: coqui_transport_pipe::Stream);   // forward::ipc::pump
     pub fn bridge(self, input: impl Read + Send + 'static, output: &mut dyn Write) -> Result<(), Error>;   // netcat: input's end is a half-close; ends when the host's direction does; Ok only for a finish; input is read on a thread that may outlive the call
 }
-#[non_exhaustive] pub enum Ended { Stopped, LinkLost }
+#[non_exhaustive] pub enum Ended { Stopped, LinkLost, Closed }   // Closed: the host ended a remote listener while the link stayed up (a revoke, or a failure it reported)
 pub fn listen_tcp(link: &dyn Open, listener: &TcpListener, target: &Target, settings: &ForwardSettings, stop: &AtomicBool, report: &(dyn Fn(&Error) + Sync)) -> io::Result<Ended>;
 pub fn listen_ipc(link: &dyn Open, listener: &coqui_transport_pipe::Listener, target: &Target, settings: &ForwardSettings, stop: &AtomicBool, report: &(dyn Fn(&Error) + Sync)) -> io::Result<Ended>;   // one connect and pump per accepted connection, until `stop` or the link ends; bind loopback
 pub mod ipc {   // a Unix socket or Windows pipe on one end
     pub fn connect(name: &PipeName, timeout: Duration, options: &Options) -> Result<Stream, coqui_transport_pipe::Error>;   // reads wake every `watch`, a write may take `stalled`
-    pub fn listener(name: &PipeName, options: &Options) -> Result<Listener, coqui_transport_pipe::Error>;                 // this user alone, mode 0o600
+    pub fn listener(name: &PipeName, options: &Options, mode: Option<u32>) -> Result<Listener, coqui_transport_pipe::Error>;   // this user alone, mode 0o600 unless `mode` (Unix sockets only)
     pub fn pump<S: LinkStream + ?Sized>(stream: &S, ipc: Stream, options: &Options);   // two threads; a Windows pipe has no half-close, so a finish ends both directions
 }
 ```
+
+Remote forwards (`bohio-listen/1`, `bohio-accept/1`):
+
+```rust
+pub use bohio_proto::forward::{Arrival, Bind, ListenRequest};
+pub fn listen(link: &dyn Open, bind: &Bind, backlog: Option<u32>, settings: &ForwardSettings) -> Result<RemoteListener, Error>;   // the host binds; waits `answer_timeout` for `listening`
+impl RemoteListener {                                           // Debug; dropping it closes the stream, which ends the host's listener and resets what it handed over
+    pub fn address(&self) -> &str;  pub fn token(&self) -> &str;  pub fn is_open(&self) -> bool;
+    pub fn next_arrival(&self, timeout: Option<Duration>) -> Result<Option<Arrival>, Error>;   // Ok(None): the wait ended; Err: the host reported a failure, revoked it or ended it
+    pub fn accept(&self, link: &dyn Open, arrival: &Arrival, settings: &ForwardSettings) -> Result<Tunnel, Error>;   // claim one arrival: `not_found` when it was claimed, expired or its listener ended
+}
+pub fn connect_local(target: &Target, settings: &ForwardSettings) -> io::Result<LocalConnection>;   // TCP, a Unix socket (Unix) or a named pipe (Windows) on this machine
+impl Tunnel { pub fn pump_local(self, connection: LocalConnection); }                                // pump_tcp or pump_ipc, by the connection's kind
+pub struct RemoteForward;                                       // `ssh -R`: Debug; a thread of its own takes each arrival, connects it to the local target and pumps it; closed on drop
+impl RemoteForward {
+    pub fn open(link: Arc<dyn Open>, bind: &Bind, local: &Target, settings: &ForwardSettings, report: Arc<dyn Fn(&Error) + Send + Sync>) -> Result<Self, Error>;   // an arrival that cannot be bridged is claimed and closed, its reason goes to `report`
+    pub fn address(&self) -> &str;  pub fn ended(&self) -> Option<Ended>;  pub fn wait(self) -> Ended;  pub fn close(self);
+}
+```
+
+An error from `listen`: `Error::Remote(body)` (`in_use`, `busy`, `unsupported`, `denied`, `bad_request`, `unreachable`, `not_found`) or `Error::Transport(Failure::Permission)` when the grant covers no such bind (refused before anything listens); a claim that finds nothing is `Remote` `not_found` and says no more.
 
 An error from `connect`: `Error::Remote(body)` when the host did not connect (`refused`, `unreachable`, `timeout`, `not_found`, `busy`, `unsupported`, `bad_request`),
 `Error::Transport(Failure::Permission)` when the peer's grant does not cover the target (refused before the host connects) or was revoked, `Error::Timeout` and

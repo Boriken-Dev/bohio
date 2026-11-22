@@ -109,6 +109,21 @@ bohio remote tcp://host.example:7620 gui type "hello" && bohio remote tcp://host
 ```
 
 [The protocol](protocol.md#desktop-bohio-gui1) has the wire and [Security](security.md#what-gui-access-gives-a-peer) what a view of the screen gives a peer. A host that already runs a VNC server is reached with `forward -L` under a `forward.connect` rule for it.
+## Having a host listen for you
+
+The other direction: the host listens and each connection that arrives is brought to this side, `ssh -R`. The grant is `forward.listen` and a `listen` rule for each bind, and a bind defaults to loopback:
+
+```bash
+bohio peer approve <id> --listen 127.0.0.1:0 --listen 127.0.0.1:18090-18099 --listen unix:/run/user/1000/app.sock
+```
+
+```bash
+bohio remote tcp://host.example:7620 forward -R 0=127.0.0.1:8080          # prints: remote 127.0.0.1:41873 -> 127.0.0.1:8080
+bohio remote tcp://host.example:7620 forward -R unix:/run/user/1000/app.sock=unix:/tmp/app.sock
+bohio remote tcp://host.example:7620 listen 127.0.0.1:18090 --keep          # each arrival meets standard input and output
+```
+
+Every kind of end pairs with every kind on the other side: a TCP port, a Unix socket, a Windows named pipe, or standard input and output, in either direction (`-L`, `-R`, `connect` and `listen`). A socket or pipe the host makes is for the host's own account. [The protocol](protocol.md#remote-forwards-bohio-listen1-and-bohio-accept1) has the wire, and [Security](security.md#what-a-remote-forward-gives-a-peer) what a remote forward gives a peer.
 
 ## Configuration
 
