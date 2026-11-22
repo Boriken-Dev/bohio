@@ -7,6 +7,8 @@
 //! A node serves its desktop only when an application gave it one (`Node::with_desktop`); a platform backend is such a
 //! desktop. Everything here is tested against an in-memory one, with no screen.
 
+#![forbid(unsafe_code)]
+
 mod desktop;
 mod encode;
 mod limits;

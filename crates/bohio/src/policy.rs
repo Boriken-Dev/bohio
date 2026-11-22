@@ -19,6 +19,8 @@
 //! remote = ["127.0.0.1:0=127.0.0.1:8080"]
 //! ```
 
+#![forbid(unsafe_code)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 

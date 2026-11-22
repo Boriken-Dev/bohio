@@ -8,6 +8,8 @@
 //!
 //! [`recheck`]: crate::config::LinkConfig::recheck
 
+#![forbid(unsafe_code)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::sync::{Arc, PoisonError, RwLock};

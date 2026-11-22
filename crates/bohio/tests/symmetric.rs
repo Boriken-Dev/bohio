@@ -1,6 +1,8 @@
 //! Either side opens streams on any link: nodes linked in process over memory pipes, one dialing and
 //! the other answering, each deciding what the other may do by its own grants.
 
+#![forbid(unsafe_code)]
+
 mod support;
 
 use std::sync::{Arc, Mutex, PoisonError};

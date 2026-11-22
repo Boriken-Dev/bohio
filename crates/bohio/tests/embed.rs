@@ -1,6 +1,8 @@
 //! A node embedded in a test: its settings, identity, keys and grants are values in memory, with no file
 //! and no `bohio` process on the host side. The built `bohio` is the peer that uses it.
 
+#![forbid(unsafe_code)]
+
 mod support;
 
 use std::path::{Path, PathBuf};

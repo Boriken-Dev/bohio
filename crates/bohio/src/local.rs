@@ -10,6 +10,8 @@
 //! [`Via`] is the client: an [`Open`] whose streams run on a node's link to one peer, so `info`, `exec`, `read`
 //! and `shell` work over a link the peer made.
 
+#![forbid(unsafe_code)]
+
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};

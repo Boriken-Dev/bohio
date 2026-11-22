@@ -1,5 +1,7 @@
 //! `bohio-gui/1` served by a node over memory pipes to a peer, against a painted in-memory desktop: no screen is touched.
 
+#![forbid(unsafe_code)]
+
 #[path = "../examples/support/painted.rs"]
 mod painted;
 

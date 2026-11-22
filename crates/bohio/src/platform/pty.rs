@@ -5,6 +5,8 @@
 //! so on Windows the child joins its job just after it has started: a process it starts in that
 //! instant is outside the tree.
 
+#![forbid(unsafe_code)]
+
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;

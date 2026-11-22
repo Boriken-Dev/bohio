@@ -1,6 +1,8 @@
 //! Presence: the notice to the person at the screen and the approval they may be asked for, against a painted desktop and
 //! a fake notifier. Nothing is shown on this machine.
 
+#![forbid(unsafe_code)]
+
 #[path = "../examples/support/painted.rs"]
 mod painted;
 

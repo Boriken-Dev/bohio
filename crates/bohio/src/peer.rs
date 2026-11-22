@@ -5,6 +5,8 @@
 //! do. The data directory holds what is state, not configuration: `identity` (this host's key) and
 //! `peers/waiting/`, the proven keys that were not accepted, until [`approve`] or [`revoke`] decides them.
 
+#![forbid(unsafe_code)]
+
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};

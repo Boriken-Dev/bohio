@@ -1,4 +1,5 @@
 //! Helpers the integration tests share: an in-process link, the helper program, process checks.
+#![forbid(unsafe_code)]
 #![allow(dead_code, reason = "each test binary uses some of these")]
 
 pub mod embedded;

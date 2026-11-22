@@ -6,6 +6,8 @@
 //! Every wait has a deadline, every child is killed when its handle drops, and every data directory is
 //! under the system temporary directory.
 
+#![forbid(unsafe_code)]
+
 mod support;
 
 use std::io::Read;

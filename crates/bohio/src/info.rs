@@ -1,5 +1,7 @@
 //! This host's capabilities, as `info` reports them.
 
+#![forbid(unsafe_code)]
+
 use std::ffi::OsStr;
 use std::path::Path;
 

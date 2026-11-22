@@ -1,6 +1,8 @@
 //! Forwarding: `bohio-connect/1` and `tcp/1` against an embedded node, and `bohio remote ... connect` and `forward` through the
 //! built binary, over loopback.
 
+#![forbid(unsafe_code)]
+
 mod support;
 
 use std::io::{Read, Write};

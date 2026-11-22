@@ -11,6 +11,8 @@
 //! [`Node::arm_pairing`]: crate::node::Node::arm_pairing
 //! [`Keys::paired`]: crate::link::Keys::paired
 
+#![forbid(unsafe_code)]
+
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, RwLock};

@@ -1,5 +1,7 @@
 //! One-shot process execution, served and driven in-process over memory channels.
 
+#![forbid(unsafe_code)]
+
 mod support;
 
 use std::time::{Duration, Instant};

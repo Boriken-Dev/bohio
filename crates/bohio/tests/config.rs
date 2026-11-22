@@ -1,5 +1,7 @@
 //! `bohio.cfg`: defaults, refusals, the layers and the peers they hold, and the bounds.
 
+#![forbid(unsafe_code)]
+
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 

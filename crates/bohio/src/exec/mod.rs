@@ -5,6 +5,8 @@
 //! kill requests and the deadline, and always ends the whole tree: when the stream closes, when the
 //! deadline passes and after the process exits.
 
+#![forbid(unsafe_code)]
+
 mod command;
 
 use std::ffi::OsStr;

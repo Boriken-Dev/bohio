@@ -11,6 +11,8 @@
 //! it opens is decided by [`crate::link`] at open and at every `[link] recheck`, and runs one engine
 //! behind a bounded [`Relay`](bohio_client::relay::Relay).
 
+#![forbid(unsafe_code)]
+
 use std::ffi::OsString;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::RwLock;

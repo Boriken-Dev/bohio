@@ -1,5 +1,7 @@
 //! The built `bohio` binary, run with real arguments.
 
+#![forbid(unsafe_code)]
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 

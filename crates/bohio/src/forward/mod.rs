@@ -11,6 +11,8 @@
 //! [`serve_listen`] and [`serve_accept`] are the other direction (`bohio-listen/1` and `bohio-accept/1`): the host listens for
 //! the peer and hands it each connection, which the peer claims on a stream of its own and which then moves as above.
 
+#![forbid(unsafe_code)]
+
 mod keep;
 mod listen;
 mod rules;

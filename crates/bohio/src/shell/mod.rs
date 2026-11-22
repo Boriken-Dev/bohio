@@ -6,6 +6,8 @@
 //! a kill request and after the program exits. It is separate from `bohio-exec/1`: a terminal
 //! merges the program's output and error and renders them, and takes typed input.
 
+#![forbid(unsafe_code)]
+
 use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::path::PathBuf;

@@ -3,6 +3,8 @@
 //! Every session a test opens is dropped before it ends, which makes the host end the shell's
 //! process tree; a test that leaves a process behind fails.
 
+#![forbid(unsafe_code)]
+
 mod support;
 
 use std::time::Duration;

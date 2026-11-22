@@ -1,6 +1,8 @@
 //! Compression of reads, writes and exec streams, and prepared reads, served and driven in-process over
 //! memory channels.
 
+#![forbid(unsafe_code)]
+
 mod support;
 
 use std::io::Cursor;

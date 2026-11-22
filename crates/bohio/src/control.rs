@@ -1,6 +1,8 @@
 //! The control stream (`bohio/1`): hello, info and the small filesystem calls, one request and
 //! one response per call.
 
+#![forbid(unsafe_code)]
+
 use std::sync::Arc;
 
 use bohio_proto::control::{Call, Reply, Request, Response};

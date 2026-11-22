@@ -1,6 +1,7 @@
 //! What another local account can do to a node: a layer it owns, and a control endpoint it serves. These need a
 //! second account, reached with `sudo -n -u ACCOUNT`, so they run only when `BOHIO_TEST_OTHER_ACCOUNT` names one
 //! (`nobody`, say) and `sudo -n` works; otherwise they print SKIPPED and pass.
+#![forbid(unsafe_code)]
 #![cfg(unix)]
 
 mod support;

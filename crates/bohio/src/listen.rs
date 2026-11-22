@@ -3,6 +3,8 @@
 //! Each listener yields an unproven [`Channel`] (see `bohio_client::dial`); the proof, the link and the
 //! engines that follow are the same for every scheme.
 
+#![forbid(unsafe_code)]
+
 use std::io;
 use std::net::{SocketAddr, TcpListener};
 use std::path::Path;

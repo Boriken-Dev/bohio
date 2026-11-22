@@ -3,6 +3,8 @@
 //! Only this module prints, reads the process environment and installs the diagnostics
 //! subscriber; the library below it does none of those.
 
+#![forbid(unsafe_code)]
+
 mod access;
 mod commands;
 mod gui;

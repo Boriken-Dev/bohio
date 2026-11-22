@@ -1,5 +1,7 @@
 //! Sending on a stream without growing a buffer: wait while the stream has no room.
 
+#![forbid(unsafe_code)]
+
 use std::time::{Duration, Instant};
 
 use coqui_transport::{Channel, Failure};

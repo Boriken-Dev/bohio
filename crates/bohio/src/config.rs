@@ -5,6 +5,8 @@
 //! file and the user's as one configuration, each merged over the one before; a peer is a `[peer.<id>]`
 //! table in it.
 
+#![forbid(unsafe_code)]
+
 mod gui;
 mod layers;
 

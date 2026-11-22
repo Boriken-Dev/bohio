@@ -3,6 +3,8 @@
 //! Two muxes over memory pipes; the side that opens reads nothing, so what the other side can send before it
 //! stalls is the credit the opener holds out, which is what the grant raises.
 
+#![forbid(unsafe_code)]
+
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};

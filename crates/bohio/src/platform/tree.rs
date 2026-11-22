@@ -1,6 +1,8 @@
 //! Ending a process together with everything it started, which std cannot do: a job object on
 //! Windows, a process group on Unix.
 
+#![forbid(unsafe_code)]
+
 #[cfg(windows)]
 use super::winproc::Child;
 use std::io;

@@ -2,6 +2,8 @@
 //! listener that also serves proven peers, an unarmed node refuses, a wrong PIN uses the PIN up, an expired one is refused,
 //! and the PIN is in no log or event.
 
+#![forbid(unsafe_code)]
+
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, Once, PoisonError};

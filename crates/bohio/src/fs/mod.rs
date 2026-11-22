@@ -35,6 +35,8 @@
 //! to a file outside a root exposes that file, and a bind mount or a Windows junction an
 //! administrator places inside a root is part of the root.
 
+#![forbid(unsafe_code)]
+
 pub(crate) mod compress;
 mod delta;
 mod hash;

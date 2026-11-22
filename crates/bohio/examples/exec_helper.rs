@@ -4,6 +4,7 @@
 //! `tree MS` (starts a sleeping child and prints its id), `orphan MS` (starts a sleeping child
 //! that keeps standard output open, then exits at once), `env NAME`, `cwd`, `whoami` (prints its own path), `flood BYTES`.
 
+#![forbid(unsafe_code)]
 #![expect(
     clippy::zombie_processes,
     reason = "the helper starts children it must leave running"

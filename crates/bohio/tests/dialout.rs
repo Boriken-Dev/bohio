@@ -2,6 +2,8 @@
 //! it from its `[peer."<id>"]` table's `endpoint`, with the trust set up by `bohio pair`, `join` and
 //! `peer approve` or by the controller approving the key that waits.
 
+#![forbid(unsafe_code)]
+
 mod support;
 
 use std::io::{Read, Write};

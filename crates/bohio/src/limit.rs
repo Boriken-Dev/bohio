@@ -1,5 +1,7 @@
 //! A counted bound on concurrent work, taken as a permit that frees itself.
 
+#![forbid(unsafe_code)]
+
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicUsize, Ordering};

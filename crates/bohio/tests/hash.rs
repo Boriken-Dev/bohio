@@ -1,5 +1,7 @@
 //! `bohio-hash/1`, and the digests of reads and writes, served and driven in-process over memory channels.
 
+#![forbid(unsafe_code)]
+
 mod support;
 
 use std::path::PathBuf;

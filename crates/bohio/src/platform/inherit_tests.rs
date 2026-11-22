@@ -5,6 +5,8 @@
 //! (the end never arrives) nor closed cleanly when the child is killed (the peer reads a reset).
 //! A stream split into a reader and a writer is cloned this way.
 
+#![forbid(unsafe_code)]
+
 use std::ffi::OsString;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};

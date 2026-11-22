@@ -6,6 +6,8 @@
 //! empty root list and a disabled filesystem. Tests that need a symbolic link print `SKIPPED` and
 //! return when the operating system refuses to create one.
 
+#![forbid(unsafe_code)]
+
 mod support;
 
 use std::io::{Read, Write};
