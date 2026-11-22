@@ -48,7 +48,7 @@ A stream's `open` carries a protocol token and metadata. A client ignores a toke
 | `bohio-exec/1` | one process, run to its exit | CBOR [`exec-request`](#exec-bohio-exec1) | `exec` |
 | `bohio-shell/1` | one interactive shell on a terminal | CBOR [`shell-request`](#shells) | `shell` |
 | `bohio-read/1` | one file read, streamed | CBOR [`read-request`](#reading-a-file) | `fs.read` |
-| `bohio-write/1` | one file written, streamed | CBOR [`write-request`](#writing-a-file) | `fs.write` |
+| `bohio-write/1` | one file written, streamed | CBOR [`write-request`](#writing-a-file) | `fs.write`, and `fs.read` as well for a [delta](#deltas) write |
 | `bohio-hash/1` | digests of many files, computed on the host | CBOR [`hash-request`](#hashing-bohio-hash1) | `fs.read` |
 | `bohio-connect/1` | one connection from the host to a target, then its bytes | CBOR [`connect-request`](#forwarding-bohio-connect1-and-tcp1) | `forward.connect` and a rule that matches the target |
 | `tcp/1` | the same, as [coqui-link](https://github.com/Boriken-Dev/coqui-link) defines it | the text `HOST:PORT` | `forward.connect` and a rule that matches the target |
@@ -78,7 +78,7 @@ Every error is `{code, message}`:
 error-body = { code: error-code, ? message: text }
 error-code = "bad_request" / "denied" / "not_found" / "exists" / "unsupported"
            / "busy" / "outside_root" / "io" / "refused" / "unreachable" / "timeout" / "in_use"
-           / "unavailable" / "internal" / "other"   ; unknown text decodes as "other"
+           / "changed" / "unavailable" / "internal" / "other"   ; unknown text decodes as "other"
 ```
 
 | Code | Means |
@@ -96,6 +96,7 @@ error-code = "bad_request" / "denied" / "not_found" / "exists" / "unsupported"
 | `timeout` | a forward's target did not answer within `[forward] connect_timeout` |
 | `unavailable` | the thing exists but cannot be used now: a desktop that is locked for input, a session that is not at the screen, a permission of the operating system that is missing (`unsupported` is a host with no desktop backend, or `[gui] enabled = false`) |
 | `in_use` | a remote forward's address, socket path or pipe name is already bound |
+| `changed` | a precondition no longer holds: the file a [delta](#deltas) write was made against is not as the client saw it |
 | `internal` | a bug or a reply that does not fit the stream |
 | `other` | a code this version does not know |
 
@@ -168,7 +169,12 @@ transfer-info = { ? hashes: [* text],                        ; the algorithms th
                   ? hash_limits: { ? max_streams: uint, ? rate: uint },    ; hash streams at once; bytes a second one stream reads, 0 unlimited
                   ? compression: [* compression-info],                     ; the algorithms the host compresses with, empty when none
                   ? compression_default: opt<compression>,                 ; what "auto" means on this host
-                  ? prepared: bool }                                       ; whether a read may say `prepare`
+                  ? prepared: bool,                                        ; whether a read may say `prepare`
+                  ? delta: delta-info }                                    ; what the host offers for deltas
+delta-info = { ? weak: [* text],                                           ; the weak checksums it computes: "rsync"; empty when it serves no deltas
+               ? min_block: uint, ? max_block: uint,                       ; the block sizes it chooses between, and the largest it accepts
+               ? min_size: uint,                                           ; the size of file from which a client's "auto" uses a delta
+               ? max_signature_bytes: uint }                               ; the most bytes of signature a delta read takes from the client
 compression-info = { algorithm: text, ? levels: { min: int, max: int },    ; the levels after the host's own cap; 0 and 0 for lz4
                      ? default_level: int, ? window_log_max: uint }        ; the level used when a request names none; the largest zstd window, 0 where there is none
 shell-kind = "sh" / "bash" / "zsh" / "cmd" / "powershell" / "pwsh" / "other"
@@ -182,10 +188,12 @@ shell-kind = "sh" / "bash" / "zsh" / "cmd" / "powershell" / "pwsh" / "other"
 read-request = { path: text, ? offset: uint, ? length: opt<uint>, ? hashes: [* text],   ; length null: to the end; hashes: algorithm names
                  ? compression: compression,                                           ; how the host sends the bytes; absent or "none": raw
                  ? prepare: bool,                                                      ; compress the whole range first, then send it
-                 ? resume: { token: text, offset: uint } }                             ; continue a prepared read at a compressed offset
+                 ? resume: { token: text, offset: uint },                              ; continue a prepared read at a compressed offset
+                 ? delta: read-delta }                                                 ; send only what differs from the client's old copy (see Deltas)
 read-header  = { size: uint, length: uint,                                             ; the file's size; the bytes that follow, decompressed
                  ? compression: compression,                                           ; what the host used, never "auto"; absent: raw
-                 ? compressed_length: uint, ? token: text }                            ; prepared reads: the compressed size, the name to resume by
+                 ? compressed_length: uint, ? token: text,                             ; prepared reads: the compressed size, the name to resume by
+                 ? delta: bool }                                                       ; a delta read: copy frames and data add up to `length`
 read-done    = { ? hashes: { * text => text } }                                        ; the digests asked for, of the bytes sent
 progress     = { prepared: uint }                                                      ; the bytes of the file compressed so far
 ```
@@ -198,6 +206,9 @@ progress     = { prepared: uint }                                               
 | host to client | `0x05` | CBOR `error-body`: the last frame |
 | host to client | `0x06` | a piece of the compressed stream (see [Compression](#compression)) |
 | host to client | `0x08` | CBOR `progress`: a prepared read is still being compressed |
+| host to client | `0x09` | CBOR `delta-copy`: a delta read, these blocks of the client's old copy stand here |
+| client to host | `0x12` | CBOR `signature-batch`: a delta read, the next blocks of the client's signature |
+| client to host | `0x13` | empty: a delta read, the signature is complete |
 
 The host sends the header first, then data frames whose bytes add up to `header.length` (after decompression), then `0x04`. A stream that ends with no `0x04` and no `0x05` is a read cut short. A refused request is one `0x05` frame. A client closing the stream stops the read.
 
@@ -211,6 +222,7 @@ write-request = { path: text, ? mode: write-mode, ? parents: bool, ? file_mode: 
                   ? hashes: opt<[* text]>,                ; digests to answer; null: the host's [filesystem] write_hashes (sha256 by default)
                   ? compression: compression }            ; what the client sends: a concrete algorithm, never "auto"; absent or "none": raw
 write-mode    = { type: "replace" } / { type: "create" } / { type: "append" } / { type: "at", offset: uint }   ; replace by default
+              / { type: "delta", block_size: uint, base: delta-base }   ; build the new file from the target and what follows (see Deltas)
 write-done    = { written: uint, ? hashes: { * text => text } }            ; the bytes written, and the digests `hashes` asked for
 ```
 
@@ -222,8 +234,9 @@ write-done    = { written: uint, ? hashes: { * text => text } }            ; the
 | client to host | `0x10` | raw file bytes, in order |
 | client to host | `0x11` | empty: the end of the data |
 | client to host | `0x14` | a piece of the compressed stream (see [Compression](#compression)) |
+| client to host | `0x15` | CBOR `delta-copy`: a delta write, these blocks of the target stand here |
 
-The client waits for `0x01`, sends `0x10` frames, then `0x11`, then waits for `0x04`. A `replace` write goes to a temporary sibling and is renamed over the target after `0x11` and a matching `expect` (every named digest is checked, a mismatch is `io`, and nothing is replaced; `expect` is for `replace` and `create` only, and a value that is not the algorithm's lowercase hex is `bad_request`); until the host's `0x04` the target is as it was. `create` fails with `exists` when the file is there. `append` and `at` write in place, and what was written stays when the stream is abandoned. `parents` creates missing directories; `file_mode` sets Unix permission bits on a new file. A write the client abandons (closing the stream) leaves no temporary file.
+The client waits for `0x01`, sends `0x10` frames, then `0x11`, then waits for `0x04`. A `replace` write goes to a temporary sibling and is renamed over the target after `0x11` and a matching `expect` (every named digest is checked, a mismatch is `io`, and nothing is replaced; `expect` is for `replace`, `create` and `delta` only, and a value that is not the algorithm's lowercase hex is `bad_request`); until the host's `0x04` the target is as it was. `create` fails with `exists` when the file is there. `append` and `at` write in place, and what was written stays when the stream is abandoned. `parents` creates missing directories; `file_mode` sets Unix permission bits on a new file. A write the client abandons (closing the stream) leaves no temporary file.
 
 A host computes the union of `hashes` and `expect` in one pass and answers only `hashes`. An algorithm the host does not offer (`[hash] algorithms`), in a read, a write or a hash stream, is `unsupported` before any data moves.
 
@@ -233,9 +246,10 @@ Digests of many files on one stream, computed on the host, so a client compares 
 
 ```text
 hash-request = { algorithms: [+ text], ? blocks: opt<block-options> }
-block-options = { ? size: opt<uint>, ? weak: opt<text>, ? strong_len: opt<uint> }   ; `unsupported` for now
+block-options = { ? size: opt<uint>, ? weak: opt<text>, ? strong_len: opt<uint> }   ; the signature of each item: see Deltas
 hash-item    = { path: text, ? offset: uint, ? length: opt<uint>, ? if_size: opt<uint>, ? if_modified: opt<timestamp> }
-hash-result  = { index: uint, size: uint, ? modified: opt<timestamp>, length: uint, ? unchanged: bool, hashes: { * text => text } }
+hash-result  = { index: uint, size: uint, ? modified: opt<timestamp>, length: uint, ? unchanged: bool, hashes: { * text => text },
+                 ? block_size: uint, ? strong_len: uint }       ; with blocks asked for: what they were made with
 hash-blocks  = { index: uint, first: uint, size: uint, ? weak: [* uint], strong: bstr }
 item-error   = { index: uint, code: error-code, ? message: text }
 hash-done    = { items: uint }
@@ -246,14 +260,41 @@ hash-done    = { items: uint }
 | client to host | `0x10` | CBOR `hash-item` |
 | client to host | `0x11` | empty: no more items |
 | host to client | `0x01` | CBOR `hash-result` |
-| host to client | `0x02` | CBOR `hash-blocks` (reserved for block signatures; the host sends none yet) |
+| host to client | `0x02` | CBOR `hash-blocks`: the next blocks of an item's signature, before that item's `0x01` |
 | host to client | `0x03` | CBOR `item-error`: that item failed, the stream goes on |
 | host to client | `0x04` | CBOR `hash-done`: every item was answered |
 | host to client | `0x05` | CBOR `error-body`: the stream failed or was refused; the last frame |
 
-`index` is the item's position among the client's items, from 0. `length` bytes from `offset` are hashed (to the end of the file when `length` is `null`; an `offset` past the end is that item's `bad_request`), and `size` and `modified` describe the file as it was opened. With `if_size` and `if_modified` both equal to the file's, nothing is read: the result has `unchanged` true, `length` 0 and no `hashes`. Each item's path is resolved against the peer's grant as it is when the item is reached, so a grant narrowed while the stream is open refuses the next item (`outside_root`, `denied`), and a missing file, a directory or a path outside the roots is that item's error, not the stream's. A request with no algorithm is `bad_request`; an algorithm the host does not offer, or `blocks`, is `unsupported`; a peer without `fs.read` or a root is `denied`; past the host's hash-stream limit the stream is `busy` (`[hash] max_streams`, default 4). A stream that gets no item for `[filesystem] idle_timeout` ends with `io`. The host may hold one stream to `[hash] rate` bytes a second.
+`index` is the item's position among the client's items, from 0. `length` bytes from `offset` are hashed (to the end of the file when `length` is `null`; an `offset` past the end is that item's `bad_request`), and `size` and `modified` describe the file as it was opened. With `if_size` and `if_modified` both equal to the file's, nothing is read: the result has `unchanged` true, `length` 0 and no `hashes`. Each item's path is resolved against the peer's grant as it is when the item is reached, so a grant narrowed while the stream is open refuses the next item (`outside_root`, `denied`), and a missing file, a directory or a path outside the roots is that item's error, not the stream's. A request with no algorithm is `bad_request`; an algorithm the host does not offer, or a weak checksum it does not know, is `unsupported`; a peer without `fs.read` or a root is `denied`; past the host's hash-stream limit the stream is `busy` (`[hash] max_streams`, default 4). A stream that gets no item for `[filesystem] idle_timeout` ends with `io`. The host may hold one stream to `[hash] rate` bytes a second.
 
 Names and digests. An algorithm is one of `md5`, `sha1`, `sha256`, `sha384`, `sha512`, `blake3`, `xxh3` (XXH3 with 64 bits), `xxh128`, `xxh64` (seed 0) and `crc32c`; an unknown name is `other` to a reader and `unsupported` to a host. A digest is lowercase hex in the byte order the reference tool prints (`md5sum`, `sha256sum`, `b3sum`, `xxhsum`): the digest's bytes for the cryptographic ones, and the value in big-endian for the others, `xxh128` high half first and `crc32c` as 8 digits. So the digest has 32 (`md5`, `xxh128`), 40, 64 (`sha256`, `blake3`), 96, 128, 16 (`xxh3`, `xxh64`) or 8 hex digits. Test vectors of the empty input and `abc` are in `crates/bohio-transfer/tests/vectors.rs`; `crc32c` of `123456789` is `e3069283`. `md5` and `sha1` are for comparing with sums that still use them, not for trust.
+
+## Deltas
+
+A client that has an older copy of a file, or a host that has one, moves only what differs: **rsync's algorithm** (Tridgell and Mackerras, "The rsync algorithm", 1996), streamed. The side that has the *old* file sends its **signature**, the weak and strong hash of each block; the side that has the *new* file slides a window over it, finds the blocks the old file already has and sends **steps**: a copy of blocks of the old file, or the bytes the old file lacks. The receiver applies the steps in order. Three uses share it: a **pull** (`bohio-read/1` with `delta`: the client has the old copy and sends its signature, the host sends steps), a **push** (`bohio-write/1` in mode `delta`: the host has the old copy, the client asks for its signature with `bohio-hash/1` and sends steps), and a **comparison** (the signatures of both sides equal). Memory on each side is a signature, a window of one block and one frame of literal bytes, never the file.
+
+**Blocks.** The old file of `S` bytes is cut into blocks of `L` bytes, the last one shorter when `S` is not a multiple of `L`; block `k` is bytes `kL` to `kL + L - 1`. A signature has one entry per block: the *weak* hash and the *strong* hash.
+
+- **The block size** is chosen by the side that makes the signature, unless the request names one: `clamp(next_power_of_two(floor(sqrt(S))), min_block, max_block)`, where the bounds are `info.transfer.delta` (`[delta] min_block`, 2048, and `max_block`, 1 MiB, on a host). A request may name any size from 1 to the host's `max_block`.
+- **The weak hash** is `rsync`, a checksum of two 16-bit sums over a window `x[0..L]`: `a = (sum of x[i]) mod 2^16` and `b = (sum of (L - i) * x[i]) mod 2^16`, and the value is `a + 2^16 * b` (32 bits; no offset is added to the bytes; an empty block is `0`). It rolls one byte forward in constant time: dropping `out = x[0]` and taking in `in = x[L]`, `a' = (a - out + in) mod 2^16` and `b' = (b - L * out + a') mod 2^16`. `vectors/delta.json` holds the sums of the empty input, `abc` (`024a0126`) and others, and of a 64 KiB window and the same window rolled one byte, each computed from the definition.
+- **The strong hash** is one of the [hash algorithms](#hashing-bohio-hash1) (the signature's first, `blake3` by default) of the block's bytes, cut to its first `strong_len` bytes (the digest's length up to 16 by default, from 1 to the digest's length). A weak match counts only when the strong hash matches too.
+- **Wire form.** A signature travels as batches: `{first: uint, weak: [* uint], strong: bstr}` carries the blocks from number `first`, each block's weak value in `weak` and its strong hash, `strong_len` bytes, joined in `strong` (so `strong` is `strong_len` times as long as `weak` has entries). Batches come in order with no gap, and are cut to fit a frame.
+
+**Steps.** `delta-copy = { block: uint, count: uint }` says that `count` (at least 1) consecutive blocks of the old file, from block `block`, stand here; the old file's last block may be shorter, so a copy that includes it is shorter than `count * L`. A copy that names a block the old file does not have is `bad_request` on a host and a protocol error on a client. Any other data is carried in the stream's data frames, as it is in a plain transfer, and is compressed as the stream's `compression` says: a copy frame neither ends nor disturbs a compression context, since every compressed piece decodes completely. The steps are not unique: a receiver applies whatever steps rebuild the file. What the sender does is this: it takes the weak hash of the window at its position, looks for blocks of the old file with that weak value, confirms with the strong hash, and on a match emits a copy (merged with the previous copy when the blocks are consecutive, and preferring the block that continues the previous copy when several equal blocks match) and moves the window on by `L`; with no match it adds the window's first byte to the literal bytes and rolls the window by one. At the end of the new file, bytes left (fewer than `L`) are matched against the old file's short last block as a suffix, and are literal otherwise. Literal bytes are cut into frames of at most the stream's chunk size.
+
+```text
+read-delta      = { block_size: uint, weak: "rsync", strong: text, strong_len: uint,
+                    base_size: uint }                       ; the size of the client's old copy: what tells a block from the short last one
+signature-batch = { first: uint, ? weak: [* uint], ? strong: bstr }
+delta-copy      = { block: uint, count: uint }
+delta-base      = { size: uint, ? modified: opt<timestamp>, ? hashes: { * text => text } }
+```
+
+**A pull.** The request is a `read-request` with `delta` and no `offset`, `length`, `prepare` or `resume`. After the open the client sends its signature, `0x12` batches then `0x13`, and the host answers the header (`delta` true, `length` the file's size) once it holds the whole signature; then `0x09` copies and `0x02` or `0x06` data frames whose bytes (a copy counts the bytes of its blocks) add up to `length`, then `0x04` with the `hashes` the request named, of the whole new file. The host holds a signature of at most `[delta] max_signature_bytes` (64 MiB; a larger one, known from `base_size` and `strong_len`, is `busy` before any batch is read) and a block size up to `[delta] max_block`; the strong hash must be an algorithm `[hash] algorithms` allows. A client rebuilds into a temporary file beside its old copy, checks the digest, and renames it over the old copy; a digest that does not match leaves the old copy as it was.
+
+**A push.** The client asks the host for the signature of the target: a `bohio-hash/1` stream whose request has `blocks`, the strong hash taken from the request's first algorithm. The host answers, for each item, `0x02` batches of the item's blocks (numbered from the item's `offset`, so a range has a signature of its own) and then the item's `0x01` result, whose `block_size` and `strong_len` say how they were made and whose `size` and `modified` are what the client then names as the `base`. The client opens `bohio-write/1` with `mode` `{type: "delta", block_size, base}` and `expect` the digest the new file must have, matches the new file against the signature and sends `0x15` copies, data frames and `0x11`. The host checks the permissions before anything else: **a delta write needs `fs.read` as well as `fs.write`** (`denied` otherwise, and a revoke of either ends a running one), because a copy reads the target and a mismatching `expect` would tell a peer that may only write whether its guess about the target's bytes was right. It opens the target, and answers `changed` before `ready` when its size is not `base.size`, its modification time is not `base.modified` (when given) or a digest in `base.hashes` differs; it builds the new file in a temporary sibling from the open handle of the target, so the target is never modified in place; after `0x11` it checks `expect`, checks once more that the target's size and time are what they were when it opened it (else `changed`), and renames the sibling over the target as `replace` does. Nothing is replaced on any failure. `written` in `write-done` is the new file's size. A host bounds what a delta may write: past 1 MiB of output, the output may not exceed `[delta] max_expansion` (1024; `0` turns it off) times the target's size plus the bytes received, or the write ends with `bad_request`.
+
+**Comparing without downloading.** A client decides in tiers, each dearer than the last: the size and modification time from a `stat`; then one digest of each side (`bohio-hash/1`, with `if_size` and `if_modified` to skip files that did not change); then the signatures of both sides. The client library does this (`bohio_client::sync::compare_file`) and `put` and `get` use a delta by default (`auto`) when the old copy at the destination is at least `info.transfer.delta.min_size` (a host's `[delta] min_size`, 1 MiB), because a delta of a small file saves less than its round trips cost.
 
 ## Exec: `bohio-exec/1`
 
@@ -552,7 +593,7 @@ A joiner on a listener sends one message first, `coqui-link/pairing/1`, which is
 
 ## Vectors
 
-`vectors/control.json`, `exec.json`, `shell.json`, `read.json`, `write.json`, `hash.json`, `forward.json`, `gui.json`, `listen.json` and `accept.json` hold one entry per message. Each file is:
+`vectors/control.json`, `exec.json`, `shell.json`, `read.json`, `write.json`, `hash.json`, `forward.json`, `gui.json`, `listen.json` and `accept.json` hold one entry per message; `vectors/delta.json` holds the [weak sums, a signature and a stream of steps](#deltas) in its own shape. Each file is:
 
 ```json
 { "protocol": "bohio-exec/1", "encoding": "...", "vectors": [ { "name": "stdout", "direction": "host_to_client", "kind": "frame",
@@ -564,7 +605,7 @@ A joiner on a listener sends one message first, `coqui-link/pairing/1`, which is
 | `name` | what the vector shows |
 | `direction` | `client_to_host` or `host_to_client`; an open's metadata is `client_to_host` |
 | `kind` | `open` (the open's metadata), `message` (a control message) or `frame` (a tag byte, then the body) |
-| `type` | the message's name in this page: `control.Request`, `control.Response`, `exec.Request`, `exec.Output`, `exec.Input`, `shell.Request`, `shell.Output`, `shell.Input`, `fs.ReadRequest`, `fs.ReadOutput`, `fs.WriteRequest`, `fs.WriteOutput`, `fs.WriteInput`, `hash.Request`, `hash.Output`, `hash.Input`, `forward.ConnectRequest`, `forward.Answer`, `forward.ListenRequest`, `forward.ListenFrame`, `forward.AcceptRequest` |
+| `type` | the message's name in this page: `control.Request`, `control.Response`, `exec.Request`, `exec.Output`, `exec.Input`, `shell.Request`, `shell.Output`, `shell.Input`, `fs.ReadRequest`, `fs.ReadOutput`, `fs.ReadInput`, `fs.WriteRequest`, `fs.WriteOutput`, `fs.WriteInput`, `hash.Request`, `hash.Output`, `hash.Input`, `forward.ConnectRequest`, `forward.Answer`, `forward.ListenRequest`, `forward.ListenFrame`, `forward.AcceptRequest` |
 | `hex` | the stream message exactly as it travels |
 | `value` | its meaning: the decoded CBOR as JSON for a message; for a frame, `tag`, and `message` (the CBOR body as JSON) or `data_hex` (the raw body) |
 | `decode_only` | the bytes are not what a writer produces (a message with a key this version does not know): a decoder accepts them and finds `value`, and a test does not compare a re-encoding |
