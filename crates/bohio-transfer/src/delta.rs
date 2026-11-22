@@ -204,10 +204,13 @@ impl Matcher {
     /// The block of the old file the window at `pos` equals, by weak value and then strong hash.
     fn find(&self, weak: u32) -> Option<u64> {
         let start = self.sorted.partition_point(|(have, _)| *have < weak);
-        let candidates = self.sorted[start..]
+        let mut candidates = self.sorted[start..]
             .iter()
             .take_while(|(have, _)| *have == weak)
-            .map(|(_, index)| *index as usize);
+            .map(|(_, index)| *index as usize)
+            .peekable();
+        // The strong hash costs a block's worth of hashing: only for a window some block shares the weak value with.
+        candidates.peek()?;
         let window = &self.buf[self.pos..self.pos + self.block];
         let strong = self.signature.spec().strong_of(window);
         let mut first = None;

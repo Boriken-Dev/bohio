@@ -719,3 +719,56 @@ fn a_whole_read_still_works_beside_the_delta_ones() {
     assert!(!reader.header().delta);
     assert_eq!(reader.read_to_end(WAIT).unwrap(), b"hello");
 }
+
+#[test]
+fn a_delta_that_writes_far_more_than_it_was_sent_is_refused_unless_the_bound_is_off() {
+    let base = pseudo(64 * 1024, 26);
+    for (bound, accepted) in [(4_u32, false), (0, true)] {
+        let fixture = fixture_with(
+            &RW,
+            DeltaConfig {
+                max_expansion: bound,
+                ..DeltaConfig::default()
+            },
+        );
+        let host = fixture.root.join("f");
+        std::fs::write(&host, &base).unwrap();
+        let seen = hash_blocks(
+            &fixture.link,
+            HashItem::whole("f"),
+            &[Algorithm::Blake3],
+            &BlockOptions {
+                size: Some(4096),
+                ..BlockOptions::default()
+            },
+        )
+        .unwrap();
+        let request = WriteRequest {
+            mode: WriteMode::Delta {
+                block_size: 4096,
+                base: DeltaBase {
+                    size: seen.result.size,
+                    modified: seen.result.modified,
+                    hashes: Digests::new(),
+                },
+            },
+            ..WriteRequest::replace("f")
+        };
+        let writer = Writer::start(&fixture.link, &request, WAIT).unwrap();
+        // The whole target forty times over, 2.5 MiB, from a few hundred bytes of frames.
+        for _ in 0..40 {
+            if writer.copy(0, 16).is_err() {
+                break;
+            }
+        }
+        let finished = writer.finish(WAIT);
+        if accepted {
+            assert_eq!(finished.unwrap().written, 40 * 64 * 1024);
+            assert_eq!(std::fs::metadata(&host).unwrap().len(), 40 * 64 * 1024);
+        } else {
+            assert_eq!(code(finished), ErrorCode::BadRequest);
+            assert_eq!(std::fs::read(&host).unwrap(), base);
+            assert!(strays(&fixture.root, &["f"]).is_empty());
+        }
+    }
+}
