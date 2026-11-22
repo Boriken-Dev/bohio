@@ -1,0 +1,420 @@
+{
+  "name": "B-lan-r1",
+  "raw": {
+    "commit": "180aca1",
+    "rustc": "",
+    "os": "linux",
+    "arch": "x86_64",
+    "processor": "AMD EPYC 9V45 96-Core Processor",
+    "transport": "tcp",
+    "link": "lan",
+    "settings": {},
+    "label": "B"
+  },
+  "metrics": {
+    "checksum_16MiB_host_cpu_tcp_lan": {
+      "min_ms": 0.0,
+      "median_ms": 10.0,
+      "max_ms": 10.0,
+      "samples": 9
+    },
+    "checksum_16MiB_tcp_lan": {
+      "min_ms": 8.941232000000001,
+      "median_ms": 9.306906999999999,
+      "max_ms": 9.539208,
+      "samples": 9,
+      "bytes": 16777216
+    },
+    "connect_host_cpu_tcp_lan": {
+      "min_ms": 0.0,
+      "median_ms": 0.0,
+      "max_ms": 0.0,
+      "samples": 9
+    },
+    "connect_tcp_lan": {
+      "min_ms": 113.555312,
+      "median_ms": 203.765452,
+      "max_ms": 220.55006799999998,
+      "samples": 9
+    },
+    "cpu_sha256_256MiB_tcp_lan": {
+      "min_ms": 121.837818,
+      "median_ms": 123.471746,
+      "max_ms": 126.41411599999999,
+      "samples": 9,
+      "bytes": 268435456
+    },
+    "exec_echo_host_cpu_tcp_lan": {
+      "min_ms": 0.0,
+      "median_ms": 0.0,
+      "max_ms": 10.0,
+      "samples": 9
+    },
+    "exec_echo_tcp_lan": {
+      "min_ms": 22.846246,
+      "median_ms": 22.923547999999997,
+      "max_ms": 23.154819,
+      "samples": 9
+    },
+    "exec_out_16MiB_host_cpu_tcp_lan": {
+      "min_ms": 60.0,
+      "median_ms": 110.0,
+      "max_ms": 120.0,
+      "samples": 9
+    },
+    "exec_out_16MiB_tcp_lan": {
+      "min_ms": 43.005078000000005,
+      "median_ms": 63.18297200000001,
+      "max_ms": 63.521398000000005,
+      "samples": 9,
+      "bytes": 16777216
+    },
+    "info_host_cpu_tcp_lan": {
+      "min_ms": 0.0,
+      "median_ms": 0.0,
+      "max_ms": 0.0,
+      "samples": 9
+    },
+    "info_tcp_lan": {
+      "min_ms": 0.446332,
+      "median_ms": 0.521413,
+      "max_ms": 0.601724,
+      "samples": 9
+    },
+    "open_close_x50_host_cpu_tcp_lan": {
+      "min_ms": 10.0,
+      "median_ms": 20.0,
+      "max_ms": 40.0,
+      "samples": 6
+    },
+    "open_close_x50_tcp_lan": {
+      "min_ms": 4.7971070000000005,
+      "median_ms": 7.3388290000000005,
+      "max_ms": 8.555824999999999,
+      "samples": 6
+    },
+    "raw_connect_host_cpu_tcp_lan": {
+      "min_ms": 0.0,
+      "median_ms": 0.0,
+      "max_ms": 10.0,
+      "samples": 9
+    },
+    "raw_connect_tcp_lan": {
+      "min_ms": 0.034432,
+      "median_ms": 0.058037,
+      "max_ms": 0.128291,
+      "samples": 9
+    },
+    "raw_down_256MiB_host_cpu_tcp_lan": {
+      "min_ms": 0.0,
+      "median_ms": 0.0,
+      "max_ms": 0.0,
+      "samples": 9
+    },
+    "raw_down_256MiB_tcp_lan": {
+      "min_ms": 182.03480199999998,
+      "median_ms": 191.429669,
+      "max_ms": 196.820506,
+      "samples": 9,
+      "bytes": 268435456
+    },
+    "raw_up_16MiB_host_cpu_tcp_lan": {
+      "min_ms": 0.0,
+      "median_ms": 0.0,
+      "max_ms": 0.0,
+      "samples": 9
+    },
+    "raw_up_16MiB_tcp_lan": {
+      "min_ms": 11.819885000000001,
+      "median_ms": 12.125294,
+      "max_ms": 14.349706,
+      "samples": 9,
+      "bytes": 16777216
+    },
+    "raw_warm_down_256MiB_host_cpu_tcp_lan": {
+      "min_ms": 0.0,
+      "median_ms": 0.0,
+      "max_ms": 0.0,
+      "samples": 9
+    },
+    "raw_warm_down_256MiB_tcp_lan": {
+      "min_ms": 178.289633,
+      "median_ms": 185.850889,
+      "max_ms": 201.867874,
+      "samples": 9,
+      "bytes": 268435456
+    },
+    "raw_warm_up_16MiB_host_cpu_tcp_lan": {
+      "min_ms": 0.0,
+      "median_ms": 0.0,
+      "max_ms": 0.0,
+      "samples": 9
+    },
+    "raw_warm_up_16MiB_tcp_lan": {
+      "min_ms": 11.782287,
+      "median_ms": 11.970984,
+      "max_ms": 13.394751999999999,
+      "samples": 9,
+      "bytes": 16777216
+    },
+    "read_16MiB_cold_host_cpu_tcp_lan": {
+      "min_ms": 40.0,
+      "median_ms": 40.0,
+      "max_ms": 50.0,
+      "samples": 9
+    },
+    "read_16MiB_cold_tcp_lan": {
+      "min_ms": 214.708437,
+      "median_ms": 315.164648,
+      "max_ms": 321.147927,
+      "samples": 9,
+      "bytes": 16777216
+    },
+    "read_1MiB_cold_host_cpu_tcp_lan": {
+      "min_ms": 0.0,
+      "median_ms": 0.0,
+      "max_ms": 30.0,
+      "samples": 9
+    },
+    "read_1MiB_cold_tcp_lan": {
+      "min_ms": 313.891054,
+      "median_ms": 314.887269,
+      "max_ms": 316.93773600000003,
+      "samples": 9,
+      "bytes": 1048576
+    },
+    "read_256MiB_warm_host_cpu_tcp_lan": {
+      "min_ms": 990.0,
+      "median_ms": 1060.0,
+      "max_ms": 1160.0,
+      "samples": 9
+    },
+    "read_256MiB_warm_tcp_lan": {
+      "min_ms": 368.735039,
+      "median_ms": 416.23069000000004,
+      "max_ms": 441.16175699999997,
+      "samples": 9,
+      "bytes": 268435456
+    },
+    "read_random_1MiB_host_cpu_tcp_lan": {
+      "min_ms": 0.0,
+      "median_ms": 0.0,
+      "max_ms": 10.0,
+      "samples": 9
+    },
+    "read_random_1MiB_tcp_lan": {
+      "min_ms": 1.945465,
+      "median_ms": 2.082998,
+      "max_ms": 2.3032809999999997,
+      "samples": 9,
+      "bytes": 1048576
+    },
+    "read_random_1MiB_wire_bytes_tcp_lan": {
+      "min_ms": 1048576.0,
+      "median_ms": 1048576.0,
+      "max_ms": 1048576.0,
+      "samples": 9
+    },
+    "read_text_1MiB_host_cpu_tcp_lan": {
+      "min_ms": 0.0,
+      "median_ms": 0.0,
+      "max_ms": 20.0,
+      "samples": 9
+    },
+    "read_text_1MiB_tcp_lan": {
+      "min_ms": 1.777485,
+      "median_ms": 2.022084,
+      "max_ms": 2.427076,
+      "samples": 9,
+      "bytes": 1048576
+    },
+    "read_text_1MiB_wire_bytes_tcp_lan": {
+      "min_ms": 1048576.0,
+      "median_ms": 1048576.0,
+      "max_ms": 1048576.0,
+      "samples": 9
+    },
+    "remote_info_host_cpu_tcp_lan": {
+      "min_ms": 0.0,
+      "median_ms": 0.0,
+      "max_ms": 10.0,
+      "samples": 9
+    },
+    "remote_info_tcp_lan": {
+      "min_ms": 211.360468,
+      "median_ms": 214.380383,
+      "max_ms": 215.004217,
+      "samples": 9
+    },
+    "remote_read_16MiB_host_cpu_tcp_lan": {
+      "min_ms": 40.0,
+      "median_ms": 40.0,
+      "max_ms": 60.0,
+      "samples": 9
+    },
+    "remote_read_16MiB_tcp_lan": {
+      "min_ms": 214.552887,
+      "median_ms": 315.11862,
+      "max_ms": 318.24331900000004,
+      "samples": 9,
+      "bytes": 16777216
+    },
+    "stat_x100_serial_host_cpu_tcp_lan": {
+      "min_ms": 0.0,
+      "median_ms": 20.0,
+      "max_ms": 30.0,
+      "samples": 9
+    },
+    "stat_x100_serial_tcp_lan": {
+      "min_ms": 15.009388,
+      "median_ms": 16.388709000000002,
+      "max_ms": 17.467239,
+      "samples": 9
+    },
+    "timeline_read_16MiB_body_tcp_lan": {
+      "min_ms": 23.098397,
+      "median_ms": 25.762188,
+      "max_ms": 42.105243,
+      "samples": 9,
+      "bytes": 16777216
+    },
+    "timeline_read_16MiB_dial_tcp_lan": {
+      "min_ms": 0.13331,
+      "median_ms": 0.14679,
+      "max_ms": 0.222975,
+      "samples": 9
+    },
+    "timeline_read_16MiB_first_tcp_lan": {
+      "min_ms": 0.004376,
+      "median_ms": 0.314971,
+      "max_ms": 0.807822,
+      "samples": 9
+    },
+    "timeline_read_16MiB_open_tcp_lan": {
+      "min_ms": 0.416285,
+      "median_ms": 0.565495,
+      "max_ms": 1.04516,
+      "samples": 9
+    },
+    "timeline_read_16MiB_proof_tcp_lan": {
+      "min_ms": 0.500286,
+      "median_ms": 11.812505,
+      "max_ms": 20.347573,
+      "samples": 9
+    },
+    "timeline_read_16MiB_total_tcp_lan": {
+      "min_ms": 26.149452,
+      "median_ms": 44.870307999999994,
+      "max_ms": 63.458104,
+      "samples": 9,
+      "bytes": 16777216
+    },
+    "write_16MiB_host_cpu_tcp_lan": {
+      "min_ms": 40.0,
+      "median_ms": 90.0,
+      "max_ms": 100.0,
+      "samples": 9
+    },
+    "write_16MiB_tcp_lan": {
+      "min_ms": 74.661569,
+      "median_ms": 84.984825,
+      "max_ms": 103.112508,
+      "samples": 9,
+      "bytes": 16777216
+    }
+  },
+  "curves": {
+    "timeline_read_16MiB_tcp_lan": [
+      [
+        [
+          0,
+          0
+        ],
+        [
+          43,
+          16777216
+        ]
+      ],
+      [
+        [
+          0,
+          0
+        ],
+        [
+          47,
+          16777216
+        ]
+      ],
+      [
+        [
+          0,
+          0
+        ],
+        [
+          26,
+          16777216
+        ]
+      ],
+      [
+        [
+          0,
+          0
+        ],
+        [
+          54,
+          16777216
+        ]
+      ],
+      [
+        [
+          0,
+          0
+        ],
+        [
+          26,
+          16777216
+        ]
+      ],
+      [
+        [
+          0,
+          0
+        ],
+        [
+          44,
+          16777216
+        ]
+      ],
+      [
+        [
+          0,
+          0
+        ],
+        [
+          37,
+          16777216
+        ]
+      ],
+      [
+        [
+          0,
+          0
+        ],
+        [
+          63,
+          16777216
+        ]
+      ],
+      [
+        [
+          0,
+          0
+        ],
+        [
+          53,
+          16777216
+        ]
+      ]
+    ]
+  }
+}

@@ -142,3 +142,8 @@ and the controls do not move:
 
 `connect` is either about 1000 or about 1300 ms (a round trip apart) and stays so within one job; two jobs of this change gave it
 to different builds, so it is a property of the job and not of a build.
+
+## Compression
+
+`results/compress-off-{slow,wan,lan}.json` and `compress-zstd3-{slow,wan,lan}.json` are one build (`180aca12`) with compression off and with `bench.compress=zstd:3`, three alternating rounds of three samples (run 44777792164). On `slow`, `read_text_1MiB` went from 9409 ms to 3615 ms (1049 KiB to 358 KiB on the wire) and `read_random_1MiB` stayed at 9409 ms (the sample sent it raw); `cpu_sha256_256MiB` moved +2.9% and `raw_down_1MiB` 0.0%. On `lan` the 1 MiB text read is slower compressed (2.0 ms against 6.7 ms): compression pays where bandwidth is the limit.
+`results/compress-algorithms-weak.json` (run 45021195510, `weak`: the host under a 25% CPU quota) holds `read_text_1MiB` by algorithm: none 707 ms, lz4 503, zstd1 428, zstd3 418, deflate6 421, zstd19 1704 (390 ms host CPU).

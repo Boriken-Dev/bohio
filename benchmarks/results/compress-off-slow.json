@@ -1,0 +1,526 @@
+{
+  "name": "B-slow-r1",
+  "raw": {
+    "commit": "180aca1",
+    "rustc": "",
+    "os": "linux",
+    "arch": "x86_64",
+    "processor": "AMD EPYC 9V45 96-Core Processor",
+    "transport": "tcp",
+    "link": "slow",
+    "settings": {},
+    "label": "B"
+  },
+  "metrics": {
+    "checksum_256KiB_host_cpu_tcp_slow": {
+      "min_ms": 0.0,
+      "median_ms": 0.0,
+      "max_ms": 10.0,
+      "samples": 9
+    },
+    "checksum_256KiB_tcp_slow": {
+      "min_ms": 617.870757,
+      "median_ms": 620.786585,
+      "max_ms": 622.103523,
+      "samples": 9,
+      "bytes": 262144
+    },
+    "connect_host_cpu_tcp_slow": {
+      "min_ms": 0.0,
+      "median_ms": 0.0,
+      "max_ms": 10.0,
+      "samples": 9
+    },
+    "connect_tcp_slow": {
+      "min_ms": 1710.8094700000001,
+      "median_ms": 1819.7830829999998,
+      "max_ms": 1821.653997,
+      "samples": 9
+    },
+    "cpu_sha256_256MiB_tcp_slow": {
+      "min_ms": 121.40975399999999,
+      "median_ms": 124.075178,
+      "max_ms": 129.33086699999998,
+      "samples": 9,
+      "bytes": 268435456
+    },
+    "exec_echo_host_cpu_tcp_slow": {
+      "min_ms": 0.0,
+      "median_ms": 0.0,
+      "max_ms": 10.0,
+      "samples": 9
+    },
+    "exec_echo_tcp_slow": {
+      "min_ms": 632.228703,
+      "median_ms": 632.6376889999999,
+      "max_ms": 638.146787,
+      "samples": 9
+    },
+    "info_host_cpu_tcp_slow": {
+      "min_ms": 0.0,
+      "median_ms": 0.0,
+      "max_ms": 0.0,
+      "samples": 9
+    },
+    "info_tcp_slow": {
+      "min_ms": 616.14479,
+      "median_ms": 621.729279,
+      "max_ms": 622.11619,
+      "samples": 9
+    },
+    "open_close_x20_host_cpu_tcp_slow": {
+      "min_ms": 0.0,
+      "median_ms": 0.0,
+      "max_ms": 0.0,
+      "samples": 9
+    },
+    "open_close_x20_tcp_slow": {
+      "min_ms": 1.052178,
+      "median_ms": 1.186336,
+      "max_ms": 1.327329,
+      "samples": 9
+    },
+    "raw_connect_host_cpu_tcp_slow": {
+      "min_ms": 0.0,
+      "median_ms": 0.0,
+      "max_ms": 0.0,
+      "samples": 9
+    },
+    "raw_connect_tcp_slow": {
+      "min_ms": 602.9963240000001,
+      "median_ms": 603.034041,
+      "max_ms": 603.109914,
+      "samples": 9
+    },
+    "raw_down_1MiB_host_cpu_tcp_slow": {
+      "min_ms": 20.0,
+      "median_ms": 30.0,
+      "max_ms": 50.0,
+      "samples": 9
+    },
+    "raw_down_1MiB_tcp_slow": {
+      "min_ms": 11010.600161999999,
+      "median_ms": 11010.724415,
+      "max_ms": 11011.304912,
+      "samples": 9,
+      "bytes": 1048576
+    },
+    "raw_up_256KiB_host_cpu_tcp_slow": {
+      "min_ms": 20.0,
+      "median_ms": 30.0,
+      "max_ms": 60.0,
+      "samples": 9
+    },
+    "raw_up_256KiB_tcp_slow": {
+      "min_ms": 9950.695096000001,
+      "median_ms": 9950.804668,
+      "max_ms": 9951.177080000001,
+      "samples": 9,
+      "bytes": 262144
+    },
+    "raw_warm_down_1MiB_host_cpu_tcp_slow": {
+      "min_ms": 10.0,
+      "median_ms": 20.0,
+      "max_ms": 50.0,
+      "samples": 9
+    },
+    "raw_warm_down_1MiB_tcp_slow": {
+      "min_ms": 9373.848067,
+      "median_ms": 9373.862682,
+      "max_ms": 9373.988916,
+      "samples": 9,
+      "bytes": 1048576
+    },
+    "raw_warm_up_256KiB_host_cpu_tcp_slow": {
+      "min_ms": 20.0,
+      "median_ms": 30.0,
+      "max_ms": 50.0,
+      "samples": 9
+    },
+    "raw_warm_up_256KiB_tcp_slow": {
+      "min_ms": 9170.851361,
+      "median_ms": 9170.89601,
+      "max_ms": 9177.945991999999,
+      "samples": 9,
+      "bytes": 262144
+    },
+    "read_1MiB_warm_host_cpu_tcp_slow": {
+      "min_ms": 10.0,
+      "median_ms": 30.0,
+      "max_ms": 40.0,
+      "samples": 9
+    },
+    "read_1MiB_warm_tcp_slow": {
+      "min_ms": 9400.083504999999,
+      "median_ms": 9408.440971,
+      "max_ms": 9420.378552,
+      "samples": 9,
+      "bytes": 1048576
+    },
+    "read_256KiB_cold_host_cpu_tcp_slow": {
+      "min_ms": 0.0,
+      "median_ms": 20.0,
+      "max_ms": 30.0,
+      "samples": 9
+    },
+    "read_256KiB_cold_tcp_slow": {
+      "min_ms": 6214.881387,
+      "median_ms": 6220.641791,
+      "max_ms": 6226.907571,
+      "samples": 9,
+      "bytes": 262144
+    },
+    "read_random_1MiB_host_cpu_tcp_slow": {
+      "min_ms": 10.0,
+      "median_ms": 30.0,
+      "max_ms": 50.0,
+      "samples": 9
+    },
+    "read_random_1MiB_tcp_slow": {
+      "min_ms": 9400.127671,
+      "median_ms": 9408.737457000001,
+      "max_ms": 9420.369511,
+      "samples": 9,
+      "bytes": 1048576
+    },
+    "read_random_1MiB_wire_bytes_tcp_slow": {
+      "min_ms": 1048576.0,
+      "median_ms": 1048576.0,
+      "max_ms": 1048576.0,
+      "samples": 9
+    },
+    "read_text_1MiB_host_cpu_tcp_slow": {
+      "min_ms": 10.0,
+      "median_ms": 30.0,
+      "max_ms": 50.0,
+      "samples": 9
+    },
+    "read_text_1MiB_tcp_slow": {
+      "min_ms": 9400.072861,
+      "median_ms": 9408.739806,
+      "max_ms": 9420.085232,
+      "samples": 9,
+      "bytes": 1048576
+    },
+    "read_text_1MiB_wire_bytes_tcp_slow": {
+      "min_ms": 1048576.0,
+      "median_ms": 1048576.0,
+      "max_ms": 1048576.0,
+      "samples": 9
+    },
+    "remote_read_256KiB_host_cpu_tcp_slow": {
+      "min_ms": 0.0,
+      "median_ms": 20.0,
+      "max_ms": 30.0,
+      "samples": 9
+    },
+    "remote_read_256KiB_tcp_slow": {
+      "min_ms": 6215.624362,
+      "median_ms": 6221.669142,
+      "max_ms": 6231.399252,
+      "samples": 9,
+      "bytes": 262144
+    },
+    "stat_x20_serial_host_cpu_tcp_slow": {
+      "min_ms": 30.0,
+      "median_ms": 50.0,
+      "max_ms": 50.0,
+      "samples": 9
+    },
+    "stat_x20_serial_tcp_slow": {
+      "min_ms": 12274.980186,
+      "median_ms": 12275.130995,
+      "max_ms": 12281.456016,
+      "samples": 9
+    },
+    "timeline_read_256KiB_body_tcp_slow": {
+      "min_ms": 2279.1250299999997,
+      "median_ms": 2279.307641,
+      "max_ms": 2279.413689,
+      "samples": 9,
+      "bytes": 262144
+    },
+    "timeline_read_256KiB_dial_tcp_slow": {
+      "min_ms": 603.164376,
+      "median_ms": 603.190518,
+      "max_ms": 603.239754,
+      "samples": 9
+    },
+    "timeline_read_256KiB_first_tcp_slow": {
+      "min_ms": 1466.8413229999999,
+      "median_ms": 1466.974819,
+      "max_ms": 1467.22935,
+      "samples": 9
+    },
+    "timeline_read_256KiB_open_tcp_slow": {
+      "min_ms": 616.113777,
+      "median_ms": 616.152441,
+      "max_ms": 616.235274,
+      "samples": 9
+    },
+    "timeline_read_256KiB_proof_tcp_slow": {
+      "min_ms": 607.30626,
+      "median_ms": 620.001163,
+      "max_ms": 623.018824,
+      "samples": 9
+    },
+    "timeline_read_256KiB_total_tcp_slow": {
+      "min_ms": 5572.811888,
+      "median_ms": 5585.663283,
+      "max_ms": 5588.455447,
+      "samples": 9,
+      "bytes": 262144
+    },
+    "write_256KiB_host_cpu_tcp_slow": {
+      "min_ms": 20.0,
+      "median_ms": 30.0,
+      "max_ms": 40.0,
+      "samples": 9
+    },
+    "write_256KiB_tcp_slow": {
+      "min_ms": 9801.892792,
+      "median_ms": 9812.678722999999,
+      "max_ms": 10030.166355000001,
+      "samples": 9,
+      "bytes": 262144
+    }
+  },
+  "curves": {
+    "timeline_read_256KiB_tcp_slow": [
+      [
+        [
+          0,
+          0
+        ],
+        [
+          3306,
+          65536
+        ],
+        [
+          4053,
+          131072
+        ],
+        [
+          4765,
+          196608
+        ],
+        [
+          5585,
+          262144
+        ],
+        [
+          5585,
+          262144
+        ]
+      ],
+      [
+        [
+          0,
+          0
+        ],
+        [
+          3305,
+          65536
+        ],
+        [
+          4052,
+          131072
+        ],
+        [
+          4764,
+          196608
+        ],
+        [
+          5584,
+          262144
+        ],
+        [
+          5584,
+          262144
+        ]
+      ],
+      [
+        [
+          0,
+          0
+        ],
+        [
+          3308,
+          65536
+        ],
+        [
+          4056,
+          131072
+        ],
+        [
+          4767,
+          196608
+        ],
+        [
+          5588,
+          262144
+        ],
+        [
+          5588,
+          262144
+        ]
+      ],
+      [
+        [
+          0,
+          0
+        ],
+        [
+          3307,
+          65536
+        ],
+        [
+          4054,
+          131072
+        ],
+        [
+          4766,
+          196608
+        ],
+        [
+          5586,
+          262144
+        ],
+        [
+          5586,
+          262144
+        ]
+      ],
+      [
+        [
+          0,
+          0
+        ],
+        [
+          3309,
+          65536
+        ],
+        [
+          4056,
+          131072
+        ],
+        [
+          4767,
+          196608
+        ],
+        [
+          5588,
+          262144
+        ],
+        [
+          5588,
+          262144
+        ]
+      ],
+      [
+        [
+          0,
+          0
+        ],
+        [
+          3293,
+          65536
+        ],
+        [
+          4041,
+          131072
+        ],
+        [
+          4752,
+          196608
+        ],
+        [
+          5572,
+          262144
+        ],
+        [
+          5572,
+          262144
+        ]
+      ],
+      [
+        [
+          0,
+          0
+        ],
+        [
+          3293,
+          65536
+        ],
+        [
+          4041,
+          131072
+        ],
+        [
+          4752,
+          196608
+        ],
+        [
+          5572,
+          262144
+        ],
+        [
+          5572,
+          262144
+        ]
+      ],
+      [
+        [
+          0,
+          0
+        ],
+        [
+          3306,
+          65536
+        ],
+        [
+          4054,
+          131072
+        ],
+        [
+          4765,
+          196608
+        ],
+        [
+          5585,
+          262144
+        ],
+        [
+          5585,
+          262144
+        ]
+      ],
+      [
+        [
+          0,
+          0
+        ],
+        [
+          3305,
+          65536
+        ],
+        [
+          4053,
+          131072
+        ],
+        [
+          4764,
+          196608
+        ],
+        [
+          5584,
+          262144
+        ],
+        [
+          5584,
+          262144
+        ]
+      ]
+    ]
+  }
+}
