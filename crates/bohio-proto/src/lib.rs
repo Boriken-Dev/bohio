@@ -8,6 +8,7 @@ pub mod error;
 pub mod exec;
 pub mod forward;
 pub mod fs;
+pub mod gui;
 pub mod hash;
 pub mod info;
 pub mod local;
@@ -36,4 +37,6 @@ pub mod protocol {
     /// `coqui-link`'s `tcp/1`, served under the same grant as [`CONNECT`]: the open's metadata is `HOST:PORT`
     /// text and the stream is raw bytes at once, with no answer before them.
     pub const TCP: &str = "tcp/1";
+    /// One view of a desktop: snapshots, keyboard and mouse input and the clipboard's text.
+    pub const GUI: &str = "bohio-gui/1";
 }

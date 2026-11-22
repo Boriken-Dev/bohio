@@ -7,7 +7,7 @@ with the source at <https://github.com/Boriken-Dev/bohio>.
 No Cargo features. MSRV Rust 1.89. Depends on `serde`, `ciborium` and `thiserror`. Version `0.0.0-alpha.0`, not published.
 
 Imports: the root holds `decode`, `decode_with_depth`, `encode`, `DEFAULT_DEPTH`, `Error`, `ErrorBody`, `ErrorCode` and
-`PROTOCOL_VERSION`. Public modules: `codec`, `control`, `error`, `exec`, `forward`, `fs`, `hash`, `info`, `local`, `protocol`, `shell`. No `unsafe` code
+`PROTOCOL_VERSION`. Public modules: `codec`, `control`, `error`, `exec`, `forward`, `fs`, `gui`, `hash`, `info`, `local`, `protocol`, `shell`. No `unsafe` code
 (`#![forbid(unsafe_code)]`); no I/O; no process-wide state.
 
 ## Protocols (`bohio_proto::protocol`)
@@ -36,7 +36,7 @@ does not name, refuses trailing bytes and nesting past `depth` (`Error::Decode`)
 
 ```rust
 #[non_exhaustive] pub enum Error { Encode, Decode, Tag(u8), Short }        // Copy, std::error::Error; never quotes input
-#[non_exhaustive] pub enum ErrorCode { BadRequest, Denied, NotFound, Exists, Unsupported, Busy, OutsideRoot, Io, Refused, Unreachable, Timeout, Internal, Other }   // `Refused`, `Unreachable` and `Timeout` are a forward's connect failing
+#[non_exhaustive] pub enum ErrorCode { BadRequest, Denied, NotFound, Exists, Unsupported, Busy, OutsideRoot, Io, Refused, Unreachable, Timeout, Unavailable, Internal, Other }   // `Unavailable`: a desktop that exists and cannot be used now (locked for input, not at the screen); `Refused`, `Unreachable` and `Timeout` are a forward's connect failing
 pub struct ErrorBody { pub code: ErrorCode, pub message: String }          // Error; ErrorBody::new(code, message)
 ```
 
@@ -120,6 +120,30 @@ pub struct ForwardInfo { pub enabled: bool, pub connect: Vec<String>, pub listen
 
 `bohio-connect/1`: after `Connected` the stream is raw bytes both ways, untagged, a `finish` a half-close; an `Error` is the last frame. See `docs/protocol.md`.
 
+## Gui (`bohio_proto::gui`)
+
+```rust
+pub const GUI: &str = "bohio-gui/1";   // in `protocol`
+pub struct GuiRequest { pub session: Option<String>, pub want: Option<Vec<Want>> }   // `new(want)`, `wants()` (default [View], sorted), to_metadata / from_metadata
+pub enum Want { View, Input, Clipboard }                          // "view", "input", "clipboard"
+pub struct DisplayId(pub String);   pub struct Rect { x, y, width, height: u32 }  // `fits(w, h)`, `area()`
+pub struct Display { id, name, primary, x, y: i32, width, height, scale: f64, rotation }   pub struct State { active, locked: Option<bool>, displays }
+pub struct Ready { session, granted: Vec<Want>, state: State }
+pub enum ImageFormat { Png, Jpeg, Webp }                          // ALL, name(), from_name()
+pub struct Snapshot { seq, display, region, format, quality, max_width, max_height, cursor: bool, settle: Option<SettleOptions> }   // Default
+pub struct ImageHeader { seq, display, format, width, height, region, scale: f64, cursor: Option<Point>, length: u64, settled: Option<Settled> }
+pub enum InputEvent { Move, Button, Scroll, Key, Text, Wait }     // tagged by `type`; `InputEvent::combo("ctrl+shift+t") -> Result<Vec<_>, BadCombo>` (xdotool names)
+pub const KEY_NAMES: &[&str];   pub fn is_key(key: &str) -> bool;  // a listed name or exactly one character
+pub struct Input { seq, events }   pub struct InputDone { seq, applied }   pub struct Settle { seq, display, region, quiet_ms, timeout_ms }   pub struct SettledFrame { seq, settled, waited_ms }
+pub struct ClipboardGet { seq }   pub struct ClipboardSet { seq, text }   pub struct ClipboardText { seq, text }   pub struct RequestError { seq, code, message }   // `new(seq, body)`, `body()`
+#[non_exhaustive] pub enum GuiOutput { Ready, Image, Data(Vec<u8>), Error, InputDone, Settled, Clipboard, State, RequestError }   // encode / decode; tags 0x01 0x02 0x03 0x05 0x06 0x07 0x08 0x09 0x0b
+#[non_exhaustive] pub enum GuiInput { Snapshot, Input, Settle, ClipboardGet, ClipboardSet }                                       // tags 0x10 0x14 0x15 0x16 0x17
+pub struct GuiInfo { enabled, available, reason, backend, input, clipboard, lock_detection, formats, sessions: Vec<GuiSession> }   // `info.gui`
+pub enum ApproveOutput { Pending { requests: Vec<PendingRequest> }, Decided { id, found } }   pub enum ApproveInput { Decide { id, allow } }   // `bohio-gui-approve/1` (`local::GUI_APPROVE`)
+```
+
+`Info` is no longer `Eq` (a scale is a float). Tags `0x04`, `0x0a`, `0x11` to `0x13` are reserved for a screen stream.
+
 ## Info (`bohio_proto::info`)
 
 ```rust
@@ -130,7 +154,7 @@ pub struct Info { protocol, service: Service{name, version}, host_id: Option<Str
                   transfer: TransferInfo{hashes: Vec<Algorithm>, hash_limits: HashLimits{max_streams: u64, rate: u64 /* 0 unlimited */},
                          compression: Vec<CompressionInfo{algorithm: Codec, levels: Levels{min, max}, default_level: i32, window_log_max: u32}>,
                          compression_default: Option<Compression>, prepared: bool},
-                  forward: ForwardInfo{enabled, connect, listen} }
+                  forward: ForwardInfo{enabled, connect, listen}, gui: GuiInfo }
 ```
 
 Every field has a default and unknown keys are ignored: a client works with a host that reports less or more. `os` and `arch` are

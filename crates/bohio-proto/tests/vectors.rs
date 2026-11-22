@@ -16,6 +16,12 @@ use bohio_proto::fs::{
     Entry, FileKind, Listing, Metadata, ReadDone, ReadHeader, ReadOutput, ReadRequest, Timestamp,
     WriteDone, WriteInput, WriteMode, WriteOutput, WriteRequest,
 };
+use bohio_proto::gui::{
+    ApproveInput, ApproveOutput, Button, ButtonAction, ClipboardGet, ClipboardSet, ClipboardText,
+    Display, DisplayId, GuiInfo, GuiInput, GuiOutput, GuiRequest, GuiSession, ImageFormat,
+    ImageHeader, Input, InputDone, InputEvent, KeyAction, PendingRequest, Point, Ready, Rect,
+    RequestError, Settle, SettleOptions, Settled, SettledFrame, Snapshot, State, Want,
+};
 use bohio_proto::hash::{
     Algorithm, BlockOptions, Digests, HashBlocks, HashDone, HashInput, HashItem, HashOutput,
     HashRequest, HashResult, ItemError,
@@ -200,6 +206,49 @@ fn sample_info() -> Info {
             connect: vec!["tcp".into(), "unix".into()],
             listen: Vec::new(),
         },
+        gui: sample_gui_info(),
+    }
+}
+
+fn sample_display() -> Display {
+    Display {
+        id: DisplayId::from("0"),
+        name: Some("Built-in".into()),
+        primary: true,
+        x: 0,
+        y: 0,
+        width: 1920,
+        height: 1080,
+        scale: 1.5,
+        rotation: Some(0),
+    }
+}
+
+fn sample_state() -> State {
+    State {
+        active: true,
+        locked: Some(false),
+        displays: vec![sample_display()],
+    }
+}
+
+fn sample_gui_info() -> GuiInfo {
+    GuiInfo {
+        enabled: true,
+        available: true,
+        reason: None,
+        backend: Some("x11".into()),
+        input: true,
+        clipboard: true,
+        lock_detection: false,
+        formats: vec![ImageFormat::Png, ImageFormat::Jpeg, ImageFormat::Webp],
+        sessions: vec![GuiSession {
+            id: "default".into(),
+            user: Some("alice".into()),
+            active: true,
+            locked: Some(false),
+            displays: vec![sample_display()],
+        }],
     }
 }
 
@@ -1188,6 +1237,220 @@ fn forward_cases() -> Vec<Case> {
     ]
 }
 
+fn gui_cases() -> Vec<Case> {
+    let output = |name: &str, value: GuiOutput, body: Value| {
+        frame(name, TO_CLIENT, "gui.Output", value.encode().unwrap(), body)
+    };
+    let input = |name: &str, value: GuiInput, body: Value| {
+        frame(name, TO_HOST, "gui.Input", value.encode().unwrap(), body)
+    };
+    let ready = Ready {
+        session: "default".into(),
+        granted: vec![Want::View, Want::Input],
+        state: sample_state(),
+    };
+    let header = ImageHeader {
+        seq: 1,
+        display: DisplayId::from("0"),
+        format: ImageFormat::Png,
+        width: 960,
+        height: 540,
+        region: Rect::new(0, 0, 1920, 1080),
+        scale: 0.5,
+        cursor: Some(Point { x: 10, y: 20 }),
+        length: 4,
+        settled: Some(Settled {
+            settled: true,
+            waited_ms: 350,
+        }),
+    };
+    let snapshot = Snapshot {
+        seq: 1,
+        display: Some(DisplayId::from("0")),
+        region: Some(Rect::new(0, 0, 640, 480)),
+        format: Some(ImageFormat::Jpeg),
+        quality: Some(80),
+        max_width: Some(1280),
+        max_height: Some(800),
+        cursor: true,
+        settle: Some(SettleOptions {
+            quiet_ms: Some(300),
+            timeout_ms: None,
+        }),
+    };
+    let events = Input {
+        seq: 2,
+        events: vec![
+            InputEvent::Move {
+                display: None,
+                x: 100,
+                y: 200,
+            },
+            InputEvent::Button {
+                button: Button::Left,
+                action: ButtonAction::Click,
+                count: Some(2),
+                display: Some(DisplayId::from("0")),
+                x: Some(5),
+                y: Some(6),
+            },
+            InputEvent::Scroll {
+                display: None,
+                x: None,
+                y: None,
+                dx: 0,
+                dy: -3,
+            },
+            InputEvent::Key {
+                key: "page_down".into(),
+                action: KeyAction::Press,
+            },
+            InputEvent::Text {
+                text: "h\u{e9}llo".into(),
+            },
+            InputEvent::Wait { ms: 250 },
+        ],
+    };
+    let settle = Settle {
+        seq: 3,
+        display: None,
+        region: None,
+        quiet_ms: Some(300),
+        timeout_ms: Some(5000),
+    };
+    let denied = RequestError::new(
+        5,
+        ErrorBody::new(ErrorCode::Denied, "this stream was not granted input"),
+    );
+    let pending = ApproveOutput::Pending {
+        requests: vec![PendingRequest {
+            id: 7,
+            peer: "sha256:00".into(),
+            session: "default".into(),
+            want: vec![Want::View],
+            since: 1_700_000_000,
+        }],
+    };
+    let settled = SettledFrame {
+        seq: 3,
+        settled: false,
+        waited_ms: 5000,
+    };
+    let clipboard = ClipboardText {
+        seq: 4,
+        text: "copied".into(),
+    };
+    let unavailable = ErrorBody::new(ErrorCode::Unavailable, "the desktop is not at the screen");
+    vec![
+        message(
+            "open_view_and_input",
+            OPEN,
+            "open",
+            "gui.Request",
+            &GuiRequest::new([Want::View, Want::Input]),
+        ),
+        message(
+            "open_default",
+            OPEN,
+            "open",
+            "gui.Request",
+            &GuiRequest::default(),
+        ),
+        output("ready", GuiOutput::Ready(ready.clone()), to_json(&ready)),
+        output("image", GuiOutput::Image(header.clone()), to_json(&header)),
+        output(
+            "data",
+            GuiOutput::Data(vec![0x89, 0x50, 0x4e, 0x47]),
+            raw(&[0x89, 0x50, 0x4e, 0x47]),
+        ),
+        output(
+            "input_done",
+            GuiOutput::InputDone(InputDone { seq: 2, applied: 6 }),
+            to_json(&InputDone { seq: 2, applied: 6 }),
+        ),
+        output("settled", GuiOutput::Settled(settled), to_json(&settled)),
+        output(
+            "clipboard",
+            GuiOutput::Clipboard(clipboard.clone()),
+            to_json(&clipboard),
+        ),
+        output(
+            "state",
+            GuiOutput::State(sample_state()),
+            to_json(&sample_state()),
+        ),
+        output(
+            "request_error_denied",
+            GuiOutput::RequestError(denied.clone()),
+            to_json(&denied),
+        ),
+        output(
+            "error_unavailable",
+            GuiOutput::Error(unavailable.clone()),
+            to_json(&unavailable),
+        ),
+        input(
+            "snapshot",
+            GuiInput::Snapshot(snapshot.clone()),
+            to_json(&snapshot),
+        ),
+        input(
+            "snapshot_defaults",
+            GuiInput::Snapshot(Snapshot::default()),
+            to_json(&Snapshot::default()),
+        ),
+        input("input", GuiInput::Input(events.clone()), to_json(&events)),
+        input("settle", GuiInput::Settle(settle.clone()), to_json(&settle)),
+        input(
+            "clipboard_get",
+            GuiInput::ClipboardGet(ClipboardGet { seq: 8 }),
+            to_json(&ClipboardGet { seq: 8 }),
+        ),
+        input(
+            "clipboard_set",
+            GuiInput::ClipboardSet(ClipboardSet {
+                seq: 9,
+                text: "set".into(),
+            }),
+            to_json(&ClipboardSet {
+                seq: 9,
+                text: "set".into(),
+            }),
+        ),
+        message(
+            "approve_pending",
+            TO_CLIENT,
+            "message",
+            "gui.ApproveOutput",
+            &pending,
+        ),
+        message(
+            "approve_decided",
+            TO_CLIENT,
+            "message",
+            "gui.ApproveOutput",
+            &ApproveOutput::Decided { id: 7, found: true },
+        ),
+        message(
+            "approve_decide",
+            TO_HOST,
+            "message",
+            "gui.ApproveInput",
+            &ApproveInput::Decide { id: 7, allow: true },
+        ),
+        Case {
+            name: "unknown_tag".into(),
+            direction: TO_CLIENT,
+            kind: "frame",
+            ty: "gui.Output",
+            bytes: vec![0x7f],
+            value: None,
+            decode_only: true,
+            error: Some("tag"),
+        },
+    ]
+}
+
 fn files() -> Vec<(&'static str, &'static str, Vec<Case>)> {
     vec![
         ("control.json", "bohio/1", control()),
@@ -1197,6 +1460,7 @@ fn files() -> Vec<(&'static str, &'static str, Vec<Case>)> {
         ("write.json", "bohio-write/1", write_cases()),
         ("hash.json", "bohio-hash/1", hash_cases()),
         ("forward.json", "bohio-connect/1", forward_cases()),
+        ("gui.json", "bohio-gui/1", gui_cases()),
     ]
 }
 
@@ -1235,6 +1499,9 @@ fn decode_error(ty: &str, bytes: &[u8]) -> Result<(), Error> {
         "hash.Input" => HashInput::decode(bytes).map(|_| ()),
         "forward.ConnectRequest" => ConnectRequest::from_metadata(bytes).map(|_| ()),
         "forward.Answer" => Answer::decode(bytes).map(|_| ()),
+        "gui.Request" => GuiRequest::from_metadata(bytes).map(|_| ()),
+        "gui.Output" => GuiOutput::decode(bytes).map(|_| ()),
+        "gui.Input" => GuiInput::decode(bytes).map(|_| ()),
         other => panic!("a vector names a type this test does not know: {other}"),
     }
 }
@@ -1298,6 +1565,11 @@ fn check(entry: &Value) {
         "hash.Input" => check_frame(entry, &bytes, HashInput::decode, |v| v.encode().unwrap()),
         "forward.ConnectRequest" => check_message::<ConnectRequest>(entry, &bytes),
         "forward.Answer" => check_frame(entry, &bytes, Answer::decode, |v| v.encode().unwrap()),
+        "gui.Request" => check_message::<GuiRequest>(entry, &bytes),
+        "gui.ApproveOutput" => check_message::<ApproveOutput>(entry, &bytes),
+        "gui.ApproveInput" => check_message::<ApproveInput>(entry, &bytes),
+        "gui.Output" => check_frame(entry, &bytes, GuiOutput::decode, |v| v.encode().unwrap()),
+        "gui.Input" => check_frame(entry, &bytes, GuiInput::decode, |v| v.encode().unwrap()),
         other => panic!("a vector names a type this test does not know: {other}"),
     }
 }

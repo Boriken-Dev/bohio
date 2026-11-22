@@ -130,7 +130,7 @@ pub enum Call {
 }
 
 /// The answer to one request: exactly one of `reply` and `error` is present.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Response {
     /// The request id this answers.
     pub id: u64,
@@ -179,7 +179,7 @@ impl Response {
 }
 
 /// What a successful call returns.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Reply {

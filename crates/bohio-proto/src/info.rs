@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::compress::{Codec, Compression};
 use crate::forward::ForwardInfo;
+use crate::gui::GuiInfo;
 use crate::hash::Algorithm;
 use crate::shell::ShellKind;
 
@@ -14,7 +15,7 @@ use crate::shell::ShellKind;
 pub const PROTOCOL_VERSION: u32 = 1;
 
 /// A host's capabilities.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Info {
     /// The protocol version the host speaks.
@@ -41,6 +42,8 @@ pub struct Info {
     pub transfer: TransferInfo,
     /// Forwarding.
     pub forward: ForwardInfo,
+    /// The desktop: screen, keyboard and mouse.
+    pub gui: GuiInfo,
 }
 
 /// The serving program.

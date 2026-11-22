@@ -20,6 +20,9 @@ pub const LINKS: &str = "bohio-links/1";
 /// Arms the node's one PIN for a peer to pair on any of the node's listeners.
 pub const PAIR: &str = "bohio-pair/1";
 
+/// Lists the desktop approvals a node waits for and takes the owner's decisions (`bohio-gui-approve/1`).
+pub const GUI_APPROVE: &str = "bohio-gui-approve/1";
+
 /// The metadata of a [`VIA`] open.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ViaRequest {

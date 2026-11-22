@@ -60,6 +60,7 @@ fn sample_info() -> Info {
             connect: vec!["tcp".into()],
             listen: Vec::new(),
         },
+        gui: bohio_proto::gui::GuiInfo::default(),
     }
 }
 
@@ -175,6 +176,7 @@ fn every_error_code_round_trips() {
         ErrorCode::Refused,
         ErrorCode::Unreachable,
         ErrorCode::Timeout,
+        ErrorCode::Unavailable,
         ErrorCode::Internal,
         ErrorCode::Other,
     ] {

@@ -1,0 +1,410 @@
+{
+  "encoding": "hex is the stream message exactly as it travels: open metadata and control messages are bare CBOR, a frame is one tag byte then its body",
+  "protocol": "bohio-gui/1",
+  "vectors": [
+    {
+      "direction": "client_to_host",
+      "hex": "a26773657373696f6ef66477616e7482647669657765696e707574",
+      "kind": "open",
+      "name": "open_view_and_input",
+      "type": "gui.Request",
+      "value": {
+        "session": null,
+        "want": [
+          "view",
+          "input"
+        ]
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a26773657373696f6ef66477616e74f6",
+      "kind": "open",
+      "name": "open_default",
+      "type": "gui.Request",
+      "value": {
+        "session": null,
+        "want": null
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "01a36773657373696f6e6764656661756c74676772616e74656482647669657765696e707574657374617465a366616374697665f5666c6f636b6564f468646973706c61797381a96269646130646e616d65684275696c742d696e677072696d617279f561780061790065776964746819078066686569676874190438657363616c65f93e0068726f746174696f6e00",
+      "kind": "frame",
+      "name": "ready",
+      "type": "gui.Output",
+      "value": {
+        "message": {
+          "granted": [
+            "view",
+            "input"
+          ],
+          "session": "default",
+          "state": {
+            "active": true,
+            "displays": [
+              {
+                "height": 1080,
+                "id": "0",
+                "name": "Built-in",
+                "primary": true,
+                "rotation": 0,
+                "scale": 1.5,
+                "width": 1920,
+                "x": 0,
+                "y": 0
+              }
+            ],
+            "locked": false
+          }
+        },
+        "tag": 1
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "02aa637365710167646973706c6179613066666f726d617463706e676577696474681903c06668656967687419021c66726567696f6ea461780061790065776964746819078066686569676874190438657363616c65f9380066637572736f72a261780a617914666c656e6774680467736574746c6564a267736574746c6564f5697761697465645f6d7319015e",
+      "kind": "frame",
+      "name": "image",
+      "type": "gui.Output",
+      "value": {
+        "message": {
+          "cursor": {
+            "x": 10,
+            "y": 20
+          },
+          "display": "0",
+          "format": "png",
+          "height": 540,
+          "length": 4,
+          "region": {
+            "height": 1080,
+            "width": 1920,
+            "x": 0,
+            "y": 0
+          },
+          "scale": 0.5,
+          "seq": 1,
+          "settled": {
+            "settled": true,
+            "waited_ms": 350
+          },
+          "width": 960
+        },
+        "tag": 2
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "0389504e47",
+      "kind": "frame",
+      "name": "data",
+      "type": "gui.Output",
+      "value": {
+        "data_hex": "89504e47",
+        "tag": 3
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "06a26373657102676170706c69656406",
+      "kind": "frame",
+      "name": "input_done",
+      "type": "gui.Output",
+      "value": {
+        "message": {
+          "applied": 6,
+          "seq": 2
+        },
+        "tag": 6
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "07a3637365710367736574746c6564f4697761697465645f6d73191388",
+      "kind": "frame",
+      "name": "settled",
+      "type": "gui.Output",
+      "value": {
+        "message": {
+          "seq": 3,
+          "settled": false,
+          "waited_ms": 5000
+        },
+        "tag": 7
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "08a26373657104647465787466636f70696564",
+      "kind": "frame",
+      "name": "clipboard",
+      "type": "gui.Output",
+      "value": {
+        "message": {
+          "seq": 4,
+          "text": "copied"
+        },
+        "tag": 8
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "09a366616374697665f5666c6f636b6564f468646973706c61797381a96269646130646e616d65684275696c742d696e677072696d617279f561780061790065776964746819078066686569676874190438657363616c65f93e0068726f746174696f6e00",
+      "kind": "frame",
+      "name": "state",
+      "type": "gui.Output",
+      "value": {
+        "message": {
+          "active": true,
+          "displays": [
+            {
+              "height": 1080,
+              "id": "0",
+              "name": "Built-in",
+              "primary": true,
+              "rotation": 0,
+              "scale": 1.5,
+              "width": 1920,
+              "x": 0,
+              "y": 0
+            }
+          ],
+          "locked": false
+        },
+        "tag": 9
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "0ba3637365710564636f64656664656e696564676d6573736167657821746869732073747265616d20776173206e6f74206772616e74656420696e707574",
+      "kind": "frame",
+      "name": "request_error_denied",
+      "type": "gui.Output",
+      "value": {
+        "message": {
+          "code": "denied",
+          "message": "this stream was not granted input",
+          "seq": 5
+        },
+        "tag": 11
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "05a264636f64656b756e617661696c61626c65676d6573736167657820746865206465736b746f70206973206e6f74206174207468652073637265656e",
+      "kind": "frame",
+      "name": "error_unavailable",
+      "type": "gui.Output",
+      "value": {
+        "message": {
+          "code": "unavailable",
+          "message": "the desktop is not at the screen"
+        },
+        "tag": 5
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "10a9637365710167646973706c6179613066726567696f6ea4617800617900657769647468190280666865696768741901e066666f726d6174646a706567677175616c6974791850696d61785f77696474681905006a6d61785f68656967687419032066637572736f72f566736574746c65a26871756965745f6d7319012c6a74696d656f75745f6d73f6",
+      "kind": "frame",
+      "name": "snapshot",
+      "type": "gui.Input",
+      "value": {
+        "message": {
+          "cursor": true,
+          "display": "0",
+          "format": "jpeg",
+          "max_height": 800,
+          "max_width": 1280,
+          "quality": 80,
+          "region": {
+            "height": 480,
+            "width": 640,
+            "x": 0,
+            "y": 0
+          },
+          "seq": 1,
+          "settle": {
+            "quiet_ms": 300,
+            "timeout_ms": null
+          }
+        },
+        "tag": 16
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "10a9637365710067646973706c6179f666726567696f6ef666666f726d6174f6677175616c697479f6696d61785f7769647468f66a6d61785f686569676874f666637572736f72f466736574746c65f6",
+      "kind": "frame",
+      "name": "snapshot_defaults",
+      "type": "gui.Input",
+      "value": {
+        "message": {
+          "cursor": false,
+          "display": null,
+          "format": null,
+          "max_height": null,
+          "max_width": null,
+          "quality": null,
+          "region": null,
+          "seq": 0,
+          "settle": null
+        },
+        "tag": 16
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "14a26373657102666576656e747386a46474797065646d6f766567646973706c6179f661781864617918c8a7647479706566627574746f6e66627574746f6e646c65667466616374696f6e65636c69636b65636f756e740267646973706c61796130617805617906a66474797065667363726f6c6c67646973706c6179f66178f66179f66264780062647922a36474797065636b6579636b657969706167655f646f776e66616374696f6e657072657373a26474797065647465787464746578746668c3a96c6c6fa264747970656477616974626d7318fa",
+      "kind": "frame",
+      "name": "input",
+      "type": "gui.Input",
+      "value": {
+        "message": {
+          "events": [
+            {
+              "display": null,
+              "type": "move",
+              "x": 100,
+              "y": 200
+            },
+            {
+              "action": "click",
+              "button": "left",
+              "count": 2,
+              "display": "0",
+              "type": "button",
+              "x": 5,
+              "y": 6
+            },
+            {
+              "display": null,
+              "dx": 0,
+              "dy": -3,
+              "type": "scroll",
+              "x": null,
+              "y": null
+            },
+            {
+              "action": "press",
+              "key": "page_down",
+              "type": "key"
+            },
+            {
+              "text": "héllo",
+              "type": "text"
+            },
+            {
+              "ms": 250,
+              "type": "wait"
+            }
+          ],
+          "seq": 2
+        },
+        "tag": 20
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "15a5637365710367646973706c6179f666726567696f6ef66871756965745f6d7319012c6a74696d656f75745f6d73191388",
+      "kind": "frame",
+      "name": "settle",
+      "type": "gui.Input",
+      "value": {
+        "message": {
+          "display": null,
+          "quiet_ms": 300,
+          "region": null,
+          "seq": 3,
+          "timeout_ms": 5000
+        },
+        "tag": 21
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "16a16373657108",
+      "kind": "frame",
+      "name": "clipboard_get",
+      "type": "gui.Input",
+      "value": {
+        "message": {
+          "seq": 8
+        },
+        "tag": 22
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "17a26373657109647465787463736574",
+      "kind": "frame",
+      "name": "clipboard_set",
+      "type": "gui.Input",
+      "value": {
+        "message": {
+          "seq": 9,
+          "text": "set"
+        },
+        "tag": 23
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "a16770656e64696e67a168726571756573747381a5626964076470656572697368613235363a30306773657373696f6e6764656661756c746477616e748164766965776573696e63651a6553f100",
+      "kind": "message",
+      "name": "approve_pending",
+      "type": "gui.ApproveOutput",
+      "value": {
+        "pending": {
+          "requests": [
+            {
+              "id": 7,
+              "peer": "sha256:00",
+              "session": "default",
+              "since": 1700000000,
+              "want": [
+                "view"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "a16764656369646564a26269640765666f756e64f5",
+      "kind": "message",
+      "name": "approve_decided",
+      "type": "gui.ApproveOutput",
+      "value": {
+        "decided": {
+          "found": true,
+          "id": 7
+        }
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a166646563696465a26269640765616c6c6f77f5",
+      "kind": "message",
+      "name": "approve_decide",
+      "type": "gui.ApproveInput",
+      "value": {
+        "decide": {
+          "allow": true,
+          "id": 7
+        }
+      }
+    },
+    {
+      "decode_only": true,
+      "direction": "host_to_client",
+      "error": "tag",
+      "hex": "7f",
+      "kind": "frame",
+      "name": "unknown_tag",
+      "type": "gui.Output"
+    }
+  ]
+}

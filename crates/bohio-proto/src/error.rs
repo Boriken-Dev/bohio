@@ -50,6 +50,9 @@ pub enum ErrorCode {
     Unreachable,
     /// A forward's target did not answer within the connect timeout.
     Timeout,
+    /// The thing exists but cannot be used now: a desktop that is locked for input, a session that is not at the screen, a
+    /// permission of the operating system that is missing.
+    Unavailable,
     /// The host failed in a way the request did not cause.
     Internal,
     /// A code this version does not know.
