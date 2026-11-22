@@ -7,6 +7,7 @@ use bohio_proto::exec::{Command, Request};
 use bohio_proto::shell::ShellKind;
 use bohio_proto::{ErrorBody, ErrorCode};
 
+use crate::config::HostDeath;
 use crate::platform::{Spec, resolve_listed};
 use crate::policy::Grant;
 
@@ -85,6 +86,7 @@ pub(super) fn spec(request: &Request, grant: &Grant, path: &OsStr) -> Result<Spe
         cwd: request.cwd.as_ref().map(PathBuf::from),
         env: request.env.clone(),
         stdin: matches!(request.stdin, bohio_proto::exec::Stdin::Open),
+        on_host_death: HostDeath::default(),
     })
 }
 

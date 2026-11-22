@@ -39,14 +39,20 @@ pub(super) use self::windows::{Tree, contain, contain_handle, end, end_tree, pol
 #[cfg(unix)]
 mod unix {
     use super::{Child, Command, Poll, io};
+    use crate::config::HostDeath;
     use crate::platform::ProcessExit;
 
     /// A process group needs no object of its own: the child leads it.
     pub(in crate::platform) struct Tree;
 
-    /// The child leads a process group of its own, which `end` signals.
-    pub(in crate::platform) fn prepare(command: &mut Command) {
+    /// The child leads a process group of its own, which `end` signals, and gets a guardian that
+    /// signals it if this process dies first.
+    pub(in crate::platform) fn prepare(
+        command: &mut Command,
+        on_host_death: HostDeath,
+    ) -> io::Result<()> {
         std::os::unix::process::CommandExt::process_group(command, 0);
+        crate::platform::guard::attach(command, on_host_death)
     }
 
     pub(in crate::platform) fn contain(_child: &Child) -> io::Result<Tree> {

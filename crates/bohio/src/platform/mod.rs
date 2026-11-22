@@ -5,6 +5,8 @@
 //! process group (and on Linux a walk of `/proc` for processes that left it) on Unix. That module
 //! cannot stream a child's standard error, so this one starts the child itself.
 
+#[cfg(unix)]
+mod guard;
 mod pty;
 mod tree;
 #[cfg(windows)]
@@ -18,6 +20,8 @@ use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use bohio_proto::exec::Env;
+
+use crate::config::HostDeath;
 
 use self::tree::{Poll, Tree};
 #[cfg(windows)]
@@ -70,6 +74,8 @@ pub struct Spec {
     pub env: Env,
     /// Whether standard input is a pipe; otherwise it is empty.
     pub stdin: bool,
+    /// What happens to the process's group if this process dies without ending it (Unix).
+    pub on_host_death: HostDeath,
 }
 
 /// A started process and its pipes.
@@ -114,7 +120,7 @@ pub fn spawn(spec: Spec) -> io::Result<Spawned> {
             })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        tree::prepare(&mut command);
+        tree::prepare(&mut command, spec.on_host_death)?;
         command.spawn()?
     };
     #[cfg(windows)]

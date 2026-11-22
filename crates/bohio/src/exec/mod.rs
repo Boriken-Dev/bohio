@@ -255,7 +255,8 @@ fn start<'a>(
         .as_ref()
         .map(|used| settings.decoder(used))
         .transpose()?;
-    let spec = command::spec(&request, context.grant, context.path)?;
+    let mut spec = command::spec(&request, context.grant, context.path)?;
+    spec.on_host_death = context.config.host_death;
     if let Some(cwd) = &spec.cwd
         && !cwd.is_dir()
     {

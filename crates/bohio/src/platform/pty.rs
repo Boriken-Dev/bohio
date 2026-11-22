@@ -12,10 +12,13 @@ use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use crate::config::HostDeath;
 use bohio_proto::exec::Env;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 use super::ProcessExit;
+#[cfg(unix)]
+use super::guard;
 use super::tree::{self, Tree};
 
 /// `TERM` for a program whose environment does not set it.
@@ -36,6 +39,15 @@ pub struct PtySpec {
     pub cols: u16,
     /// Terminal height in rows.
     pub rows: u16,
+    /// What happens to the program's tree if this process dies without ending it (Unix).
+    #[cfg_attr(
+        windows,
+        allow(
+            dead_code,
+            reason = "a job object ends a Windows tree whenever its owner is gone"
+        )
+    )]
+    pub on_host_death: HostDeath,
 }
 
 /// A program on its terminal.
@@ -60,6 +72,9 @@ pub struct Session {
     child: Mutex<Box<dyn Child + Send + Sync>>,
     master: Mutex<Option<Box<dyn MasterPty + Send>>>,
     state: Mutex<State>,
+    /// The guardian that ends the tree if this process dies, until the program is collected.
+    #[cfg(unix)]
+    watch: Mutex<Option<guard::Watch>>,
 }
 
 struct State {
@@ -143,6 +158,16 @@ pub fn spawn(spec: PtySpec) -> io::Result<Terminal> {
 
     #[cfg(unix)]
     let tree = Tree;
+    #[cfg(unix)]
+    let watch = match guard::watch_session(pid, spec.on_host_death) {
+        Ok(watch) => watch,
+        Err(error) => {
+            // Nothing would end this tree if the host died, so end the child now.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+    };
     #[cfg(windows)]
     let tree = {
         let contained = child
@@ -180,6 +205,8 @@ pub fn spawn(spec: PtySpec) -> io::Result<Terminal> {
                 exit: None,
                 collected: false,
             }),
+            #[cfg(unix)]
+            watch: Mutex::new(watch),
         }),
         reader,
         writer: Arc::new(Mutex::new(writer)),
@@ -261,6 +288,11 @@ impl Session {
             tree::end_tree(&self.tree);
             let status = lock(&self.child).wait()?;
             state.collected = true;
+            // The session id may be another process's from now on: its guardian must not act.
+            #[cfg(unix)]
+            if let Some(watch) = lock(&self.watch).take() {
+                watch.retire();
+            }
             if state.exit.is_none() {
                 state.exit = Some(exit_of(&status));
             }

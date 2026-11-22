@@ -48,6 +48,8 @@ const SLACK: Duration = Duration::from_secs(3);
 /// A child process whose output is read on threads and which is killed when dropped.
 struct Proc {
     child: Child,
+    /// The input pipe, kept open until the process drops, when the test asked for that.
+    _kept: Option<std::process::ChildStdin>,
     stdout: Arc<Mutex<Vec<u8>>>,
     stderr: Arc<Mutex<Vec<u8>>>,
     readers: Vec<JoinHandle<()>>,
@@ -83,6 +85,11 @@ impl Proc {
     /// Starts `bohio` with `args`, `log` as its log filter and `stdin` as its input (closed when
     /// given, empty otherwise).
     fn start(args: &[&str], stdin: Option<&str>, log: &str) -> Self {
+        Self::start_with(args, stdin, false, log)
+    }
+
+    /// As [`Proc::start`]; with `keep_open` the input stays open after `stdin` is written.
+    fn start_with(args: &[&str], stdin: Option<&str>, keep_open: bool, log: &str) -> Self {
         let mut command = Command::new(env!("CARGO_BIN_EXE_bohio"));
         command
             .args(args)
@@ -97,13 +104,18 @@ impl Proc {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let mut child = command.spawn().expect("the binary starts");
+        let mut kept = None;
         if let (Some(input), Some(mut pipe)) = (stdin, child.stdin.take()) {
             pipe.write_all(input.as_bytes()).expect("input is written");
+            if keep_open {
+                kept = Some(pipe);
+            }
         }
         let (stdout, out_reader) = collect(child.stdout.take().unwrap());
         let (stderr, err_reader) = collect(child.stderr.take().unwrap());
         Self {
             child,
+            _kept: kept,
             stdout,
             stderr,
             readers: vec![out_reader, err_reader],
@@ -175,6 +187,13 @@ impl Proc {
 
     fn id(&self) -> u32 {
         self.child.id()
+    }
+
+    /// Kills the process (SIGKILL on Unix) and collects it.
+    #[cfg(unix)]
+    fn kill(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
@@ -1613,4 +1632,225 @@ fn a_host_with_a_small_window_and_a_wide_bulk_window_serves_a_client_with_the_de
     let told = link.opener().capabilities(Duration::from_secs(60)).unwrap();
     assert_eq!(told.window, Some(65536));
     assert_eq!(told.max_frame, Some(Settings::default().max_frame));
+}
+
+/// How long a killed host's processes may take to be gone.
+#[cfg(unix)]
+const HOST_DEATH_WITHIN: Duration = Duration::from_secs(10);
+
+/// Waits until no process runs `program` with `argument`, up to `within`; what remains is ended and returned.
+#[cfg(unix)]
+fn left_running(program: &str, argument: &str, within: Duration) -> Vec<u32> {
+    let until = Instant::now() + within;
+    loop {
+        let found = support::processes_of(program, argument);
+        if found.is_empty() {
+            return found;
+        }
+        if Instant::now() >= until {
+            support::end_processes(&found);
+            return found;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_host_killed_with_sigkill_leaves_no_exec_tree() {
+    let world = World::new("");
+    let mut host = world.serve("warn");
+    let client = approved(&world, "ops", &["--allow", "info,exec"]);
+    // A marker no other test's helper has, so the scan sees only this test's tree.
+    let ms = (600_000 + u64::from(std::process::id() % 5000)).to_string();
+    let helper = helper();
+    let mut running = Proc::start(
+        &[
+            "remote",
+            &host.endpoint,
+            "--config",
+            &client.config,
+            "exec",
+            "--",
+            &helper,
+            "tree",
+            &ms,
+        ],
+        None,
+        "warn",
+    );
+    // The helper prints its child's id once both run.
+    let grandchild: u32 = running.expect_line("").parse().expect("a process id");
+    assert_eq!(
+        support::processes_of(&helper, &ms).len(),
+        2,
+        "the control: the scan sees the program and its child while the host lives"
+    );
+    assert!(alive(grandchild));
+    host.process.kill();
+    let left = left_running(&helper, &ms, HOST_DEATH_WITHIN);
+    assert!(
+        left.is_empty(),
+        "processes of the exec tree outlived the killed host: {left:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_host_killed_with_sigkill_leaves_no_shell_tree() {
+    let world = World::new("");
+    let mut host = world.serve("warn");
+    let client = approved(&world, "ops", &["--allow", "shell"]);
+    let ms = (700_000 + u64::from(std::process::id() % 5000)).to_string();
+    let shell = Proc::start_with(
+        &[
+            "remote",
+            &host.endpoint,
+            "--config",
+            &client.config,
+            "shell",
+            "--kind",
+            "sh",
+        ],
+        Some(&format!("sleep {ms} &\recho $((40 + 2))\r")),
+        true,
+        "warn",
+    );
+    let until = Instant::now() + DEADLINE;
+    while !text(&shell.stdout).lines().any(|line| {
+        line.split('\r')
+            .any(|part| !part.contains("echo") && part.split_whitespace().last() == Some("42"))
+    }) {
+        assert!(
+            Instant::now() < until,
+            "the shell did not answer\n{}",
+            text(&shell.stdout)
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(
+        support::processes_of("sleep", &ms).len(),
+        1,
+        "the control: the scan sees the shell's background job while the host lives"
+    );
+    host.process.kill();
+    let left = left_running("sleep", &ms, HOST_DEATH_WITHIN);
+    assert!(
+        left.is_empty(),
+        "processes of the shell tree outlived the killed host: {left:?}"
+    );
+    drop(shell);
+}
+
+/// The ids of the processes of this test's host: it and the guardians it made, which carry its command line.
+#[cfg(unix)]
+fn host_processes(config: &str) -> Vec<u32> {
+    support::processes_of(env!("CARGO_BIN_EXE_bohio"), config)
+}
+
+#[cfg(unix)]
+#[test]
+fn a_program_that_ended_leaves_no_guardian_behind() {
+    let world = World::new("");
+    let host = world.serve("warn");
+    let client = approved(&world, "ops", &["--allow", "info,exec"]);
+    let ms = (610_000 + u64::from(std::process::id() % 5000)).to_string();
+    let helper = helper();
+    let mut running = Proc::start(
+        &[
+            "remote",
+            &host.endpoint,
+            "--config",
+            &client.config,
+            "exec",
+            "--",
+            &helper,
+            "tree",
+            &ms,
+        ],
+        None,
+        "warn",
+    );
+    running.expect_line("");
+    assert_eq!(
+        host_processes(&world.config).len(),
+        2,
+        "the control: while a program runs the host has its guardian beside it"
+    );
+    // Ending the request ends the tree, and the guardian is in it.
+    drop(running);
+    let until = Instant::now() + DEADLINE;
+    while host_processes(&world.config).len() > 1 && Instant::now() < until {
+        thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(
+        host_processes(&world.config),
+        vec![host.process.id()],
+        "a guardian outlived its program"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_host_set_to_leave_its_programs_leaves_them_when_killed() {
+    let world = World::new("\n[execution]\nhost_death = \"leave\"\n");
+    let mut host = world.serve("warn");
+    let client = approved(&world, "ops", &["--allow", "info,exec"]);
+    let ms = (620_000 + u64::from(std::process::id() % 5000)).to_string();
+    let helper = helper();
+    let mut running = Proc::start(
+        &[
+            "remote",
+            &host.endpoint,
+            "--config",
+            &client.config,
+            "exec",
+            "--",
+            &helper,
+            "tree",
+            &ms,
+        ],
+        None,
+        "warn",
+    );
+    running.expect_line("");
+    assert_eq!(
+        host_processes(&world.config),
+        vec![host.process.id()],
+        "no guardian is made under `leave`"
+    );
+    host.process.kill();
+    thread::sleep(Duration::from_secs(2));
+    let left = support::processes_of(&helper, &ms);
+    support::end_processes(&left);
+    assert_eq!(left.len(), 2, "`leave` left the tree running: {left:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_host_set_to_term_ends_its_programs_with_sigterm_when_killed() {
+    let world = World::new("\n[execution]\nhost_death = \"term\"\n");
+    let mut host = world.serve("warn");
+    let client = approved(&world, "ops", &["--allow", "info,exec"]);
+    let ms = (630_000 + u64::from(std::process::id() % 5000)).to_string();
+    let helper = helper();
+    let mut running = Proc::start(
+        &[
+            "remote",
+            &host.endpoint,
+            "--config",
+            &client.config,
+            "exec",
+            "--",
+            &helper,
+            "tree",
+            &ms,
+        ],
+        None,
+        "warn",
+    );
+    running.expect_line("");
+    host.process.kill();
+    let left = left_running(&helper, &ms, HOST_DEATH_WITHIN);
+    assert!(left.is_empty(), "SIGTERM left the tree running: {left:?}");
 }

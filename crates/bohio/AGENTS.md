@@ -130,6 +130,8 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[execution] chunk_size` | `16384` | most output bytes in one frame; at least 1; a smaller message bound of the stream wins |
 | `[execution] poll_interval` | `20ms` | how often a process, its deadline and its stream are looked at; not zero |
 | `[execution] drain_timeout` | `500ms` | wait for a process's remaining output after it exits, before the rest of its tree is ended |
+| `[execution] host_death` | `kill` | Unix: what happens to a process's group when the host dies without ending it: `kill` (SIGKILL), `term` (SIGTERM) or `leave` |
+| `[shell] host_death` | `kill` | Unix: what happens to a session's tree when the host dies without ending it: `kill`, `term` or `leave` |
 | `[shell] enabled` | `true` | whether shell sessions are opened |
 | `[shell] max_sessions` | `8` | concurrent sessions across peers; at least 1 |
 | `[shell] chunk_size` | `16384` | most terminal bytes in one frame; at least 1; a smaller message bound of the stream wins |

@@ -274,6 +274,7 @@ fn start<'a>(metadata: &[u8], context: &Context<'a>) -> Result<(Terminal, Permit
         env,
         cols: request.cols,
         rows: request.rows,
+        on_host_death: context.config.host_death,
     })
     .map_err(|error| match error.kind() {
         std::io::ErrorKind::NotFound => refuse(ErrorCode::NotFound, "the program was not found"),

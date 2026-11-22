@@ -26,6 +26,7 @@ fn sleeper() -> Spec {
         cwd: None,
         env: Env::default(),
         stdin: false,
+        on_host_death: crate::config::HostDeath::default(),
     }
 }
 

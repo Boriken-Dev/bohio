@@ -385,3 +385,46 @@ pub fn gone_within(pid: u32, within: Duration) -> bool {
     }
     !alive(pid)
 }
+
+/// The ids of the processes running `program` (by its file name) with `argument` among their
+/// arguments. A zombie is not listed.
+pub fn processes_of(program: &str, argument: &str) -> Vec<u32> {
+    use sysinfo::{ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System, UpdateKind};
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
+    );
+    let name = std::path::Path::new(program).file_name();
+    system
+        .processes()
+        .values()
+        .filter(|process| {
+            // Linux lists a process's threads beside it, with the same command line.
+            process.thread_kind().is_none()
+                && !matches!(
+                    process.status(),
+                    ProcessStatus::Zombie | ProcessStatus::Dead
+                )
+                && process
+                    .cmd()
+                    .first()
+                    .is_some_and(|first| std::path::Path::new(first).file_name() == name)
+                && process.cmd().iter().skip(1).any(|part| part == argument)
+        })
+        .map(|process| process.pid().as_u32())
+        .collect()
+}
+
+/// Ends the processes `ids`, so a test that found survivors leaves none.
+pub fn end_processes(ids: &[u32]) {
+    use sysinfo::{Pid, ProcessesToUpdate, System};
+    let mut system = System::new();
+    system.refresh_processes(ProcessesToUpdate::All, true);
+    for id in ids {
+        if let Some(process) = system.process(Pid::from_u32(*id)) {
+            process.kill();
+        }
+    }
+}

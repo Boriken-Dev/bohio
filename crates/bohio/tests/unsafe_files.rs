@@ -24,19 +24,26 @@ struct Allowed {
     miri: &'static str,
 }
 
-const ALLOWED: &[Allowed] = &[Allowed {
-    file: "crates/bohio/src/platform/winproc.rs",
-    reason: "starting a process on Windows with a handle list (CreateProcessW, STARTUPINFOEX, \
+const ALLOWED: &[Allowed] = &[
+    Allowed {
+        file: "crates/bohio/src/platform/guard.rs",
+        reason: "ending a program's process group when the host dies without ending it (Unix): a guardian \n             process, made with fork between the child's fork and exec, reads a pipe only the host holds \n             the write end of and signals the group on end-of-file. Ruled out: PR_SET_PDEATHSIG and \n             procctl(PROC_PDEATHSIG_CTL) signal only the child they are set on, never its descendants \n             (measured: the child died and its own child lived on), and macOS has neither; a kqueue \n             watcher or a supervisor process needs the same fork and a program to run it; no maintained \n             crate makes a guardian. std's `pre_exec` is itself unsafe, and rustix offers no fork",
+        miri: "not reachable: Miri does not run fork, waitpid or close_range; covered by the host-death \n           tests of tests/link.rs, which SIGKILL `serve` and look for the exec tree, on Linux (and \n           macOS or FreeBSD where run)",
+    },
+    Allowed {
+        file: "crates/bohio/src/platform/winproc.rs",
+        reason: "starting a process on Windows with a handle list (CreateProcessW, STARTUPINFOEX, \
              PROC_THREAD_ATTRIBUTE_HANDLE_LIST), so a child holds only its three standard streams: \
              std's Command inherits every inheritable handle, and TcpStream::try_clone makes \
              inheritable sockets, which a killed child resets. Ruled out: std offers the attribute \
              only on nightly (raw_attribute); portable-pty starts its child without inheriting \
              handles but cannot start a pipe-only process; no maintained crate wraps a handle list \
              over pipes",
-    miri: "not reachable: every unsafe call is a Win32 call (CreateProcessW, handle and attribute \
+        miri: "not reachable: every unsafe call is a Win32 call (CreateProcessW, handle and attribute \
            list functions), which Miri does not run; covered by tests/exec.rs and \
            platform/inherit_tests.rs on Windows",
-}];
+    },
+];
 
 /// Whether `line` holds the keyword `unsafe` outside a comment and a one-line string.
 fn holds_unsafe_keyword(line: &str) -> bool {

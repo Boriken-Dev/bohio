@@ -82,6 +82,33 @@ fn a_wrong_type_is_a_parse_error_not_a_default() {
 }
 
 #[test]
+fn what_a_dead_host_does_to_its_programs_is_kill_term_or_leave() {
+    use bohio::config::HostDeath;
+    assert_eq!(parse("").unwrap().execution.host_death, HostDeath::Kill);
+    for (text, want) in [
+        ("kill", HostDeath::Kill),
+        ("term", HostDeath::Term),
+        ("leave", HostDeath::Leave),
+    ] {
+        let config = parse(&format!(
+            "[execution]
+host_death = \"{text}\"
+"
+        ))
+        .unwrap();
+        assert_eq!(config.execution.host_death, want, "{text}");
+    }
+    assert!(
+        parse(
+            "[execution]
+host_death = \"pause\"
+"
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn times_take_seconds_or_a_unit() {
     let config = parse(
         "[link]\nrecheck = \"250ms\"\n[execution]\npoll_interval = 2\ndrain_timeout = \"1m\"\n",

@@ -972,6 +972,24 @@ pub struct ExecutionConfig {
     /// How long after a process exits its remaining output is awaited before the rest of its
     /// tree is ended. Default `500ms`.
     pub drain_timeout: Span,
+    /// What happens to the processes a host started when the host itself dies without ending
+    /// them (killed, crashed): `kill` (the default) ends their process groups with SIGKILL,
+    /// `term` sends SIGTERM, which a program may handle or ignore, and `leave` leaves them
+    /// running. Unix only: a job object ends a Windows tree whenever its owner is gone.
+    pub host_death: HostDeath,
+}
+
+/// `[execution] host_death`: what a host does about its processes when it dies.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HostDeath {
+    /// End each process group with SIGKILL.
+    #[default]
+    Kill,
+    /// Send each process group SIGTERM; a program that handles or ignores it lives on.
+    Term,
+    /// Leave the processes running: a killed host leaves its trees behind.
+    Leave,
 }
 
 impl Default for ExecutionConfig {
@@ -982,6 +1000,7 @@ impl Default for ExecutionConfig {
             chunk_size: 16 * 1024,
             poll_interval: Span(Duration::from_millis(20)),
             drain_timeout: Span(Duration::from_millis(500)),
+            host_death: HostDeath::default(),
         }
     }
 }
@@ -1006,6 +1025,9 @@ pub struct ShellConfig {
     /// How long the host waits for a session's output reader to finish after the program's tree
     /// has been ended, before it reports the exit regardless. Default `2s`.
     pub kill_wait: Span,
+    /// What happens to a session's program tree when the host itself dies without ending it, as
+    /// `[execution] host_death` does for processes. Default `kill`.
+    pub host_death: HostDeath,
 }
 
 impl Default for ShellConfig {
@@ -1017,6 +1039,7 @@ impl Default for ShellConfig {
             poll_interval: Span(Duration::from_millis(20)),
             drain_quiet: Span(Duration::from_millis(200)),
             kill_wait: Span(Duration::from_secs(2)),
+            host_death: HostDeath::default(),
         }
     }
 }

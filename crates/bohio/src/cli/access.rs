@@ -355,6 +355,7 @@ foreach ($rule in $acl.GetAccessRules($true, $true, $sid)) {
             cwd: None,
             env,
             stdin: false,
+            on_host_death: crate::config::HostDeath::default(),
         })
         .map_err(|error| format!("PowerShell could not be started: {error}"))?;
         let crate::platform::Spawned {
