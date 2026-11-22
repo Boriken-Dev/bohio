@@ -25,13 +25,17 @@ required-features = ["cli"]
 doc = false
 
 [features]
-default = ["cli", "zstd"]
+default = ["cli", "zstd", "gui"]
 # Zstandard through the C library, for the compression of reads, writes and exec streams (it compiles C with `cc`). Without it `zstd` is not offered, and `lz4` and `deflate` remain.
 zstd = ["bohio-transfer/zstd", "bohio-client/zstd"]
 # zstd worker threads: `[compression] workers` above 0.
 zstdmt = ["zstd", "bohio-transfer/zstdmt"]
 # The `bohio` command: arguments, output and the diagnostics subscriber. An embedding host takes the library alone.
-cli = ["dep:clap", "dep:tracing-subscriber", "dep:serde_json", "dep:crossterm", "dep:windows-service"]
+cli = ["dep:clap", "dep:tracing-subscriber", "dep:serde_json", "dep:crossterm", "dep:windows-service", "notify"]
+# Desktop access (`bohio-gui/1`): snapshot encoding (PNG, JPEG, lossless WebP) and resizing. Without it a host has the engine and no image format, so a snapshot is `unsupported`.
+gui = ["dep:image", "dep:image-webp"]
+# The desktop notification of the GUI's presence notice (`DesktopNotifier`); without it a node logs the notice.
+notify = ["dep:notify-rust"]
 
 [dependencies]
 bohio-proto.workspace = true
@@ -60,6 +64,10 @@ clap = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 crossterm = { workspace = true, optional = true }
+image = { workspace = true, optional = true }
+image-webp = { workspace = true, optional = true }
+notify-rust = { workspace = true, optional = true }
+xxhash-rust.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 rustix.workspace = true
@@ -74,6 +82,15 @@ tempfile.workspace = true
 rcgen.workspace = true
 time.workspace = true
 sha2.workspace = true
+image = { workspace = true, features = ["webp"] }
+
+[[test]]
+name = "gui"
+required-features = ["gui"]
+
+[[test]]
+name = "gui_presence"
+required-features = ["gui"]
 
 [[test]]
 name = "cli"

@@ -34,7 +34,7 @@ use crate::local::{ANOTHER_ACCOUNT, Server, Via};
 use crate::node::Endpoint;
 
 /// What a person is told when the host will not do what was asked.
-fn explain(error: &Error) -> String {
+pub(super) fn explain(error: &Error) -> String {
     match error {
         Error::Remote(body) => format!("the host refused: {}", body.message),
         Error::Transport(coqui_transport::Failure::Permission) => {
@@ -177,6 +177,7 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
             let (found, _) = source(&args.config, environment)?;
             connect_command(&*link, connect, &found.config().forward.client())
         }
+        RemoteAction::Gui(gui) => super::gui::run(&*link, gui),
         RemoteAction::Forward(forward) => {
             let (found, _) = source(&args.config, environment)?;
             forward_command(&*link, forward, &found.config().forward.client())
@@ -613,7 +614,7 @@ fn shell_command(link: &dyn Open, args: &RemoteShellArgs) -> Result<ExitCode, St
 
 /// The node's local control endpoint for the configuration `config` names: the one set, else the default of
 /// this machine's key.
-fn control_endpoint(
+pub(super) fn control_endpoint(
     config: &super::ConfigOption,
     environment: &Environment,
 ) -> Result<(Endpoint, bohio_client::link::Settings, Server), String> {
@@ -629,7 +630,7 @@ fn control_endpoint(
 
 /// What a client of the control endpoint says when it cannot use it: why another account's endpoint is refused,
 /// else that no node answers.
-fn unreachable(error: &bohio_client::Error) -> String {
+pub(super) fn unreachable(error: &bohio_client::Error) -> String {
     match error {
         bohio_client::Error::Link(text) if text == ANOTHER_ACCOUNT => format!(
             "{text}: another account bound the name first; stop it, then start `bohio serve` again"

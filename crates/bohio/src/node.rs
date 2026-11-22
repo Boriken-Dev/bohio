@@ -37,6 +37,7 @@ use coqui_transport::Channel;
 
 use crate::config::ConfigError;
 pub use crate::config::{DialConfig, NodeConfig};
+use crate::gui::{self, Desktop, GuiState, Notifier, Presence};
 use crate::limit::{Counted, Hold, Slots};
 use crate::link::{Bridge, NodePeers, PROTOCOLS, admission, grant_of, offered};
 pub use crate::link::{
@@ -114,6 +115,7 @@ struct Shared {
     forwards: Slots,
     forwards_per_peer: Counted<String>,
     events: Arc<EventCell>,
+    gui: Arc<GuiState>,
 }
 
 impl Shared {
@@ -123,6 +125,7 @@ impl Shared {
         host: PeerId,
         path: OsString,
         events: &Arc<EventCell>,
+        gui: &Arc<GuiState>,
     ) -> Arc<Self> {
         if let Some(dir) = &config.compression.prepare_dir {
             crate::fs::sweep_prepared(dir, config.compression.prepare_ttl.0);
@@ -141,6 +144,7 @@ impl Shared {
             forwards: Slots::new(config.forward.max_connections),
             forwards_per_peer: Counted::new(config.forward.max_connections_per_peer),
             events: Arc::clone(events),
+            gui: Arc::clone(gui),
             config: config.clone(),
         })
     }
@@ -341,6 +345,7 @@ pub struct Node {
     grants: Arc<dyn Grants>,
     keys: Arc<dyn Keys>,
     events: Arc<EventCell>,
+    gui: Arc<GuiState>,
     proof: Proof,
     identity: Identity,
     registry: Arc<Registry>,
@@ -433,6 +438,7 @@ impl Node {
                 false
             })
         };
+        let gui = GuiState::new(&config.gui);
         let proof = Proof::builder(identity.clone())
             .initiators(asked)
             .build()
@@ -440,7 +446,8 @@ impl Node {
         Ok(Self {
             identity,
             registry: Arc::default(),
-            shared: Shared::new(&config, &grants, host, OsString::new(), &events),
+            shared: Shared::new(&config, &grants, host, OsString::new(), &events, &gui),
+            gui,
             peers: NodePeers::new(Arc::clone(&keys), Arc::clone(&grants)),
             grants,
             keys,
@@ -474,8 +481,36 @@ impl Node {
             self.host,
             path,
             &self.events,
+            &self.gui,
         );
         self
+    }
+
+    /// The desktop this node serves over `bohio-gui/1` (needs `[gui] enabled` and a peer holding `gui.view` or
+    /// `gui.input`). A platform backend and an application's own are the same thing: a [`Desktop`].
+    #[must_use]
+    pub fn with_desktop(self, desktop: Arc<dyn Desktop>) -> Self {
+        self.gui.set_desktop(desktop);
+        self
+    }
+
+    /// Replaces what tells the person at the screen, and asks them: the node's own [`gui::LocalPresence`] otherwise.
+    #[must_use]
+    pub fn with_presence(self, presence: Arc<dyn Presence>) -> Self {
+        self.gui.set_presence(presence);
+        self
+    }
+
+    /// Where the node's own presence shows its notices; they are logged until this says otherwise.
+    #[must_use]
+    pub fn with_notifier(self, notifier: Arc<dyn Notifier>) -> Self {
+        self.gui.set_notifier(notifier);
+        self
+    }
+
+    /// The desktop approvals the node waits on, which `bohio-gui-approve/1` of the local endpoint lists and decides.
+    pub fn gui_approvals(&self) -> Arc<gui::Approvals> {
+        self.gui.approvals()
     }
 
     /// Lets this node pair peers on its own listeners, accepting a joiner's key in `store` (the trust store `respond`
@@ -1034,6 +1069,34 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
     {
         let _ = stream.grant(shared.settings.bulk_window - shared.settings.window);
     }
+    if accepted.protocol == protocol::GUI {
+        let Ok(peer) = accepted.peer.parse::<PeerId>() else {
+            return stream.close_with(CloseReason::Refused, "that is not a peer id");
+        };
+        let now = || {
+            grant_of(shared.grants.as_ref(), &accepted.peer).map_err(|_| {
+                ErrorBody::new(ErrorCode::Internal, "the host cannot read its peer grants")
+            })
+        };
+        let context = gui::Context {
+            grant: &grant,
+            current: Some(control::Current(&now)),
+            config: &shared.config.gui,
+            state: &shared.gui,
+            peer,
+            events: shared.events.as_ref(),
+        };
+        thread::scope(|scope| {
+            let relay = relay(scope, stream, &shared.settings);
+            let channel: Arc<dyn Channel> = relay.clone();
+            match gui::serve(channel, &accepted.metadata, &context) {
+                Ok(ended) => tracing::debug!(snapshots = ended.snapshots, "gui ended"),
+                Err(error) => tracing::info!(code = ?error.code, "gui refused"),
+            }
+            relay.close();
+        });
+        return;
+    }
     // A forward carries a connection's bytes on the stream itself, with no relay in between.
     if matches!(
         accepted.protocol.as_str(),
@@ -1131,10 +1194,12 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
                         ErrorBody::new(ErrorCode::Internal, "the host cannot read its peer grants")
                     })
                 };
+                let probe = |grant: &Grant| shared.gui.info(&config.gui, grant);
                 let context = control::Context {
                     filesystem: files,
                     info: &shared.info,
                     current: Some(control::Current(&now)),
+                    gui: Some(control::GuiProbe(&probe)),
                 };
                 let answered = control::serve(&channel, &context);
                 tracing::debug!(answered, "control ended");

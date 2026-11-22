@@ -88,6 +88,12 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 globset = { version = "0.4", default-features = false }
 # Unguessable names for prepared files.
 getrandom = "0.4"
+# Screen snapshots: resizing, and the PNG and JPEG encoders (and decoders, for the tests that check what was sent). No other format, no threads.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# Lossless WebP for snapshots; the crate encodes lossless only.
+image-webp = "0.2"
+# The desktop notification that tells a person someone is viewing or controlling the screen (zbus on Linux, toasts on Windows, the system's on macOS).
+notify-rust = { version = "4.19", default-features = false, features = ["z"] }
 # Tests: scratch directories that remove themselves.
 tempfile = "3"
 bohio-proto = { path = "crates/bohio-proto" }

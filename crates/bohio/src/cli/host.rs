@@ -64,7 +64,10 @@ fn node(found: &Found, watch: Vec<PathBuf>, environment: &Environment) -> Result
     .map_err(|error| error.to_string())?
     .with_pairing(data.store().map_err(|error| error.to_string())?)
     .map_err(|error| error.to_string())?;
-    Ok(node.with_path(environment.path.clone().unwrap_or_default()))
+    let node = node.with_path(environment.path.clone().unwrap_or_default());
+    #[cfg(feature = "notify")]
+    let node = node.with_notifier(Arc::new(crate::gui::DesktopNotifier::new()));
+    Ok(node)
 }
 
 /// `bohio serve`.
@@ -378,7 +381,7 @@ fn peer_approve(args: &ApproveArgs, environment: &Environment) -> Result<(), Str
         }
         permissions.push(Permission::from_name(name).ok_or_else(|| {
             format!(
-                "`{name}` is not a permission: info, fs.read, fs.write, exec, shell, admin, forward.connect"
+                "`{name}` is not a permission: info, fs.read, fs.write, exec, shell, admin, forward.connect, gui.view, gui.input, gui.clipboard"
             )
         })?);
     }

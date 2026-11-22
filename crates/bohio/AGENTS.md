@@ -6,7 +6,9 @@ with the source at <https://github.com/Boriken-Dev/bohio>.
 
 | Feature | Adds | Needed for | Default |
 | --- | --- | --- | --- |
-| `cli` | module `cli`, the `bohio` binary; `clap`, `tracing-subscriber`, `serde_json`, `crossterm` | the command | on |
+| `cli` | module `cli`, the `bohio` binary; `clap`, `tracing-subscriber`, `serde_json`, `crossterm`, and `notify` | the command | on |
+| `gui` | snapshot encoding (`image`: PNG, JPEG; `image-webp`: lossless WebP); without it a snapshot is `unsupported` | `bohio-gui/1` | on |
+| `notify` | `gui::DesktopNotifier` (`notify-rust`) | the desktop notice of the presence indicator | on with `cli` |
 
 MSRV Rust 1.89. A library-only build (`default-features = false`) depends on `bohio-proto`, `bohio-client` (the link and its relay),
 `coqui-transport`, `coqui-link` (with `sealed`), `coqui-peer`, `coqui-transport-pipe` and `coqui-transport-web` (each a git revision; one copy of each builds), `serde`, `toml`,
@@ -14,7 +16,7 @@ MSRV Rust 1.89. A library-only build (`default-features = false`) depends on `bo
 `win32job` (Windows). Version `0.0.0-alpha.0`, not published.
 
 Imports: the root holds `Config`, `ConfigError`, `Environment`, `Grant`, `Peers`, `Permission`. Public modules:
-`config`, `control`, `exec`, `forward`, `fs`, `info`, `limit`, `link`, `listen`, `node`, `peer`, `policy`, `shell`, `cli` (feature `cli`). No `unsafe` code
+`config`, `control`, `exec`, `forward`, `fs`, `gui`, `info`, `limit`, `link`, `listen`, `node`, `peer`, `policy`, `shell`, `cli` (feature `cli`). No `unsafe` code
 (`#![forbid(unsafe_code)]`). The library prints nothing, reads no environment variable and installs no logger; it starts threads only inside
 `exec::serve`, `shell::serve`, the transfer and control engines, `node::Node` (a thread per connection, per stream and per relay) and
 `pair::Armed` waits and the pairing a node answers.
@@ -26,7 +28,7 @@ pub struct Environment { pub windows: bool, pub local_app_data: Option<PathBuf>,
     pub path: Option<OsString> }                                  // Default; the binary fills it from the process (cli::capture_environment)
 impl Environment { pub fn default_data_dir(&self) -> PathBuf; }
 
-pub struct Config { pub service: ServiceConfig, pub listen: Vec<ListenConfig>, pub link: LinkConfig, pub filesystem: FilesystemConfig, pub hash: HashConfig,
+pub struct Config { pub service: ServiceConfig, pub listen: Vec<ListenConfig>, pub link: LinkConfig, pub filesystem: FilesystemConfig, pub hash: HashConfig, pub gui: GuiConfig,
                     pub execution: ExecutionConfig, pub shell: ShellConfig, pub forward: ForwardConfig, pub pairing: PairingConfig, pub control: ControlConfig, pub peer: Peers }     // Default; unknown keys refused; `peer` is `[peer.<id>]`
 pub struct NodeConfig { pub name: String, pub link: LinkConfig, pub filesystem: FilesystemConfig, pub hash: HashConfig,
                         pub execution: ExecutionConfig, pub shell: ShellConfig, pub forward: ForwardConfig, pub pairing: PairingConfig }   // Default, Deserialize, unknown keys refused: what a Node runs on, read by an app from any section of its own settings
@@ -143,7 +145,7 @@ checks the system file when it exists, as `serve` checks every layer.
 ## Peer grants (`bohio::policy`)
 
 ```rust
-#[non_exhaustive] pub enum Permission { Info, FsRead, FsWrite, Exec, Shell, Admin, ForwardConnect }   // Ord; names "info","fs.read","fs.write","exec","shell","admin","forward.connect"
+#[non_exhaustive] pub enum Permission { Info, FsRead, FsWrite, Exec, Shell, Admin, ForwardConnect, GuiView, GuiInput, GuiClipboard }   // Ord; names "info","fs.read","fs.write","exec","shell","admin","forward.connect","gui.view","gui.input","gui.clipboard"
 impl Permission { pub const fn name(self) -> &'static str; }
 pub struct Grant;                                                // Default = nothing
 impl Grant { pub fn none() -> Self; pub fn allowing(permissions) -> Self; pub fn with_fs_roots(self, roots) -> Self; pub fn with_programs(self, programs) -> Self; pub fn restricts_programs(&self) -> bool;
@@ -331,6 +333,34 @@ failure) and again at every `[link] recheck`, when a lost grant resets the conne
 Unix socket or Windows pipe by `bohio_client::forward::ipc::pump`, both on the link stream itself with no relay. `NodeEvent::Forwarded { peer, kind: ForwardKind::Connect, target, outcome: ForwardOutcome::{Connected, Failed(code)} }`
 tells the owner each connect (the target's text, never a byte). `limit::Counted<K>` is the per-key bound (`take(key) -> Option<Hold>`).
 
+## Desktop (`bohio::gui`, `[gui]`)
+
+```rust
+pub trait Desktop: Send + Sync {                                   // what a backend, or an application, implements; the engine calls it one call at a time
+    fn state(&self) -> Result<DesktopState, GuiError>;             // DesktopState { user, active, locked: Option<bool>, displays }
+    fn capture(&self, display: &DisplayId, region: Option<Rect>) -> Result<Frame, GuiError>;   // Frame: RGB, 3 bytes a pixel, rows from the top (`Frame::new(w, h, rgb)`)
+    fn input(&self, events: &[InputEvent]) -> Result<u32, GuiError>;   // how many it took; a `wait` never arrives (the engine pauses)
+    fn cursor(&self) -> Option<(DisplayId, i32, i32)>;
+    fn clipboard_text(&self) -> Result<String, GuiError>;   fn set_clipboard_text(&self, text: &str) -> Result<(), GuiError>;
+    fn capabilities(&self) -> Capabilities { .. }                  // provided: Capabilities { backend, input, clipboard, lock_detection }
+}
+pub struct GuiError { pub code: ErrorCode, pub message: String }   // unavailable(..), unsupported(..), not_found(..), io(..), bad_request(..); the message reaches the peer: no typed text, no clipboard
+impl Node { pub fn with_desktop(self, Arc<dyn Desktop>) -> Self; pub fn with_presence(self, Arc<dyn Presence>) -> Self; pub fn with_notifier(self, Arc<dyn Notifier>) -> Self; pub fn gui_approvals(&self) -> Arc<Approvals>; }
+pub trait Presence: Send + Sync { fn engaged(&self, &Engagement); fn released(&self, &Engagement); fn approve(&self, &ApprovalRequest<'_>) -> Approval; }   // default: LocalPresence over a Notifier and Approvals
+pub struct Engagement { pub peer: PeerId, pub session: String, pub controlling: bool }
+pub trait Notifier: Send + Sync { fn notify(&self, notice: &Notice, decide: Option<Decide>); }   // LogNotifier (default), DesktopNotifier (feature `notify`); Notice { title, body }
+pub fn serve(channel: Arc<dyn Channel>, metadata: &[u8], context: &Context<'_>) -> Result<Ended, ErrorBody>;   // `bohio-gui/1`; Ended: counts only
+pub fn covers(grant: &Grant, metadata: &[u8]) -> bool;
+```
+
+`[gui]` (`GuiConfig`; every key in `examples/bohio.cfg`): `enabled` `false`, `backend` `"auto"`, `max_streams` `4`, `max_streams_per_peer` `2`, `snapshots_per_minute` `120`, `max_snapshot_pixels` `33554432`,
+`formats` `["png","jpeg","webp"]`, `jpeg_quality` `80`, `max_input_rate` `1000`, `max_batch_events` `256`, `max_text` `4096`, `max_batch_wait` `5s`, `input_when_locked` `false`, `settle_interval` `100ms`,
+`settle_quiet` `300ms`, `settle_timeout` `5s`, `settle_ignore_tiles` `1`, `clipboard_max_bytes` `1048576`, `chunk_size` `65536`, `poll_interval` `50ms`, `state_interval` `500ms`, `idle_timeout` `30m`,
+`indicator` `"notify"`, `indicator_linger` `30s`, `approval` `"none"`, `approval_timeout` `60s`, `approval_ttl` `15m`; a zero count or time is an error naming the key. A node serves a stream only with `enabled`, a desktop
+(`with_desktop`; no platform backend ships yet, so `bohio serve` has none) and a peer whose grant holds what the request wants (`gui.clipboard` only beside `gui.view` or `gui.input`). Each request is decided by the grant
+as it is then; the stream ends `revoked` at the next `[link] recheck`. An engagement (one peer, one session) starts at its first stream and ends `indicator_linger` after its last, so many short streams make one notice.
+`bohio-gui-approve/1` is served on the local endpoint only (`LocalLink::gui_pending`, `gui_decide`; `bohio gui pending|allow|deny`).
+
 ## Capabilities (`bohio::info`)
 
 ```rust
@@ -380,13 +410,13 @@ pub struct MemoryKeys;                                             // new(), acc
 pub struct MemoryGrants;                                           // new(), set(PeerId, Grant), remove(&PeerId) -> bool; FromIterator<(PeerId, Grant)>; no entry: Grant::none()
 
 pub trait NodeEvents: Send + Sync { fn event(&self, event: &NodeEvent); }   // runs on the link's thread: return quickly
-#[non_exhaustive] pub enum NodeEvent { LinkUp { peer, side }, LinkDown { peer }, Opened { peer, protocol }, Refused { peer, protocol }, Revoked { peer, protocol }, Dialing { peer, endpoint }, DialFailed { peer, endpoint, reason, retry_in }, Paired { peer }, PairingRefused { source, attempts, reason }, Stranger { peer, source }, Forwarded { peer, kind, target, outcome } }   // an id, a protocol, an address: never a key, PIN or request
+#[non_exhaustive] pub enum NodeEvent { LinkUp { peer, side }, LinkDown { peer }, Opened { peer, protocol }, Refused { peer, protocol }, Revoked { peer, protocol }, Dialing { peer, endpoint }, DialFailed { peer, endpoint, reason, retry_in }, Paired { peer }, PairingRefused { source, attempts, reason }, Stranger { peer, source }, Forwarded { peer, kind, target, outcome }, Gui { peer, session, change: GuiChange } }   // an id, a protocol, an address: never a key, PIN or request
 pub struct LogEvents;                                              // the default: log lines
 
 pub mod pair;   // Armed { pin(), lifetime(), wait(up_to) -> Option<PairEnd>, withdraw() } (Debug hides the PIN); #[non_exhaustive] PairEnd { Paired(PeerId), Expired, UsedUp, Replaced, Withdrawn, Failed(String) }
 // PairingConfig { timeout, max_attempts, attempt_delay, attempt_delay_max, pin_length } is `[pairing]`; one PIN at a time, in memory; a connection's first message `coqui_link::pairing::MARKER` makes it a pairing (else a proof)
 
-pub const PROTOCOLS: [(&str, &[Permission]); 8];                   // each protocol with the permissions of which a peer needs one to open it (`bohio-connect/1` and `tcp/1` need `forward.connect`)
+pub const PROTOCOLS: [(&str, &[Permission]); 9];                   // each protocol with the permissions of which a peer needs one to open it (`bohio-connect/1` and `tcp/1` need `forward.connect`, `bohio-gui/1` `gui.view` or `gui.input`)
 pub struct NodePeers;                                              // coqui_link::peers::PeerStore over `Keys` and `Grants`: NodePeers::new(keys, grants); an accepted key may open each protocol its grant holds a permission for, which is what `link/1` offers it
 pub fn offered(grant: &Grant) -> Vec<&'static str>;                       // the PROTOCOLS tokens `grant` holds a permission for: what a node offers that peer
 pub fn admission(grants: Arc<dyn Grants>, protocol: &'static str) -> coqui_link::link::Admission;   // asks `grants` afresh each call
@@ -526,6 +556,8 @@ a person or a script reads is printed to standard output and flushed; diagnostic
 | `remote <endpoint> read <path>` | writes the host's file to standard output |
 | `remote <endpoint> connect [--check] <target>` | the host connects to `HOST:PORT` (an IPv6 address in brackets), `unix:PATH` or `pipe:NAME` and the connection's bytes meet standard input and output (netcat; `ssh -o ProxyCommand="bohio remote ENDPOINT connect %h:%p"`): the end of standard input is a half-close and the reply is still read; exit 0 when the host's direction ended in order, 1 with the reason (`the host did not connect (Refused): ...`, or that the peer holds no `forward.connect` rule for the target). `--check` connects, prints `connected ADDRESS` and exits |
 | `remote <endpoint> forward -L SPEC...` | listens here and has the host connect for each connection: `[BIND:]PORT=TARGET`, `unix:PATH=TARGET` or `pipe:NAME=TARGET` (`BIND` an address, default `127.0.0.1`; another is printed as `non-default: bind ADDRESS`; port 0 picks one; a socket or pipe is for this user, `0o600`); prints `local BOUND -> TARGET` per entry, then runs until the link ends (exit 1) or the process is interrupted; the `[forward]` bounds come from the client's own file. Works over `--via` |
+| `remote <endpoint> gui info\|snapshot\|click\|move\|scroll\|type\|key\|clipboard` | the host's desktop (`gui.view`, `gui.input`, `gui.clipboard`): `snapshot [--display ID] [--region X,Y,W,H] [--format F] [--quality N] [--max-size WxH] [--settle] -o FILE\|-`, `click X Y [--button B] [--count N]`, `move X Y`, `scroll DX DY [--at X,Y]`, `type TEXT\|-`, `key COMBO...`, `clipboard [--set TEXT\|-]` |
+| `gui pending\|allow ID\|deny ID` | answers a peer waiting for the person at the desk, through the running node's local endpoint (`[gui] approval = "local"`) |
 | `remote <endpoint> shell [--kind sh\|bash\|zsh\|cmd\|powershell\|pwsh] [--cwd D]` | an interactive shell; the local terminal is put in raw mode when standard input is one, and its size is followed |
 
 `serve`, `serve --stdio` and the service check every layer file and its directory, and the data directory (Windows only). On Unix a layer or its directory owned by an

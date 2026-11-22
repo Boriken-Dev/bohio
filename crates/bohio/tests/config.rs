@@ -368,6 +368,10 @@ fn every_permission_name_round_trips_through_the_file() {
         Permission::Exec,
         Permission::Shell,
         Permission::Admin,
+        Permission::ForwardConnect,
+        Permission::GuiView,
+        Permission::GuiInput,
+        Permission::GuiClipboard,
     ] {
         let text = format!("[peer.\"{id}\"]\nallow = [\"{}\"]\n", permission.name());
         assert!(parse(&text).unwrap().peer.grant_for(&id).allows(permission));

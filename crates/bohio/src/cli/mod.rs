@@ -5,6 +5,7 @@
 
 mod access;
 mod commands;
+mod gui;
 mod host;
 mod remote;
 pub mod service;
@@ -64,6 +65,8 @@ pub enum Command {
     Remote(RemoteArgs),
     /// List the links this node's running `bohio serve` holds, whichever side made each.
     Links(LinksArgs),
+    /// Answer a peer's request to look at or drive this screen, on the running node (`pending`, `allow`, `deny`).
+    Gui(gui::GuiArgs),
 }
 
 /// `bohio config`.
@@ -338,6 +341,8 @@ pub enum RemoteAction {
     Connect(RemoteConnectArgs),
     /// Listen on this machine and have the host connect to a target for each connection (`ssh -L`).
     Forward(RemoteForwardArgs),
+    /// Look at and drive the host's desktop: snapshots, clicks, keys, text and the clipboard.
+    Gui(gui::RemoteGuiArgs),
 }
 
 /// `bohio remote ... info`.

@@ -5,8 +5,10 @@
 //! file and the user's as one configuration, each merged over the one before; a peer is a `[peer.<id>]`
 //! table in it.
 
+mod gui;
 mod layers;
 
+pub use gui::{ApprovalMode, BACKENDS, GuiConfig, Indicator};
 pub use layers::{Layered, Layers};
 
 use std::ffi::OsString;
@@ -135,6 +137,8 @@ pub struct Config {
     pub shell: ShellConfig,
     /// `[forward]`.
     pub forward: ForwardConfig,
+    /// `[gui]`.
+    pub gui: GuiConfig,
     /// `[pairing]`: the PIN a node arms.
     pub pairing: PairingConfig,
     /// `[control]`: the node's local endpoint.
@@ -1079,6 +1083,8 @@ pub struct NodeConfig {
     pub shell: ShellConfig,
     /// `[forward]`.
     pub forward: ForwardConfig,
+    /// `[gui]`.
+    pub gui: GuiConfig,
     /// `[pairing]`.
     pub pairing: PairingConfig,
 }
@@ -1094,6 +1100,7 @@ impl Default for NodeConfig {
             execution: ExecutionConfig::default(),
             shell: ShellConfig::default(),
             forward: ForwardConfig::default(),
+            gui: GuiConfig::default(),
             pairing: PairingConfig::default(),
         }
     }
@@ -1291,6 +1298,15 @@ impl NodeConfig {
                 "must be at least forward.idle_min",
             ));
         }
+        if let Err((key, message)) = self.gui.validate() {
+            return Err(invalid(key, message));
+        }
+        if link.max_message <= self.gui.chunk_size {
+            return Err(invalid(
+                "link.max_message",
+                "must be more than gui.chunk_size",
+            ));
+        }
         if link.max_message <= forward.chunk_size {
             return Err(invalid(
                 "link.max_message",
@@ -1341,6 +1357,7 @@ impl Config {
             execution: self.execution.clone(),
             shell: self.shell.clone(),
             forward: self.forward.clone(),
+            gui: self.gui.clone(),
             pairing: self.pairing.clone(),
         }
     }

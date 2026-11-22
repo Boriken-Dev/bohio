@@ -24,7 +24,7 @@ use bohio_proto::protocol;
 use crate::policy::{Grant, Permission};
 
 /// The protocols a host serves, each with the permissions of which a peer needs at least one to open it.
-pub const PROTOCOLS: [(&str, &[Permission]); 8] = [
+pub const PROTOCOLS: [(&str, &[Permission]); 9] = [
     (
         protocol::CONTROL,
         &[Permission::Info, Permission::FsRead, Permission::FsWrite],
@@ -36,6 +36,7 @@ pub const PROTOCOLS: [(&str, &[Permission]); 8] = [
     (protocol::HASH, &[Permission::FsRead]),
     (protocol::CONNECT, &[Permission::ForwardConnect]),
     (protocol::TCP, &[Permission::ForwardConnect]),
+    (protocol::GUI, &[Permission::GuiView, Permission::GuiInput]),
 ];
 
 /// Which keys a node accepts.
@@ -295,6 +296,51 @@ pub enum NodeEvent {
         /// How it went.
         outcome: ForwardOutcome,
     },
+    /// Something happened on a peer's view of the desktop. Counts and ids only: never pixels, typed text, key names or
+    /// clipboard content.
+    Gui {
+        /// The peer.
+        peer: PeerId,
+        /// The desktop session.
+        session: String,
+        /// What happened.
+        change: GuiChange,
+    },
+}
+
+/// What a [`NodeEvent::Gui`] tells of.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum GuiChange {
+    /// A stream opened, with what the peer was granted of what it asked.
+    Started {
+        /// What the stream may do.
+        granted: Vec<bohio_proto::gui::Want>,
+    },
+    /// A stream ended, with what it did.
+    Ended {
+        /// Snapshots sent.
+        snapshots: u64,
+        /// Screen updates sent.
+        frames: u64,
+        /// Input events applied.
+        input_events: u64,
+        /// Clipboard reads.
+        clipboard_reads: u64,
+        /// Clipboard writes.
+        clipboard_writes: u64,
+        /// Why it ended.
+        reason: String,
+    },
+    /// The clipboard was read.
+    ClipboardRead,
+    /// The clipboard was written.
+    ClipboardWritten,
+    /// An open was refused.
+    Refused {
+        /// Why, with no request content in it.
+        reason: String,
+    },
 }
 
 /// What kind of forward a [`NodeEvent::Forwarded`] tells of.
@@ -363,6 +409,11 @@ impl NodeEvents for LogEvents {
                 target,
                 outcome,
             } => tracing::info!(%peer, ?kind, %target, ?outcome, "forward"),
+            NodeEvent::Gui {
+                peer,
+                session,
+                change,
+            } => tracing::info!(%peer, %session, ?change, "gui"),
         }
     }
 }
@@ -503,6 +554,7 @@ pub fn covers(grant: &Grant, protocol: &str, metadata: &[u8]) -> bool {
         protocol::WRITE => crate::fs::covers_write(grant, metadata),
         protocol::CONNECT => crate::forward::covers(grant, metadata),
         protocol::TCP => crate::forward::covers_tcp(grant, metadata),
+        protocol::GUI => crate::gui::covers(grant, metadata),
         _ => true,
     }
 }

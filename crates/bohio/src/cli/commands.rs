@@ -6,7 +6,8 @@ use std::process::ExitCode;
 use bohio_proto::info::Info;
 
 use super::{
-    CheckArgs, Command, ConfigAction, ConfigOption, Format, InfoArgs, access, host, remote, service,
+    CheckArgs, Command, ConfigAction, ConfigOption, Format, InfoArgs, access, gui, host, remote,
+    service,
 };
 use crate::config::{Config, Environment, Layered, Layers};
 use crate::info;
@@ -29,6 +30,7 @@ pub(super) fn run(command: &Command, environment: &Environment) -> Result<ExitCo
         Command::Service(args) => done(service::run(args, environment)),
         Command::Remote(args) => remote::run(args, environment),
         Command::Links(args) => done(remote::links(args, environment)),
+        Command::Gui(args) => done(gui::approve(args, environment)),
     }
 }
 
@@ -265,6 +267,18 @@ pub(super) fn print_info(info: &Info) {
         );
     }
     println!("prepared reads: {}", enabled(transfer.prepared));
+    let gui = &info.gui;
+    if gui.enabled {
+        println!(
+            "gui: {}",
+            gui.backend
+                .as_deref()
+                .or(gui.reason.as_deref())
+                .unwrap_or("unavailable")
+        );
+    } else {
+        println!("gui: disabled");
+    }
 }
 
 fn limit(value: Option<u64>) -> String {

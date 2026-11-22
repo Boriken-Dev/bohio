@@ -9,6 +9,7 @@ mod error;
 pub mod exec;
 pub mod forward;
 pub mod fs;
+pub mod gui;
 pub mod hash;
 pub mod link;
 pub mod relay;

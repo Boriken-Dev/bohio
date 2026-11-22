@@ -6,6 +6,7 @@ pub mod control;
 pub mod exec;
 pub mod forward;
 pub mod fs;
+pub mod gui;
 pub mod info;
 pub mod limit;
 pub mod link;

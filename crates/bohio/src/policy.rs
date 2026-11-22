@@ -48,11 +48,22 @@ pub enum Permission {
     /// named pipes, from the host's own network position.
     #[serde(rename = "forward.connect")]
     ForwardConnect,
+    /// See the desktop: snapshots, and the wait for the screen to settle. Everything on the screen is readable: passwords
+    /// shown in clear, one-time codes, messages.
+    #[serde(rename = "gui.view")]
+    GuiView,
+    /// Type and click on the desktop, with the authority of the person who owns it: more than `exec`'s program list or
+    /// `fs_roots` give.
+    #[serde(rename = "gui.input")]
+    GuiInput,
+    /// Read and write the desktop's clipboard text, beside `gui.view` or `gui.input`. A password manager's copy is in it.
+    #[serde(rename = "gui.clipboard")]
+    GuiClipboard,
 }
 
 impl Permission {
     /// Every permission, in order.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 10] = [
         Self::Info,
         Self::FsRead,
         Self::FsWrite,
@@ -60,6 +71,9 @@ impl Permission {
         Self::Shell,
         Self::Admin,
         Self::ForwardConnect,
+        Self::GuiView,
+        Self::GuiInput,
+        Self::GuiClipboard,
     ];
 
     /// The permission named `name` as `bohio.cfg` writes it.
@@ -79,6 +93,9 @@ impl Permission {
             Self::Shell => "shell",
             Self::Admin => "admin",
             Self::ForwardConnect => "forward.connect",
+            Self::GuiView => "gui.view",
+            Self::GuiInput => "gui.input",
+            Self::GuiClipboard => "gui.clipboard",
         }
     }
 }

@@ -23,6 +23,18 @@ pub struct Context<'a> {
     /// Where the peer's grant is read before each call, so a grant narrowed while the stream is open
     /// applies to its next call; `filesystem.grant` is used when absent.
     pub current: Option<Current<'a>>,
+    /// What `info` says of the desktop to a peer with a given grant, asked at every `info`; `info.gui` is used when absent.
+    pub gui: Option<GuiProbe<'a>>,
+}
+
+/// The desktop part of `info` for a grant, as it is now.
+#[derive(Clone, Copy)]
+pub struct GuiProbe<'a>(pub &'a dyn Fn(&Grant) -> bohio_proto::gui::GuiInfo);
+
+impl core::fmt::Debug for GuiProbe<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("GuiProbe")
+    }
 }
 
 /// The peer's grant as it is now, or the error to answer a call with when it cannot be read.
@@ -80,19 +92,20 @@ pub fn serve(channel: &Arc<dyn Channel>, context: &Context<'_>) -> u64 {
 
 fn answer(context: &Context<'_>, call: &Call, limit: usize) -> Result<Reply, ErrorBody> {
     let Some(current) = context.current else {
-        return answer_with(context.filesystem, context.info, call, limit);
+        return answer_with(context.filesystem, context.info, context.gui, call, limit);
     };
     let grant = (current.0)()?;
     let filesystem = fs::Context {
         grant: &grant,
         ..context.filesystem
     };
-    answer_with(filesystem, context.info, call, limit)
+    answer_with(filesystem, context.info, context.gui, call, limit)
 }
 
 fn answer_with(
     filesystem: fs::Context<'_>,
     info: &Info,
+    gui: Option<GuiProbe<'_>>,
     call: &Call,
     limit: usize,
 ) -> Result<Reply, ErrorBody> {
@@ -116,7 +129,11 @@ fn answer_with(
                     "this peer does not hold info",
                 ));
             }
-            Ok(Reply::Info(Box::new(info.clone())))
+            let mut info = info.clone();
+            if let Some(probe) = gui {
+                info.gui = (probe.0)(filesystem.grant);
+            }
+            Ok(Reply::Info(Box::new(info)))
         }
         other => fs::call(&filesystem, other, limit),
     }

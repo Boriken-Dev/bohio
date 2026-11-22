@@ -21,8 +21,10 @@ use bohio_client::dial::Endpoint;
 use bohio_client::link::Settings;
 use bohio_client::relay::relay;
 use bohio_client::{Error, Open};
+use bohio_proto::gui::{ApproveInput, ApproveOutput, PendingRequest};
 use bohio_proto::local::{
-    LINKS, LinkEntry, LinksReply, LinksRequest, PAIR, PairReply, PairRequest, VIA, ViaRequest,
+    GUI_APPROVE, LINKS, LinkEntry, LinksReply, LinksRequest, PAIR, PairReply, PairRequest, VIA,
+    ViaRequest,
 };
 use coqui_link::link::{Accepted, Host, Options, Services, serve_with};
 use coqui_link::mux::{CloseReason, LinkStream, Mux, Side, StreamEnd, StreamLife};
@@ -122,6 +124,7 @@ struct Context {
     registry: Arc<Registry>,
     grants: Arc<dyn Grants>,
     settings: Settings,
+    approvals: Arc<crate::gui::Approvals>,
 }
 
 /// The one local peer: it may open both local protocols.
@@ -133,7 +136,8 @@ impl PeerStore for Everything {
             PeerRecord::new(peer)
                 .granting(VIA)
                 .granting(LINKS)
-                .granting(PAIR),
+                .granting(PAIR)
+                .granting(GUI_APPROVE),
         ))
     }
 
@@ -177,6 +181,7 @@ impl Node {
             registry,
             grants,
             settings,
+            approvals: self.gui_approvals(),
         });
         channel.set_max_message(settings.max_frame.saturating_add(5));
         let _ = channel.set_pending(settings.read_ahead);
@@ -196,6 +201,15 @@ impl Node {
                     let context = Arc::clone(&context);
                     move |stream: &dyn LinkStream, accepted: &Accepted| {
                         links(&context, stream, accepted);
+                    }
+                }),
+            )
+            .with(
+                GUI_APPROVE,
+                Box::new({
+                    let context = Arc::clone(&context);
+                    move |stream: &dyn LinkStream, accepted: &Accepted| {
+                        approve(&context, stream, accepted);
                     }
                 }),
             )
@@ -370,6 +384,48 @@ fn links(context: &Context, stream: &dyn LinkStream, accepted: &Accepted) {
     let _ = stream.send(&reply);
     let _ = stream.finish();
     let _ = stream.receive(Some(context.settings.send_limit));
+}
+
+/// `bohio-gui-approve/1`: the desktop requests waiting for the owner, sent at once and again whenever they change, and the
+/// answer to each decision the client sends.
+fn approve(context: &Context, stream: &dyn LinkStream, _accepted: &Accepted) {
+    let poll = context.settings.poll_interval.max(Duration::from_millis(1));
+    let send = |output: &ApproveOutput| {
+        output
+            .encode()
+            .ok()
+            .is_some_and(|message| stream.send(&message).is_ok())
+    };
+    let mut version = context.approvals.version();
+    if !send(&ApproveOutput::Pending {
+        requests: context.approvals.list(),
+    }) {
+        return;
+    }
+    loop {
+        match stream.receive(Some(poll)) {
+            Ok(Some(message)) => {
+                let Ok(ApproveInput::Decide { id, allow }) = ApproveInput::decode(&message) else {
+                    return stream.close_with(CloseReason::Refused, "that is not a decision");
+                };
+                let found = context.approvals.decide(id, allow);
+                if !send(&ApproveOutput::Decided { id, found }) {
+                    return;
+                }
+            }
+            Err(Failure::Timeout) => {}
+            Ok(None) | Err(_) => return,
+        }
+        let now = context.approvals.version();
+        if now != version {
+            version = now;
+            if !send(&ApproveOutput::Pending {
+                requests: context.approvals.list(),
+            }) {
+                return;
+            }
+        }
+    }
 }
 
 /// `bohio-pair/1`: arms a PIN, says it, then says how it ended. A client that goes away withdraws the PIN.
@@ -556,6 +612,53 @@ impl LocalLink {
             PairReply::Ended { reason } => Err(Error::Link(reason)),
             PairReply::Paired { .. } => {
                 Err(Error::Link("the node paired before it armed".to_owned()))
+            }
+        }
+    }
+
+    /// The desktop requests the node waits for the owner to allow or deny.
+    ///
+    /// # Errors
+    ///
+    /// The stream's failure, or [`Error::Link`] for a reply that is not one.
+    pub fn gui_pending(&self) -> Result<Vec<PendingRequest>, Error> {
+        let stream = self.opener.open(GUI_APPROVE, &[])?;
+        let message = stream
+            .receive(Some(self.settings.proof_timeout))?
+            .ok_or(Error::Closed)?;
+        stream.close();
+        match ApproveOutput::decode(&message).map_err(|error| Error::Link(error.to_string()))? {
+            ApproveOutput::Pending { requests } => Ok(requests),
+            ApproveOutput::Decided { .. } => Err(Error::Link(
+                "the node answered a decision nobody sent".to_owned(),
+            )),
+        }
+    }
+
+    /// Allows or denies request `id`; `false` when it is not waiting any more (it timed out, or was decided).
+    ///
+    /// # Errors
+    ///
+    /// As [`LocalLink::gui_pending`].
+    pub fn gui_decide(&self, id: u64, allow: bool) -> Result<bool, Error> {
+        let stream = self.opener.open(GUI_APPROVE, &[])?;
+        let wait = self.settings.proof_timeout;
+        stream.receive(Some(wait))?.ok_or(Error::Closed)?;
+        let message = ApproveInput::Decide { id, allow }
+            .encode()
+            .map_err(|error| Error::Link(error.to_string()))?;
+        stream.send_timeout(&message, Some(wait))?;
+        loop {
+            let reply = stream.receive(Some(wait))?.ok_or(Error::Closed)?;
+            match ApproveOutput::decode(&reply).map_err(|error| Error::Link(error.to_string()))? {
+                ApproveOutput::Decided {
+                    id: answered,
+                    found,
+                } if answered == id => {
+                    stream.close();
+                    return Ok(found);
+                }
+                _ => {}
             }
         }
     }

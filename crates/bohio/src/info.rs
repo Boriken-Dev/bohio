@@ -92,6 +92,11 @@ pub fn collect(config: &NodeConfig, path: &OsStr) -> Info {
             },
             listen: Vec::new(),
         },
+        gui: bohio_proto::gui::GuiInfo {
+            enabled: config.gui.enabled,
+            formats: config.gui.formats.clone(),
+            ..Default::default()
+        },
     }
 }
 

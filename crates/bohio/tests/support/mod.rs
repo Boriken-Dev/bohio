@@ -265,6 +265,7 @@ impl Open for Link {
                 let result = match name.as_str() {
                     protocol::CONTROL => {
                         let context = control::Context {
+                            gui: None,
                             filesystem: context,
                             info: &info,
                             current: None,

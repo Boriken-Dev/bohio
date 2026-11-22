@@ -8,7 +8,7 @@ No Cargo features. MSRV Rust 1.89. Depends on `bohio-proto`, `coqui-transport` (
 `coqui-transport-serial` (each a git revision, one copy), `url`, `socket2`, `serde_json`, `tracing` and `thiserror`. Version
 `0.0.0-alpha.0`, not published.
 
-Imports: the root holds `Open` and `Error`. Public modules: `connect`, `control`, `dial`, `exec`, `forward`, `fs`, `link`, `relay`, `shell`. No `unsafe` code
+Imports: the root holds `Open` and `Error`. Public modules: `connect`, `control`, `dial`, `exec`, `forward`, `fs`, `gui`, `link`, `relay`, `shell`. No `unsafe` code
 (`#![forbid(unsafe_code)]`). The operations start no threads and do no I/O of their own: every call blocks on the channel it was given
 (only `connect` and `relay` start threads, and `connect` opens a socket).
 
@@ -118,6 +118,22 @@ impl Control {
 
 `call` returns the host's `{code, message}` as `Error::Remote`, `Error::Timeout` when no answer came in time (a late answer is
 skipped by the next call), `Error::Closed` when the host closed the stream.
+
+## Gui (`bohio_client::gui`)
+
+```rust
+pub struct Gui;                                                    // Debug; Drop closes. Every method takes &self; calls take turns
+impl Gui {
+    pub fn open(link: &dyn Open, request: &GuiRequest) -> Result<Gui, Error>;   // waits up to OPEN_WAIT (120 s: the host may wait for its owner); Error::Remote for a refusal the engine made, Transport(Permission) when the link's grant does not cover the request
+    pub fn granted(&self) -> &[Want];   pub fn session(&self) -> &str;   pub fn state(&self) -> State;   // state: the last the host said (`state` frames are kept as they pass)
+    pub fn snapshot(&self, options: &SnapshotOptions, timeout: Option<Duration>) -> Result<Image, Error>;   // Image { header: ImageHeader, bytes }
+    pub fn input(&self, events: &[InputEvent], timeout: Option<Duration>) -> Result<u32, Error>;            // applied; `denied`, `busy`, `unavailable`, `bad_request` are Error::Remote and the stream goes on
+    pub fn settle(&self, request: &Settle, timeout: Option<Duration>) -> Result<SettleResult, Error>;
+    pub fn clipboard(&self, timeout: Option<Duration>) -> Result<String, Error>;   pub fn set_clipboard(&self, text: &str, timeout: Option<Duration>) -> Result<(), Error>;
+    pub fn close(&self);
+}
+pub struct SnapshotOptions { display, region, format, quality, max_width, max_height, cursor, settle }   // Default
+```
 
 ## Hash (`bohio_client::hash`)
 
