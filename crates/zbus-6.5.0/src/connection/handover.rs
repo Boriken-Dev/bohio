@@ -1,0 +1,6607 @@
+//! Handing a connection over, for a connection in this process or in another one to go on from
+//! where it stopped, as a service or a bus that restarts does.
+//!
+//! This is behind the `handover` cargo feature, which is off by default, and only on Linux.
+//!
+//! # How it goes
+//!
+//! 1. Use the connection as any other, for as long as it is yours: serve interfaces on it, make
+//!    calls through it, or take its messages off the stream that [`Builder::build_message_stream`]
+//!    builds along with it, which has had every one of them, from the first.
+//! 2. Once it is time to hand the connection over, stop taking messages off that stream, if you
+//!    take them yourself, and finish what you do with those that you took. The replies and the
+//!    other messages that you send go out until the hand-over commits. If the methods of your
+//!    interfaces leave work to be done once they returned, such as a signal that is to follow a
+//!    reply, have it follow the response (`ResponseDispatchNotifier::followed_by`): the hand-over
+//!    then waits for it, as for the methods.
+//! 3. Call [`Connection::hand_over`], or [`MessageStream::hand_over`] on that stream, which hands
+//!    the connection over with what the stream didn't yield. It prepares the hand-over, so that no
+//!    send waits for the peer from then on, as [`Connection::prepare_hand_over`] does, which you
+//!    can call yourself as early as you like for the sends meanwhile not to wait either. It has the
+//!    object server take no more method calls, and waits for those that it has under way to be
+//!    answered. Then it stops the connection reading, wherever the peer is in sending a message,
+//!    and takes the connection apart, without waiting for the peer to take what was sent to it. The
+//!    [`Handover`] that it gives holds the socket, the messages that the connection read and that
+//!    are yet to be dealt with ([Who gets each message](#who-gets-each-message) tells which), what
+//!    the connection read off the socket after them and made no message of yet, what the connection
+//!    took to send and didn't write, the file descriptors that came with all of those, and what a
+//!    connection that goes on needs to know of this one.
+//! 4. To pass the hand-over to another process, or to keep it while this one restarts, such as in
+//!    the file descriptor store of systemd, copy its record into memory with [`Save::save`], and
+//!    pass the record on, with the file descriptors that [`Save::fds`] gives. Then drop the
+//!    hand-over. [`Restore::restore`] gives it back from them, in the process that they go to.
+//! 5. Build the connection that goes on, in this process or in another one that the hand-over is
+//!    passed to, with [`Builder::take_over`], with the interfaces (`Builder::serve_at`) and the
+//!    stream (`build_message_stream`) that the one that was handed over had. It hands each message
+//!    of the hand-over to those that are yet to get it first, then goes on reading the socket where
+//!    the other one stopped, and it can be handed over in turn.
+//! 6. Call [`Connection::flush`] on it, bounded by a timeout, as the flush waits for the peer to
+//!    read: the connection writes what the other one left unwritten ahead of its own sends, and
+//!    nothing else does, while the peer may be waiting for the rest of a message
+//!    ([`Connection::unwritten_len`] tells whether there is any).
+//!
+//! Nothing that the peer sent is lost on the way, nor anything that was sent to it, and nothing is
+//! written to the socket from the commit of the hand-over until the connection that goes on sends,
+//! so the peer sees nothing but a pause. A peer that doesn't read holds no hand-over up, unless a
+//! [`Connection::flush`] to it is under way, or the connection runs over a write half of your own
+//! that can't resume writes ([`Connection::hand_over`] tells more): what it doesn't take goes on
+//! with the hand-over. A peer that closed its end of the connection, such as one that sent a last
+//! message and went, is no exception, even once a send to it failed: what it sent is handed over,
+//! and the connection that goes on comes to its end. For that, the connection keeps what it read of
+//! such a peer and made no message of, the file descriptors that came with it included, until it is
+//! handed over or dropped.
+//!
+//! A hand-over does wait for the method calls that the object server has under way, though, for
+//! as long as their methods take, so bound it by a timeout. A hand-over that fails, or that is
+//! given up on, such as by that timeout, loses none of the messages of the stream that it goes
+//! through: the stream keeps those that the hand-over took off it, and yields them before the
+//! rest. The connection has stopped reading by then, for good, and its object server takes no more
+//! method calls. Hand it over again, the same way, or take the messages off the stream, deal with
+//! them, and close the connection, which leaves the method calls that the object server didn't
+//! take unanswered. [`Connection::hand_over`] and [`MessageStream::hand_over`] tell more.
+//!
+//! # Who gets each message
+//!
+//! Each message that the connection read is dealt with in this process, or handed over for the
+//! connection that goes on to deal with it, and never both. Which it is depends on who takes the
+//! message:
+//!
+//! * The stream that the connection is handed over through, if it is handed over through one, has
+//!   had every message of the connection. Those that it yielded are yours, and those that it is yet
+//!   to yield are handed over, for the stream that `build_message_stream` builds along with the
+//!   connection that goes on.
+//! * The object server answers the method calls that it took, and the others are handed over, for
+//!   the object server that the connection that goes on is built with, which answers them through
+//!   the interfaces that `Builder::serve_at` adds. It takes the method calls one after the other,
+//!   waits for the method of a call before it takes the next one where the interface says so
+//!   (`spawn = false`), and takes none from when the hand-over starts, so there can be calls that
+//!   it didn't take.
+//! * Everything else gets each message that the connection read until it stopped, and none of those
+//!   is handed over for it. The streams for match rules, as the streams of proxies are, yield what
+//!   was queued for them, and then end, and so do the streams without one of a connection that is
+//!   handed over through none ([`Connection::hand_over`]). A hand-over through a stream fails where
+//!   the connection has another stream without a match rule, a clone of that stream included, which
+//!   has the same messages ([`MessageStream::hand_over`] tells more). A method call that waits for
+//!   its reply gets it if it came in by then, and fails otherwise, so wait for the calls that
+//!   matter before you hand the connection over.
+//!
+//! A message that the stream and the object server both take, as each method call is, is handed
+//! over for the one that is yet to get it only, or for both. So a method call that the object
+//! server answered, and that the stream didn't yield, is one that the stream of the connection
+//! that goes on yields, and that its object server doesn't answer again.
+//!
+//! # What a bus keeps
+//!
+//! A bus has the connection that goes on as the one that was handed over: under its unique name,
+//! which [`Builder::take_over`] gives the connection, with the well-known names that it owns or
+//! queues for, and with the match rules that it added. The connection that goes on knows nothing
+//! of those names and rules, so:
+//!
+//! * Give it the well-known names again (`Builder::name`): it requests them, and the bus answers
+//!   that it has them already.
+//! * Its match rules add up with each hand-over. The rules that the connection that was handed over
+//!   added stay with the bus, and the connection that goes on adds its own, as any connection does:
+//!   those of its streams for match rules, those of its proxies, and two for each of its well-known
+//!   names. A message that several rules ask for still comes once, but a bus only lets a connection
+//!   have so many rules, 512 by default on the system bus of the reference implementation, which a
+//!   connection that is handed over time and again comes to. [`AsyncDrop::async_drop`] removes the
+//!   rule of a stream before it returns, so do that before the hand-over. Nothing removes the rules
+//!   of the proxies and of the names.
+//!
+//! # Example
+//!
+//! ```
+//! use std::os::fd::OwnedFd;
+//!
+//! use zbus::{
+//!     Connection, Error, block_on,
+//!     connection::{Builder, Handover},
+//! };
+//! use zoter::{Restore, Save};
+//!
+//! # fn main() -> zbus::Result<()> {
+//! block_on(async {
+//!     let mut stream = Builder::session().build_message_stream().await?;
+//!     let name = Connection::from(&stream).unique_name().cloned();
+//!     // Take the messages of the connection off `stream` and deal with them, until it is time to
+//!     // hand the connection over.
+//!
+//!     let handover = stream.hand_over().await?;
+//!     let mut record = vec![0; handover.saved_len().ok_or(Error::Unsupported)?];
+//!     handover.save(&mut record)?;
+//!     // Pass `record` and the descriptors on, such as to the file descriptor store of systemd,
+//!     // which keeps descriptors of its own, as an item that `zoter::Store::hand_over` stores, and
+//!     // get them back, such as in the next instance of the service. Duplicates stand for that
+//!     // here.
+//!     let fds = handover
+//!         .fds()
+//!         .iter()
+//!         .map(|fd| fd.try_clone_to_owned())
+//!         .collect::<std::io::Result<Vec<OwnedFd>>>()?;
+//!     drop(handover);
+//!     let handover = Handover::restore(&record, fds)?;
+//!
+//!     // The connection goes on, with the name that the bus knows it by. It writes what the one
+//!     // that was handed over took to send and didn't write, which the bus may be waiting for.
+//!     let stream = Builder::take_over(handover).build_message_stream().await?;
+//!     let conn = Connection::from(&stream);
+//!     assert_eq!(conn.unique_name().cloned(), name);
+//!     conn.flush().await?;
+//!     conn.call_method(
+//!         Some("org.freedesktop.DBus"),
+//!         "/org/freedesktop/DBus",
+//!         Some("org.freedesktop.DBus.Peer"),
+//!         "Ping",
+//!         &(),
+//!     )
+//!     .await?;
+//!
+//!     Ok(())
+//! })
+//! # }
+//! ```
+//!
+//! [`AsyncDrop::async_drop`]: crate::AsyncDrop::async_drop
+//! [`Builder::build_message_stream`]: super::Builder::build_message_stream
+//! [`Builder::take_over`]: super::Builder::take_over
+//! [`Connection::hand_over`]: crate::Connection::hand_over
+//! [`Connection::flush`]: crate::Connection::flush
+//! [`Connection::prepare_hand_over`]: crate::Connection::prepare_hand_over
+//! [`MessageStream::hand_over`]: crate::MessageStream::hand_over
+//! [`Save::save`]: zoter::Save::save
+//! [`Save::fds`]: zoter::Save::fds
+//! [`Restore::restore`]: zoter::Restore::restore
+
+use std::{
+    collections::VecDeque,
+    fmt,
+    future::{Future, poll_fn},
+    io, mem,
+    net::TcpStream,
+    num::NonZeroU32,
+    ops::BitOr,
+    os::{
+        fd::{AsFd, BorrowedFd, OwnedFd},
+        unix::net::UnixStream,
+    },
+    pin::{Pin, pin},
+    str,
+    sync::{
+        Mutex, OnceLock, PoisonError,
+        atomic::{AtomicBool, Ordering},
+    },
+    task::Poll,
+};
+#[cfg(feature = "p2p")]
+use std::{sync::Arc, task};
+
+use futures_core::Stream;
+use zruntime::{
+    Event, EventListener,
+    broadcast::{Receiver, TryRecvError},
+};
+
+use super::{ConnectionInner, socket_write::Unwritten};
+#[cfg(feature = "p2p")]
+use crate::connection::socket::{Channel, Writes};
+use crate::{
+    Connection, Error, Guid, MatchRule, Message, OwnedGuid, Result,
+    connection::socket::{BoxedSplit, ReadHalf, Split, read_primary_header},
+    message::{self, header::MIN_MESSAGE_SIZE},
+    names::OwnedUniqueName,
+    runtime::IoSource,
+    wire::{
+        Endian, LE,
+        serialized::{Context, Data},
+    },
+};
+
+/// A connection taken apart by [`Connection::hand_over`] or [`MessageStream::hand_over`], or put
+/// back together by [`Restore::restore`], for [`Builder::take_over`] to build a connection that
+/// goes on from where it stopped, in this process or in another one.
+///
+/// The other process can be the next instance of a service that restarts, or a helper process.
+/// Nothing in a hand-over changes once it exists.
+///
+/// This type is only available on Linux, with the `handover` feature.
+///
+/// # Passing it to another process
+///
+/// [`Save::save`] copies the record of the hand-over into memory that you give, anywhere, such
+/// as the place of the connection in a file that is mapped into memory, and [`Save::fds`]
+/// gives the file descriptors that go with the record, that of the socket first. Pass the record on
+/// as bytes, and the descriptors as descriptors, such as over a unix socket or through the file
+/// descriptor store of systemd, and [`Restore::restore`] gives the hand-over back from them,
+/// wherever they go.
+///
+/// The hand-over of a connection over a socket of your own, such as a `Channel`, or over the pipes
+/// of a `unixexec:` address, has no record: its halves can only go on in this process, which
+/// [`Save::saved_len`] tells. With the `p2p` feature, the hand-overs of the connections at the two
+/// ends of one `Channel` go to another process together, as a `ChannelHandover`, which has one.
+///
+/// What the hand-over holds of what the peer sent is the messages that the stream that the
+/// connection was handed over through didn't yield, and the method calls that its object server
+/// didn't take, each with whether the other of the two had it, then what was read after them and
+/// made no message of yet: whole messages, and the start of one that the peer was in the middle of
+/// sending, which can be as long as the longest message that D-Bus allows (128 MiB).
+///
+/// What the hand-over holds of what was sent to the peer is the rest of a message that a send was
+/// cut off in the middle of, and the messages that sends kept once the hand-over was prepared
+/// ([`Connection::prepare_hand_over`]), which nothing bounds but how much the peer didn't take.
+///
+/// [`Builder::take_over`]: super::Builder::take_over
+/// [`Connection::hand_over`]: crate::Connection::hand_over
+/// [`Connection::prepare_hand_over`]: crate::Connection::prepare_hand_over
+/// [`MessageStream::hand_over`]: crate::MessageStream::hand_over
+/// [`Save::save`]: zoter::Save::save
+/// [`Save::saved_len`]: zoter::Save::saved_len
+/// [`Save::fds`]: zoter::Save::fds
+/// [`Restore::restore`]: zoter::Restore::restore
+#[must_use = "dropping a `Handover` closes the descriptors that it holds, which disconnects the \
+              peer unless they were passed on"]
+pub struct Handover {
+    /// The socket of the connection.
+    pub(super) socket: HandoverSocket,
+    /// The GUID of the server end of the connection.
+    pub(super) server_guid: OwnedGuid,
+    /// The unique name of the connection, if it has one: for a connection to a bus, the one that
+    /// the bus knows it by, which the connection that goes on keeps, rather than say `Hello`
+    /// again.
+    pub(super) unique_name: Option<OwnedUniqueName>,
+    /// Whether the two ends of the connection agreed to pass file descriptors.
+    pub(super) unix_fd_passing: bool,
+    /// Whether the connection is a peer-to-peer one rather than one to a bus.
+    #[cfg(feature = "p2p")]
+    pub(super) p2p: bool,
+    /// The serial number that the process was to give the next message that it builds, which the
+    /// connection that goes on gives its messages from on, so that a reply to a method call made
+    /// before the hand-over isn't taken for the reply to one made after it.
+    pub(super) next_serial: NonZeroU32,
+    /// The messages that the connection read and that its stream, its object server or both are
+    /// yet to get, oldest first, with their file descriptors, each with those of the two that had
+    /// it.
+    pub(super) queued: Vec<(Message, Had)>,
+    /// What was read off the socket after them and made no message of yet, from the start of a
+    /// message: the tail of what was read.
+    pub(super) tail: Vec<u8>,
+    /// The file descriptors that came in with the tail and that no message took, in the order that
+    /// they came in.
+    pub(super) tail_fds: Vec<OwnedFd>,
+    /// What the connection took to send and didn't write.
+    pub(super) unwritten: Unwritten,
+}
+
+impl Handover {
+    /// How many bytes were read off the socket and are handed over: those of the messages that the
+    /// stream of the connection didn't yield, or that its object server didn't take, then whatever
+    /// was read after them.
+    pub fn unread_len(&self) -> usize {
+        len_of(self.queued()) + self.tail.len() + len_of(self.held())
+    }
+
+    /// How many bytes the connection took to send and didn't write: the rest of a message that a
+    /// write ended in the middle of, if any, then whole messages, which the connection that takes
+    /// over writes ahead of its own sends.
+    pub fn unwritten_len(&self) -> usize {
+        self.unwritten.len()
+    }
+}
+
+/// The record of the hand-over, and its file descriptors, to pass on to another process, such as
+/// through the file descriptor store of systemd, which [`Handover`]'s [`zoter::Restore`] impl
+/// gives the hand-over back from.
+impl zoter::Save for Handover {
+    /// The exact length of the record that [`Save::save`] writes, a multiple of 8, or `None`
+    /// for the hand-over of a connection over a socket of your own, which only goes on in this
+    /// process: a [`Socket`] of yours, a `Channel`, or the pipes of a `unixexec:` address.
+    ///
+    /// [`Socket`]: super::Socket
+    /// [`Save::save`]: zoter::Save::save
+    fn saved_len(&self) -> Option<usize> {
+        match self.socket {
+            HandoverSocket::Socket(_) => None,
+            _ => Some(self.layout().len),
+        }
+    }
+
+    /// Copy the record of the hand-over into `dest`, which can be any memory, at any address, such
+    /// as the place of the connection in a file that is mapped into memory.
+    ///
+    /// `dest` is to be exactly [`Save::saved_len`] bytes long. Each of its bytes is written
+    /// once, the padding of the record included, and the bytes that the hand-over holds are copied
+    /// once, from where it holds them. The hand-over is left as it was, so a caller that gives up
+    /// on passing it on can still go on with it in this process, once it took back the descriptors
+    /// that it passed on.
+    ///
+    /// A later version of zbus restores the records that this one saves, as a service that
+    /// restarts after an update needs. A version of zbus that can't read a record, as an earlier
+    /// one may not, refuses it.
+    ///
+    /// # Errors
+    ///
+    /// Nothing is written on an error. The error is one of:
+    ///
+    /// * [`zoter::Error::Io`] of kind [`io::ErrorKind::Unsupported`] if the connection runs over a
+    ///   socket of your own. Such a hand-over can't be saved, and its `saved_len` is `None`.
+    /// * [`zoter::Error::Io`] of kind [`io::ErrorKind::InvalidInput`] if `dest` is not `saved_len`
+    ///   bytes long, or if the hand-over has more messages or file descriptors than a record can
+    ///   count (4 billion).
+    ///
+    /// [`Save::saved_len`]: zoter::Save::saved_len
+    fn save(&self, dest: &mut [u8]) -> zoter::Result<()> {
+        let kind = match &self.socket {
+            HandoverSocket::UnixStream(_) => UNIX_STREAM,
+            HandoverSocket::TcpStream(_) => TCP_STREAM,
+            #[cfg(feature = "p2p")]
+            HandoverSocket::Unpaired(_) => CHANNEL,
+            HandoverSocket::Socket(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "the hand-over of a connection over a socket of your own has no record",
+                )
+                .into());
+            }
+        };
+        let layout = self.layout();
+        if dest.len() != layout.len {
+            return Err(invalid_input("the memory is not as long as the record").into());
+        }
+        let kept = &self.unwritten.kept;
+        let held = self.held();
+        let counts = self.counts()?;
+        let name = self.unique_name.as_ref().map_or("", |name| name.as_str());
+        let mut flags = 0;
+        if self.unix_fd_passing {
+            flags |= FD_PASSING;
+        }
+        #[cfg(feature = "p2p")]
+        if self.p2p {
+            flags |= P2P;
+        }
+        // The GUID in the form of 32 hex digits that D-Bus gives it, whatever form it was given in.
+        let mut guid = [0; 32];
+        uuid::Uuid::try_parse(self.server_guid.as_str())
+            .expect("a GUID is a UUID")
+            .as_simple()
+            .encode_lower(&mut guid);
+        let rest = self.unwritten.rest();
+
+        // Nothing fails from here on.
+        let mut record = Record(dest);
+        record.put(MAGIC);
+        record.put(&MAJOR.to_le_bytes());
+        // 104 bytes and those of a unique name, which has 255 at most.
+        record.put(&(layout.header_len as u16).to_le_bytes());
+        // A record that tells who had none of its messages needs no feature of its format, so
+        // every version of zbus restores it.
+        record.put(&layout.features.to_le_bytes());
+        record.put(&(layout.len as u64).to_le_bytes());
+        record.put(&[kind, flags, name.len() as u8, 0]);
+        record.put(&self.next_serial.get().to_le_bytes());
+        for count in counts {
+            record.put(&(count as u32).to_le_bytes());
+        }
+        for len in [layout.inbound, layout.outbound, rest.len()] {
+            record.put(&(len as u64).to_le_bytes());
+        }
+        record.put(&guid);
+        record.put(name.as_bytes());
+        record.zeros(layout.header_len - NAME - name.len());
+        for msg in self.queued().chain(kept) {
+            record.put(&(msg.data().len() as u32).to_le_bytes());
+            record.put(&(msg.data().fds().len() as u32).to_le_bytes());
+        }
+        if layout.features & HAD != 0 {
+            for (_, had) in &self.queued {
+                record.put(&[had.0]);
+            }
+            record.zeros(layout.had_len - self.queued.len());
+        }
+        for msg in self.queued() {
+            record.put(msg.data());
+        }
+        record.put(&self.tail);
+        for msg in held {
+            record.put(msg.data());
+        }
+        record.zeros(layout.inbound.next_multiple_of(8) - layout.inbound);
+        record.put(rest);
+        for msg in kept {
+            record.put(msg.data());
+        }
+        record.zeros(layout.outbound.next_multiple_of(8) - layout.outbound);
+        debug_assert!(
+            record.0.is_empty(),
+            "the record is longer than what was copied into it"
+        );
+
+        Ok(())
+    }
+
+    /// The file descriptors to pass on with the record, in the order that [`Restore::restore`]
+    /// takes them: that of the socket, then those of the messages that the connection read and
+    /// hands over, in their order, those that came in with what was read after them, and those of
+    /// the messages that the connection took to send and didn't write, in their order. There are
+    /// none for a hand-over whose [`Save::saved_len`] is `None`.
+    ///
+    /// They are borrowed, so none is duplicated, and this can't fail on the limit of descriptors
+    /// that a process may have open. That of the socket is close-on-exec in a hand-over that
+    /// [`Connection::hand_over`](crate::Connection::hand_over) gave. The others, and all
+    /// those of a restored hand-over, are as they came in, and zbus receives descriptors without
+    /// close-on-exec.
+    ///
+    /// [`Save::saved_len`]: zoter::Save::saved_len
+    /// [`Restore::restore`]: zoter::Restore::restore
+    fn fds(&self) -> Vec<BorrowedFd<'_>> {
+        let socket = match &self.socket {
+            HandoverSocket::UnixStream(socket) => Some(socket.as_fd()),
+            HandoverSocket::TcpStream(socket) => Some(socket.as_fd()),
+            #[cfg(feature = "p2p")]
+            HandoverSocket::Unpaired(_) => None,
+            HandoverSocket::Socket(_) => return Vec::new(),
+        };
+        let kept = &self.unwritten.kept;
+
+        socket
+            .into_iter()
+            .chain(fds_of(self.queued()))
+            .chain(self.tail_fds.iter().map(AsFd::as_fd))
+            .chain(fds_of(self.held()))
+            .chain(fds_of(kept))
+            .collect()
+    }
+}
+
+/// The hand-over that [`zoter::Save`] saved, out of its record and its file descriptors.
+impl zoter::Restore for Handover {
+    type Error = Error;
+
+    /// The hand-over that [`Save::save`] copied into `record`, given exactly those bytes, at
+    /// any address, with the file descriptors that [`Save::fds`] gave, in their order, in this
+    /// process or in another one.
+    ///
+    /// This copies what it needs out of `record` before it returns.
+    ///
+    /// # Errors
+    ///
+    /// * [`Error::Unsupported`] for a record that this version of zbus can't read, as one that a
+    ///   later version saved may be, and for the record of a peer-to-peer connection in a build
+    ///   without the `p2p` feature.
+    /// * An I/O error ([`Error::InputOutput`]) of kind `InvalidData` for anything else that is not
+    ///   a record that `save` copied, and for a number of file descriptors other than the one that
+    ///   it counts.
+    ///
+    /// The file descriptors are closed on an error.
+    ///
+    /// [`Save::save`]: zoter::Save::save
+    /// [`Save::fds`]: zoter::Save::fds
+    fn restore(record: &[u8], fds: Vec<OwnedFd>) -> Result<Handover> {
+        Handover::from_record(
+            record,
+            fds,
+            #[cfg(feature = "p2p")]
+            false,
+        )
+    }
+}
+
+/// The hand-overs of the connections at the two ends of one `Channel`, together, as they go to
+/// another process.
+///
+/// A [`Channel`] exists in one process only. So the hand-over of a connection over a channel has
+/// no record ([`Save::saved_len`]), and can only go on in the same process. This type has a
+/// record: it holds the hand-overs of both ends of one channel, and the messages that were on
+/// their way between them.
+///
+/// It is for a program that talks to itself over a channel and restarts under systemd, such as a
+/// bus that serves the D-Bus API as a peer of its own. The program hands over the connections at
+/// both ends, and puts the two hand-overs in a `ChannelHandover`. It passes the record and the
+/// file descriptors ([`Save::fds`]) to its next instance, as it does those of a [`Handover`].
+/// The next instance gets the `ChannelHandover` back with [`Restore::restore`], takes the two
+/// hand-overs out with [`ChannelHandover::into_ends`], and builds a connection from each with
+/// [`Builder::take_over`]. The two connections go on over a new channel, and no message between
+/// them is lost.
+///
+/// This type is only available on Linux, with the `handover` and `p2p` features.
+///
+/// # Example
+///
+/// ```
+/// use std::os::fd::OwnedFd;
+///
+/// use zbus::{
+///     Guid, block_on,
+///     connection::{
+///         Builder,
+///         socket::{Channel, ChannelHandover},
+///     },
+/// };
+/// use zoter::{Restore, Save};
+///
+/// # fn main() -> zbus::Result<()> {
+/// block_on(async {
+///     let guid = Guid::generate();
+///     let (first, second) = Channel::pair();
+///     let first = Builder::authenticated_socket(first, &guid)
+///         .p2p()
+///         .build()
+///         .await?;
+///     let second = Builder::authenticated_socket(second, &guid)
+///         .p2p()
+///         .build()
+///         .await?;
+///     // The two connections talk to each other, until it is time to hand them over.
+///
+///     let channel = ChannelHandover::new(first.hand_over().await?, second.hand_over().await?)?;
+///     let (record, fds) = {
+///         let mut record = vec![0; channel.saved_len().expect("it has a record")];
+///         channel.save(&mut record)?;
+///         // Pass `record` and the descriptors on, such as to the file descriptor store of
+///         // systemd, and get them back, such as in the next instance of the program. Duplicates
+///         // stand for that here.
+///         let fds = channel
+///             .fds()
+///             .iter()
+///             .map(|fd| fd.try_clone_to_owned())
+///             .collect::<std::io::Result<Vec<OwnedFd>>>()?;
+///
+///         (record, fds)
+///     };
+///     let channel = ChannelHandover::restore(&record, fds)?;
+///
+///     // The two connections go on, over a new channel.
+///     let (first, second) = channel.into_ends();
+///     let first = Builder::take_over(first).build().await?;
+///     let second = Builder::take_over(second).build().await?;
+///     first.flush().await?;
+///     second.flush().await?;
+///
+///     Ok(())
+/// })
+/// # }
+/// ```
+///
+/// [`Builder::take_over`]: super::Builder::take_over
+/// [`Channel`]: super::socket::Channel
+/// [`Save::fds`]: zoter::Save::fds
+/// [`Save::saved_len`]: zoter::Save::saved_len
+/// [`Restore::restore`]: zoter::Restore::restore
+#[cfg(feature = "p2p")]
+#[derive(Debug)]
+#[must_use = "dropping a `ChannelHandover` closes the descriptors that it holds"]
+pub struct ChannelHandover {
+    /// The hand-over of the first end, off its channel.
+    first: Handover,
+    /// The hand-over of the second end, off its channel.
+    second: Handover,
+}
+
+#[cfg(feature = "p2p")]
+impl ChannelHandover {
+    /// Put the hand-overs of the connections at the two ends of one [`Channel`] together, for them
+    /// to go to another process.
+    ///
+    /// Each hand-over takes the messages that the channel held for its connection: those that the
+    /// other end sent and that the connection didn't read. The channel itself goes. Nothing can be
+    /// sent over it any more, as both of its ends were handed over.
+    ///
+    /// # Errors
+    ///
+    /// It fails with [`Error::Unsupported`] unless `first` and `second` are the hand-overs of the
+    /// connections at the two ends of one channel, and both are still on it. It drops both then,
+    /// which closes the file descriptors that they hold, as dropping a [`Handover`] does.
+    ///
+    /// [`Channel`]: super::socket::Channel
+    pub fn new(mut first: Handover, mut second: Handover) -> Result<Self> {
+        match (first.channel_pair(), second.channel_pair()) {
+            (Some(first), Some(second)) if Arc::ptr_eq(first, second) => (),
+            _ => return Err(Error::Unsupported),
+        }
+        for handover in [&mut first, &mut second] {
+            handover.take_off_channel();
+        }
+
+        Ok(Self { first, second })
+    }
+
+    /// The hand-overs of the two ends, in the order that they were given in, at the ends of a new
+    /// [`Channel`]. Build the connections that go on over it with [`Builder::take_over`].
+    ///
+    /// The new channel holds the messages that the old one held. Each connection reads those for
+    /// it first.
+    ///
+    /// [`Builder::take_over`]: super::Builder::take_over
+    /// [`Channel`]: super::socket::Channel
+    pub fn into_ends(self) -> (Handover, Handover) {
+        let Self {
+            mut first,
+            mut second,
+        } = self;
+        let (first_end, second_end) = Channel::pair_holding(first.take_held(), second.take_held());
+        first.socket = HandoverSocket::Socket(first_end.into());
+        second.socket = HandoverSocket::Socket(second_end.into());
+
+        (first, second)
+    }
+}
+
+/// The record of the hand-overs of the two ends of a channel, and their file descriptors, to pass
+/// on to another process, which [`ChannelHandover`]'s [`zoter::Restore`] impl gives them back from.
+#[cfg(feature = "p2p")]
+impl zoter::Save for ChannelHandover {
+    /// The exact length of the record that [`Save::save`] writes, a multiple of 8. It is never
+    /// `None`.
+    ///
+    /// [`Save::save`]: zoter::Save::save
+    fn saved_len(&self) -> Option<usize> {
+        Some(CHANNEL_HEADER + self.first.layout().len + self.second.layout().len)
+    }
+
+    /// Copy the record of the two hand-overs into `dest`, which can be any memory, at any address,
+    /// as [`Handover`]'s [`Save::save`] does.
+    ///
+    /// `dest` is to be exactly [`Save::saved_len`] bytes long. The hand-overs are left as they
+    /// were.
+    ///
+    /// # Errors
+    ///
+    /// Nothing is written on an error. The error is [`zoter::Error::Io`] of kind
+    /// [`io::ErrorKind::InvalidInput`] if `dest` is not `saved_len` bytes long, or if a hand-over
+    /// has more messages or file descriptors than a record can count (4 billion).
+    ///
+    /// [`Save::save`]: zoter::Save::save
+    /// [`Save::saved_len`]: zoter::Save::saved_len
+    fn save(&self, dest: &mut [u8]) -> zoter::Result<()> {
+        let (first, second) = (self.first.layout().len, self.second.layout().len);
+        if dest.len() != CHANNEL_HEADER + first + second {
+            return Err(invalid_input("the memory is not as long as the record").into());
+        }
+        // The first count is that of all the file descriptors of a hand-over that is off its
+        // channel, as it has no socket.
+        let [first_fds, ..] = self.first.counts()?;
+        let [second_fds, ..] = self.second.counts()?;
+
+        // Nothing fails from here on: the parts are as long as their records, which count what
+        // they hold.
+        let (header, parts) = dest.split_at_mut(CHANNEL_HEADER);
+        let (first_part, second_part) = parts.split_at_mut(first);
+        self.first.save(first_part)?;
+        self.second.save(second_part)?;
+        let mut header = Record(header);
+        header.put(CHANNEL_MAGIC);
+        header.put(&CHANNEL_VERSION.to_le_bytes());
+        header.zeros(2);
+        for count in [first_fds, second_fds] {
+            header.put(&(count as u32).to_le_bytes());
+        }
+        header.zeros(4);
+        for len in [first, second] {
+            header.put(&(len as u64).to_le_bytes());
+        }
+        debug_assert!(
+            header.0.is_empty(),
+            "the header is longer than what was copied into it"
+        );
+
+        Ok(())
+    }
+
+    /// The file descriptors to pass on with the record, in the order that [`Restore::restore`]
+    /// takes them: those of the first end, then those of the second one, each in the order that
+    /// [`Handover`]'s [`Save::fds`] gives them, with no socket.
+    ///
+    /// They are borrowed, so none is duplicated.
+    ///
+    /// [`Save::fds`]: zoter::Save::fds
+    /// [`Restore::restore`]: zoter::Restore::restore
+    fn fds(&self) -> Vec<BorrowedFd<'_>> {
+        let mut fds = self.first.fds();
+        fds.extend(self.second.fds());
+
+        fds
+    }
+}
+
+/// The hand-overs of the two ends of a channel that [`zoter::Save`] saved, out of their record and
+/// their file descriptors.
+#[cfg(feature = "p2p")]
+impl zoter::Restore for ChannelHandover {
+    type Error = Error;
+
+    /// The hand-overs that [`Save::save`] copied into `record`, given exactly those bytes, at any
+    /// address, with the file descriptors that [`Save::fds`] gave, in their order, in this process
+    /// or in another one.
+    ///
+    /// This copies what it needs out of `record` before it returns.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Handover`]'s [`Restore::restore`], for the record of the two and for that
+    /// of each end:
+    ///
+    /// * [`Error::Unsupported`] for a record that this version of zbus can't read, as one that a
+    ///   later version saved may be.
+    /// * An I/O error ([`Error::InputOutput`]) of kind `InvalidData` for anything else that is not
+    ///   a record that `save` copied, and for a number of file descriptors other than the one that
+    ///   it counts.
+    ///
+    /// The file descriptors are closed on an error.
+    ///
+    /// [`Save::save`]: zoter::Save::save
+    /// [`Save::fds`]: zoter::Save::fds
+    /// [`Restore::restore`]: zoter::Restore::restore
+    fn restore(record: &[u8], mut fds: Vec<OwnedFd>) -> Result<ChannelHandover> {
+        if record.get(..CHANNEL_MAGIC.len()) != Some(CHANNEL_MAGIC) {
+            return Err(malformed());
+        }
+        match u16::from_le_bytes(field(record, 8)?) {
+            CHANNEL_VERSION => (),
+            version if version > CHANNEL_VERSION => return Err(Error::Unsupported),
+            _ => return Err(malformed()),
+        }
+        let count_at = |at| field(record, at).map(|count| u32::from_le_bytes(count) as usize);
+        let (first_fds, second_fds) = (count_at(12)?, count_at(16)?);
+        let (first, second) = (len_at(record, 24)?, len_at(record, 32)?);
+        if field::<2>(record, 10)? != [0; 2] || field::<4>(record, 20)? != [0; 4] {
+            return Err(malformed());
+        }
+        let (first, first_end) = section(record, CHANNEL_HEADER, first)?;
+        let (second, end) = section(record, first_end, second)?;
+        // Counted without adding the two counts, which can overflow on a 32-bit target.
+        if end != record.len() || fds.len().checked_sub(first_fds) != Some(second_fds) {
+            return Err(malformed());
+        }
+        let second_fds = fds.split_off(first_fds);
+
+        Ok(ChannelHandover {
+            first: Handover::from_record(first, fds, true)?,
+            second: Handover::from_record(second, second_fds, true)?,
+        })
+    }
+}
+
+impl Handover {
+    /// The hand-over that `record` holds, with `fds`, as [`zoter::Restore::restore`] documents.
+    ///
+    /// With the `p2p` feature, `end_of_channel` tells whether it is to be that of one end of a
+    /// [`ChannelHandover`], off its channel, which only the record of the two holds, and no
+    /// other. Those are the only hand-overs whose records have no socket.
+    fn from_record(
+        record: &[u8],
+        fds: Vec<OwnedFd>,
+        #[cfg(feature = "p2p")] end_of_channel: bool,
+    ) -> Result<Handover> {
+        if record.get(..MAGIC.len()) != Some(MAGIC) {
+            return Err(malformed());
+        }
+        match u16::from_le_bytes(field(record, 8)?) {
+            MAJOR => (),
+            major if major > MAJOR => return Err(Error::Unsupported),
+            _ => return Err(malformed()),
+        }
+        let features = u32::from_le_bytes(field(record, 12)?);
+        if features & !KNOWN_FEATURES != 0 {
+            return Err(Error::Unsupported);
+        }
+        let [kind, flags, name_len, _] = field(record, 24)?;
+        #[cfg(not(feature = "p2p"))]
+        if flags & P2P != 0 {
+            return Err(Error::Unsupported);
+        }
+        let header_len = usize::from(u16::from_le_bytes(field(record, 10)?));
+        let name_len = usize::from(name_len);
+        // A later minor version of the format adds fields at the end of the header, which this
+        // skips, as it reads the fields that it knows only.
+        if header_len % 8 != 0
+            || header_len < (NAME + name_len).next_multiple_of(8)
+            || len_at(record, 16)? != record.len()
+        {
+            return Err(malformed());
+        }
+        let next_serial = NonZeroU32::new(u32::from_le_bytes(field(record, 28)?));
+        let next_serial = next_serial.ok_or_else(malformed)?;
+        let count_at = |at| field(record, at).map(|count| u32::from_le_bytes(count) as usize);
+        let (fd_count, queued, tail_fds, kept) =
+            (count_at(32)?, count_at(36)?, count_at(40)?, count_at(44)?);
+        let (inbound, outbound) = (len_at(record, 48)?, len_at(record, 56)?);
+        let rest = len_at(record, 64)?;
+        // A record has no socket if, and only if, it says so, and is that of one end of a channel.
+        #[cfg(feature = "p2p")]
+        if (kind == CHANNEL) != (features & UNPAIRED != 0) || (kind == CHANNEL) != end_of_channel {
+            return Err(malformed());
+        }
+        // The socket's descriptor comes first, in a record that has one. Counted without adding
+        // to `fd_count`, which can overflow on a 32-bit target.
+        let socket_fds = usize::from(kind != CHANNEL);
+        if fds.len().checked_sub(socket_fds) != Some(fd_count) {
+            return Err(malformed());
+        }
+        let server_guid = str::from_utf8(bytes(record, 72, 32)?).map_err(|_| malformed())?;
+        let server_guid = Guid::try_from(server_guid).map_err(|_| malformed())?;
+        let unique_name = match bytes(record, NAME, name_len)? {
+            [] => None,
+            name => {
+                let name = str::from_utf8(name).map_err(|_| malformed())?;
+
+                Some(OwnedUniqueName::try_from(name).map_err(|_| malformed())?)
+            }
+        };
+
+        // The table, who had each of the messages that were queued, if the record tells, the
+        // inbound bytes and the outbound ones, each of those but the table padded to a multiple of
+        // 8, up to the end of the record.
+        let table_len = queued
+            .checked_add(kept)
+            .and_then(|entries| entries.checked_mul(8))
+            .ok_or_else(malformed)?;
+        let table = bytes(record, header_len, table_len)?;
+        let table_end = header_len + table_len;
+        let (had, had_end) = match features & HAD {
+            0 => (None, table_end),
+            _ => {
+                let (had, end) = section(record, table_end, queued)?;
+
+                (Some(had), end)
+            }
+        };
+        let (mut inbound, inbound_end) = section(record, had_end, inbound)?;
+        let (outbound, end) = section(record, inbound_end, outbound)?;
+        if end != record.len() {
+            return Err(malformed());
+        }
+        let (rest, mut outbound) = outbound.split_at_checked(rest).ok_or_else(malformed)?;
+        let (queued_table, kept_table) = table.split_at(8 * queued);
+
+        let mut fds = fds.into_iter();
+        let mut socket = || fds.next().expect("the descriptors were counted");
+        let socket = match kind {
+            UNIX_STREAM => HandoverSocket::UnixStream(UnixStream::from(socket())),
+            TCP_STREAM => HandoverSocket::TcpStream(TcpStream::from(socket())),
+            // What the channel held is the end of the tail, which the connection that takes over
+            // reads off it.
+            #[cfg(feature = "p2p")]
+            CHANNEL => HandoverSocket::Unpaired(Vec::new()),
+            _ => return Err(malformed()),
+        };
+        // A record that doesn't tell who had its messages is one whose messages nobody had.
+        let mut had = had.unwrap_or_default().iter().copied();
+        let queued = queued_table
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|entry| {
+                let had = Had::from_record(had.next().unwrap_or(0))?;
+
+                Ok((framed(entry, &mut inbound, &mut fds)?, had))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let tail = inbound.to_vec();
+        let tail_fds: Vec<_> = fds.by_ref().take(tail_fds).collect();
+        let tail_fds_counted = tail_fds.len() == count_at(40)?;
+        let kept = kept_table
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|entry| framed(entry, &mut outbound, &mut fds))
+            .collect::<Result<VecDeque<_>>>()?;
+        // Each message took as many bytes and descriptors as the table gives it, so these are
+        // those that the record counts if none is left over, and none ran short.
+        if !outbound.is_empty() || !tail_fds_counted || fds.next().is_some() {
+            return Err(malformed());
+        }
+        // What is left of a message that a write ended in the middle of goes out as bytes, as
+        // they are.
+        let cut = (!rest.is_empty()).then(|| (Data::new(rest.to_vec(), Context::new(LE, 0)), 0));
+
+        Ok(Handover {
+            socket,
+            server_guid: server_guid.to_owned().into(),
+            unique_name,
+            unix_fd_passing: flags & FD_PASSING != 0,
+            #[cfg(feature = "p2p")]
+            p2p: flags & P2P != 0,
+            next_serial,
+            queued,
+            tail,
+            tail_fds,
+            unwritten: Unwritten { cut, kept },
+        })
+    }
+
+    /// The counts of the record of the hand-over: of the file descriptors that come after that of
+    /// the socket, of the messages that were read and are handed over, of the file descriptors of
+    /// the tail, and of the whole messages that were left to write.
+    ///
+    /// It fails with [`io::ErrorKind::InvalidInput`] where one of those, or of the lengths and the
+    /// counts of the messages in its table, is more than a record can count.
+    fn counts(&self) -> io::Result<[usize; 4]> {
+        let kept = &self.unwritten.kept;
+        // What the channel held for the connection goes as the end of the tail, which the
+        // connection that takes over reads as such.
+        let tail_fds = self.tail_fds.len() + fd_count_of(self.held());
+        let counts = [
+            fd_count_of(self.queued()) + tail_fds + fd_count_of(kept),
+            self.queued.len(),
+            tail_fds,
+            kept.len(),
+        ];
+        // Each count of the record takes 4 bytes, and so does each of those in its table.
+        let mut table = self
+            .queued()
+            .chain(kept)
+            .flat_map(|msg| [msg.data().len(), msg.data().fds().len()]);
+        if counts
+            .iter()
+            .copied()
+            .chain(&mut table)
+            .any(|count| u32::try_from(count).is_err())
+        {
+            return Err(invalid_input(
+                "too many messages or file descriptors for a record",
+            ));
+        }
+
+        Ok(counts)
+    }
+
+    /// The messages that the connection read and hands over, oldest first.
+    fn queued(&self) -> impl Iterator<Item = &Message> {
+        self.queued.iter().map(|(msg, _)| msg)
+    }
+
+    /// How the record of the hand-over is laid out.
+    fn layout(&self) -> Layout {
+        let name = self
+            .unique_name
+            .as_ref()
+            .map_or(0, |name| name.as_str().len());
+        let header_len = (NAME + name).next_multiple_of(8);
+        let kept = &self.unwritten.kept;
+        let table_len = 8 * (self.queued.len() + kept.len());
+        let unpaired = match self.socket {
+            #[cfg(feature = "p2p")]
+            HandoverSocket::Unpaired(_) => UNPAIRED,
+            _ => 0,
+        };
+        // Who had each message only takes room in a record if someone had one of them.
+        let (features, had_len) = match self.queued.iter().any(|(_, had)| *had != Had::NONE) {
+            true => (HAD | unpaired, self.queued.len().next_multiple_of(8)),
+            false => (unpaired, 0),
+        };
+        let inbound = len_of(self.queued()) + self.tail.len() + len_of(self.held());
+        let outbound = self.unwritten.rest().len() + len_of(kept);
+        let len = header_len
+            + table_len
+            + had_len
+            + inbound.next_multiple_of(8)
+            + outbound.next_multiple_of(8);
+
+        Layout {
+            header_len,
+            features,
+            had_len,
+            inbound,
+            outbound,
+            len,
+        }
+    }
+
+    /// What tells the pair of channels that the hand-over holds an end of, if it holds one.
+    #[cfg(feature = "p2p")]
+    fn channel_pair(&self) -> Option<&Arc<()>> {
+        match &self.socket {
+            HandoverSocket::Socket(split) => match split.writes() {
+                Some(Writes::Whole { pair }) => Some(pair),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Take the hand-over off the channel that it holds an end of: what the channel holds for it
+    /// goes with it, after the tail of what its connection read, and the end of the channel goes.
+    #[cfg(feature = "p2p")]
+    fn take_off_channel(&mut self) {
+        let HandoverSocket::Socket(split) = &mut self.socket else {
+            return;
+        };
+        let mut held = Vec::new();
+        let mut cx = task::Context::from_waker(task::Waker::noop());
+        loop {
+            // The read half gives the whole messages of the tail first, then those of the channel,
+            // and loses none where it has none to give yet. It fails on a tail that holds part of
+            // a message, which stays where it is, as it would for the connection that takes over.
+            let mut receiving =
+                split
+                    .read_mut()
+                    .receive_message(0, &mut self.tail, &mut self.tail_fds);
+            match receiving.as_mut().poll(&mut cx) {
+                Poll::Ready(Ok(msg)) => held.push(msg),
+                Poll::Ready(Err(_)) | Poll::Pending => break,
+            }
+        }
+        self.socket = HandoverSocket::Unpaired(held);
+    }
+
+    /// The whole messages that the channel that the hand-over was taken off held for it.
+    fn held(&self) -> &[Message] {
+        match &self.socket {
+            #[cfg(feature = "p2p")]
+            HandoverSocket::Unpaired(held) => held,
+            _ => &[],
+        }
+    }
+
+    /// Take the whole messages that the channel that the hand-over was taken off held for it, for
+    /// a new channel to hold them.
+    #[cfg(feature = "p2p")]
+    fn take_held(&mut self) -> Vec<Message> {
+        match &mut self.socket {
+            HandoverSocket::Unpaired(held) => mem::take(held),
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// Shows the kind of socket, the unique name, and how many bytes and file descriptors were left
+/// unread and unwritten, rather than which: the bytes can be as many as the longest message that
+/// D-Bus allows.
+impl fmt::Debug for Handover {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let kept = &self.unwritten.kept;
+
+        f.debug_struct("Handover")
+            .field("socket", &self.socket)
+            .field("unique_name", &self.unique_name)
+            .field("unread_len", &self.unread_len())
+            .field(
+                "unread_fds",
+                &(fd_count_of(self.queued()) + self.tail_fds.len() + fd_count_of(self.held())),
+            )
+            .field("unwritten_len", &self.unwritten_len())
+            .field("unwritten_fds", &fd_count_of(kept))
+            .finish_non_exhaustive()
+    }
+}
+
+/// The socket of a connection that was handed over.
+pub(super) enum HandoverSocket {
+    /// A unix-domain stream that zbus drove itself: the only descriptor of it that zbus kept,
+    /// which the hand-over made, in non-blocking mode, as zbus switched the socket to that.
+    UnixStream(UnixStream),
+    /// A TCP stream that zbus drove itself, as for `UnixStream`.
+    TcpStream(TcpStream),
+    /// The halves of any other socket, which can only go on in this process. Those that zbus made
+    /// run on the runtime of the connection that they came from, so they need it to keep running.
+    Socket(BoxedSplit),
+    /// No socket: that of a connection over a channel, which the hand-over was taken off, along
+    /// with that of the other end, or which it was restored without, as one end of a
+    /// [`ChannelHandover`], until the two go on over a new channel
+    /// ([`ChannelHandover::into_ends`]). It holds the whole messages that the channel held for the
+    /// connection, which the connection is to read after the tail of what it read. No hand-over
+    /// that is handed out has it.
+    #[cfg(feature = "p2p")]
+    Unpaired(Vec<Message>),
+}
+
+/// Shows the kind of socket, and its descriptor if any, rather than the halves of a socket of your
+/// own, of which a read half can hold bytes.
+impl fmt::Debug for HandoverSocket {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnixStream(socket) => f.debug_tuple("UnixStream").field(socket).finish(),
+            Self::TcpStream(socket) => f.debug_tuple("TcpStream").field(socket).finish(),
+            Self::Socket(_) => f.write_str("Socket"),
+            #[cfg(feature = "p2p")]
+            Self::Unpaired(held) => f.debug_tuple("Unpaired").field(&held.len()).finish(),
+        }
+    }
+}
+
+impl Connection {
+    /// Hand this connection over, for a connection in this process or in another one to go on from
+    /// where it stopped, through [`Builder::take_over`].
+    ///
+    /// [The module of the hand-over](crate::connection::handover) tells how it goes, and who gets
+    /// each message that the connection read. This is for a connection whose messages its object
+    /// server, its proxies and its method calls take, as those of a service. A connection whose
+    /// messages you take off the stream that [`Builder::build_message_stream`] built along with
+    /// it, as a bus does, is handed over through that stream instead, with what the stream is yet
+    /// to yield ([`MessageStream::hand_over`]). What is said here goes for both.
+    ///
+    /// This consumes the connection, as [`Connection::close`] does, and the connection is closed
+    /// once it is handed over, whichever clone of it you look at. Where the hand-over fails, or
+    /// is given up on, the connection lives on for as long as a clone of it does, as any
+    /// connection: keep one to go on with it, or to hand it over again.
+    ///
+    /// This method is only available on Linux, with the `handover` feature.
+    ///
+    /// This proceeds in order, once the checks that fail before anything is done to the
+    /// connection, which the errors below tell, have passed:
+    ///
+    /// 1. It prepares the hand-over, as [`Connection::prepare_hand_over`] does: from then on, for
+    ///    good, no send waits for the peer to take what it sends, a send under way included. Over a
+    ///    write half of your own that can't resume writes ([`WriteHalf::can_resume_writes`]), there
+    ///    is nothing to prepare, and sends go on waiting for the half.
+    /// 2. With the `service` feature, it has the object server take no more method calls, for good,
+    ///    and waits for it to be done with those that it has under way, while the connection reads
+    ///    on. [The calls under way](#the-calls-under-way) tells more.
+    /// 3. It stops the connection reading, wherever it is, even in the middle of a message.
+    /// 4. It waits for the connection to have stopped.
+    /// 5. It commits, once the socket is free: a send under way over a write half that can't resume
+    ///    writes holds it until it is through, and so does a flush under way
+    ///    ([`Connection::flush`]), which waits for the peer to take what the connection has left to
+    ///    write. Nothing else here waits for the peer to take anything. From then on nothing is
+    ///    written to the socket through the connection or any clone of it: sends and flushes fail,
+    ///    and [`Connection::close`] does nothing to the socket. The connection is closed, as
+    ///    [`Connection::is_closed`] and [`Connection::closed`] tell. The socket is neither shut
+    ///    down nor closed, so the peer sees nothing but a pause.
+    ///
+    /// The [`Handover`] that it gives holds the method calls that the object server didn't take,
+    /// oldest first, as they are, then what the connection read off the socket after them and made
+    /// no message of yet, with the file descriptors of all of those. It also holds what the
+    /// connection took to send and didn't write, which the connection that takes over writes ahead
+    /// of its own sends: the rest of a message that a send was dropped, or failed, in the middle of
+    /// ([`Connection::send`] tells more), then the messages that sends kept once the hand-over was
+    /// prepared.
+    ///
+    /// # The calls under way
+    ///
+    /// The object server takes the method calls that the connection reads one after the other, in
+    /// the order that they came in. A call is under way from then until it is answered: until its
+    /// reply is sent, or, if it expects none, until its method returned. The object server runs
+    /// the methods of an interface that says `spawn = false` (see `#[interface]`) itself, so it
+    /// only takes the call after such a call once it is done with that one. It hands every other
+    /// call to a task of its own, and goes on to the next one, so any number of those can be under
+    /// way at once.
+    ///
+    /// The hand-over waits for those calls, so that each is answered as at any other time: the
+    /// connection reads on meanwhile, for the replies to the calls that their methods make to come
+    /// in, and the signals that their proxies wait for. The work that follows a response
+    /// (`ResponseDispatchNotifier::followed_by`) is part of its call, which is under way until
+    /// that work is done, so the hand-over waits for it too.
+    ///
+    /// * It waits for as long as the methods and that work take, which is up to them, and to
+    ///   whoever is to answer the calls that they make: bound it by a timeout
+    ///   ([Cancellation](#cancellation)).
+    /// * It waits for ever if you await it from a method of an interface of the connection, or from
+    ///   the work that follows its response, whose call is under way. Have the method return first,
+    ///   and hand the connection over from elsewhere.
+    /// * The method calls that come in meanwhile are left for the object server of the connection
+    ///   that takes over, and nothing bounds how many they are but the time that this waits.
+    ///
+    /// The hand-over waits for nothing else that a method left to be done once it returned, such
+    /// as a task of your own that waits for the listener of a response
+    /// (`ResponseDispatchNotifier::new`): the connection sends nothing more once it is handed
+    /// over, so what such a task sends from then on fails.
+    ///
+    /// A stream of the connection that is full, and that nobody polls, holds all of this up, as
+    /// the connection waits for room in it to queue a message there, and reads nothing
+    /// meanwhile: the replies that the methods of the calls under way wait for don't come in,
+    /// and the connection doesn't get to stop either. Take the messages off the other streams of
+    /// the connection until they end, or let go of them.
+    ///
+    /// # A peer that closes its end
+    ///
+    /// The end of what the peer sends, as the peer closes its end of the connection, such as once
+    /// it sent a last message, fails no hand-over, whether the connection comes to it before the
+    /// hand-over starts or while the hand-over stops the connection reading, and whether or not a
+    /// send to the peer failed since, as sends do once the peer receives nothing more. The
+    /// hand-over then hands over what the connection read, part of a message included, with the
+    /// socket. The connection that takes over deals with the messages of what was read, then comes
+    /// to the same end of the socket, and ends as this one would have. A connection that ended on
+    /// anything else isn't handed over: see the errors below.
+    ///
+    /// For that, a connection that comes to that end keeps the part of a message that it read, if
+    /// any, and the file descriptors that came in that no message took, until it is handed over or
+    /// dropped, whether or not a hand-over is to come. Closing it doesn't let go of them.
+    ///
+    /// # While the connection is stopped
+    ///
+    /// From the third step on, the connection receives no more messages. Its streams yield what
+    /// was queued for them and then end, with no error before their `None`, and so do the streams
+    /// of proxies. The method calls that wait for their replies fail with an I/O error
+    /// ([`Error::InputOutput`]) of kind [`NotConnected`](std::io::ErrorKind::NotConnected), as no
+    /// reply comes in any more. Those made since fail the same way before they are sent, and so
+    /// does [`MessageStream::for_match_rule`]. Messages that expect no reply, such as replies and
+    /// signals, are sent until the hand-over commits, as far as the socket takes them, and the
+    /// hand-over holds the rest.
+    ///
+    /// # Cancellation
+    ///
+    /// The future can be dropped before it resolves, such as to bound the hand-over by a timeout:
+    /// the method of a call under way takes as long as it likes, and a peer that doesn't read can
+    /// hold a flush under way, or a send under way over a write half of your own that can't resume
+    /// writes, up for as long as it likes. If the future was polled by then, the hand-over is
+    /// prepared, the object server takes no more method calls, and the connection has stopped
+    /// reading, for good, even where the hand-over was still waiting for the calls under way: hand
+    /// a clone of the connection over again, or close it. The method calls that the object server
+    /// didn't take stay with the connection for a later hand-over, and go unanswered without one.
+    /// A future dropped before it was ever polled does nothing to the connection, which reads on.
+    ///
+    /// # Errors
+    ///
+    /// * [`Error::Unsupported`], before anything is done to the connection, which reads on, for a
+    ///   connection over a socket of your own whose read half can't hand over what it read
+    ///   ([`ReadHalf::can_take_unread`]).
+    /// * [`Error::InputOutput`], with nothing taken out of the connection, if:
+    ///   * the connection ended before it stopped reading, otherwise than at the end of what the
+    ///     peer sent: reading the socket failed, a message was invalid, or the runtime dropped the
+    ///     task that reads it;
+    ///   * it was closed with [`Connection::close`], or it was handed over already;
+    ///   * a hand-over through a stream of the connection stopped it reading before
+    ///     ([`MessageStream::hand_over`] tells why);
+    ///   * a send over a socket of your own whose write half can't resume writes
+    ///     ([`WriteHalf::can_resume_writes`]) was cut off midway, by an error or by its future
+    ///     being dropped. The socket may then hold part of a message, and the peer can make no
+    ///     sense of what follows it. If no send is under way as the hand-over starts, it fails on
+    ///     this before anything is done to the connection, which reads on. A send that failed with
+    ///     an I/O error of kind `BrokenPipe`, `ConnectionReset` or `ConnectionAborted`, as one to a
+    ///     peer that closed its end does, doesn't count: the peer receives nothing that follows it;
+    ///   * the socket fails to be duplicated, as when the process has too many file descriptors
+    ///     open.
+    ///
+    ///   The hand-over is then prepared, the object server takes no more method calls, and the
+    ///   connection has stopped reading, unless it ended before, or the hand-over failed before
+    ///   anything was done to it.
+    ///
+    /// # Example
+    ///
+    /// A service hands its connection to the bus over, and the connection that takes over, in
+    /// the same process here, goes on serving its name:
+    ///
+    /// ```
+    /// # #[cfg(feature = "service")]
+    /// use zbus::{block_on, connection::Builder, interface};
+    ///
+    /// # #[cfg(feature = "service")]
+    /// struct Greeter;
+    ///
+    /// # #[cfg(feature = "service")]
+    /// #[interface(name = "org.zbus.HandOverExample")]
+    /// impl Greeter {
+    ///     fn greet(&self, name: &str) -> String {
+    ///         format!("Hello {name}!")
+    ///     }
+    /// }
+    ///
+    /// # // The example serves an interface, which needs the `service` feature.
+    /// # #[cfg(not(feature = "service"))]
+    /// # fn main() {}
+    /// # #[cfg(feature = "service")]
+    /// # fn main() -> zbus::Result<()> {
+    /// block_on(async {
+    ///     let conn = Builder::session()
+    ///         .name("org.zbus.HandOverExample")
+    ///         .serve_at("/org/zbus/HandOverExample", Greeter)
+    ///         .build()
+    ///         .await?;
+    ///     // The object server answers the calls to `Greeter`, until it is time to hand the
+    ///     // connection over, such as to restart.
+    ///
+    ///     let handover = conn.hand_over().await?;
+    ///     // Pass `handover` on, as the example of the module does. The bus has the connection
+    ///     // that takes over as the owner of the name already, and the connection is given the
+    ///     // name again, to know of it.
+    ///     let conn = Builder::take_over(handover)
+    ///         .name("org.zbus.HandOverExample")
+    ///         .serve_at("/org/zbus/HandOverExample", Greeter)
+    ///         .build()
+    ///         .await?;
+    ///     conn.flush().await?;
+    ///
+    ///     Ok(())
+    /// })
+    /// # }
+    /// ```
+    ///
+    /// [`Builder::build_message_stream`]: super::Builder::build_message_stream
+    /// [`Builder::take_over`]: super::Builder::take_over
+    /// [`MessageStream::for_match_rule`]: crate::MessageStream::for_match_rule
+    /// [`MessageStream::hand_over`]: crate::MessageStream::hand_over
+    /// [`ReadHalf::can_take_unread`]: super::socket::ReadHalf::can_take_unread
+    /// [`WriteHalf::can_resume_writes`]: super::socket::WriteHalf::can_resume_writes
+    pub async fn hand_over(self) -> Result<Handover> {
+        self.hand_over_through(None).await
+    }
+
+    /// Hand this connection over, through `stream`, if any: the queue of a stream and its backlog.
+    /// These are the steps that [`Connection::hand_over`] documents.
+    ///
+    /// What the hand-over takes off the queue goes to the backlog, which the stream yields before
+    /// its queue, so that a hand-over that fails, or whose future is dropped, loses none of it.
+    pub(crate) async fn hand_over_through(
+        &self,
+        stream: Option<(&mut Receiver<Result<Message>>, &mut Backlog)>,
+    ) -> Result<Handover> {
+        self.ensure_whole().await?;
+        let mut through = match stream {
+            Some((queue, backlog)) => {
+                self.claim(Some(&mut backlog.stream))?;
+
+                Some(Through {
+                    queue,
+                    taken: &mut backlog.items,
+                })
+            }
+            None => {
+                self.claim(None)?;
+
+                None
+            }
+        };
+        // From here on, for good, no send waits for the peer, a send under way included, which
+        // lets go of the socket at once, so that the hand-over doesn't wait for the peer either.
+        // There is nothing to prepare over a write half of your own that can't resume writes, as
+        // sends over it wait for the half, and so does the hand-over, for a send under way.
+        self.prepare_hand_over();
+        {
+            // The connection stops reading once the object server is done with the calls that it
+            // has under way, or as soon as the hand-over is given up on, whichever comes first.
+            let _stop = StopReading(self);
+            #[cfg(feature = "service")]
+            self.finish_calls(&mut through).await;
+        }
+        taking(&mut through, self.stopped()).await;
+        // Nothing more is queued once the reader ended.
+        if let Some(through) = &mut through {
+            through.take_rest();
+            // A stream without a match rule that was made meanwhile may have had what the
+            // hand-over holds.
+            self.inner.socket_status.stop.alone()?;
+        }
+        // A reader that stopped, or came to the end of the input, ended the streams of the
+        // connection, so the task of the object server ends, once it got the calls that were
+        // queued for it, all of which it leaves.
+        #[cfg(feature = "service")]
+        if self.inner.socket_status.stop.ended_streams()
+            && let Some(calls) = self.inner.calls.existing()
+        {
+            calls.ended().await;
+        }
+
+        self.take_apart(through.map(|through| through.taken)).await
+    }
+
+    /// Have the object server take no more method calls, for good, and wait for it to be done with
+    /// those that it has under way, while the connection reads on, for the replies to the calls
+    /// that their methods wait for to come in. The object server leaves the method calls that come
+    /// in meanwhile, and the hand-over takes what is queued on its stream, if it goes through one,
+    /// so that the connection never waits for room to queue a message.
+    #[cfg(feature = "service")]
+    async fn finish_calls(&self, through: &mut Option<Through<'_>>) {
+        // A connection with no object server has no calls to wait for, and one that it gets from
+        // now on takes none.
+        let Some(calls) = self.inner.calls.existing() else {
+            return;
+        };
+        calls.hold();
+        taking(through, calls.idle()).await;
+    }
+
+    /// Fail if a send that was cut off midway left part of a message in the socket, as `take_apart`
+    /// then does, but before the connection stops reading, so that it reads on. A send under way
+    /// holds the socket, and only `take_apart` finds out how it went, once it is through.
+    async fn ensure_whole(&self) -> Result<()> {
+        let mut lock = pin!(self.inner.socket_write.lock());
+        let write = poll_fn(|cx| Poll::Ready(lock.as_mut().poll(cx))).await;
+        if matches!(write, Poll::Ready(write) if write.is_torn()) {
+            return Err(torn());
+        }
+
+        Ok(())
+    }
+
+    /// Claim the connection for the hand-overs through the stream that `stream` tells apart, if
+    /// any, unless its reader can't stop, or a hand-over through another stream claimed it first,
+    /// which this hand-over then fails on. A stream that has no id yet gets one.
+    fn claim(&self, stream: Option<&mut Option<StreamId>>) -> Result<()> {
+        let stop = &self.inner.socket_status.stop;
+        if !stop.can_stop.load(Ordering::Acquire) {
+            return Err(Error::Unsupported);
+        }
+
+        stop.claim(stream)
+    }
+
+    /// Ask the reader to stop reading the socket, wherever it is in a message.
+    ///
+    /// This applies to every clone of the connection, and does nothing the second time, or on a
+    /// connection that is closed already, which goes on ending as a closed one does, rather than
+    /// be taken for one that stopped.
+    fn stop_reading(&self) {
+        if self.inner.is_closed() {
+            return;
+        }
+        let stop = &self.inner.socket_status.stop;
+        if !stop.asked.swap(true, Ordering::AcqRel) {
+            stop.asked_event.notify(usize::MAX);
+        }
+    }
+
+    /// Wait for the reader to have stopped, or for the connection to have ended.
+    async fn stopped(&self) {
+        let inner = &*self.inner;
+        let stop = &inner.socket_status.stop;
+        loop {
+            let mut ended = stop.reader_end_event.listen();
+            let mut closed = inner.closed_listener();
+            if !stop.reading() || inner.is_closed() {
+                return;
+            }
+            poll_fn(|cx| {
+                if Pin::new(&mut ended).poll(cx).is_ready()
+                    || Pin::new(&mut closed).poll(cx).is_ready()
+                {
+                    return Poll::Ready(());
+                }
+
+                Poll::Pending
+            })
+            .await;
+        }
+    }
+
+    /// Take the connection apart, once its reader stopped or came to the end of the input, with
+    /// the messages of `taken`, which the hand-over took off the stream that it goes through, if
+    /// any, and those that the object server left, ahead of what the reader read.
+    ///
+    /// The messages stay in `taken`, and with the object server, unless the connection is handed
+    /// over. An error in `taken` is that which the reader ended on, as it came to the end of the
+    /// input, and goes with them then.
+    async fn take_apart(&self, taken: Option<&mut VecDeque<Result<Message>>>) -> Result<Handover> {
+        let inner = &*self.inner;
+        let stop = &inner.socket_status.stop;
+        // Under the lock that every send, flush, shutdown and hand-over takes. A send over a write
+        // half of your own that can't resume writes holds it until it is through, and so does a
+        // flush, which waits for the peer to take what the connection has left to write. Any other
+        // send lets go of it at once, as the hand-over is prepared.
+        let mut guard = inner.socket_write.lock().await;
+        let write = &mut *guard;
+        let mut end = stop
+            .reader_end
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if matches!(*end, ReaderEnd::HandedOver) {
+            return Err(not_connected("the connection was handed over already").into());
+        }
+        // Set before the socket is shut down, under the lock that is held here, so a closed
+        // connection whose reader then came to the end of the input is not taken for one whose
+        // peer closed its end.
+        if write.is_shut_down() {
+            return Err(not_connected("the connection was closed").into());
+        }
+        if !matches!(*end, ReaderEnd::Stopped(_) | ReaderEnd::Ended(_)) {
+            return Err(not_connected("the connection ended before it stopped reading").into());
+        }
+        if write.is_torn() {
+            return Err(torn());
+        }
+        // The last step that can fail, so that a failure commits nothing. The messages keep their
+        // descriptors, which the hand-over borrows from them, as other streams may hold them too.
+        let duplicate = write
+            .source()
+            .map(|(source, kind)| dup(source).map(|socket| (socket, *kind)))
+            .transpose()?;
+
+        // Nothing fails or waits from here on, so the connection is either handed over whole, or
+        // not at all.
+        let (ReaderEnd::Stopped(parts) | ReaderEnd::Ended(parts)) =
+            mem::replace(&mut *end, ReaderEnd::HandedOver)
+        else {
+            unreachable!("the reader stopped or ended, as the hand-over found under its lock");
+        };
+        drop(end);
+        stop.reader_end_event.notify(usize::MAX);
+        // What the connection has left to write goes with the hand-over, the rest of a message
+        // that a send was cut off in the middle of first, for the connection that takes over to
+        // write ahead of its own sends.
+        let (write_half, writes, unwritten) = write
+            .take_half()
+            .expect("the write half is only taken by a hand-over, which there was none of");
+        inner.socket_status.closed.store(true, Ordering::Release);
+        inner.socket_status.closed_event.notify(usize::MAX);
+        drop(guard);
+
+        let ReadParts {
+            half: read_half,
+            queued: taken_over,
+            unread_bytes: tail,
+            unread_fds: tail_fds,
+        } = parts;
+        // The error that the reader ended on, if any, is no message to hand over. An object server
+        // that ever took calls had every method call that it doesn't leave.
+        #[cfg(feature = "service")]
+        let mut left = inner
+            .calls
+            .existing()
+            .filter(|calls| calls.started())
+            .map(|calls| calls.take_left());
+        #[cfg(not(feature = "service"))]
+        let left = None;
+        // The object server was handed its calls, of those that the connection took over, ahead
+        // of the reader, so it may have left some that the reader is yet to yield.
+        #[cfg(feature = "service")]
+        let taken_over = {
+            let mut taken_over = taken_over;
+            if let Some(left) = &mut left
+                && !taken_over.is_empty()
+            {
+                let first = stop.taken_over_len() - taken_over.len() + 1;
+                left_unyielded(&mut taken_over, left, first as u64);
+            }
+
+            taken_over
+        };
+        // Most connections have nothing of either here, and so nothing to sort out.
+        let mut queued = if taken.as_ref().is_none_or(|taken| taken.is_empty())
+            && left.as_ref().is_none_or(VecDeque::is_empty)
+        {
+            Vec::new()
+        } else {
+            let unyielded = taken.map(|taken| taken.drain(..).flatten());
+
+            unread(unyielded, left, |msg| stop.had_before(msg))
+        };
+        // The messages that the reader was yet to yield, of those that the connection took over,
+        // come after those that it yielded, and those had them who had them before.
+        queued.extend(taken_over);
+        let socket = match duplicate {
+            Some((socket, kind)) => {
+                // The runtime stops watching the socket as the halves, and the handle that the
+                // connection wrote it directly through, go, while their descriptor of it is still
+                // open, and then that descriptor is closed.
+                drop(read_half);
+                drop(write_half);
+                drop(writes);
+
+                kind.stream(socket)
+            }
+            // A connection that goes on over the halves writes the socket as this one did.
+            None => HandoverSocket::Socket(Split::with_writes(read_half, write_half, writes)),
+        };
+
+        Ok(Handover {
+            socket,
+            server_guid: inner.server_guid.clone(),
+            unique_name: self.unique_name().cloned(),
+            unix_fd_passing: inner.cap_unix_fd,
+            #[cfg(feature = "p2p")]
+            p2p: !self.is_bus(),
+            next_serial: message::header::next_serial(),
+            queued,
+            tail,
+            tail_fds,
+            unwritten,
+        })
+    }
+}
+
+/// The stream that a connection is handed over through: its queue, and what the hand-over took
+/// off it, which the stream keeps.
+struct Through<'s> {
+    queue: &'s mut Receiver<Result<Message>>,
+    taken: &'s mut VecDeque<Result<Message>>,
+}
+
+impl Through<'_> {
+    /// Wait for `done`, while taking what is queued on the stream off it, oldest first.
+    ///
+    /// Each message taken off makes room for one that the reader waits to queue, so a reader that
+    /// waits for room in the stream gets it, and goes on, or stops: nobody else takes messages off
+    /// the stream now.
+    async fn take_while<F>(&mut self, done: F) -> F::Output
+    where
+        F: Future,
+    {
+        let mut done = pin!(done);
+
+        poll_fn(|cx| {
+            while let Poll::Ready(Some(msg)) = Pin::new(&mut *self.queue).poll_next(cx) {
+                self.taken.push_back(msg);
+            }
+
+            done.as_mut().poll(cx)
+        })
+        .await
+    }
+
+    /// Take what is left on the queue of the stream off it.
+    fn take_rest(&mut self) {
+        loop {
+            match self.queue.try_recv() {
+                Ok(msg) => self.taken.push_back(msg),
+                // As the stream itself would, this goes on from the oldest message still queued.
+                Err(TryRecvError::Overflowed(_)) => continue,
+                Err(TryRecvError::Empty | TryRecvError::Closed) => break,
+            }
+        }
+    }
+}
+
+/// Wait for `done`, while taking what is queued on the stream of `through` off it, if the
+/// hand-over goes through one.
+async fn taking<F>(through: &mut Option<Through<'_>>, done: F) -> F::Output
+where
+    F: Future,
+{
+    match through {
+        Some(through) => through.take_while(done).await,
+        None => done.await,
+    }
+}
+
+/// Asks its connection to stop reading, as it is dropped.
+struct StopReading<'c>(&'c Connection);
+
+impl Drop for StopReading<'_> {
+    fn drop(&mut self) {
+        self.0.stop_reading();
+    }
+}
+
+/// Take the calls that the reader is yet to yield out of `left`, the calls that the object server
+/// left. They are among `taken_over`, what the reader is yet to yield of the messages that the
+/// connection took over, from the position `first` on: the object server was handed them ahead
+/// of the reader, as calls that it had from then on. They go on from `taken_over`, as calls that
+/// no object server had.
+#[cfg(feature = "service")]
+fn left_unyielded(
+    taken_over: &mut VecDeque<(Message, Had)>,
+    left: &mut VecDeque<Message>,
+    first: u64,
+) {
+    left.retain(|call| {
+        let unyielded = call
+            .recv_position()
+            .get()
+            .checked_sub(first)
+            .and_then(|at| taken_over.get_mut(usize::try_from(at).ok()?));
+        let Some((_, had)) = unyielded else {
+            return true;
+        };
+        *had = had.without(Had::SERVER);
+
+        false
+    });
+}
+
+/// The messages that a connection read and hands over, oldest first, each with who had it:
+/// `unyielded`, which the stream that it is handed over through didn't yield, if it is handed over
+/// through one, and `left`, the method calls that its object server left, if it ever took calls,
+/// each in the order that the connection read them. `had_before` tells who had a message that the
+/// connection took over, its own object server among them if it was handed the message, and
+/// nothing of a message that the connection read itself.
+///
+/// The stream had every message that the connection read, so it yielded those of `left` that are
+/// not in `unyielded`. The object server had none of the calls that it left. Of the others, it
+/// had those that it was handed, and every method call that the connection read itself.
+fn unread(
+    unyielded: Option<impl Iterator<Item = Message>>,
+    left: Option<VecDeque<Message>>,
+    had_before: impl Fn(&Message) -> Option<Had>,
+) -> Vec<(Message, Had)> {
+    let (streamed, served) = (unyielded.is_some(), left.is_some());
+    let mut unyielded = unyielded.into_iter().flatten().peekable();
+    let mut left = left.into_iter().flatten().peekable();
+    let position = |msg: &Message| msg.recv_position();
+    let mut unread = Vec::new();
+    loop {
+        // Whether the stream yielded the message, and whether the object server left it.
+        let (msg, yielded, left_it) =
+            match (unyielded.peek().map(position), left.peek().map(position)) {
+                (None, None) => break,
+                (Some(stream), Some(server)) if stream == server => {
+                    left.next();
+
+                    (unyielded.next(), false, true)
+                }
+                (Some(stream), server) if server.is_none_or(|server| stream < server) => {
+                    (unyielded.next(), false, false)
+                }
+                _ => (left.next(), streamed, true),
+            };
+        let msg = msg.expect("a message that was peeked at");
+        let had = match had_before(&msg) {
+            // One that the connection took over: `before` counts the object server in if it
+            // was handed the message.
+            Some(before) if left_it => before.without(Had::SERVER),
+            Some(before) => before,
+            // One that the connection read itself.
+            None if served && !left_it && msg.message_type() == message::Type::MethodCall => {
+                Had::SERVER
+            }
+            None => Had::NONE,
+        };
+        let had = if yielded { had | Had::STREAM } else { had };
+        unread.push((msg, had));
+    }
+
+    unread
+}
+
+impl ConnectionInner {
+    /// Note that a stream without a match rule was made for the connection, before it gets any
+    /// message: a hand-over through another stream of the connection fails while it is there, or
+    /// if it was made while the hand-over stopped the connection.
+    pub(crate) fn unfiltered_stream_made(&self) {
+        self.socket_status.stop.unfiltered_made();
+    }
+
+    /// Note that a stream without a match rule of the connection was dropped.
+    pub(crate) fn unfiltered_stream_dropped(&self) {
+        self.socket_status.stop.unfiltered_dropped();
+    }
+}
+
+/// What a hand-over through a stream took off the queue of the stream, and the stream is yet to
+/// yield, for the stream to keep, whatever comes of the hand-over.
+#[derive(Debug, Default)]
+pub(crate) struct Backlog {
+    /// What was taken off the queue, oldest first: messages, and the error that the reader ended
+    /// on, if it came to the end of the input.
+    items: VecDeque<Result<Message>>,
+    /// What tells the stream apart from the other streams of its connection, from its first
+    /// hand-over on.
+    stream: Option<StreamId>,
+}
+
+impl Backlog {
+    /// Take the oldest of what is left, for the stream to yield it ahead of its queue.
+    pub(crate) fn pop(&mut self) -> Option<Result<Message>> {
+        self.items.pop_front()
+    }
+
+    /// Whether nothing is left.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+}
+
+/// A clone of a stream yields what is left in its backlog too, but it is another stream, which a
+/// hand-over through it tells apart from this one.
+impl Clone for Backlog {
+    fn clone(&self) -> Self {
+        Self {
+            items: self.items.clone(),
+            stream: None,
+        }
+    }
+}
+
+/// The kind of a socket that zbus drives itself, and so can give a descriptor of for a hand-over.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum SocketKind {
+    Unix,
+    Tcp,
+}
+
+impl SocketKind {
+    /// The stream of this kind over `socket`.
+    fn stream(self, socket: OwnedFd) -> HandoverSocket {
+        match self {
+            Self::Unix => HandoverSocket::UnixStream(UnixStream::from(socket)),
+            Self::Tcp => HandoverSocket::TcpStream(TcpStream::from(socket)),
+        }
+    }
+}
+
+/// Whether the reader of a connection is to stop, or did, for the connection to be handed over.
+#[derive(Debug)]
+pub(super) struct StopStatus {
+    /// Whether the reader can stop, which is whether its read half can take out what it read off
+    /// the socket and is yet to return in a message. It is set before the reader starts.
+    pub can_stop: AtomicBool,
+    /// Whether the connection was asked to stop reading.
+    asked: AtomicBool,
+    /// Notified when the connection is asked to stop reading.
+    asked_event: Event,
+    /// The stream of the first hand-over that asked the connection to stop reading, and which may
+    /// have taken messages off that stream since, and the ids that tell its streams apart. A
+    /// hand-over through another stream would miss those messages, and fails.
+    stream: Mutex<Claim>,
+    /// Whether the reader still reads, and how it ended if not.
+    reader_end: Mutex<ReaderEnd>,
+    /// Notified when the reader ends.
+    reader_end_event: Event,
+    /// Who had each of the messages that the connection took over, which are the first that its
+    /// reader yields, in their order: the connection hands those that it is handed over with on
+    /// as had by them still. The object server that the connection is built with is among them,
+    /// for the method calls that it was handed. It is set before the reader starts.
+    had_before: OnceLock<Box<[Had]>>,
+}
+
+impl StopStatus {
+    pub(super) fn new() -> Self {
+        Self {
+            can_stop: AtomicBool::new(false),
+            asked: AtomicBool::new(false),
+            asked_event: Event::new(),
+            stream: Mutex::default(),
+            reader_end: Mutex::new(ReaderEnd::Reading),
+            reader_end_event: Event::new(),
+            had_before: OnceLock::new(),
+        }
+    }
+
+    /// Note who had each of the messages that the connection takes over, `had`, in the order
+    /// that its reader is to yield them, before it yields anything else.
+    pub(super) fn take_over(&self, had: impl Iterator<Item = Had>) {
+        let _ = self.had_before.set(had.collect());
+    }
+
+    /// A listener for the connection to be asked to stop reading, if the reader can stop.
+    pub(super) fn listener(&self) -> Option<EventListener> {
+        self.can_stop
+            .load(Ordering::Acquire)
+            .then(|| self.asked_event.listen())
+    }
+
+    /// Fails with the error of a connection that stopped reading, once it was asked to.
+    pub(super) fn ensure_reading(&self) -> Result<()> {
+        if self.asked() {
+            return Err(stopped_error());
+        }
+
+        Ok(())
+    }
+
+    /// Whether the connection was asked to stop reading.
+    pub(super) fn asked(&self) -> bool {
+        self.asked.load(Ordering::Acquire)
+    }
+
+    /// Record how the reader ended, unless it ended already, and tell whoever waits for it.
+    pub(super) fn end_reading(&self, end: ReaderEnd) {
+        let mut slot = self
+            .reader_end
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if !matches!(*slot, ReaderEnd::Reading) {
+            // How it ended first stands. `end` is dropped once the lock is let go of.
+            return;
+        }
+        // The reader yielded its last message before this, so a stream counted after it gets
+        // none of what it read.
+        {
+            let mut claim = self.stream.lock().unwrap_or_else(PoisonError::into_inner);
+            claim.made_at_stop = Some(claim.made);
+        }
+        *slot = end;
+        drop(slot);
+        self.reader_end_event.notify(usize::MAX);
+    }
+
+    /// Claim the connection for the hand-overs through the stream that `stream` stands for, if
+    /// any, unless a hand-over through another stream claimed it first. A hand-over through no
+    /// stream claims nothing.
+    ///
+    /// A hand-over through a stream also fails where the connection has another stream without a
+    /// match rule, which has the messages that the hand-over would hold too: with
+    /// [`Error::Unsupported`] while nothing was done to the connection, and as `alone` does
+    /// otherwise.
+    fn claim(&self, stream: Option<&mut Option<StreamId>>) -> Result<()> {
+        let mut claim = self.stream.lock().unwrap_or_else(PoisonError::into_inner);
+        let stream = stream.map(|id| *id.get_or_insert_with(|| claim.new_id()));
+        match (claim.by, stream) {
+            (Some(by), Some(stream)) if by == stream => (),
+            (Some(_), _) => {
+                return Err(not_connected(
+                    "a hand-over through another stream of the connection may have taken \
+                     messages off that stream",
+                )
+                .into());
+            }
+            (None, Some(_)) => (),
+            (None, None) => return Ok(()),
+        }
+        if claim.shared {
+            return Err(shared());
+        }
+        // The other streams are counted under this lock, which their making takes too, so that
+        // none is made unseen between this look and the claim. Those made after the claim are
+        // for `alone` to find, once the connection stopped reading.
+        if claim.by.is_none() {
+            if claim.unfiltered > 1 {
+                if !self.asked() {
+                    return Err(Error::Unsupported);
+                }
+                claim.shared = true;
+
+                return Err(shared());
+            }
+            claim.by = stream;
+            // A stream made once the reader ended got nothing from it, so it counts for nothing.
+            claim.made_at_claim = claim.made_at_stop.unwrap_or(claim.made);
+        }
+
+        Ok(())
+    }
+
+    /// Fail, once the connection stopped reading, if a stream without a match rule was made from
+    /// when the connection was claimed for the hand-overs through a stream until it stopped
+    /// reading: it may have had messages that the hand-over holds too. Every later hand-over
+    /// through a stream fails the same way.
+    ///
+    /// The count of the streams made tells, where the count of those there are would miss one
+    /// that was made and dropped meanwhile. A stream made once the reader ended gets no message
+    /// from it, so it counts for nothing.
+    fn alone(&self) -> Result<()> {
+        let mut claim = self.stream.lock().unwrap_or_else(PoisonError::into_inner);
+        let made = claim.made_at_stop.unwrap_or(claim.made);
+        if claim.shared || made != claim.made_at_claim {
+            claim.shared = true;
+
+            return Err(shared());
+        }
+
+        Ok(())
+    }
+
+    /// Note that a stream without a match rule was made, before it gets a message.
+    fn unfiltered_made(&self) {
+        let mut claim = self.stream.lock().unwrap_or_else(PoisonError::into_inner);
+        claim.unfiltered += 1;
+        claim.made += 1;
+    }
+
+    /// Note that a stream without a match rule was dropped.
+    fn unfiltered_dropped(&self) {
+        let mut claim = self.stream.lock().unwrap_or_else(PoisonError::into_inner);
+        claim.unfiltered -= 1;
+    }
+
+    /// How many messages the connection took over.
+    #[cfg(feature = "service")]
+    fn taken_over_len(&self) -> usize {
+        self.had_before.get().map_or(0, |had| had.len())
+    }
+
+    /// Who had `msg`, which the reader yielded, before the connection read anything itself, if
+    /// it is one of the messages that the connection took over.
+    fn had_before(&self, msg: &Message) -> Option<Had> {
+        // The reader gives the first message that it yields the position 1.
+        let position = usize::try_from(msg.recv_position().get()).ok()?;
+
+        self.had_before
+            .get()?
+            .get(position.checked_sub(1)?)
+            .copied()
+    }
+
+    /// Whether the reader stopped, or came to the end of the input, and left the connection what
+    /// it read: either way, it ended every stream of the connection first.
+    #[cfg(feature = "service")]
+    fn ended_streams(&self) -> bool {
+        matches!(
+            *self
+                .reader_end
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+            ReaderEnd::Stopped(_) | ReaderEnd::Ended(_)
+        )
+    }
+
+    /// Whether the reader still reads.
+    fn reading(&self) -> bool {
+        matches!(
+            *self
+                .reader_end
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+            ReaderEnd::Reading
+        )
+    }
+}
+
+/// Which stream of a connection claimed it for its hand-overs, if any, the next id that tells a
+/// stream of the connection apart from the others, and the streams without a match rule that the
+/// connection has.
+#[derive(Debug, Default)]
+struct Claim {
+    /// The stream of the hand-overs that claimed the connection.
+    by: Option<StreamId>,
+    /// The id that the next stream to be handed over gets.
+    next: u64,
+    /// How many streams without a match rule the connection has.
+    unfiltered: usize,
+    /// How many streams without a match rule the connection ever made.
+    made: u64,
+    /// What `made` was as a stream claimed the connection, or as the reader ended, if it ended
+    /// before that.
+    made_at_claim: u64,
+    /// What `made` was as the reader ended, once it did.
+    made_at_stop: Option<u64>,
+    /// Whether a stream without a match rule other than that of the hand-overs may have had
+    /// messages that a hand-over through a stream would hold, which then fails.
+    shared: bool,
+}
+
+impl Claim {
+    /// An id that no other stream of the connection has.
+    fn new_id(&mut self) -> StreamId {
+        let id = StreamId(self.next);
+        self.next += 1;
+
+        id
+    }
+}
+
+/// What tells a stream of a connection apart from the other streams of the same connection, which
+/// [`Claim::new_id`] hands out the first time that it is handed over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct StreamId(u64);
+
+/// Whether the reader of a connection still reads its socket, and how it ended if not.
+pub(super) enum ReaderEnd {
+    /// The reader still reads.
+    Reading,
+    /// The connection stopped reading, and the reader left it the read half and what it read.
+    Stopped(ReadParts),
+    /// The reader came to the end of the input, which the read half reports as an I/O error of
+    /// kind `UnexpectedEof` (`ends_input`), and left the connection the read half and what it
+    /// read, as `Stopped` does. The connection is closed then, and its streams ended on that
+    /// error. What the reader left stays here, file descriptors included, until the connection is
+    /// handed over or dropped, as nothing tells whether a hand-over is to come.
+    ///
+    /// The peer closed its end of the socket, unless the connection itself was closed, which shuts
+    /// the socket down, so that the reader then comes to the end of the input too.
+    /// `SocketWrite::shut_down` tells which: a close sets it before it shuts the socket down,
+    /// under the lock that a hand-over takes before it looks at how the reader ended.
+    Ended(ReadParts),
+    /// The reader ended on any other error, or was let go of before it ended on its own.
+    Failed,
+    /// The connection stopped reading and was handed over, which took what the reader left.
+    HandedOver,
+}
+
+/// Shows how much was left unread rather than what, which can be as long as the longest message
+/// that D-Bus allows, as this is part of what a connection shows of itself.
+impl fmt::Debug for ReaderEnd {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (name, parts) = match self {
+            Self::Reading => return f.write_str("Reading"),
+            Self::Stopped(parts) => ("Stopped", parts),
+            Self::Ended(parts) => ("Ended", parts),
+            Self::Failed => return f.write_str("Failed"),
+            Self::HandedOver => return f.write_str("HandedOver"),
+        };
+        let mut left = f.debug_struct(name);
+        left.field("half", &parts.half)
+            .field("queued", &parts.queued.len())
+            .field("unread_bytes", &parts.unread_bytes.len());
+        left.field("unread_fds", &parts.unread_fds.len());
+
+        left.finish()
+    }
+}
+
+/// What the reader of a connection leaves for it when the connection stops reading, or the reader
+/// comes to the end of the input.
+pub(super) struct ReadParts {
+    /// The read half of the socket.
+    pub half: Box<dyn ReadHalf>,
+    /// The messages that a connection that this one took over left unread, which the reader was
+    /// yet to yield, ahead of what it read off the socket, oldest first, each with who had it.
+    pub queued: VecDeque<(Message, Had)>,
+    /// What was read off the socket and is yet to make a message, from the start of a message.
+    pub unread_bytes: Vec<u8>,
+    /// The file descriptors that came in with what was read, and that no message took, in the
+    /// order that they came in.
+    pub unread_fds: Vec<OwnedFd>,
+}
+
+impl ReadParts {
+    /// What the reader leaves: `queued`, the messages that it was yet to yield of those that the
+    /// connection took over, and `half`, with what it read and is yet to return in a message taken
+    /// out of it, after `unread_bytes` and `unread_fds`, which the reader kept for its next read.
+    ///
+    /// The last call to receive a message is over, or was dropped wherever it waited, so the half
+    /// has all that it read in hand.
+    pub(super) fn new(
+        mut half: Box<dyn ReadHalf>,
+        queued: VecDeque<(Message, Had)>,
+        mut unread_bytes: Vec<u8>,
+        mut unread_fds: Vec<OwnedFd>,
+    ) -> Self {
+        half.take_unread(&mut unread_bytes, &mut unread_fds);
+
+        Self {
+            half,
+            queued,
+            unread_bytes,
+            unread_fds,
+        }
+    }
+}
+
+impl Connection {
+    /// Hand the object server that the connection is built with its method calls of `taken_over`,
+    /// the messages that the connection takes over: those that no object server had. It takes
+    /// them before any call that the connection reads. `taken_over` tells that it had them from
+    /// here on, which a hand-over of the connection puts right for those that it left. Each is
+    /// at the position that the reader gives it, as it gives the first message that it yields
+    /// the position 1.
+    #[cfg(feature = "service")]
+    pub(super) fn hand_calls(&self, taken_over: &mut [(Message, Had)]) {
+        // Most connections take nothing over.
+        if taken_over.is_empty() {
+            return;
+        }
+        // The rule that the object server takes its calls with, which leaves out the calls for
+        // another unique name, as a monitor gets.
+        let mut rule = MatchRule::builder().msg_type(message::Type::MethodCall);
+        if let Some(unique_name) = self.unique_name() {
+            rule = rule.destination(&**unique_name);
+        }
+        let rule = rule.build().expect("a unique name is a valid destination");
+        let mut calls = VecDeque::new();
+        for ((msg, had), position) in taken_over.iter_mut().zip(1..) {
+            if had.leaves_to_server(msg) && rule.matches(msg).unwrap_or(false) {
+                calls.push_back(msg.clone().at_position(position));
+                *had = *had | Had::SERVER;
+            }
+        }
+        if !calls.is_empty() {
+            self.inner.calls.get_or_create().hand(calls);
+        }
+    }
+}
+
+/// The method calls for an object server: `handed`, those that its connection took over and that no
+/// object server had, oldest first, then those of `stream`, the stream of its method calls.
+#[cfg(feature = "service")]
+pub(crate) struct HandedFirst<'a, S> {
+    handed: &'a mut VecDeque<Message>,
+    stream: &'a mut S,
+}
+
+#[cfg(feature = "service")]
+impl<'a, S> HandedFirst<'a, S> {
+    pub(crate) fn new(handed: &'a mut VecDeque<Message>, stream: &'a mut S) -> Self {
+        Self { handed, stream }
+    }
+}
+
+#[cfg(feature = "service")]
+impl<S> Stream for HandedFirst<'_, S>
+where
+    S: Stream<Item = Result<Message>> + Unpin,
+{
+    type Item = Result<Message>;
+
+    fn poll_next(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        if let Some(call) = this.handed.pop_front() {
+            return Poll::Ready(Some(Ok(call)));
+        }
+
+        Pin::new(&mut *this.stream).poll_next(cx)
+    }
+}
+
+/// Which consumers of a connection that was handed over had a message that it hands over: the
+/// stream that it was handed over through, its object server, both or neither.
+///
+/// The connection that takes over hands the message to those of its own consumers that are yet to
+/// get it: its streams of every message, unless a stream had it, and the object server that it is
+/// built with, if it is a method call, unless an object server had it, ahead of the calls that the
+/// connection reads.
+/// Nothing else gets it, such as a call that waits for its reply, or a stream for a match rule,
+/// whatever its rule, as that of a proxy: those of the connection that was handed over got every
+/// message that it read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Had(u8);
+
+impl Had {
+    /// Neither had the message.
+    pub(crate) const NONE: Self = Self(0);
+    /// The stream that the connection was handed over through yielded the message.
+    pub(crate) const STREAM: Self = Self(1);
+    /// The object server took the message, to answer it.
+    pub(crate) const SERVER: Self = Self(2);
+
+    /// Whether a connection that takes a message over, which these had, queues it for the streams
+    /// of `rule`, where no rule stands for the streams of every message. It queues none for a
+    /// stream for a match rule, not even one with the rule of the object server, whose queue an
+    /// equal rule shares: the object server gets its calls from the connection directly.
+    pub(crate) fn leaves(self, rule: Option<&MatchRule<'_>>) -> bool {
+        rule.is_none() && !self.has(Self::STREAM)
+    }
+
+    /// Whether a connection that takes `msg` over, which these had, hands it to its object server:
+    /// whether it is a method call that no object server had.
+    #[cfg(feature = "service")]
+    fn leaves_to_server(self, msg: &Message) -> bool {
+        msg.message_type() == message::Type::MethodCall && !self.has(Self::SERVER)
+    }
+
+    /// Whether `other` are among these.
+    fn has(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// These, but for `other`.
+    fn without(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
+    }
+
+    /// Those that a byte of a record tells of.
+    fn from_record(byte: u8) -> Result<Self> {
+        if byte & !(Self::STREAM.0 | Self::SERVER.0) != 0 {
+            return Err(malformed());
+        }
+
+        Ok(Self(byte))
+    }
+}
+
+impl BitOr for Had {
+    type Output = Self;
+
+    fn bitor(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
+
+/// Whether `error`, which a read half failed with, is the end of the input: an I/O error of kind
+/// `UnexpectedEof`, as a half that can take out what it read reports it
+/// ([`ReadHalf::can_take_unread`]).
+pub(super) fn ends_input(error: &Error) -> bool {
+    matches!(error, Error::InputOutput(e) if e.kind() == io::ErrorKind::UnexpectedEof)
+}
+
+/// The error of what a connection that stopped reading can no longer do.
+pub(super) fn stopped_error() -> Error {
+    io::Error::new(
+        io::ErrorKind::NotConnected,
+        "the connection stopped reading",
+    )
+    .into()
+}
+
+/// A new descriptor of `source`, for the socket to outlive the one that zbus closes.
+fn dup(source: &IoSource) -> io::Result<OwnedFd> {
+    source.as_fd().try_clone_to_owned()
+}
+
+/// How many bytes `msgs` come to.
+fn len_of<'m>(msgs: impl IntoIterator<Item = &'m Message>) -> usize {
+    msgs.into_iter().map(|msg| msg.data().len()).sum()
+}
+
+/// How many file descriptors `msgs` carry.
+fn fd_count_of<'m>(msgs: impl IntoIterator<Item = &'m Message>) -> usize {
+    msgs.into_iter().map(|msg| msg.data().fds().len()).sum()
+}
+
+/// The file descriptors that `msgs` carry, in their order.
+fn fds_of<'m>(msgs: impl IntoIterator<Item = &'m Message>) -> impl Iterator<Item = BorrowedFd<'m>> {
+    msgs.into_iter()
+        .flat_map(|msg| msg.data().fds())
+        .map(AsFd::as_fd)
+}
+
+// The record of a hand-over, as `Handover::save` copies it and `Handover::restore` reads it.
+//
+// Its integers are little-endian, and its offsets are from its start, so that it can be anywhere
+// in memory, at any address. Its header is:
+//
+//      0  8 bytes  `MAGIC`
+//      8  2 bytes  the major version of the format, `MAJOR`
+//     10  2 bytes  how long the header is, a multiple of 8: a later minor version of the format
+//                  adds fields at its end, which an earlier one skips
+//     12  4 bytes  the features of the format that the record needs, as bits, which a version of
+//                  zbus that doesn't know one of refuses: `HAD` and `UNPAIRED`
+//     16  8 bytes  how long the record is
+//     24  1 byte   the kind of socket: `UNIX_STREAM`, `TCP_STREAM` or, in a record with the
+//                  `UNPAIRED` feature only, `CHANNEL`
+//     25  1 byte   flags: `FD_PASSING` and `P2P`
+//     26  1 byte   how long the unique name is, `N`, 0 for none
+//     27  1 byte   0
+//     28  4 bytes  the serial number of the next message
+//     32  4 bytes  how many file descriptors come after that of the socket, if there is one
+//     36  4 bytes  how many messages were read and are handed over, `Q`
+//     40  4 bytes  how many file descriptors came in with what was read after them, the tail
+//     44  4 bytes  how many whole messages were left to write, `W`
+//     48  8 bytes  how long the inbound bytes are: those of the `Q` messages, then the tail
+//     56  8 bytes  how long the outbound bytes are: the rest of a message that a write ended in
+//                  the middle of, then the `W` messages
+//     64  8 bytes  how long that rest is
+//     72 32 bytes  the GUID of the server, in hex
+//    104  N bytes  the unique name (`NAME`), then zeros up to the end of the header
+//
+// Then comes a table, of the length and the number of file descriptors, in 4 bytes each, of each
+// of the `Q` messages, then of each of the `W` ones. Then, in a record with the `HAD` feature
+// only, a byte for each of the `Q` messages, which tells who had it (`Had`), and zeros up to a
+// multiple of 8. Then the inbound bytes, and zeros up to a multiple of 8, then the outbound bytes,
+// and zeros up to a multiple of 8, which ends the record.
+//
+// The file descriptors that go with the record are that of the socket, then those of the `Q`
+// messages, in their order, then those of the tail, then those of the `W` messages, in their order.
+//
+// A record of the `CHANNEL` kind has no socket, and no file descriptor of one: the whole messages
+// that the channel held for the connection are the end of its tail. Such a record is only ever
+// that of one end of a channel, inside the record of a `ChannelHandover`, which is, little-endian:
+//
+//   offset  size     field
+//      0  8 bytes  `CHANNEL_MAGIC`
+//      8  2 bytes  the version of the format, `CHANNEL_VERSION`
+//     10  2 bytes  0
+//     12  4 bytes  how many file descriptors the record of the first end has, `F1`
+//     16  4 bytes  how many file descriptors the record of the second end has, `F2`
+//     20  4 bytes  0
+//     24  8 bytes  how long the record of the first end is, `L1`, a multiple of 8
+//     32  8 bytes  how long the record of the second end is, `L2`, a multiple of 8
+//     40  L1       the record of the first end
+//          L2       the record of the second end
+//
+// The file descriptors that go with it are the `F1` of the first end, then the `F2` of the second
+// one.
+
+/// How the record of a hand-over is laid out: the lengths that its header gives.
+struct Layout {
+    /// How long the header is, with the unique name and the zeros after it.
+    header_len: usize,
+    /// The features of the format that the record needs.
+    features: u32,
+    /// How long what tells who had each of the messages is, with the zeros after it: nothing in a
+    /// record without the `HAD` feature.
+    had_len: usize,
+    /// How long the bytes that were read off the socket are.
+    inbound: usize,
+    /// How long the bytes left to write are.
+    outbound: usize,
+    /// How long the whole record is.
+    len: usize,
+}
+
+/// Memory that a record is copied into, from its start on.
+struct Record<'d>(&'d mut [u8]);
+
+impl Record<'_> {
+    /// Copy `bytes` into the memory, after what was copied into it before.
+    fn put(&mut self, bytes: &[u8]) {
+        let (head, rest) = mem::take(&mut self.0).split_at_mut(bytes.len());
+        head.copy_from_slice(bytes);
+        self.0 = rest;
+    }
+
+    /// Zero the next `len` bytes of the memory.
+    fn zeros(&mut self, len: usize) {
+        let (head, rest) = mem::take(&mut self.0).split_at_mut(len);
+        head.fill(0);
+        self.0 = rest;
+    }
+}
+
+/// The `N` bytes of `record` at `at`.
+fn field<const N: usize>(record: &[u8], at: usize) -> Result<[u8; N]> {
+    let bytes = bytes(record, at, N)?;
+
+    Ok(bytes
+        .try_into()
+        .expect("the bytes of a field are as many as it has"))
+}
+
+/// The length of 8 bytes of `record` at `at`.
+fn len_at(record: &[u8], at: usize) -> Result<usize> {
+    usize::try_from(u64::from_le_bytes(field(record, at)?)).map_err(|_| malformed())
+}
+
+/// The `len` bytes of `record` at `at`.
+fn bytes(record: &[u8], at: usize, len: usize) -> Result<&[u8]> {
+    at.checked_add(len)
+        .and_then(|end| record.get(at..end))
+        .ok_or_else(malformed)
+}
+
+/// The `len` bytes of `record` at `at`, which zeros follow up to a multiple of 8, and where those
+/// end.
+fn section(record: &[u8], at: usize, len: usize) -> Result<(&[u8], usize)> {
+    let padded = len.checked_next_multiple_of(8).ok_or_else(malformed)?;
+    let (section, padding) = bytes(record, at, padded)?.split_at(len);
+    if padding.iter().any(|byte| *byte != 0) {
+        return Err(malformed());
+    }
+
+    Ok((section, at + padded))
+}
+
+/// The message that `entry` of the table of a record tells of, which `bytes` start with, with as
+/// many of `fds` as the entry counts, which it takes off them.
+fn framed(
+    entry: &[u8],
+    bytes: &mut &[u8],
+    fds: &mut impl Iterator<Item = OwnedFd>,
+) -> Result<Message> {
+    let (len, count) = entry.split_at(4);
+    let len = u32::from_le_bytes(len.try_into().expect("4 bytes")) as usize;
+    let count = u32::from_le_bytes(count.try_into().expect("4 bytes")) as usize;
+    let (msg, rest) = bytes.split_at_checked(len).ok_or_else(malformed)?;
+    *bytes = rest;
+    // The table gives each message the length that its primary header says that it has.
+    if len < MIN_MESSAGE_SIZE {
+        return Err(malformed());
+    }
+    let (primary_header, whole) = read_primary_header(msg).map_err(|_| malformed())?;
+    let msg_fds: Vec<_> = fds.by_ref().take(count).collect();
+    if whole != len || msg_fds.len() != count {
+        return Err(malformed());
+    }
+    let ctxt = Context::new(Endian::from(primary_header.endian_sig()), 0);
+    let data = Data::new_fds(msg.to_vec(), ctxt, msg_fds);
+    let msg = Message::from_raw_parts(data, 0).map_err(|_| malformed())?;
+    // A message carries as many descriptors as its header counts.
+    if msg.header().unix_fds().unwrap_or(0) as usize != count {
+        return Err(malformed());
+    }
+
+    Ok(msg)
+}
+
+/// The error of a record, or of file descriptors, that [`Restore::restore`] can make no hand-over
+/// of.
+///
+/// [`Restore::restore`]: zoter::Restore::restore
+fn malformed() -> Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        "not the record of a hand-over and its file descriptors",
+    )
+    .into()
+}
+
+/// The error, for `reason`, of memory that [`Save::save`] can't copy a record into.
+///
+/// [`Save::save`]: zoter::Save::save
+fn invalid_input(reason: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, reason)
+}
+
+/// The bytes that a record starts with.
+const MAGIC: &[u8; 8] = b"zbus-hov";
+/// The major version of the format of the record, which a version of zbus refuses a record of a
+/// later one of, as it can't read it.
+const MAJOR: u16 = 1;
+/// What the record of a `ChannelHandover` starts with.
+#[cfg(feature = "p2p")]
+const CHANNEL_MAGIC: &[u8; 8] = b"zbus-chn";
+/// The version of the format of the record of a `ChannelHandover`, which a version of zbus refuses
+/// a record of a later one of, as it can't read it.
+#[cfg(feature = "p2p")]
+const CHANNEL_VERSION: u16 = 1;
+/// How long the header of the record of a `ChannelHandover` is, which the records of its two ends
+/// come after.
+#[cfg(feature = "p2p")]
+const CHANNEL_HEADER: usize = 40;
+/// The features of the format of the record that this version of zbus knows, as the bits of those
+/// that a record needs.
+#[cfg(feature = "p2p")]
+const KNOWN_FEATURES: u32 = HAD | UNPAIRED;
+/// The features of the format of the record that this version of zbus knows, as the bits of those
+/// that a record needs: without the `p2p` feature, there is no channel for a hand-over to go on
+/// over.
+#[cfg(not(feature = "p2p"))]
+const KNOWN_FEATURES: u32 = HAD;
+/// The feature of a record that tells who had each of the messages that it hands over. A record of
+/// messages that nobody had does without it, so that every version of zbus restores it.
+const HAD: u32 = 1;
+/// The feature of the record of a hand-over that is off its channel, which has no socket.
+#[cfg(feature = "p2p")]
+const UNPAIRED: u32 = 2;
+/// Where the unique name starts in a record, after the fields that every header has.
+const NAME: usize = 104;
+/// The kind of socket of a record of a unix-domain stream.
+const UNIX_STREAM: u8 = 0;
+/// The kind of socket of a record of a TCP stream.
+const TCP_STREAM: u8 = 1;
+/// The kind of socket of the record of a hand-over that is off its channel.
+const CHANNEL: u8 = 2;
+/// The flag of a record of a connection whose two ends agreed to pass file descriptors.
+const FD_PASSING: u8 = 1;
+/// The flag of a record of a peer-to-peer connection.
+const P2P: u8 = 2;
+
+/// The error of a hand-over of a connection whose socket may hold part of a message.
+fn torn() -> Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        "a send was cut off midway: the socket may hold part of a message",
+    )
+    .into()
+}
+
+/// The error of a hand-over through a stream of a connection that had another stream without a
+/// match rule while it stopped reading.
+fn shared() -> Error {
+    not_connected(
+        "another stream of the connection, with no match rule, may have had messages that the \
+         hand-over holds",
+    )
+    .into()
+}
+
+/// The error, for `reason`, of what a connection can no longer do, or of a hand-over that the
+/// connection is not in a state for.
+fn not_connected(reason: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::NotConnected, reason)
+}
+
+#[cfg(all(test, feature = "p2p"))]
+mod tests {
+    use std::{
+        collections::VecDeque,
+        fmt::Debug,
+        future::Future,
+        io::{self, ErrorKind, IoSlice, Read, Write},
+        mem::MaybeUninit,
+        net::{Ipv4Addr, Shutdown, TcpListener, TcpStream},
+        num::{NonZeroU32, NonZeroUsize},
+        os::{
+            fd::{AsFd, BorrowedFd, OwnedFd},
+            unix::net::{UnixListener, UnixStream},
+        },
+        pin::{Pin, pin},
+        sync::Arc,
+        thread,
+        time::Duration,
+    };
+
+    use futures_util::StreamExt;
+    use ntest::timeout;
+    use test_log::test;
+
+    use zoter::{Restore, Save};
+
+    use super::{
+        CHANNEL, CHANNEL_HEADER, CHANNEL_MAGIC, CHANNEL_VERSION, ChannelHandover, HAD, Had,
+        Handover, HandoverSocket, KNOWN_FEATURES, MAJOR, NAME, ReaderEnd, TCP_STREAM, UNIX_STREAM,
+        UNPAIRED,
+    };
+    #[cfg(feature = "service")]
+    use crate::object_server::{ResponseDispatchNotifier, SignalEmitter};
+    #[cfg(feature = "service")]
+    use crate::runtime::test_runtime::Gate;
+    #[cfg(feature = "service")]
+    use crate::runtime::traits::TaskHandle;
+    use crate::{
+        Address, Connection, Error, Guid, MatchRule, Message, MessageStream, Result,
+        address::transport::{Transport, Unix, UnixSocket},
+        connection::{
+            AuthMechanism, Builder,
+            socket::{BoxedSplit, Channel, ReadHalf, RecvmsgResult, Split, WriteHalf},
+            socket_write::Unwritten,
+        },
+        message::{Type, header::next_serial},
+        runtime::{
+            Runtime,
+            io::{Reader, RegisteredIo, UnixOps, registered},
+            test_runtime::{AbortingRuntime, GatedRuntime, TestRuntime, under_every_runtime},
+        },
+    };
+
+    /// A method call that waits for its reply fails once a hand-over stops the connection reading,
+    /// and once the connection is handed over, calls fail before they are sent, and so does a
+    /// stream for a match rule.
+    #[test]
+    #[timeout(15000)]
+    fn a_call_that_waits_for_its_reply_fails_once_the_connection_stops() {
+        under_every_runtime(|runtime| async move {
+            let (mut stream, peer) = channel_pair(&runtime).await;
+            let conn = Connection::from(&stream);
+            let mut peer_stream = MessageStream::from(&peer);
+
+            // Nothing ever answers this call, so only the stop can end the wait for its reply. The
+            // peer seeing the call is what says it is registered and away.
+            let calling = conn.call_method(None::<()>, PATH, Some(INTERFACE), "NoReply", &());
+            let handing_over = async {
+                let call = peer_stream.next().await.unwrap().unwrap();
+                assert_eq!(call.header().member().unwrap().as_str(), "NoReply");
+
+                stream.hand_over().await.unwrap()
+            };
+            let (reply, _handover) = futures_util::future::join(calling, handing_over).await;
+            assert_not_connected(reply);
+
+            let late = conn
+                .call_method(None::<()>, PATH, Some(INTERFACE), "Late", &())
+                .await;
+            assert_not_connected(late);
+            assert_not_connected(MessageStream::for_match_rule(signals(), &conn, None).await);
+        });
+    }
+
+    /// A connection whose peer closed its end, once it sent a last message, is handed over with
+    /// that message, which the stream did not yield, though it came to the end of the input before
+    /// the hand-over. Its streams end on that end then, as another stream, let go of before the
+    /// hand-over, shows, and so do the calls made since. A stream made after that end, which gets
+    /// nothing, doesn't stand in the way of the hand-over. A connection that takes over yields the
+    /// message, then comes to the same end.
+    #[test]
+    #[timeout(15000)]
+    fn a_connection_whose_peer_went_is_handed_over_with_what_it_sent() {
+        under_every_runtime(|runtime| async move {
+            let (mut stream, peer) = channel_pair(&runtime).await;
+            let conn = Connection::from(&stream);
+            let msg = signal(1);
+            {
+                let mut other = MessageStream::from(&conn);
+
+                peer.send(&msg).await.unwrap();
+                peer.close().await.unwrap();
+
+                let received = other.next().await.unwrap().unwrap();
+                assert_eq!(&received.data()[..], &msg.data()[..]);
+                assert_end_of_input(other.next().await.unwrap());
+                assert!(other.next().await.is_none(), "the stream outlived its end");
+            }
+            {
+                // A stream made once the reader ended gets none of what it read, so it doesn't
+                // stand in the way of the hand-over.
+                let mut late = MessageStream::from(&conn);
+                assert!(late.next().await.is_none(), "a late stream got a message");
+            }
+            let call = conn
+                .call_method(None::<()>, PATH, Some(INTERFACE), "Late", &())
+                .await;
+            assert_end_of_input(call);
+            assert_broken_pipe(MessageStream::for_match_rule(signals(), &conn, None).await);
+            let handover = stream.hand_over().await.unwrap();
+            assert_eq!(handover.unread_len(), msg.data().len());
+            assert_eq!(unread(&handover), &msg.data()[..]);
+            assert!(
+                stream.next().await.is_none(),
+                "the stream outlived the hand-over"
+            );
+            let mut stream = on(Builder::take_over(handover), &runtime)
+                .build_message_stream()
+                .await
+                .unwrap();
+            let received = stream.next().await.unwrap().unwrap();
+            assert_eq!(&received.data()[..], &msg.data()[..]);
+            assert_end_of_input(stream.next().await.unwrap());
+            assert!(stream.next().await.is_none(), "the stream outlived its end");
+        });
+    }
+
+    /// A connection whose peer closed its end of the socket is handed over with what it read, the
+    /// part of a message included, and the socket, which holds the rest up to that end, whether
+    /// the connection came to the end before the hand-over or as the hand-over stopped it, and
+    /// whatever the peer sent before. A connection that takes over, in this process or through the
+    /// record of the hand-over, yields the message that the peer sent whole, then comes to the
+    /// same end.
+    #[test]
+    #[timeout(15000)]
+    fn a_connection_whose_peer_closed_its_end_is_handed_over() {
+        under_every_runtime(|runtime| async move {
+            for (ended, record) in [(true, false), (false, false), (true, true), (false, true)] {
+                for (whole, cut) in [(true, 0), (true, 10), (false, 10), (false, 0)] {
+                    let (mut stream, peer, _probe) = served(&runtime).await;
+                    let conn = Connection::from(&stream);
+                    let (last, next) = (signal(1), signal(2));
+                    let mut sent = if whole { last.data().to_vec() } else { vec![] };
+                    sent.extend_from_slice(&next.data()[..cut]);
+
+                    (&peer).write_all(&sent).unwrap();
+                    peer.shutdown(Shutdown::Write).unwrap();
+                    if ended {
+                        conn.closed().await;
+                    }
+                    let handover = stream.hand_over().await.unwrap();
+
+                    let case =
+                        format!("ended: {ended}, record: {record}, whole: {whole}, cut: {cut}");
+                    assert!(stream.next().await.is_none(), "{case}");
+                    assert!(
+                        matches!(handover.socket, HandoverSocket::UnixStream(_)),
+                        "{case}: a unix socket was handed over as {:?}",
+                        handover.socket,
+                    );
+                    // What the connection didn't read is still in the socket, up to its end.
+                    assert!(sent.starts_with(&unread(&handover)), "{case}");
+                    let handover = if record {
+                        through_a_record(handover, 5)
+                    } else {
+                        handover
+                    };
+                    let mut stream = on(Builder::take_over(handover), &runtime)
+                        .build_message_stream()
+                        .await
+                        .unwrap();
+                    if whole {
+                        let received = stream.next().await.unwrap().unwrap();
+                        assert_eq!(&received.data()[..], &last.data()[..], "{case}");
+                    }
+                    assert_end_of_input(stream.next().await.unwrap());
+                    assert!(stream.next().await.is_none(), "{case}");
+                }
+            }
+        });
+    }
+
+    /// A connection whose peer went, once it sent a last message, is handed over with that
+    /// message and the socket, though a send to the peer failed since: the peer receives nothing
+    /// more, so nothing follows what the send may have left in the socket. A connection that takes
+    /// over yields the message, then comes to the same end.
+    #[test]
+    #[timeout(15000)]
+    fn a_connection_whose_peer_went_is_handed_over_once_a_send_to_it_failed() {
+        under_every_runtime(|runtime| async move {
+            let (mut stream, peer, _probe) = served(&runtime).await;
+            let conn = Connection::from(&stream);
+            let last = signal(1);
+
+            // The peer read all that the connection sent it, the answer to its handshake, so it
+            // ends what it sends as it goes.
+            (&peer).write_all(&last.data()[..]).unwrap();
+            drop(peer);
+            conn.closed().await;
+            assert_broken_pipe(conn.send(&signal(2)).await);
+            let handover = stream.hand_over().await.unwrap();
+
+            assert_eq!(unread(&handover), &last.data()[..]);
+            let mut stream = on(Builder::take_over(handover), &runtime)
+                .build_message_stream()
+                .await
+                .unwrap();
+            let received = stream.next().await.unwrap().unwrap();
+            assert_eq!(&received.data()[..], &last.data()[..]);
+            assert_end_of_input(stream.next().await.unwrap());
+            assert!(stream.next().await.is_none(), "the stream outlived its end");
+        });
+    }
+
+    /// A connection whose peer went without reading what the connection sent it, once it sent a
+    /// last message, is handed over with that message: Linux tells the connection that the peer
+    /// went with a reset, but only once it read all that the peer sent.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    #[timeout(15000)]
+    fn a_connection_whose_peer_went_with_messages_unread_is_handed_over() {
+        under_every_runtime(|runtime| async move {
+            let (mut stream, peer, _probe) = served(&runtime).await;
+            let conn = Connection::from(&stream);
+            let last = signal(1);
+
+            conn.send(&signal(2)).await.unwrap();
+            (&peer).write_all(&last.data()[..]).unwrap();
+            drop(peer);
+            conn.closed().await;
+            let handover = stream.hand_over().await.unwrap();
+
+            assert_eq!(unread(&handover), &last.data()[..]);
+            let mut stream = on(Builder::take_over(handover), &runtime)
+                .build_message_stream()
+                .await
+                .unwrap();
+            let received = stream.next().await.unwrap().unwrap();
+            assert_eq!(&received.data()[..], &last.data()[..]);
+            assert_end_of_input(stream.next().await.unwrap());
+            assert!(stream.next().await.is_none(), "the stream outlived its end");
+        });
+    }
+
+    /// A connection over a read half that can't take out what it read isn't handed over, and
+    /// reads on as if no hand-over had been asked for.
+    #[test]
+    #[timeout(15000)]
+    fn a_connection_that_cant_stop_reading_reads_on() {
+        under_every_runtime(|runtime| async move {
+            let (peer, theirs) = UnixStream::pair().unwrap();
+            let split = recvmsg_only(&runtime, theirs, false);
+            let mut stream = on(
+                Builder::authenticated_socket(split, Guid::generate()),
+                &runtime,
+            )
+            .p2p()
+            .build_message_stream()
+            .await
+            .unwrap();
+            let conn = Connection::from(&stream);
+            let mut other = MessageStream::from(&conn);
+
+            let handed_over = stream.hand_over().await;
+
+            assert!(
+                matches!(handed_over, Err(Error::Unsupported)),
+                "{handed_over:?}"
+            );
+            let mut matching = MessageStream::for_match_rule(signals(), &conn, None)
+                .await
+                .unwrap();
+            let msg = signal(1);
+            (&peer).write_all(&msg.data()[..]).unwrap();
+            for stream in [&mut other, &mut matching] {
+                let received = stream.next().await.unwrap().unwrap();
+                assert_eq!(&received.data()[..], &msg.data()[..]);
+            }
+        });
+    }
+
+    /// A stream for a match rule never had the messages that didn't match it, so it isn't handed
+    /// over, and the connection reads on.
+    #[test]
+    #[timeout(15000)]
+    fn a_stream_for_a_match_rule_is_not_handed_over() {
+        under_every_runtime(|runtime| async move {
+            let (mut stream, peer) = channel_pair(&runtime).await;
+            let conn = Connection::from(&stream);
+            let mut matching = MessageStream::for_match_rule(signals(), &conn, None)
+                .await
+                .unwrap();
+
+            let handed_over = matching.hand_over().await;
+
+            assert!(
+                matches!(handed_over, Err(Error::Unsupported)),
+                "{handed_over:?}"
+            );
+            let msg = signal(1);
+            peer.send(&msg).await.unwrap();
+            let received = stream.next().await.unwrap().unwrap();
+            assert_eq!(&received.data()[..], &msg.data()[..]);
+        });
+    }
+
+    /// The messages queued on a full stream, which a reader that read more waits for room in, are
+    /// taken off it by the hand-over itself, which lets the reader stop. They are handed over as
+    /// messages, those that the reader read after them too, and nothing is written to the socket.
+    /// A connection that takes over yields them first.
+    #[test]
+    #[timeout(15000)]
+    fn a_full_stream_is_handed_over_with_what_it_queued() {
+        under_every_runtime(|runtime| async move {
+            // However many of the messages the stream yielded before the hand-over.
+            for taken in [0, 1] {
+                let (peer, theirs) = UnixStream::pair().unwrap();
+                // What the reader is yet to take off the socket is read through a descriptor of
+                // its own.
+                let probe = theirs.try_clone().unwrap();
+                let socket = registered(&runtime, theirs, UnixOps).unwrap();
+                let mut stream = on(
+                    Builder::authenticated_socket(socket, Guid::generate()),
+                    &runtime,
+                )
+                .p2p()
+                .max_queued(NonZeroUsize::MIN)
+                .build_message_stream()
+                .await
+                .unwrap();
+                let conn = Connection::from(&stream);
+                let msgs = [1, 2, 3, 4].map(signal);
+
+                // The first message fills the queue of the stream.
+                (&peer).write_all(&msgs[0].data()[..]).unwrap();
+                wait_until(|| conn.inner.msg_receiver.is_full());
+                // The reader takes in the others at once, and waits for room for the second.
+                let rest: Vec<u8> = msgs[1..]
+                    .iter()
+                    .flat_map(|msg| msg.data().to_vec())
+                    .collect();
+                (&peer).write_all(&rest).unwrap();
+                wait_until(|| rustix::io::ioctl_fionread(&probe).unwrap() == 0);
+                for sent in &msgs[..taken] {
+                    let received = stream.next().await.unwrap().unwrap();
+                    assert_eq!(&received.data()[..], &sent.data()[..]);
+                }
+
+                let handover = stream.hand_over().await.unwrap();
+
+                let left: Vec<u8> = msgs[taken..]
+                    .iter()
+                    .flat_map(|msg| msg.data().to_vec())
+                    .collect();
+                assert_eq!(unread(&handover), left, "taken: {taken}");
+                assert!(!handover.queued.is_empty(), "taken: {taken}");
+                peer.set_nonblocking(true).unwrap();
+                let read = (&peer).read(&mut [0; 1]);
+                assert!(
+                    matches!(&read, Err(e) if e.kind() == ErrorKind::WouldBlock),
+                    "the peer got something: {read:?}",
+                );
+                // Only a stream set up before the connection is built is sure to get the messages
+                // that it takes over whole.
+                let mut stream = on(Builder::take_over(handover), &runtime)
+                    .build_message_stream()
+                    .await
+                    .unwrap();
+                for sent in &msgs[taken..] {
+                    let received = stream.next().await.unwrap().unwrap();
+                    assert_eq!(&received.data()[..], &sent.data()[..]);
+                }
+            }
+        });
+    }
+
+    /// The messages queued on the stream, which it didn't yield, are handed over with their file
+    /// descriptors, in their order, ahead of the part of a message that the reader read, and of
+    /// the descriptors that came with that, which `fds` gives in that order, after that of the
+    /// socket. A connection that takes over, in this process or through the record of the
+    /// hand-over, yields each message with its own descriptors.
+    #[test]
+    #[timeout(15000)]
+    fn messages_queued_on_the_stream_are_handed_over_with_their_descriptors() {
+        under_every_runtime(|runtime| async move {
+            for record in [false, true] {
+                let (mut stream, peer, probe) = served(&runtime).await;
+                let conn = Connection::from(&stream);
+                let pipes = [pipe(), pipe(), pipe(), pipe()];
+                let fd = |i: usize| crate::Fd::from(&pipes[i]);
+                let msgs = [
+                    Message::signal(PATH, INTERFACE, "WithFds")
+                        .build(&fd(0))
+                        .unwrap(),
+                    Message::signal(PATH, INTERFACE, "WithFds")
+                        .build(&(fd(1), fd(2)))
+                        .unwrap(),
+                    Message::signal(PATH, INTERFACE, "WithFds")
+                        .build(&fd(3))
+                        .unwrap(),
+                ];
+                let fds: Vec<Vec<_>> = msgs
+                    .iter()
+                    .map(|msg| msg.data().fds().iter().map(AsFd::as_fd).collect())
+                    .collect();
+
+                send_with_fds(&peer, &msgs[0].data()[..], &fds[0]);
+                send_with_fds(&peer, &msgs[1].data()[..], &fds[1]);
+                wait_until(|| conn.inner.msg_receiver.len() == 2);
+                // The descriptors go with the first bytes of a message, as D-Bus has it.
+                send_with_fds(&peer, &msgs[2].data()[..20], &fds[2]);
+                wait_until(|| rustix::io::ioctl_fionread(&probe).unwrap() == 0);
+
+                let handover = stream.hand_over().await.unwrap();
+
+                let sent = [
+                    &msgs[0].data()[..],
+                    &msgs[1].data()[..],
+                    &msgs[2].data()[..20],
+                ]
+                .concat();
+                assert_eq!(unread(&handover), sent, "record: {record}");
+                assert_eq!(handover.queued.len(), 2, "record: {record}");
+                assert_eq!(handover.tail, &msgs[2].data()[..20], "record: {record}");
+                assert_eq!(handover.fds().len(), 1 + pipes.len());
+                let inodes: Vec<_> = handover
+                    .fds()
+                    .into_iter()
+                    .skip(1)
+                    .map(|fd| inode(&fd))
+                    .collect();
+                assert_eq!(inodes, pipes.each_ref().map(inode), "record: {record}");
+                drop(conn);
+                let handover = if record {
+                    through_a_record(handover, 0)
+                } else {
+                    handover
+                };
+                let mut stream = on(Builder::take_over(handover), &runtime)
+                    .build_message_stream()
+                    .await
+                    .unwrap();
+                (&peer).write_all(&msgs[2].data()[20..]).unwrap();
+                for sent in &msgs {
+                    let received = stream.next().await.unwrap().unwrap();
+                    assert_eq!(&received.data()[..], &sent.data()[..]);
+                    let inodes: Vec<_> = received.data().fds().iter().map(inode).collect();
+                    let sent: Vec<_> = sent.data().fds().iter().map(inode).collect();
+                    assert_eq!(inodes, sent, "record: {record}");
+                }
+            }
+        });
+    }
+
+    /// The messages that a connection hands over are the messages that its stream had queued, not
+    /// copies of their bytes, and so are those that a connection that takes over in this process
+    /// yields, at positions among its own.
+    #[test]
+    #[timeout(15000)]
+    fn queued_messages_are_handed_over_as_they_are() {
+        under_every_runtime(|runtime| async move {
+            let (mut stream, peer) = channel_pair(&runtime).await;
+            let msgs = [signal(1), signal(2)];
+            // A clone has the messages that the stream has queued, and goes before the hand-over.
+            let queued = {
+                let mut probe = stream.clone();
+                for msg in &msgs {
+                    peer.send(msg).await.unwrap();
+                }
+
+                [
+                    probe.next().await.unwrap().unwrap(),
+                    probe.next().await.unwrap().unwrap(),
+                ]
+            };
+
+            let handover = stream.hand_over().await.unwrap();
+
+            let bytes = |msg: &Message| msg.data().as_ptr();
+            assert_eq!(
+                handover.queued().map(bytes).collect::<Vec<_>>(),
+                queued.iter().map(bytes).collect::<Vec<_>>(),
+            );
+            let mut stream = on(Builder::take_over(handover), &runtime)
+                .build_message_stream()
+                .await
+                .unwrap();
+            let received = [
+                stream.next().await.unwrap().unwrap(),
+                stream.next().await.unwrap().unwrap(),
+            ];
+            assert_eq!(
+                received.iter().map(bytes).collect::<Vec<_>>(),
+                queued.iter().map(bytes).collect::<Vec<_>>(),
+            );
+            assert!(
+                received[0].recv_position() < received[1].recv_position(),
+                "{received:?}"
+            );
+        });
+    }
+
+    /// A connection that took over is handed over in turn with the messages that it was handed
+    /// and has yet to yield: those that its stream had queued, then those that its reader had yet
+    /// to queue, which those had who had them before, then what was read after them. A connection
+    /// that takes over from that hand-over yields all of them, in order.
+    #[test]
+    #[timeout(15000)]
+    fn a_connection_that_took_over_hands_over_what_it_is_yet_to_yield() {
+        under_every_runtime(|runtime| async move {
+            let msgs = [1, 2, 3, 4].map(signal);
+            let tail = &msgs[3].data()[..10];
+            let (ours, peer) = UnixStream::pair().unwrap();
+            let mut handover = handover(HandoverSocket::UnixStream(ours), true);
+            handover.queued = nobody_had(&msgs[..3]);
+            handover.queued[2].1 = Had::SERVER;
+            handover.tail = tail.to_vec();
+            // The stream of the connection that takes over has room for one message, so its
+            // reader waits for room for the second, with the third still to queue.
+            let mut stream = on(Builder::take_over(handover), &runtime)
+                .max_queued(NonZeroUsize::MIN)
+                .build_message_stream()
+                .await
+                .unwrap();
+            let conn = Connection::from(&stream);
+            wait_until(|| conn.inner.msg_receiver.is_full());
+
+            let handover = stream.hand_over().await.unwrap();
+
+            let had: Vec<_> = handover.queued.iter().map(|(_, had)| *had).collect();
+            assert_eq!(had, [Had::NONE, Had::NONE, Had::SERVER]);
+            assert_eq!(
+                unread(&handover),
+                [concat(&msgs[..3]), tail.to_vec()].concat()
+            );
+            drop(conn);
+            let mut stream = on(Builder::take_over(handover), &runtime)
+                .build_message_stream()
+                .await
+                .unwrap();
+            (&peer).write_all(&msgs[3].data()[10..]).unwrap();
+            for sent in &msgs {
+                let received = stream.next().await.unwrap().unwrap();
+                assert_eq!(&received.data()[..], &sent.data()[..]);
+            }
+        });
+    }
+
+    /// A connection that stopped in the middle of a message hands over its socket with the part
+    /// of the message that it read, and a connection that takes over goes on with that message.
+    #[test]
+    #[timeout(15000)]
+    fn a_message_cut_short_is_handed_over() {
+        under_every_runtime(|runtime| async move {
+            hand_over_in_the_middle_of(&runtime, &signal(2), 10).await;
+        });
+    }
+
+    /// As for a message that fits in the buffer of the reader, but for one that doesn't, of which
+    /// as much as came in is handed over in the allocation of the message, which has room for the
+    /// rest of it.
+    #[test]
+    #[timeout(15000)]
+    fn a_long_message_cut_short_is_handed_over() {
+        under_every_runtime(|runtime| async move {
+            let long = Message::signal(PATH, INTERFACE, "Long")
+                .build(&vec![7u8; 10 * 1024])
+                .unwrap();
+
+            let room = hand_over_in_the_middle_of(&runtime, &long, 6000).await;
+
+            assert_eq!(
+                room,
+                long.data().len(),
+                "the hand-over has no room for the rest of the message",
+            );
+        });
+    }
+
+    /// The file descriptors that came in with the part of a message that was read are handed over
+    /// with it, in the order that they came in, and the message carries them once a connection
+    /// that takes over has the rest of it.
+    #[test]
+    #[timeout(15000)]
+    fn descriptors_that_came_in_are_handed_over() {
+        under_every_runtime(|runtime| async move {
+            let (mut stream, peer, probe) = served(&runtime).await;
+            let pipes = [pipe(), pipe()];
+            let msg = Message::signal(PATH, INTERFACE, "WithFds")
+                .build(&(crate::Fd::from(&pipes[0]), crate::Fd::from(&pipes[1])))
+                .unwrap();
+            let fds: Vec<_> = msg.data().fds().iter().map(AsFd::as_fd).collect();
+
+            // The descriptors go with the first bytes of the message, as D-Bus has it.
+            send_with_fds(&peer, &msg.data()[..20], &fds);
+            wait_until(|| rustix::io::ioctl_fionread(&probe).unwrap() == 0);
+            let handover = stream.hand_over().await.unwrap();
+
+            assert_eq!(unread(&handover), &msg.data()[..20]);
+            let inodes: Vec<_> = handover
+                .fds()
+                .into_iter()
+                .skip(1)
+                .map(|fd| inode(&fd))
+                .collect();
+            assert_eq!(inodes, pipes.each_ref().map(inode));
+            let mut stream = on(Builder::take_over(handover), &runtime)
+                .build_message_stream()
+                .await
+                .unwrap();
+            (&peer).write_all(&msg.data()[20..]).unwrap();
+            let received = stream.next().await.unwrap().unwrap();
+            assert_eq!(&received.data()[..], &msg.data()[..]);
+            let inodes: Vec<_> = received.data().fds().iter().map(inode).collect();
+            assert_eq!(inodes, pipes.each_ref().map(inode));
+        });
+    }
+
+    /// Once a connection is handed over, nothing is written to its socket through it or through
+    /// any clone of it, and closing it leaves the socket alone: the peer sees the connection go
+    /// only once the socket that was handed over is dropped.
+    #[test]
+    #[timeout(15000)]
+    fn nothing_is_written_once_the_connection_is_handed_over() {
+        under_every_runtime(|runtime| async move {
+            let (mut stream, peer, probe) = served(&runtime).await;
+            // Only the socket that is handed over is to keep the connection open.
+            drop(probe);
+            let conn = Connection::from(&stream);
+            let clone = conn.clone();
+
+            let handover = stream.hand_over().await.unwrap();
+
+            let msg = signal(1);
+            assert_not_connected(conn.send(&msg).await);
+            assert_not_connected(clone.send(&msg).await);
+            assert_not_connected(clone.send_all(&[msg]).await);
+            assert_not_connected(conn.flush().await);
+            // The server of a connection has the credentials of its peer from the handshake.
+            conn.peer_creds().await.unwrap();
+            clone.close().await.unwrap();
+            peer.set_nonblocking(true).unwrap();
+            let read = (&peer).read(&mut [0; 1]);
+            assert!(
+                matches!(&read, Err(e) if e.kind() == ErrorKind::WouldBlock),
+                "the peer got {read:?}",
+            );
+            drop(handover);
+            let read = (&peer).read(&mut [0; 1]);
+            assert!(matches!(read, Ok(0)), "the peer got {read:?}");
+        });
+    }
+
+    /// A connection over a TCP socket that zbus drives itself, built with `Builder::tcp_stream`,
+    /// hands over a new descriptor of the socket as a TCP stream, whose record says so.
+    #[test]
+    #[timeout(15000)]
+    fn a_tcp_stream_is_handed_over_as_one() {
+        under_every_runtime(|runtime| async move {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let ours = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let theirs = listener.accept().unwrap().0;
+            let guid = Guid::generate();
+            let (mut stream, peer) = futures_util::try_join!(
+                on(Builder::tcp_stream(ours).p2p(), &runtime).build_message_stream(),
+                on(
+                    Builder::tcp_stream(theirs)
+                        .server(&guid)
+                        .p2p()
+                        .auth_mechanism(AuthMechanism::Anonymous),
+                    &runtime,
+                )
+                .build(),
+            )
+            .unwrap();
+
+            let handover = stream.hand_over().await.unwrap();
+
+            assert_eq!(saved(&handover).0[24], TCP_STREAM);
+            match handover.socket {
+                HandoverSocket::TcpStream(socket) => carries_what_is_sent(socket, &peer).await,
+                socket => panic!("a TCP socket was handed over as {socket:?}"),
+            }
+        });
+    }
+
+    /// A connection to a `unix:` address hands over a new descriptor of its socket as a unix
+    /// stream, whose record says so.
+    #[test]
+    #[timeout(15000)]
+    fn a_connection_to_a_unix_address_is_handed_over_as_a_unix_stream() {
+        under_every_runtime(|runtime| async move {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("socket");
+            let listener = UnixListener::bind(&path).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let address = Address::from(Transport::Unix(Unix::new(UnixSocket::File(path))));
+            let guid = Guid::generate();
+            // The connection connects to the listener as it is built, which may be after this is
+            // first polled.
+            let serving = async {
+                let theirs = loop {
+                    match listener.accept() {
+                        Ok((theirs, _)) => break theirs,
+                        Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                            runtime.sleep(Duration::from_millis(1)).await;
+                        }
+                        Err(e) => panic!("the listener failed: {e}"),
+                    }
+                };
+
+                on(Builder::unix_stream(theirs).server(&guid).p2p(), &runtime)
+                    .build()
+                    .await
+            };
+            let (mut stream, peer) = futures_util::try_join!(
+                on(Builder::address(address).p2p(), &runtime).build_message_stream(),
+                serving,
+            )
+            .unwrap();
+
+            let handover = stream.hand_over().await.unwrap();
+
+            assert_eq!(saved(&handover).0[24], UNIX_STREAM);
+            match handover.socket {
+                HandoverSocket::UnixStream(socket) => carries_what_is_sent(socket, &peer).await,
+                socket => panic!("a unix socket was handed over as {socket:?}"),
+            }
+        });
+    }
+
+    /// A send through a write half of your own that can't resume writes, cut off midway, keeps a
+    /// connection from being handed over, as the socket may hold a part of a message, of which the
+    /// peer could make no sense. The hand-over finds that out before it stops the connection
+    /// reading, so the connection reads on. It still sends, and closing it shuts the socket down.
+    #[test]
+    #[timeout(15000)]
+    fn a_send_cut_off_midway_keeps_the_connection_from_being_handed_over() {
+        under_every_runtime(|runtime| async move {
+            let (mut stream, peer) = over_a_socket_pair_of_your_own(&runtime).await;
+            let conn = Connection::from(&stream);
+            let big = big_signal();
+            {
+                let sending = pin!(conn.send(&big));
+                stuck(&runtime, sending, &peer).await;
+            }
+
+            let handed_over = stream.hand_over().await;
+
+            let Err(Error::InputOutput(e)) = &handed_over else {
+                panic!("a connection with a torn send was handed over: {handed_over:?}");
+            };
+            assert_eq!(e.kind(), ErrorKind::InvalidData, "{e}");
+            assert!(
+                !conn.is_closed(),
+                "the refused hand-over closed the connection"
+            );
+            let reading = MessageStream::for_match_rule(signals(), &conn, None).await;
+            assert!(
+                reading.is_ok(),
+                "the connection stopped reading: {reading:?}"
+            );
+            let sent = futures_lite::future::poll_once(pin!(conn.send(&signal(1)))).await;
+            assert!(
+                !matches!(sent, Some(Err(_))),
+                "the send was refused: {sent:?}"
+            );
+            conn.clone().close().await.unwrap();
+            // The peer gets what the socket holds, then sees it end.
+            let mut received = vec![];
+            (&peer).read_to_end(&mut received).unwrap();
+            assert!(received.len() < big.data().len());
+        });
+    }
+
+    /// A hand-over given up on while a send through a write half of your own that can't resume
+    /// writes holds the socket leaves the connection stopped: calls fail before they are sent, and
+    /// so does a stream for a match rule. The send goes on once the peer reads, and messages that
+    /// expect no reply still go out. The messages that the hand-over took off its stream stay with
+    /// the stream, so a hand-over through another stream, or through none, which would miss them,
+    /// fails, while one through the same stream hands the connection over with them.
+    #[test]
+    #[timeout(15000)]
+    fn a_hand_over_given_up_on_goes_on_through_its_stream() {
+        under_every_runtime(|runtime| async move {
+            let (mut stream, peer) = over_a_socket_pair_of_your_own(&runtime).await;
+            let conn = Connection::from(&stream);
+            let queued = queue_two(&conn, &peer);
+            let big = big_signal();
+            let mut sending = pin!(conn.send(&big));
+            stuck(&runtime, sending.as_mut(), &peer).await;
+
+            let given_up = runtime
+                .timeout(stream.hand_over(), Duration::from_millis(100))
+                .await;
+
+            let Err(Error::InputOutput(e)) = &given_up else {
+                panic!("the hand-over didn't wait for the send: {given_up:?}");
+            };
+            assert_eq!(e.kind(), ErrorKind::TimedOut, "{e}");
+            assert!(
+                !conn.is_closed(),
+                "the given up hand-over closed the connection"
+            );
+            let late = conn
+                .call_method(None::<()>, PATH, Some(INTERFACE), "Late", &())
+                .await;
+            assert_not_connected(late);
+            assert_not_connected(MessageStream::for_match_rule(signals(), &conn, None).await);
+            assert_not_connected(MessageStream::from(&conn).hand_over().await);
+            assert_not_connected(conn.clone().hand_over().await);
+            let len = big.data().len();
+            let reading = thread::spawn(move || {
+                let mut received = vec![0; len];
+                (&peer).read_exact(&mut received).unwrap();
+
+                (received, peer)
+            });
+            sending.await.unwrap();
+            let (received, peer) = reading.join().unwrap();
+            assert_eq!(received, &big.data()[..]);
+            // The late call never went out, so this is the next message that the peer gets.
+            let msg = signal(3);
+            conn.send(&msg).await.unwrap();
+            let mut received = vec![0; msg.data().len()];
+            (&peer).read_exact(&mut received).unwrap();
+            assert_eq!(received, &msg.data()[..]);
+
+            let handover = stream.hand_over().await.unwrap();
+
+            assert_eq!(unread(&handover), queued);
+            assert!(
+                stream.next().await.is_none(),
+                "the stream outlived the hand-over"
+            );
+        });
+    }
+
+    /// A hand-over that fails once it stopped the connection reading, as a send under way through
+    /// a write half of your own that can't resume writes is cut off midway, leaves the messages
+    /// that it took off its stream with the stream, which yields them, then ends.
+    #[test]
+    #[timeout(15000)]
+    fn a_failed_hand_over_leaves_the_messages_on_its_stream() {
+        under_every_runtime(|runtime| async move {
+            let (mut stream, peer) = over_a_socket_pair_of_your_own(&runtime).await;
+            let conn = Connection::from(&stream);
+            let queued = queue_two(&conn, &peer);
+            let big = big_signal();
+            let mut sending = Box::pin(conn.send(&big));
+            stuck(&runtime, sending.as_mut(), &peer).await;
+
+            // The hand-over is polled first, so it has stopped the connection reading, and taken
+            // the messages off the stream, by the time that the send is cut off.
+            let cutting = async { drop(sending) };
+            let (handed_over, ()) = futures_util::future::join(stream.hand_over(), cutting).await;
+
+            let Err(Error::InputOutput(e)) = &handed_over else {
+                panic!("a connection with a torn send was handed over: {handed_over:?}");
+            };
+            assert_eq!(e.kind(), ErrorKind::InvalidData, "{e}");
+            let mut received = vec![];
+            while let Some(msg) = stream.next().await {
+                received.extend_from_slice(&msg.unwrap().data()[..]);
+            }
+            assert_eq!(received, queued);
+        });
+    }
+
+    /// A send through a write half of your own that can't resume writes, under way as the
+    /// hand-over starts, which the hand-over waits for, and which fails midway as the peer goes,
+    /// fails no hand-over, any more than one that goes through: the peer receives nothing more, so
+    /// nothing follows the part of the message in the socket.
+    #[test]
+    #[timeout(15000)]
+    fn a_send_cut_off_midway_as_the_peer_goes_fails_no_hand_over() {
+        under_every_runtime(|runtime| async move {
+            let (mut stream, peer) = over_a_socket_pair_of_your_own(&runtime).await;
+            let conn = Connection::from(&stream);
+            let queued = queue_two(&conn, &peer);
+            let big = big_signal();
+            let mut sending = pin!(conn.send(&big));
+            stuck(&runtime, sending.as_mut(), &peer).await;
+            let mut handing_over = pin!(stream.hand_over());
+            let waiting = futures_lite::future::poll_once(handing_over.as_mut()).await;
+            assert!(waiting.is_none(), "the hand-over didn't wait for the send");
+            wait_until(|| !conn.inner.socket_status.stop.reading());
+
+            drop(peer);
+            let (handed_over, sent) = futures_util::future::join(handing_over, sending).await;
+
+            // The peer went with part of the message unread, which Linux reports as a reset.
+            let Err(Error::InputOutput(e)) = &sent else {
+                panic!("the send went through: {sent:?}");
+            };
+            assert!(
+                matches!(e.kind(), ErrorKind::BrokenPipe | ErrorKind::ConnectionReset),
+                "{e}"
+            );
+            assert_eq!(unread(&handed_over.unwrap()), queued);
+        });
+    }
+
+    /// A send over a socket that zbus drives, cut off midway, as the peer doesn't read, holds no
+    /// hand-over up: the hand-over holds the rest of its message, and the connection that takes
+    /// over, in this process or through the record of the hand-over, counts it from the start,
+    /// and writes it ahead of its first send, once the peer reads. The peer gets the message
+    /// whole, then the next one.
+    #[test]
+    #[timeout(15000)]
+    fn the_rest_of_a_send_cut_off_midway_is_handed_over() {
+        under_every_runtime(|runtime| async move {
+            for record in [false, true] {
+                let (mut stream, peer, _probe) = served(&runtime).await;
+                let conn = Connection::from(&stream);
+                let (big, next) = (big_signal(), signal(1));
+                stuck(&runtime, pin!(conn.send(&big)), &peer).await;
+                let unwritten = conn.unwritten_len();
+                assert!(unwritten > 0, "the send left nothing to write");
+
+                let handover = stream.hand_over().await.unwrap();
+
+                assert_eq!(handover.unwritten_len(), unwritten, "record: {record}");
+                assert_eq!(conn.unwritten_len(), 0);
+                let handover = if record {
+                    through_a_record(handover, 2)
+                } else {
+                    handover
+                };
+                let conn = on(Builder::take_over(handover), &runtime)
+                    .build()
+                    .await
+                    .unwrap();
+                assert_eq!(conn.unwritten_len(), unwritten, "record: {record}");
+                let reading = read_in_the_background(&peer, big.data().len() + next.data().len());
+                conn.send(&next).await.unwrap();
+                let received = reading.join().unwrap();
+                assert_eq!(received, [&big.data()[..], &next.data()[..]].concat());
+                assert_eq!(conn.unwritten_len(), 0);
+            }
+        });
+    }
+
+    /// A send that waits for a peer that doesn't read as the hand-over starts holds the hand-over
+    /// up no more than one that was cut off: the hand-over has it stop waiting, as it prepares
+    /// the connection, and holds what the send kept, the rest of the message that it was in the
+    /// middle of and the messages after it, which the connection that takes over writes.
+    #[test]
+    #[timeout(15000)]
+    fn a_send_that_waits_for_the_peer_holds_no_hand_over_up() {
+        under_every_runtime(|runtime| async move {
+            let (mut stream, peer, _probe) = served(&runtime).await;
+            let conn = Connection::from(&stream);
+            let msgs = [big_signal(), signal(1)];
+            let mut sending = pin!(conn.send_all(&msgs));
+            stuck(&runtime, sending.as_mut(), &peer).await;
+
+            let (handed_over, sent) = futures_util::future::join(stream.hand_over(), sending).await;
+
+            sent.unwrap();
+            let handover = handed_over.unwrap();
+            let [big, after] = &msgs;
+            let unwritten = handover.unwritten_len();
+            assert!(
+                after.data().len() < unwritten && unwritten < big.data().len() + after.data().len(),
+                "{unwritten} bytes left to write",
+            );
+            let conn = on(Builder::take_over(handover), &runtime)
+                .build()
+                .await
+                .unwrap();
+            let reading = read_in_the_background(&peer, concat(&msgs).len());
+            conn.flush().await.unwrap();
+            assert_eq!(reading.join().unwrap(), concat(&msgs));
+        });
+    }
+
+    /// A flush that waits for a peer that doesn't read holds a hand-over up, as it waits for the
+    /// peer to take what the connection has left to write: a hand-over given up on meanwhile goes
+    /// on through its stream once the flush is through.
+    #[test]
+    #[timeout(15000)]
+    fn a_flush_under_way_holds_the_hand_over_up() {
+        under_every_runtime(|runtime| async move {
+            let (mut stream, peer, _probe) = served(&runtime).await;
+            let conn = Connection::from(&stream);
+            let big = big_signal();
+            stuck(&runtime, pin!(conn.send(&big)), &peer).await;
+            let mut flushing = pin!(conn.flush());
+            let flushed = futures_lite::future::poll_once(flushing.as_mut()).await;
+            assert!(flushed.is_none(), "the flush didn't wait for the peer");
+
+            let given_up = runtime
+                .timeout(stream.hand_over(), Duration::from_millis(100))
+                .await;
+
+            let Err(Error::InputOutput(e)) = &given_up else {
+                panic!("the hand-over didn't wait for the flush: {given_up:?}");
+            };
+            assert_eq!(e.kind(), ErrorKind::TimedOut, "{e}");
+            let reading = read_in_the_background(&peer, big.data().len());
+            flushing.await.unwrap();
+            assert_eq!(reading.join().unwrap(), &big.data()[..]);
+            let handover = stream.hand_over().await.unwrap();
+            assert_eq!(handover.unwritten_len(), 0);
+        });
+    }
+
+    /// The messages that sends kept once a hand-over of the connection was prepared are handed over
+    /// with their file descriptors, which `fds` gives last, after that of the socket and those of
+    /// what was read, and the connection that takes over, through the record of the hand-over,
+    /// writes each with its own.
+    #[test]
+    #[timeout(15000)]
+    fn messages_left_to_write_are_handed_over_with_their_descriptors() {
+        under_every_runtime(|runtime| async move {
+            let (mut stream, peer, _probe) = served(&runtime).await;
+            let conn = Connection::from(&stream);
+            let pipes = [pipe(), pipe(), pipe()];
+            let with = |i: usize| {
+                Message::signal(PATH, INTERFACE, "WithFd")
+                    .build(&crate::Fd::from(&pipes[i]))
+                    .unwrap()
+            };
+            let received = with(0);
+            send_with_fds(&peer, &received.data()[..], &[pipes[0].as_fd()]);
+            wait_until(|| conn.inner.msg_receiver.len() == 1);
+            assert!(conn.prepare_hand_over());
+            let kept = [big_signal(), with(1), with(2)];
+            conn.send_all(&kept).await.unwrap();
+
+            let handover = stream.hand_over().await.unwrap();
+
+            assert!(handover.unwritten_len() > concat(&kept[1..]).len());
+            let inodes: Vec<_> = handover
+                .fds()
+                .into_iter()
+                .skip(1)
+                .map(|fd| inode(&fd))
+                .collect();
+            assert_eq!(inodes, pipes.each_ref().map(inode));
+            drop(conn);
+            let handover = through_a_record(handover, 6);
+            let mut stream = on(Builder::take_over(handover), &runtime)
+                .build_message_stream()
+                .await
+                .unwrap();
+            let conn = Connection::from(&stream);
+            let msg = stream.next().await.unwrap().unwrap();
+            assert_eq!(&msg.data()[..], &received.data()[..]);
+            let mut peer = Reader::new(Arc::new(registered(&runtime, peer, UnixOps).unwrap()));
+            let receiving = async {
+                let mut msgs = vec![];
+                for seq in 0..kept.len() {
+                    let msg = peer
+                        .receive_message(seq as u64, &mut vec![], &mut vec![])
+                        .await;
+                    msgs.push(msg.unwrap());
+                }
+
+                msgs
+            };
+            let (flushed, msgs) = futures_util::future::join(conn.flush(), receiving).await;
+            flushed.unwrap();
+            for (msg, sent) in msgs.iter().zip(&kept) {
+                assert_eq!(&msg.data()[..], &sent.data()[..]);
+                let inodes: Vec<_> = msg.data().fds().iter().map(inode).collect();
+                let sent: Vec<_> = sent.data().fds().iter().map(inode).collect();
+                assert_eq!(inodes, sent);
+            }
+        });
+    }
+
+    /// A connection that was closed isn't handed over.
+    #[test]
+    #[timeout(15000)]
+    fn a_closed_connection_is_not_handed_over() {
+        under_every_runtime(|runtime| async move {
+            let (mut stream, _peer) = channel_pair(&runtime).await;
+            Connection::from(&stream).close().await.unwrap();
+
+            // The reader of a channel reads on after a close, as long as the peer is there.
+            assert_not_connected(stream.hand_over().await);
+        });
+    }
+
+    /// A connection over a socket that was closed isn't handed over, though its reader came to the
+    /// end of the input as the socket was shut down, as it would have had the peer closed its end.
+    #[test]
+    #[timeout(15000)]
+    fn a_connection_closed_over_a_socket_is_not_handed_over() {
+        under_every_runtime(|runtime| async move {
+            let (mut stream, _peer) = over_a_socket_pair(&runtime).await;
+            let conn = Connection::from(&stream);
+
+            conn.clone().close().await.unwrap();
+            wait_until(|| !conn.inner.socket_status.stop.reading());
+
+            {
+                let end = conn.inner.socket_status.stop.reader_end.lock().unwrap();
+                assert!(matches!(*end, ReaderEnd::Ended(_)), "the reader {end:?}");
+            }
+            assert_not_connected(stream.hand_over().await);
+        });
+    }
+
+    /// A connection whose reader the runtime took away before it stopped isn't handed over.
+    #[test]
+    #[timeout(15000)]
+    fn a_connection_whose_reader_was_taken_away_is_not_handed_over() {
+        let runtime = AbortingRuntime::new();
+        let (ours, theirs) = Channel::pair();
+
+        futures_lite::future::block_on(async {
+            let guid = Guid::generate();
+            let (mut stream, _peer) = futures_util::try_join!(
+                Builder::authenticated_socket(ours, guid.clone())
+                    .p2p()
+                    .runtime(runtime.clone())
+                    .build_message_stream(),
+                Builder::authenticated_socket(theirs, guid)
+                    .p2p()
+                    .runtime(TestRuntime::new())
+                    .build(),
+            )
+            .unwrap();
+
+            runtime.abort_tasks();
+            Connection::from(&stream).closed().await;
+
+            assert_not_connected(stream.hand_over().await);
+        });
+    }
+
+    /// A hand-over through a stream fails, and does nothing to the connection, which reads on,
+    /// while the connection has another stream without a match rule, be it a clone of the stream
+    /// or one made from the connection. Once that stream is gone, the same hand-over goes through.
+    #[test]
+    #[timeout(15000)]
+    fn a_hand_over_through_a_stream_fails_while_the_connection_has_another() {
+        under_every_runtime(|runtime| async move {
+            for clone in [true, false] {
+                let (mut stream, peer) = channel_pair(&runtime).await;
+                let conn = Connection::from(&stream);
+                let other = match clone {
+                    true => stream.clone(),
+                    false => MessageStream::from(&conn),
+                };
+
+                let refused = stream.hand_over().await;
+
+                assert!(
+                    matches!(refused, Err(Error::Unsupported)),
+                    "clone: {clone}, {refused:?}"
+                );
+                peer.send(&signal(1)).await.unwrap();
+                let received = stream.next().await.unwrap().unwrap();
+                assert_eq!(members(&[received]), ["Test"], "clone: {clone}");
+                {
+                    // The other stream is let go of here.
+                    let _other = other;
+                }
+                peer.send(&signal(2)).await.unwrap();
+                queued(&conn).await;
+                let handover = stream.hand_over().await.unwrap();
+                assert_eq!(
+                    who_had(&handover),
+                    [(Type::Signal, Had::NONE)],
+                    "clone: {clone}"
+                );
+            }
+        });
+    }
+
+    /// A stream without a match rule that is made while a hand-over through another stream waits
+    /// for the calls under way, and let go of before the connection stops reading, may have had
+    /// what the hand-over holds: the hand-over fails once the connection stopped reading, and so
+    /// does the next one, while the stream keeps what the hand-over took off its queue.
+    #[cfg(feature = "service")]
+    #[test]
+    #[timeout(15000)]
+    fn a_stream_made_while_the_connection_is_handed_over_fails_the_hand_over() {
+        under_every_runtime(|runtime| async move {
+            let (mut stream, peer) = serving(&runtime, InlineAsker).await;
+            let conn = Connection::from(&stream);
+            let mut peer_stream = MessageStream::from(&peer);
+
+            let asking = peer.call_method(None::<()>, PATH, Some(INTERFACE), "Ask", &());
+            let handing_over = async {
+                // The method of the call asks the peer, so the call is under way.
+                let question = peer_stream.next().await.unwrap().unwrap();
+                let mut handing_over = pin!(stream.hand_over());
+                let handed_over = futures_lite::future::poll_once(handing_over.as_mut()).await;
+                assert!(handed_over.is_none(), "{handed_over:?}");
+                {
+                    let _made = MessageStream::from(&conn);
+                }
+                peer.reply(&question.header(), &"told").await.unwrap();
+
+                handing_over.await
+            };
+            let (answer, refused) = futures_util::future::join(asking, handing_over).await;
+
+            answer.unwrap();
+            assert_not_connected(refused);
+            assert_not_connected(stream.hand_over().await);
+            // The call and what the peer told, which the stream had queued, are still the
+            // stream's.
+            let mut kept = Vec::new();
+            for _ in 0..2 {
+                kept.push(stream.next().await.unwrap().unwrap().message_type());
+            }
+            assert_eq!(kept, [Type::MethodCall, Type::MethodReturn]);
+        });
+    }
+
+    /// Nothing that zbus makes for a connection counts as another stream without a match rule: a
+    /// connection that has an object server, a proxy with a stream of its signals and a stream for
+    /// a match rule is handed over through its one stream without a match rule.
+    #[cfg(all(feature = "service", feature = "proxy"))]
+    #[test]
+    #[timeout(15000)]
+    fn a_connection_with_streams_for_match_rules_is_handed_over_through_its_stream() {
+        under_every_runtime(|runtime| async move {
+            let (mut stream, peer) = serving(&runtime, Echo).await;
+            let conn = Connection::from(&stream);
+            // A unique name, which a peer-to-peer connection needs no bus to resolve.
+            let proxy = crate::Proxy::new(&conn, ":1.1", PATH, INTERFACE)
+                .await
+                .unwrap();
+            let _signals = proxy.receive_signal("Test").await.unwrap();
+            let _for_a_rule = MessageStream::for_match_rule(signals(), &conn, None)
+                .await
+                .unwrap();
+            let reply = peer
+                .call_method(None::<()>, PATH, Some(INTERFACE), "Echo", &"served")
+                .await
+                .unwrap();
+            assert_eq!(reply.body().deserialize::<&str>().unwrap(), "served");
+
+            let handover = stream.hand_over().await.unwrap();
+
+            assert_eq!(who_had(&handover), [(Type::MethodCall, Had::SERVER)]);
+        });
+    }
+
+    /// Of two hand-overs of a connection at once, through its stream and through none, one hands
+    /// it over and the other finds it handed over already.
+    #[test]
+    #[timeout(15000)]
+    fn a_connection_is_handed_over_once() {
+        under_every_runtime(|runtime| async move {
+            let (mut stream, _peer) = channel_pair(&runtime).await;
+            let conn = Connection::from(&stream);
+
+            let handing_over = conn.clone().hand_over();
+            let handovers = futures_util::future::join(stream.hand_over(), handing_over).await;
+
+            let (handover, refused) = match handovers {
+                (Ok(handover), refused) | (refused, Ok(handover)) => (handover, refused),
+                handovers => panic!("the connection wasn't handed over: {handovers:?}"),
+            };
+            assert_eq!(handover.saved_len(), None, "{handover:?}");
+            assert_not_connected(refused);
+            // The connection never asked for the credentials of its peer, and can't any more.
+            let credentials = conn.peer_creds().await;
+            assert!(
+                matches!(&credentials, Err(e) if e.kind() == io::ErrorKind::NotConnected),
+                "{credentials:?}",
+            );
+        });
+    }
+
+    /// A connection over a channel hands over its halves, with the messages that its stream had
+    /// queued, and a connection that takes over gets those, then those that it is yet to read,
+    /// while its peer goes on sending.
+    #[test]
+    #[timeout(15000)]
+    fn a_channel_is_handed_over_with_the_messages_that_it_is_yet_to_read() {
+        under_every_runtime(|runtime| async move {
+            // However many of the messages the stream yielded before the hand-over.
+            for taken in [0, 7, 50] {
+                let (mut stream, peer) = channel_pair(&runtime).await;
+                let msgs: Vec<_> = (0..50).map(signal).collect();
+
+                let sending = async {
+                    for msg in &msgs {
+                        peer.send(msg).await.unwrap();
+                    }
+                };
+                let receiving = async {
+                    let mut received = vec![];
+                    for _ in 0..taken {
+                        received.push(stream.next().await.unwrap().unwrap());
+                    }
+                    let handover = stream.hand_over().await.unwrap();
+                    // A channel has no descriptor to pass on.
+                    assert_eq!(handover.saved_len(), None, "{handover:?}");
+                    assert_eq!(handover.fds().len(), 0);
+                    let mut stream = on(Builder::take_over(handover), &runtime)
+                        .build_message_stream()
+                        .await
+                        .unwrap();
+                    // The peer is still sending the rest.
+                    while received.len() < msgs.len() {
+                        received.push(stream.next().await.unwrap().unwrap());
+                    }
+
+                    received
+                };
+                let ((), received) = futures_util::future::join(sending, receiving).await;
+
+                let numbers: Vec<u32> = received
+                    .iter()
+                    .map(|msg| msg.body().deserialize().unwrap())
+                    .collect();
+                assert_eq!(numbers, (0..50).collect::<Vec<_>>(), "taken: {taken}");
+            }
+        });
+    }
+
+    /// A connection that takes over a channel puts the messages that come over the channel after
+    /// those that it was handed, so its streams, joined in the order of the positions of their
+    /// messages, yield them in the order that they came in.
+    #[test]
+    #[timeout(15000)]
+    fn messages_after_a_take_over_are_ordered_after_those_handed_over() {
+        under_every_runtime(|runtime| async move {
+            let (mut stream, peer) = channel_pair(&runtime).await;
+            let [handed, live] = ["Handed", "Live"]
+                .map(|member| Message::signal(PATH, INTERFACE, member).build(&()).unwrap());
+
+            peer.send(&handed).await.unwrap();
+            // Queued on the stream, which hands it over.
+            queued(&Connection::from(&stream)).await;
+            let handover = stream.hand_over().await.unwrap();
+            let mut stream = on(Builder::take_over(handover), &runtime)
+                .build_message_stream()
+                .await
+                .unwrap();
+            // A clone has what the stream has queued, and gets what the stream gets.
+            let only = |member: &'static str| {
+                let is_member = move |msg: &Result<Message>| {
+                    msg.as_ref()
+                        .is_ok_and(|msg| msg.header().member().unwrap().as_str() == member)
+                };
+
+                ordered_stream::OrderedStreamExt::filter(stream.clone(), is_member)
+            };
+            let joined = ordered_stream::join(only("Handed"), only("Live"));
+            peer.send(&live).await.unwrap();
+            let received = [
+                stream.next().await.unwrap().unwrap(),
+                stream.next().await.unwrap().unwrap(),
+            ];
+
+            assert_eq!(members(&received), ["Handed", "Live"]);
+            assert!(
+                received[0].recv_position() < received[1].recv_position(),
+                "{received:?}"
+            );
+            // Both are queued on the clones by now.
+            let joined: Vec<_> = ordered_stream::OrderedStreamExt::into_stream(joined)
+                .take(2)
+                .map(Result::unwrap)
+                .collect()
+                .await;
+            assert_eq!(members(&joined), ["Handed", "Live"]);
+        });
+    }
+
+    /// A connection over halves of your own, whose read half only receives bytes and says that it
+    /// can take out what it read, is handed over in the middle of a message as its halves, and a
+    /// connection that takes over goes on with that message.
+    #[test]
+    #[timeout(15000)]
+    fn a_connection_over_halves_of_your_own_is_taken_over() {
+        under_every_runtime(|runtime| async move {
+            let (peer, theirs) = UnixStream::pair().unwrap();
+            let probe = theirs.try_clone().unwrap();
+            let split = recvmsg_only(&runtime, theirs, true);
+            let mut stream = on(
+                Builder::authenticated_socket(split, Guid::generate()),
+                &runtime,
+            )
+            .p2p()
+            .build_message_stream()
+            .await
+            .unwrap();
+            let msgs = [1, 2, 3].map(signal);
+
+            let mut sent = msgs[0].data().to_vec();
+            sent.extend_from_slice(&msgs[1].data()[..10]);
+            (&peer).write_all(&sent).unwrap();
+            let received = stream.next().await.unwrap().unwrap();
+            assert_eq!(&received.data()[..], &msgs[0].data()[..]);
+            wait_until(|| rustix::io::ioctl_fionread(&probe).unwrap() == 0);
+            let handover = stream.hand_over().await.unwrap();
+
+            assert_eq!(unread(&handover), &msgs[1].data()[..10]);
+            assert_eq!(handover.saved_len(), None, "{handover:?}");
+            let mut stream = on(Builder::take_over(handover), &runtime)
+                .build_message_stream()
+                .await
+                .unwrap();
+            let mut rest = msgs[1].data()[10..].to_vec();
+            rest.extend_from_slice(&msgs[2].data()[..]);
+            (&peer).write_all(&rest).unwrap();
+            for sent in &msgs[1..] {
+                let received = stream.next().await.unwrap().unwrap();
+                assert_eq!(&received.data()[..], &sent.data()[..]);
+            }
+        });
+    }
+
+    /// A hand-over of a connection to a bus isn't taken over as a peer-to-peer connection.
+    #[test]
+    #[timeout(15000)]
+    fn a_bus_connection_isnt_taken_over_as_a_peer_to_peer_one() {
+        under_every_runtime(|runtime| async move {
+            let (ours, _theirs) = Channel::pair();
+            let handover = handover(HandoverSocket::Socket(ours.into()), false);
+
+            let built = on(Builder::take_over(handover), &runtime)
+                .p2p()
+                .build()
+                .await;
+
+            assert!(matches!(built, Err(Error::Unsupported)), "{built:?}");
+        });
+    }
+
+    /// Once a connection took over, the messages that the process builds get serial numbers from
+    /// the one that the hand-over gives on. A hand-over that gives a lower one doesn't lower them.
+    #[test]
+    #[timeout(15000)]
+    fn serial_numbers_go_on_from_that_of_the_hand_over() {
+        under_every_runtime(|runtime| async move {
+            // Other tests build messages meanwhile, which only raises the serial numbers further.
+            let floor = next_serial().checked_add(1000).unwrap();
+            for next in [floor, NonZeroU32::MIN] {
+                let (ours, _theirs) = Channel::pair();
+                let mut handover = handover(HandoverSocket::Socket(ours.into()), true);
+                handover.next_serial = next;
+
+                let _conn = on(Builder::take_over(handover), &runtime)
+                    .build()
+                    .await
+                    .unwrap();
+
+                let serial = signal(1).primary_header().serial_num();
+                assert!(serial >= floor, "{serial} is below {floor}");
+            }
+        });
+    }
+
+    /// A connection to a bus that takes over, in this process or through the record of the
+    /// hand-over, has the unique name of the hand-over, and says no `Hello`: the first message that
+    /// the bus gets from it is the first one that it sends.
+    #[test]
+    #[timeout(15000)]
+    fn a_bus_connection_takes_over_with_its_unique_name() {
+        under_every_runtime(|runtime| async move {
+            for record in [false, true] {
+                // A peer-to-peer connection plays the bus.
+                let (mut bus_stream, ours) = over_a_socket_pair(&runtime).await;
+                let handover = handover(HandoverSocket::UnixStream(ours), false);
+                let handover = if record {
+                    through_a_record(handover, 1)
+                } else {
+                    handover
+                };
+
+                let conn = on(Builder::take_over(handover), &runtime)
+                    .build()
+                    .await
+                    .unwrap();
+
+                assert!(
+                    conn.is_bus(),
+                    "a bus connection was taken over as a peer-to-peer one"
+                );
+                assert_eq!(conn.unique_name().unwrap().as_str(), UNIQUE_NAME);
+                conn.emit_signal(None::<()>, PATH, INTERFACE, "Test", &())
+                    .await
+                    .unwrap();
+                let msg = bus_stream.next().await.unwrap().unwrap();
+                assert_eq!(msg.message_type(), Type::Signal);
+                assert_eq!(msg.header().sender().unwrap(), UNIQUE_NAME);
+            }
+        });
+    }
+
+    /// An interface served on a connection to a bus that took over gets the method calls to the
+    /// unique name of the hand-over.
+    #[cfg(feature = "service")]
+    #[test]
+    #[timeout(15000)]
+    fn a_bus_connection_that_took_over_serves_calls_to_its_unique_name() {
+        under_every_runtime(|runtime| async move {
+            let (bus, ours) = over_a_socket_pair(&runtime).await;
+            let bus = Connection::from(&bus);
+
+            let _conn = on(
+                Builder::take_over(handover(HandoverSocket::UnixStream(ours), false)),
+                &runtime,
+            )
+            .serve_at(PATH, Echo)
+            .build()
+            .await
+            .unwrap();
+
+            let reply = bus
+                .call_method(Some(UNIQUE_NAME), PATH, Some(INTERFACE), "Echo", &"hello")
+                .await
+                .unwrap();
+            assert_eq!(reply.body().deserialize::<String>().unwrap(), "hello");
+        });
+    }
+
+    /// A method call that a connection left unread, queued on its stream or in what it read after
+    /// that, goes to the interface served on the connection that takes over, which replies to it.
+    #[cfg(feature = "service")]
+    #[test]
+    #[timeout(15000)]
+    fn a_method_call_left_unread_is_served_once_taken_over() {
+        under_every_runtime(|runtime| async move {
+            for queued in [true, false] {
+                let (mut peer_stream, ours) = over_a_socket_pair(&runtime).await;
+                let call = Message::method_call(PATH, "Echo")
+                    .interface(INTERFACE)
+                    .build(&"left unread")
+                    .unwrap();
+                let mut handover = handover(HandoverSocket::UnixStream(ours), true);
+                if queued {
+                    handover.queued = nobody_had(std::slice::from_ref(&call));
+                } else {
+                    handover.tail = call.data().to_vec();
+                }
+
+                let _conn = on(Builder::take_over(handover), &runtime)
+                    .serve_at(PATH, Echo)
+                    .build()
+                    .await
+                    .unwrap();
+
+                let reply = peer_stream.next().await.unwrap().unwrap();
+                assert_eq!(reply.message_type(), Type::MethodReturn, "queued: {queued}");
+                assert_eq!(
+                    reply.header().reply_serial(),
+                    Some(call.primary_header().serial_num()),
+                );
+                assert_eq!(reply.body().deserialize::<&str>().unwrap(), "left unread");
+            }
+        });
+    }
+
+    /// A connection that takes over hands each message of the hand-over, whether it comes as it
+    /// is or through its record, to those that are yet to get it, and to no other: its stream
+    /// yields those that no stream had, and its object server answers the method calls that no
+    /// object server had, each once.
+    #[cfg(feature = "service")]
+    #[test]
+    #[timeout(15000)]
+    fn a_message_taken_over_goes_to_those_that_are_yet_to_get_it() {
+        under_every_runtime(|runtime| async move {
+            for record in [false, true] {
+                let (mut peer_stream, ours) = over_a_socket_pair(&runtime).await;
+                let peer = Connection::from(&peer_stream);
+                let mut handover = handover(HandoverSocket::UnixStream(ours), true);
+                handover.queued = vec![
+                    (echo("an object server had"), Had::SERVER),
+                    (signal(1), Had::STREAM),
+                    (echo("a stream had"), Had::STREAM),
+                    (echo("both had"), Had::STREAM | Had::SERVER),
+                    (echo("nobody had"), Had::NONE),
+                ];
+                let handover = if record {
+                    through_a_record(handover, 5)
+                } else {
+                    handover
+                };
+
+                let mut stream = on(Builder::take_over(handover), &runtime)
+                    .serve_at(PATH, Echo)
+                    .build_message_stream()
+                    .await
+                    .unwrap();
+
+                // What the peer sends next comes right after what the stream yields of them.
+                peer.send(&signal(2)).await.unwrap();
+                let mut yielded = Vec::new();
+                for _ in 0..3 {
+                    let msg = stream.next().await.unwrap().unwrap();
+                    yielded.push(match msg.message_type() {
+                        Type::MethodCall => msg.body().deserialize::<String>().unwrap(),
+                        _ => msg.body().deserialize::<u32>().unwrap().to_string(),
+                    });
+                }
+                assert_eq!(
+                    yielded,
+                    ["an object server had", "nobody had", "2"],
+                    "record: {record}"
+                );
+                // A call that the peer makes next is answered along with those of them that the
+                // object server answers, each in a task of its own.
+                peer.send(&echo("after")).await.unwrap();
+                assert_eq!(
+                    replies(&mut peer_stream, 3).await,
+                    ["a stream had", "after", "nobody had"],
+                    "record: {record}"
+                );
+            }
+        });
+    }
+
+    /// A method call that the object server of a connection answered, and that the stream that the
+    /// connection is handed over through didn't yield, is handed over as one that an object server
+    /// had: the stream of the connection that takes over yields it, and its object server doesn't
+    /// answer it again.
+    #[cfg(feature = "service")]
+    #[test]
+    #[timeout(15000)]
+    fn a_call_that_was_answered_is_not_answered_again() {
+        under_every_runtime(|runtime| async move {
+            let (mut stream, peer) = serving(&runtime, Asker).await;
+            let mut peer_stream = MessageStream::from(&peer);
+            let reply = peer
+                .call_method(None::<()>, PATH, Some(INTERFACE), "Echo", &"once")
+                .await
+                .unwrap();
+            assert_eq!(reply.body().deserialize::<&str>().unwrap(), "once");
+            // The stream of the peer gets that reply too, once its call has it.
+            assert_eq!(replies(&mut peer_stream, 1).await, ["once"]);
+
+            let handover = stream.hand_over().await.unwrap();
+
+            assert_eq!(who_had(&handover), [(Type::MethodCall, Had::SERVER)]);
+            let mut stream = on(Builder::take_over(handover), &runtime)
+                .serve_at(PATH, Asker)
+                .build_message_stream()
+                .await
+                .unwrap();
+            let call = stream.next().await.unwrap().unwrap();
+            assert_eq!(call.body().deserialize::<&str>().unwrap(), "once");
+            // The answer to the next call is the next message that the peer gets.
+            peer.send(&echo("after")).await.unwrap();
+            let reply = peer_stream.next().await.unwrap().unwrap();
+            assert_eq!(reply.body().deserialize::<&str>().unwrap(), "after");
+        });
+    }
+
+    /// As a connection is handed over, its object server takes no more method calls, and the
+    /// connection reads on until those that it has under way are answered, whether each has a task
+    /// of its own or not: the reply to a call that the method of one of them made comes in, so the
+    /// call is answered as at any other time. A call that comes in meanwhile is left for the
+    /// object server of the connection that takes over, which answers it, and none of those that
+    /// were answered.
+    #[cfg(feature = "service")]
+    #[test]
+    #[timeout(15000)]
+    fn calls_under_way_are_answered_and_those_after_them_are_handed_over() {
+        under_every_runtime(|runtime| async move {
+            for inline in [false, true] {
+                let (mut stream, peer) = match inline {
+                    false => serving(&runtime, Asker).await,
+                    true => serving(&runtime, InlineAsker).await,
+                };
+                let mut peer_stream = MessageStream::from(&peer);
+
+                let asking = peer.call_method(None::<()>, PATH, Some(INTERFACE), "Ask", &());
+                let handing_over = async {
+                    // The method of the call asks the peer, so the call is under way.
+                    let question = peer_stream.next().await.unwrap().unwrap();
+                    assert_eq!(question.header().member().unwrap().as_str(), "Tell");
+                    let mut handing_over = pin!(stream.hand_over());
+                    let handed_over = futures_lite::future::poll_once(handing_over.as_mut()).await;
+                    assert!(
+                        handed_over.is_none(),
+                        "handed over with a call under way: {handed_over:?}"
+                    );
+                    peer.send(&echo("left")).await.unwrap();
+                    peer.reply(&question.header(), &"told").await.unwrap();
+
+                    handing_over.await.unwrap()
+                };
+                let (answer, handover) = futures_util::future::join(asking, handing_over).await;
+
+                let answer = answer.unwrap();
+                assert_eq!(answer.body().deserialize::<&str>().unwrap(), "told");
+                // The stream yielded none of the two calls, nor what the peer told.
+                assert_eq!(
+                    who_had(&handover),
+                    [
+                        (Type::MethodCall, Had::SERVER),
+                        (Type::MethodCall, Had::NONE),
+                        (Type::MethodReturn, Had::NONE),
+                    ],
+                    "inline: {inline}"
+                );
+                let answer = peer_stream.next().await.unwrap().unwrap();
+                assert_eq!(answer.body().deserialize::<&str>().unwrap(), "told");
+                let mut stream = on(Builder::take_over(handover), &runtime)
+                    .serve_at(PATH, Asker)
+                    .build_message_stream()
+                    .await
+                    .unwrap();
+                peer.send(&echo("after")).await.unwrap();
+                assert_eq!(replies(&mut peer_stream, 2).await, ["after", "left"]);
+                let mut yielded = Vec::new();
+                for _ in 0..4 {
+                    yielded.push(stream.next().await.unwrap().unwrap().message_type());
+                }
+                assert_eq!(
+                    yielded,
+                    [
+                        Type::MethodCall,
+                        Type::MethodCall,
+                        Type::MethodReturn,
+                        Type::MethodCall,
+                    ]
+                );
+            }
+        });
+    }
+
+    /// A method call that the stream of a connection yielded, and that its object server is yet to
+    /// take as the connection is handed over, as it is in the method of the call before it, is
+    /// handed over as one that the stream had: the object server of the connection that takes over
+    /// answers it, and its stream doesn't yield it again.
+    #[cfg(feature = "service")]
+    #[test]
+    #[timeout(15000)]
+    fn a_call_that_the_stream_yielded_is_handed_over_for_the_object_server() {
+        under_every_runtime(|runtime| async move {
+            let (mut stream, peer) = serving(&runtime, InlineAsker).await;
+            let mut peer_stream = MessageStream::from(&peer);
+
+            let asking = peer.call_method(None::<()>, PATH, Some(INTERFACE), "Ask", &());
+            let handing_over = async {
+                let question = peer_stream.next().await.unwrap().unwrap();
+                // The object server runs the method of the first call itself, so the second one
+                // waits for it, while the stream yields both.
+                peer.send(&echo("queued")).await.unwrap();
+                for member in ["Ask", "Echo"] {
+                    let call = stream.next().await.unwrap().unwrap();
+                    assert_eq!(call.header().member().unwrap().as_str(), member);
+                }
+                let mut handing_over = pin!(stream.hand_over());
+                let handed_over = futures_lite::future::poll_once(handing_over.as_mut()).await;
+                assert!(
+                    handed_over.is_none(),
+                    "handed over with a call under way: {handed_over:?}"
+                );
+                peer.reply(&question.header(), &"told").await.unwrap();
+
+                handing_over.await.unwrap()
+            };
+            let (answer, handover) = futures_util::future::join(asking, handing_over).await;
+
+            answer.unwrap();
+            assert_eq!(
+                who_had(&handover),
+                [
+                    (Type::MethodCall, Had::STREAM),
+                    (Type::MethodReturn, Had::NONE),
+                ]
+            );
+            let answer = peer_stream.next().await.unwrap().unwrap();
+            assert_eq!(answer.body().deserialize::<&str>().unwrap(), "told");
+            let mut stream = on(Builder::take_over(handover), &runtime)
+                .serve_at(PATH, Asker)
+                .build_message_stream()
+                .await
+                .unwrap();
+            let reply = peer_stream.next().await.unwrap().unwrap();
+            assert_eq!(reply.body().deserialize::<&str>().unwrap(), "queued");
+            let told = stream.next().await.unwrap().unwrap();
+            assert_eq!(told.message_type(), Type::MethodReturn);
+            // What the peer sends next is what the stream yields next.
+            peer.send(&signal(1)).await.unwrap();
+            let next = stream.next().await.unwrap().unwrap();
+            assert_eq!(next.message_type(), Type::Signal);
+        });
+    }
+
+    /// A connection is handed over through no stream too, as one whose object server takes its
+    /// method calls, and which was built without a stream: the object server takes no more calls,
+    /// the call that it has under way is answered, and the one that it didn't take is handed
+    /// over, as one that nobody had, for the object server of the connection that takes over to
+    /// answer it.
+    #[cfg(feature = "service")]
+    #[test]
+    #[timeout(15000)]
+    fn a_connection_is_handed_over_through_no_stream() {
+        under_every_runtime(|runtime| async move {
+            let guid = Guid::generate();
+            let (ours, theirs) = Channel::pair();
+            let (conn, peer) = futures_util::try_join!(
+                on(Builder::authenticated_socket(ours, guid.clone()), &runtime)
+                    .p2p()
+                    .serve_at(PATH, InlineAsker)
+                    .build(),
+                on(Builder::authenticated_socket(theirs, guid), &runtime)
+                    .p2p()
+                    .build(),
+            )
+            .unwrap();
+            let mut peer_stream = MessageStream::from(&peer);
+
+            let asking = peer.call_method(None::<()>, PATH, Some(INTERFACE), "Ask", &());
+            let handing_over = async {
+                let question = peer_stream.next().await.unwrap().unwrap();
+                // The object server runs the method of the first call itself, so the second one
+                // waits for it.
+                peer.send(&echo("left")).await.unwrap();
+                let mut handing_over = pin!(conn.clone().hand_over());
+                let handed_over = futures_lite::future::poll_once(handing_over.as_mut()).await;
+                assert!(
+                    handed_over.is_none(),
+                    "handed over with a call under way: {handed_over:?}"
+                );
+                peer.reply(&question.header(), &"told").await.unwrap();
+
+                handing_over.await.unwrap()
+            };
+            let (answer, handover) = futures_util::future::join(asking, handing_over).await;
+
+            answer.unwrap();
+            assert!(
+                conn.is_closed(),
+                "the connection is open after its hand-over"
+            );
+            assert_eq!(who_had(&handover), [(Type::MethodCall, Had::NONE)]);
+            let answer = peer_stream.next().await.unwrap().unwrap();
+            assert_eq!(answer.body().deserialize::<&str>().unwrap(), "told");
+            let _conn = on(Builder::take_over(handover), &runtime)
+                .serve_at(PATH, Asker)
+                .build()
+                .await
+                .unwrap();
+            peer.send(&echo("after")).await.unwrap();
+            assert_eq!(replies(&mut peer_stream, 2).await, ["after", "left"]);
+        });
+    }
+
+    /// What a task of the service does once the listener of a response resolved is no part of the
+    /// call: a hand-over of the connection doesn't wait for it, and what it sends once the
+    /// connection is handed over fails.
+    #[cfg(feature = "service")]
+    #[test]
+    #[timeout(15000)]
+    fn work_that_waits_for_the_listener_of_a_response_is_not_waited_for() {
+        under_every_runtime(|runtime| async move {
+            let announcement = Arc::new(Announcement::default());
+            let (mut stream, peer) = serving(&runtime, Announcer(announcement.clone())).await;
+            let mut peer_stream = MessageStream::from(&peer);
+
+            let reply = peer
+                .call_method(None::<()>, PATH, Some(INTERFACE), "Announce", &())
+                .await
+                .unwrap();
+            assert_eq!(reply.body().deserialize::<&str>().unwrap(), "announcing");
+            // The task of the method is past the listener, and yet to send the signal.
+            announcement.answered.passed().await;
+            let handover = stream.hand_over().await.unwrap();
+            announcement.released.open();
+            announcement.tried.passed().await;
+
+            let sent = announcement.sent.lock().unwrap().take().unwrap();
+            assert!(
+                sent.is_err(),
+                "the signal went out of a connection handed over"
+            );
+            // The peer gets the reply, and no signal before what the connection that takes over
+            // sends it.
+            let conn = on(Builder::take_over(handover), &runtime)
+                .build()
+                .await
+                .unwrap();
+            conn.send(&signal(1)).await.unwrap();
+            let reply = peer_stream.next().await.unwrap().unwrap();
+            assert_eq!(reply.message_type(), Type::MethodReturn, "{reply:?}");
+            let next = peer_stream.next().await.unwrap().unwrap();
+            assert_eq!(members(&[next]), ["Test"]);
+        });
+    }
+
+    /// The work that follows a response is part of its call: a hand-over of the connection waits
+    /// for it, as for the method, with the calls that come in meanwhile left, and what the work
+    /// sends goes out ahead of the hand-over.
+    #[cfg(feature = "service")]
+    #[test]
+    #[timeout(15000)]
+    fn work_that_follows_a_response_is_waited_for() {
+        under_every_runtime(|runtime| async move {
+            let announcement = Arc::new(Announcement::default());
+            let (mut stream, peer) = serving(&runtime, Announcer(announcement.clone())).await;
+            let mut peer_stream = MessageStream::from(&peer);
+
+            let reply = peer
+                .call_method(None::<()>, PATH, Some(INTERFACE), "AnnounceAfter", &())
+                .await
+                .unwrap();
+            assert_eq!(reply.body().deserialize::<&str>().unwrap(), "announcing");
+            // The work is under way, and yet to send the signal.
+            announcement.answered.passed().await;
+            let mut handing_over = pin!(stream.hand_over());
+            let handed_over = futures_lite::future::poll_once(handing_over.as_mut()).await;
+            assert!(
+                handed_over.is_none(),
+                "handed over with work under way: {handed_over:?}"
+            );
+            peer.send(&echo("left")).await.unwrap();
+            announcement.released.open();
+            let handover = handing_over.await.unwrap();
+
+            let sent = announcement.sent.lock().unwrap().take().unwrap();
+            sent.unwrap();
+            // The stream yielded neither call, and the object server left the second one.
+            assert_eq!(
+                who_had(&handover),
+                [
+                    (Type::MethodCall, Had::SERVER),
+                    (Type::MethodCall, Had::NONE)
+                ]
+            );
+            // The peer gets the reply, and then the signal.
+            let reply = peer_stream.next().await.unwrap().unwrap();
+            assert_eq!(reply.message_type(), Type::MethodReturn, "{reply:?}");
+            let signal = peer_stream.next().await.unwrap().unwrap();
+            assert_eq!(members(&[signal]), ["Announced"]);
+        });
+    }
+
+    /// The work that follows a response is part of its call from when the method made the
+    /// response, before the task that does the work ever ran: a hand-over that started while the
+    /// method was running, or once the call was answered, waits for it, and doesn't stop the
+    /// connection meanwhile.
+    #[cfg(feature = "service")]
+    #[test]
+    #[timeout(15000)]
+    fn work_that_is_yet_to_start_is_waited_for() {
+        futures_lite::future::block_on(async {
+            for early in [false, true] {
+                let gated = GatedRuntime::holding("response follow-up");
+                let runtime = Runtime::from_external(gated.clone());
+                let announcement = Arc::new(Announcement::default());
+                let (mut stream, peer) = serving(&runtime, Announcer(announcement.clone())).await;
+                let conn = Connection::from(&stream);
+                let member = match early {
+                    false => "AnnounceAfter",
+                    true => "AnnounceOnceLetGo",
+                };
+                let mut calling =
+                    pin!(peer.call_method(None::<()>, PATH, Some(INTERFACE), member, &()));
+                if !early {
+                    calling.as_mut().await.unwrap();
+                }
+
+                let mut handing_over = pin!(stream.hand_over());
+                if early {
+                    // The method of the call waits to be let go, so the call is under way.
+                    let entered = pin!(announcement.entered.passed());
+                    futures_util::future::select(calling.as_mut(), entered).await;
+                    let handed_over = futures_lite::future::poll_once(handing_over.as_mut()).await;
+                    assert!(
+                        handed_over.is_none(),
+                        "handed over with a call under way: {handed_over:?}"
+                    );
+                    announcement.let_go.open();
+                    calling.await.unwrap();
+                }
+                // The call is answered, and the task of the work that follows it is yet to run.
+                for _ in 0..50 {
+                    let handed_over = futures_lite::future::poll_once(handing_over.as_mut()).await;
+                    assert!(
+                        handed_over.is_none(),
+                        "handed over with work yet to start, early: {early}: {handed_over:?}"
+                    );
+                    assert!(
+                        !conn.inner.socket_status.stop.asked(),
+                        "the connection was stopped with work yet to start, early: {early}"
+                    );
+                    thread::sleep(Duration::from_millis(1));
+                }
+                gated.open();
+                announcement.released.open();
+                let _handover = handing_over.await.unwrap();
+
+                let sent = announcement.sent.lock().unwrap().take().unwrap();
+                sent.unwrap();
+            }
+        });
+    }
+
+    /// Both ends of a channel are handed over, the one that serves an interface first, and taken
+    /// over, with all that was on its way between them: a call that the object server didn't
+    /// take, calls that the channel held, calls that a send kept, and a reply that the stream of
+    /// the other end didn't yield. Each call is answered once, and the stream of the connection
+    /// that takes over yields the replies in the order of their calls.
+    #[cfg(feature = "service")]
+    #[test]
+    #[timeout(15000)]
+    fn both_ends_of_a_channel_are_handed_over_with_what_is_on_its_way() {
+        for carry in [Carry::AsTheyAre, Carry::Together, Carry::Records] {
+            both_ends_of_a_channel_are_handed_over(carry);
+        }
+    }
+
+    /// Hands both ends of a channel over, with all that is on its way between them, to connections
+    /// that take over what `carry` makes of the two hand-overs.
+    #[cfg(feature = "service")]
+    fn both_ends_of_a_channel_are_handed_over(carry: Carry) {
+        under_every_runtime(move |runtime| async move {
+            let guid = Guid::generate();
+            let (ours, theirs) = Channel::pair();
+            let (service, mut stream) = futures_util::try_join!(
+                on(Builder::authenticated_socket(ours, guid.clone()), &runtime)
+                    .p2p()
+                    .serve_at(PATH, InlineAsker)
+                    .build(),
+                on(Builder::authenticated_socket(theirs, guid), &runtime)
+                    .p2p()
+                    .build_message_stream(),
+            )
+            .unwrap();
+            let caller = Connection::from(&stream);
+
+            // The object server runs the method of the first call itself, which waits to be told,
+            // so it leaves the second one.
+            caller
+                .send(
+                    &Message::method_call(PATH, "Ask")
+                        .interface(INTERFACE)
+                        .build(&())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let question = stream.next().await.unwrap().unwrap();
+            assert_eq!(question.header().member().unwrap(), "Tell");
+            caller.send(&echo("left")).await.unwrap();
+            let service_handover = {
+                let mut handing_over = pin!(service.hand_over());
+                let handed_over = futures_lite::future::poll_once(handing_over.as_mut()).await;
+                assert!(
+                    handed_over.is_none(),
+                    "handed over with a call under way: {handed_over:?}"
+                );
+                caller.reply(&question.header(), &"told").await.unwrap();
+
+                handing_over.await.unwrap()
+            };
+            assert_eq!(who_had(&service_handover), [(Type::MethodCall, Had::NONE)]);
+            // Nobody reads the channel now: it holds the calls that it has room for, and the sends
+            // keep the others, as the hand-over of the caller is prepared.
+            assert!(caller.prepare_hand_over());
+            let texts: Vec<_> = (0..40).map(|n| format!("{n:02}")).collect();
+            for text in &texts {
+                caller.send(&echo(text)).await.unwrap();
+            }
+            assert_ne!(caller.unwritten_len(), 0);
+            // The stream is yet to yield the answer to the first call, once the caller read it.
+            queued(&caller).await;
+            let caller_handover = stream.hand_over().await.unwrap();
+            assert_eq!(who_had(&caller_handover), [(Type::MethodReturn, Had::NONE)]);
+            assert_ne!(caller_handover.unwritten_len(), 0);
+            let (service_handover, caller_handover) =
+                carry.carried(service_handover, caller_handover);
+
+            let _service = on(Builder::take_over(service_handover), &runtime)
+                .serve_at(PATH, InlineAsker)
+                .build()
+                .await
+                .unwrap();
+            let mut stream = on(Builder::take_over(caller_handover), &runtime)
+                .build_message_stream()
+                .await
+                .unwrap();
+            let caller = Connection::from(&stream);
+            // The calls that the sends kept go out as the channel has room for them.
+            runtime
+                .timeout(caller.flush(), Duration::from_secs(10))
+                .await
+                .unwrap();
+            caller.send(&echo("after")).await.unwrap();
+
+            let mut answers = Vec::new();
+            for _ in 0..texts.len() + 3 {
+                let reply = stream.next().await.unwrap().unwrap();
+                assert_eq!(reply.message_type(), Type::MethodReturn, "{reply:?}");
+                answers.push(reply.body().deserialize::<String>().unwrap());
+            }
+            let expected: Vec<_> = ["told", "left"]
+                .into_iter()
+                .chain(texts.iter().map(String::as_str))
+                .chain(["after"])
+                .collect();
+            assert_eq!(answers, expected, "{carry:?}");
+        });
+    }
+
+    /// What a channel held for the hand-overs of its two ends goes through the record of the two,
+    /// file descriptors included, which are those of the messages alone: an end that is off its
+    /// channel has no socket. A message that came in before it comes first.
+    #[test]
+    #[timeout(15000)]
+    fn what_a_channel_held_goes_through_the_records() {
+        under_every_runtime(|runtime| async move {
+            let (sent, with_fd, unread, channel) = holding_a_message(&runtime).await;
+
+            assert_eq!(channel.first.unread_len(), unread + with_fd.data().len());
+            assert_eq!(channel.second.unread_len(), 0);
+            let inodes: Vec<_> = channel.fds().iter().map(inode).collect();
+            assert_eq!(inodes, [inode(&sent)]);
+            assert!(channel.second.fds().is_empty());
+            // The record of each end is of the kind of a channel, and says that it has no socket.
+            let (record, _) = saved(&channel);
+            for at in parts_of(&record) {
+                assert_eq!(record[at + 24], CHANNEL);
+                assert_eq!(
+                    u32::from_le_bytes(record[at + 12..at + 16].try_into().unwrap()),
+                    UNPAIRED
+                );
+            }
+            let channel = through_a_record(channel, 5);
+            assert_eq!(channel.first.unread_len(), unread + with_fd.data().len());
+            let (handover, peer_handover) = channel.into_ends();
+            assert_eq!(handover.saved_len(), None);
+
+            let mut stream = on(Builder::take_over(handover), &runtime)
+                .build_message_stream()
+                .await
+                .unwrap();
+            let peer = on(Builder::take_over(peer_handover), &runtime)
+                .build()
+                .await
+                .unwrap();
+            peer.send(&signal(3)).await.unwrap();
+            let mut received = Vec::new();
+            for _ in 0..3 {
+                received.push(stream.next().await.unwrap().unwrap());
+            }
+            assert_eq!(members(&received), ["Test", "WithFd", "Test"]);
+            let inodes: Vec<_> = received[1].data().fds().iter().map(inode).collect();
+            assert_eq!(inodes, [inode(&sent)]);
+        });
+    }
+
+    /// Only the hand-overs of the two ends of one channel go together: anything else is refused.
+    /// The record of an end is one only inside the record of the two: alone, it is none, and so is
+    /// one of the kind of a channel that doesn't say that it has no socket, or one that says so and
+    /// is of another kind.
+    #[test]
+    #[timeout(15000)]
+    fn hand_overs_that_do_not_go_together_are_not_paired() {
+        under_every_runtime(|runtime| async move {
+            let (mut first, first_peer) = channel_pair(&runtime).await;
+            let (mut second, second_peer) = channel_pair(&runtime).await;
+            let (mut over_a_socket, _socket_peer) = over_a_socket_pair(&runtime).await;
+            let (mut over_another, _another_peer) = over_a_socket_pair(&runtime).await;
+
+            // The ends of two channels, a socket and an end, and an end and a socket.
+            for (one, other) in [
+                (
+                    first.hand_over().await.unwrap(),
+                    second_peer.hand_over().await.unwrap(),
+                ),
+                (
+                    over_a_socket.hand_over().await.unwrap(),
+                    first_peer.hand_over().await.unwrap(),
+                ),
+                (
+                    second.hand_over().await.unwrap(),
+                    over_another.hand_over().await.unwrap(),
+                ),
+            ] {
+                let refused = ChannelHandover::new(one, other);
+                assert!(matches!(refused, Err(Error::Unsupported)), "{refused:?}");
+            }
+
+            let (_, _, _, channel) = holding_a_message(&runtime).await;
+            let (record, _) = saved(&channel);
+            let [first_at, second_at] = parts_of(&record);
+            let parts = [
+                (&record[first_at..second_at], &channel.first),
+                (&record[second_at..], &channel.second),
+            ];
+            for (part, end) in parts {
+                assert_invalid_data(Handover::restore(part, duplicates(end)));
+            }
+            for at in [first_at, second_at] {
+                let (mut record, fds) = saved(&channel);
+                record[at + 12] &= !(UNPAIRED as u8);
+                assert_invalid_data(ChannelHandover::restore(&record, fds));
+                let (mut record, fds) = saved(&channel);
+                record[at + 24] = UNIX_STREAM;
+                assert_invalid_data(ChannelHandover::restore(&record, fds));
+            }
+            let (record, fds) = saved(&channel);
+            let restored = ChannelHandover::restore(&record, fds).unwrap();
+            assert_eq!(restored.saved_len(), Some(record.len()));
+        });
+    }
+
+    /// The record of the hand-overs of the two ends of a channel is refused where its header is not
+    /// one that `save` wrote: of another version, a later one of which this version of zbus can't
+    /// read, cut short, too long, or with file descriptors other than those that it counts for
+    /// each end.
+    #[test]
+    #[timeout(15000)]
+    fn a_record_of_a_channel_that_is_not_as_saved_is_refused() {
+        under_every_runtime(|runtime| async move {
+            let (_, _, _, channel) = holding_a_message(&runtime).await;
+            let (record, _) = saved(&channel);
+            let len = record.len();
+            assert_eq!(&record[..8], CHANNEL_MAGIC);
+
+            let later = ChannelHandover::restore(
+                &changed_at(&record, 8, &(CHANNEL_VERSION + 1).to_le_bytes()),
+                duplicates(&channel),
+            );
+            assert!(matches!(later, Err(Error::Unsupported)), "{later:?}");
+            let malformed = [
+                changed_at(&record, 0, b"zbus-hov"),
+                changed_at(&record, 8, &0u16.to_le_bytes()),
+                changed_at(&record, 10, &[1]),
+                changed_at(&record, 20, &[1]),
+                // The lengths of the parts.
+                changed_at(&record, 24, &(len as u64).to_le_bytes()),
+                changed_at(&record, 32, &8u64.to_le_bytes()),
+                // Cut short, inside the header and after it, and too long.
+                record[..CHANNEL_HEADER - 8].to_vec(),
+                record[..len - 8].to_vec(),
+                [&record[..], &[0; 8]].concat(),
+                // The counts of the file descriptors, which come with the first end.
+                changed_at(&record, 12, &0u32.to_le_bytes()),
+                changed_at(&record, 16, &1u32.to_le_bytes()),
+                [
+                    &record[..12],
+                    &0u32.to_le_bytes(),
+                    &1u32.to_le_bytes(),
+                    &record[20..],
+                ]
+                .concat(),
+            ];
+            for record in malformed {
+                assert_invalid_data(ChannelHandover::restore(&record, duplicates(&channel)));
+            }
+            // As many file descriptors as counted, and no other number.
+            let mut more = duplicates(&channel);
+            more.push(pipe());
+            for fds in [Vec::new(), more] {
+                assert_invalid_data(ChannelHandover::restore(&record, fds));
+            }
+            let restored = ChannelHandover::restore(&record, duplicates(&channel)).unwrap();
+            assert_eq!(restored.saved_len(), Some(record.len()));
+        });
+    }
+
+    /// The streams of a connection that is handed over through none of them, one for a match rule
+    /// among them, as the stream of a proxy is, yield what the connection read, then end, with no
+    /// error before their end, and a call that waits for its reply fails. The hand-over holds none
+    /// of the messages that the connection read.
+    #[test]
+    #[timeout(15000)]
+    fn the_streams_of_a_connection_handed_over_through_none_end() {
+        under_every_runtime(|runtime| async move {
+            let (stream, peer) = channel_pair(&runtime).await;
+            let conn = Connection::from(&stream);
+            let mut streams = [
+                stream,
+                MessageStream::for_match_rule(signals(), &conn, None)
+                    .await
+                    .unwrap(),
+            ];
+            let mut peer_stream = MessageStream::from(&peer);
+            let msg = signal(1);
+
+            let calling = conn.call_method(None::<()>, PATH, Some(INTERFACE), "NoReply", &());
+            let handing_over = async {
+                // The call went out by the time that the peer has it, and nothing answers it.
+                peer_stream.next().await.unwrap().unwrap();
+                peer.send(&msg).await.unwrap();
+                wait_until(|| conn.inner.msg_receiver.len() == 1);
+
+                conn.clone().hand_over().await.unwrap()
+            };
+            let (reply, handover) = futures_util::future::join(calling, handing_over).await;
+
+            assert_not_connected(reply);
+            assert!(handover.queued.is_empty());
+            assert_eq!(handover.unread_len(), 0);
+            for stream in &mut streams {
+                let received = stream.next().await.unwrap().unwrap();
+                assert_eq!(&received.data()[..], &msg.data()[..]);
+                assert!(stream.next().await.is_none(), "the stream lives on");
+            }
+        });
+    }
+
+    /// A hand-over that is given up on while it waits for a call under way stops the connection
+    /// reading all the same: the call that the method waits for the reply to fails, and so the
+    /// call does, with its error. A later hand-over through the stream hands the connection over,
+    /// with the call as one that the object server had.
+    #[cfg(feature = "service")]
+    #[test]
+    #[timeout(15000)]
+    fn a_hand_over_given_up_on_with_a_call_under_way_stops_the_connection() {
+        under_every_runtime(|runtime| async move {
+            let (mut stream, peer) = serving(&runtime, Asker).await;
+            let conn = Connection::from(&stream);
+            let mut peer_stream = MessageStream::from(&peer);
+
+            let asking = peer.call_method(None::<()>, PATH, Some(INTERFACE), "Ask", &());
+            let giving_up = async {
+                let question = peer_stream.next().await.unwrap().unwrap();
+                assert_eq!(question.header().member().unwrap().as_str(), "Tell");
+                let mut handing_over = pin!(stream.hand_over());
+                let handed_over = futures_lite::future::poll_once(handing_over.as_mut()).await;
+                assert!(
+                    handed_over.is_none(),
+                    "handed over with a call under way: {handed_over:?}"
+                );
+            };
+            let (answer, ()) = futures_util::future::join(asking, giving_up).await;
+
+            assert!(matches!(answer, Err(Error::MethodError(..))), "{answer:?}");
+            let late = conn
+                .call_method(None::<()>, PATH, Some(INTERFACE), "Late", &())
+                .await;
+            assert_not_connected(late);
+            let handover = stream.hand_over().await.unwrap();
+            assert_eq!(who_had(&handover), [(Type::MethodCall, Had::SERVER)]);
+        });
+    }
+
+    /// A connection that took a message over hands it on, as it is handed over in turn, as one
+    /// that those had who had it before, whatever it has itself: a method call that an object
+    /// server answered goes on as that through a connection that has no object server.
+    #[test]
+    #[timeout(15000)]
+    fn who_had_a_message_is_handed_on() {
+        under_every_runtime(|runtime| async move {
+            let (ours, _peer) = UnixStream::pair().unwrap();
+            let mut handover = handover(HandoverSocket::UnixStream(ours), true);
+            handover.queued = vec![(echo("answered"), Had::SERVER), (signal(1), Had::NONE)];
+            let mut stream = on(Builder::take_over(handover), &runtime)
+                .build_message_stream()
+                .await
+                .unwrap();
+            let conn = Connection::from(&stream);
+            wait_until(|| conn.inner.msg_receiver.len() == 2);
+
+            let handover = stream.hand_over().await.unwrap();
+
+            assert_eq!(
+                who_had(&handover),
+                [(Type::MethodCall, Had::SERVER), (Type::Signal, Had::NONE)]
+            );
+        });
+    }
+
+    /// A connection that checks the bodies of the messages that it receives checks those that it
+    /// takes over too, whether they were queued on the stream of the connection that was handed
+    /// over or in what it read after them.
+    #[cfg(feature = "bus-impl")]
+    #[test]
+    #[timeout(15000)]
+    fn the_bodies_of_messages_left_unread_are_checked() {
+        under_every_runtime(|runtime| async move {
+            for queued in [true, false] {
+                let (_peer, ours) = UnixStream::pair().unwrap();
+                let builder = Message::signal(PATH, INTERFACE, "Test");
+                // SAFETY: The body carries no file descriptors, and the connection is to check it.
+                let invalid =
+                    unsafe { builder.build_raw_body(&[2, 0, 0, 0], "b", vec![]) }.unwrap();
+                let valid = signal(1);
+                let mut handover = handover(HandoverSocket::UnixStream(ours), true);
+                if queued {
+                    handover.queued = nobody_had(&[valid.clone(), invalid]);
+                } else {
+                    handover.tail = concat(&[valid.clone(), invalid]);
+                }
+
+                let mut stream = on(Builder::take_over(handover).validate_bodies(), &runtime)
+                    .build_message_stream()
+                    .await
+                    .unwrap();
+
+                let received = stream.next().await.unwrap().unwrap();
+                assert_eq!(&received.data()[..], &valid.data()[..], "queued: {queued}");
+                let error = stream.next().await.unwrap().unwrap_err();
+                assert!(matches!(error, Error::Failure(_)), "{error:?}");
+                assert!(
+                    stream.next().await.is_none(),
+                    "the stream outlived its error"
+                );
+            }
+        });
+    }
+
+    /// What a connection that was handed over took to send and didn't write, the rest of a
+    /// message that a write ended in the middle of and whole messages after it, the connection
+    /// that takes over, in this process or through the record of the hand-over, counts from the
+    /// start, and writes ahead of its first send or flush, and not before: the peer gets the
+    /// message whole, the others with their descriptors, then what the connection sends.
+    #[test]
+    #[timeout(15000)]
+    fn what_was_left_unwritten_is_written_ahead_of_the_first_send() {
+        under_every_runtime(|runtime| async move {
+            for (record, flush) in [(false, false), (false, true), (true, false), (true, true)] {
+                let case = format!("record: {record}, flush: {flush}");
+                let (ours, peer) = UnixStream::pair().unwrap();
+                let (cut, next) = (signal(1), signal(4));
+                let kept = [with_fd(2), signal(3)];
+                let mut handover = handover(HandoverSocket::UnixStream(ours), true);
+                handover.unix_fd_passing = true;
+                handover.unwritten = Unwritten {
+                    cut: Some((cut.data().clone(), 10)),
+                    kept: kept.iter().cloned().collect(),
+                };
+                let unwritten = cut.data().len() - 10 + concat(&kept).len();
+                assert_eq!(handover.unwritten.len(), unwritten);
+                let handover = if record {
+                    through_a_record(handover, 7)
+                } else {
+                    handover
+                };
+
+                let conn = on(Builder::take_over(handover), &runtime)
+                    .build()
+                    .await
+                    .unwrap();
+
+                assert_eq!(conn.unwritten_len(), unwritten, "{case}");
+                assert_nothing_to_read(&peer);
+                if flush {
+                    conn.flush().await.unwrap();
+                } else {
+                    conn.send(&next).await.unwrap();
+                }
+                assert_eq!(conn.unwritten_len(), 0, "{case}");
+                let mut peer = Reader::new(Arc::new(registered(&runtime, peer, UnixOps).unwrap()));
+                // The peer got the start of the message that was cut before the hand-over.
+                let mut start = cut.data()[..10].to_vec();
+                let mut sent = vec![&cut];
+                sent.extend(&kept);
+                if !flush {
+                    sent.push(&next);
+                }
+                for (seq, sent) in sent.into_iter().enumerate() {
+                    let received = peer
+                        .receive_message(seq as u64, &mut start, &mut vec![])
+                        .await
+                        .unwrap();
+                    assert_eq!(&received.data()[..], &sent.data()[..], "{case}");
+                    assert_eq!(
+                        received.data().fds().len(),
+                        sent.data().fds().len(),
+                        "{case}"
+                    );
+                }
+            }
+        });
+    }
+
+    /// A hand-over that goes through its record and its file descriptors has all that it had,
+    /// and a connection that takes over from it goes on where the one that was handed over
+    /// stopped, with the messages and the descriptors that it left unread.
+    #[test]
+    #[timeout(15000)]
+    fn a_hand_over_goes_through_its_record() {
+        under_every_runtime(|runtime| async move {
+            let (mut stream, peer, probe) = served(&runtime).await;
+            let pipes = [pipe(), pipe()];
+            let msgs = [
+                Message::signal(PATH, INTERFACE, "WithFds")
+                    .build(&crate::Fd::from(&pipes[0]))
+                    .unwrap(),
+                Message::signal(PATH, INTERFACE, "WithFds")
+                    .build(&crate::Fd::from(&pipes[1]))
+                    .unwrap(),
+            ];
+            send_with_fds(&peer, &msgs[0].data()[..], &[pipes[0].as_fd()]);
+            send_with_fds(&peer, &msgs[1].data()[..20], &[pipes[1].as_fd()]);
+            wait_until(|| rustix::io::ioctl_fionread(&probe).unwrap() == 0);
+            let mut handover = stream.hand_over().await.unwrap();
+            handover.unique_name = Some(UNIQUE_NAME.try_into().unwrap());
+            let left = unread(&handover);
+            let next_serial = handover.next_serial;
+            let guid = handover.server_guid.clone();
+
+            let handover = through_a_record(handover, 3);
+
+            assert!(
+                matches!(handover.socket, HandoverSocket::UnixStream(_)),
+                "a unix socket was restored as {:?}",
+                handover.socket,
+            );
+            assert_eq!(handover.server_guid, guid);
+            assert_eq!(handover.unique_name.as_ref().unwrap().as_str(), UNIQUE_NAME);
+            assert_eq!(unread(&handover), left);
+            let inodes: Vec<_> = handover
+                .fds()
+                .into_iter()
+                .skip(1)
+                .map(|fd| inode(&fd))
+                .collect();
+            assert_eq!(inodes, pipes.each_ref().map(inode));
+            assert!(handover.unix_fd_passing);
+            assert!(handover.p2p);
+            assert_eq!(handover.next_serial, next_serial);
+            let mut stream = on(Builder::take_over(handover), &runtime)
+                .build_message_stream()
+                .await
+                .unwrap();
+            assert_eq!(
+                Connection::from(&stream).unique_name().unwrap().as_str(),
+                UNIQUE_NAME
+            );
+            (&peer).write_all(&msgs[1].data()[20..]).unwrap();
+            for (sent, pipe) in msgs.iter().zip(&pipes) {
+                let received = stream.next().await.unwrap().unwrap();
+                assert_eq!(&received.data()[..], &sent.data()[..]);
+                let inodes: Vec<_> = received.data().fds().iter().map(inode).collect();
+                assert_eq!(inodes, [inode(pipe)]);
+            }
+        });
+    }
+
+    /// The hand-over of a connection to a bus over a TCP socket, with nothing left unread and no
+    /// passing of file descriptors, goes through its record too.
+    #[test]
+    fn a_tcp_hand_over_goes_through_its_record() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let socket = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let address = socket.local_addr().unwrap();
+        let mut handover = handover(HandoverSocket::TcpStream(socket), false);
+        handover.unique_name = None;
+        handover.next_serial = NonZeroU32::new(77).unwrap();
+        let guid = handover.server_guid.clone();
+
+        let handover = through_a_record(handover, 0);
+
+        match &handover.socket {
+            HandoverSocket::TcpStream(socket) => assert_eq!(socket.local_addr().unwrap(), address),
+            socket => panic!("a TCP socket was restored as {socket:?}"),
+        }
+        assert_eq!(handover.fds().len(), 1);
+        assert_eq!(handover.server_guid, guid);
+        assert!(handover.unique_name.is_none());
+        assert_eq!(handover.unread_len(), 0);
+        assert_eq!(handover.unwritten_len(), 0);
+        assert!(!handover.unix_fd_passing);
+        assert!(!handover.p2p);
+        assert_eq!(handover.next_serial.get(), 77);
+    }
+
+    /// A record restores from anywhere in memory, at any address, as it was saved: saved again,
+    /// it is the same, to the byte, with its file descriptors in the same order. It is a multiple
+    /// of 8 long.
+    #[test]
+    fn a_record_restores_from_anywhere_in_memory() {
+        let (handover, _peer) = every_part();
+        let (record, _fds) = saved(&handover);
+        assert_eq!(record.len() % 8, 0, "{} bytes of record", record.len());
+        let inodes: Vec<_> = handover.fds().into_iter().map(|fd| inode(&fd)).collect();
+
+        let mut handover = handover;
+        for at in [1, 2, 3, 4, 5, 6, 7, 8, 13] {
+            handover = through_a_record(handover, at);
+
+            assert_eq!(saved(&handover).0, record, "at {at}");
+            let restored: Vec<_> = handover.fds().into_iter().map(|fd| inode(&fd)).collect();
+            assert_eq!(restored, inodes, "at {at}");
+        }
+        assert_eq!(handover.queued.len(), 2);
+        assert_eq!(handover.tail.len(), 10);
+        assert_eq!(handover.unwritten.rest().len(), 15);
+        assert_eq!(handover.unwritten.kept.len(), 2);
+    }
+
+    /// A record of a later major version of the format, or one that needs a feature of the format
+    /// that this version of zbus doesn't know, as a later version may save, is refused as one that
+    /// it can't read, while a record of a major version of 0, which there is none of, is not a
+    /// record.
+    #[test]
+    fn a_record_of_a_later_format_is_refused() {
+        // A later major version, and the first feature that this version doesn't know.
+        let unknown = (KNOWN_FEATURES + 1).to_le_bytes();
+        for (at, value) in [(8, &(MAJOR + 1).to_le_bytes()[..]), (12, &unknown[..])] {
+            let (record, fds) =
+                changed(|record| record[at..at + value.len()].copy_from_slice(value));
+
+            let restored = Handover::restore(&record, fds);
+
+            assert!(matches!(restored, Err(Error::Unsupported)), "{restored:?}");
+        }
+        let (record, fds) = changed(|record| record[8..10].copy_from_slice(&[0, 0]));
+        assert_invalid_data(Handover::restore(&record, fds));
+    }
+
+    /// The record of a hand-over tells who had each of its messages if anyone had one of them, and
+    /// the hand-over that it restores has them as they were had. A record of messages that nobody
+    /// had needs no feature of the format, and is as long as before, so that a version of zbus
+    /// that knows nothing of who had a message restores it. A record that tells of someone that
+    /// this version doesn't know, or that has anything but zeros after what it tells, is not one.
+    #[test]
+    fn a_record_tells_who_had_its_messages() {
+        let (mut handover, _peer) = every_part();
+        let (plain, _) = saved(&handover);
+        assert_eq!(plain[12..16], [0; 4], "the record needs a feature");
+        let had = [Had::SERVER, Had::STREAM];
+        for ((_, slot), had) in handover.queued.iter_mut().zip(had) {
+            *slot = had;
+        }
+
+        let (record, fds) = saved(&handover);
+
+        assert_eq!(record[12..16], HAD.to_le_bytes());
+        assert_eq!(record.len(), plain.len() + 8);
+        let restored = Handover::restore(&record, fds).unwrap();
+        let restored_had: Vec<_> = restored.queued.iter().map(|(_, had)| *had).collect();
+        assert_eq!(restored_had, had);
+        assert_eq!(saved(&restored).0, record);
+
+        // Who had the messages comes after the table, of two queued messages and two left to
+        // write: a byte for each queued message, then zeros.
+        let header_len = usize::from(u16::from_le_bytes([record[10], record[11]]));
+        let told = header_len + 4 * 8;
+        for (at, value) in [(told, 4), (told + 2, 1)] {
+            let mut record = record.clone();
+            record[at] = value;
+            assert_invalid_data(Handover::restore(&record, duplicates(&handover)));
+        }
+    }
+
+    /// A record that a later minor version of the format saved, with more fields at the end of its
+    /// header, and with flags and a byte of the header that this version doesn't know set, is
+    /// restored as one without them.
+    #[test]
+    fn a_record_with_more_in_its_header_is_restored() {
+        let (handover, _peer) = every_part();
+        let (record, fds) = saved(&handover);
+        let header_len = usize::from(u16::from_le_bytes([record[10], record[11]]));
+        let mut later = record[..header_len].to_vec();
+        later.extend_from_slice(b"12345678");
+        later.extend_from_slice(&record[header_len..]);
+        later[10..12].copy_from_slice(&(header_len as u16 + 8).to_le_bytes());
+        later[16..24].copy_from_slice(&(record.len() as u64 + 8).to_le_bytes());
+        later[25] |= 0x80;
+        later[27] = 0xff;
+
+        let restored = Handover::restore(&later, fds).unwrap();
+
+        assert_eq!(saved(&restored).0, record);
+    }
+
+    /// Bytes that are not a record that `save` copied, or that come with more or fewer file
+    /// descriptors than they count, are refused.
+    #[test]
+    fn what_is_not_a_record_is_refused() {
+        let (handover, _peer) = every_part();
+        let (record, _) = saved(&handover);
+        let header_len = usize::from(u16::from_le_bytes([record[10], record[11]]));
+        // The table, of two queued messages and two left to write, then the bytes read.
+        let inbound = header_len + 4 * 8;
+        let refused = |what: &str, (record, fds): (Vec<u8>, Vec<OwnedFd>)| {
+            let restored = Handover::restore(&record, fds);
+
+            let Err(Error::InputOutput(e)) = &restored else {
+                panic!("a record with a wrong {what} was restored: {restored:?}");
+            };
+            assert_eq!(e.kind(), ErrorKind::InvalidData, "{what}: {e}");
+        };
+        // Fields, as where they are and a value that the record of `every_part` can't have there.
+        let fields: [(&str, usize, &[u8]); 15] = [
+            ("magic", 0, b"zbus-hoW"),
+            ("odd header", 10, &(header_len as u16 - 4).to_le_bytes()),
+            ("short header", 10, &(NAME as u16).to_le_bytes()),
+            ("record length", 16, &1u64.to_le_bytes()),
+            ("kind", 24, &[2]),
+            ("serial", 28, &0u32.to_le_bytes()),
+            ("descriptors", 32, &99u32.to_le_bytes()),
+            ("tail descriptors", 40, &0u32.to_le_bytes()),
+            ("inbound length", 48, &8u64.to_le_bytes()),
+            ("rest length", 64, &u64::MAX.to_le_bytes()),
+            ("GUID", 72, b"not hex!"),
+            ("unique name", NAME, b"org"),
+            ("message length", header_len, &17u32.to_le_bytes()),
+            ("message descriptors", header_len + 4, &0u32.to_le_bytes()),
+            ("message", inbound, b"X"),
+        ];
+        for (what, at, value) in fields {
+            refused(
+                what,
+                changed(|record| record[at..at + value.len()].copy_from_slice(value)),
+            );
+        }
+        let lengths: [(&str, Change); 5] = [
+            ("padding", |record| *record.last_mut().unwrap() = 1),
+            ("length, as longer", |record| {
+                record.extend_from_slice(&[0; 8])
+            }),
+            ("length, as shorter", |record| {
+                record.truncate(record.len() - 8)
+            }),
+            ("length, as a header only", |record| record.truncate(NAME)),
+            ("length, as nothing", Vec::clear),
+        ];
+        for (what, change) in lengths {
+            refused(what, changed(change));
+        }
+
+        let (record, mut fds) = changed(|_| ());
+        fds.push(pipe());
+        assert_invalid_data(Handover::restore(&record, fds));
+        let (record, mut fds) = changed(|_| ());
+        fds.pop();
+        assert_invalid_data(Handover::restore(&record, fds));
+    }
+
+    /// The record of a hand-over is copied into memory that is exactly as long as it, and none
+    /// is written otherwise.
+    #[test]
+    fn a_record_is_saved_only_into_memory_exactly_as_long_as_it() {
+        let (handover, _peer) = every_part();
+        let len = handover.saved_len().unwrap();
+
+        for len in [len - 1, len + 1, 0] {
+            let mut memory = vec![0xa5; len];
+
+            let saved = handover.save(&mut memory);
+
+            let Err(zoter::Error::Io(e)) = &saved else {
+                panic!("a record was saved into {len} bytes: {saved:?}");
+            };
+            assert_eq!(e.kind(), ErrorKind::InvalidInput, "{e}");
+            assert!(
+                memory.iter().all(|byte| *byte == 0xa5),
+                "the save wrote some"
+            );
+        }
+    }
+
+    /// The hand-over of a connection over a socket of your own, such as a channel, has no record
+    /// and no file descriptors to pass on.
+    #[test]
+    fn a_socket_of_your_own_has_no_record() {
+        let (ours, _theirs) = Channel::pair();
+        let mut handover = handover(HandoverSocket::Socket(ours.into()), true);
+        handover.queued = nobody_had(&[with_fd(1)]);
+
+        let saved = handover.save(&mut []);
+
+        let Err(zoter::Error::Io(e)) = saved else {
+            panic!("a record of a socket of your own was saved");
+        };
+        assert_eq!(e.kind(), ErrorKind::Unsupported, "{e}");
+        assert_eq!(handover.saved_len(), None);
+        assert!(handover.fds().is_empty());
+    }
+
+    /// A hand-over shows how much it holds rather than what, and can go to another thread.
+    #[test]
+    fn a_hand_over_shows_how_much_it_holds() {
+        fn sendable<T>(_: &T)
+        where
+            T: Send + Sync,
+        {
+        }
+
+        let (ours, _theirs) = UnixStream::pair().unwrap();
+        let mut handover = handover(HandoverSocket::UnixStream(ours), true);
+        handover.tail = vec![b'#'; 10 * 1024];
+
+        let shown = format!("{handover:?}");
+
+        assert!(shown.contains("unread_len: 10240"), "{shown}");
+        assert!(!shown.contains("35, 35"), "{shown}");
+        sendable(&handover);
+    }
+
+    /// Hands over a connection that yielded a whole message, and read `cut` up to `at`, checks what
+    /// it handed over, and takes it over. Gives how much room the bytes that it handed over had.
+    async fn hand_over_in_the_middle_of(runtime: &Runtime, cut: &Message, at: usize) -> usize {
+        let (mut stream, peer, probe) = served(runtime).await;
+        let conn = Connection::from(&stream);
+        let (whole, last) = (signal(1), signal(3));
+
+        let mut sent = whole.data().to_vec();
+        sent.extend_from_slice(&cut.data()[..at]);
+        (&peer).write_all(&sent).unwrap();
+        let received = stream.next().await.unwrap().unwrap();
+        assert_eq!(&received.data()[..], &whole.data()[..]);
+        // The reader waits for the rest of the message.
+        wait_until(|| rustix::io::ioctl_fionread(&probe).unwrap() == 0);
+
+        let handover = stream.hand_over().await.unwrap();
+
+        assert!(
+            conn.is_closed(),
+            "the connection is open after its hand-over"
+        );
+        assert_eq!(unread(&handover), &cut.data()[..at]);
+        assert!(handover.queued.is_empty());
+        assert_eq!(handover.fds().len(), 1);
+        assert_eq!(&handover.server_guid, conn.server_guid());
+        assert_eq!(handover.unique_name.as_ref(), conn.unique_name());
+        assert!(handover.unix_fd_passing);
+        assert!(handover.p2p);
+        assert!(handover.next_serial > last.primary_header().serial_num());
+        assert!(
+            matches!(handover.socket, HandoverSocket::UnixStream(_)),
+            "a unix socket was handed over as {:?}",
+            handover.socket,
+        );
+        let room = handover.tail.capacity();
+        let guid = handover.server_guid.clone();
+        // The connection that takes over has nothing to do with the one that was handed over.
+        drop(conn);
+        let mut stream = on(Builder::take_over(handover), runtime)
+            .build_message_stream()
+            .await
+            .unwrap();
+        let conn = Connection::from(&stream);
+        assert_eq!(conn.server_guid(), &guid);
+        assert!(
+            conn.inner.cap_unix_fd,
+            "the connection that took over can't pass file descriptors",
+        );
+
+        // The peer goes on where it was.
+        let mut rest = cut.data()[at..].to_vec();
+        rest.extend_from_slice(&last.data()[..]);
+        (&peer).write_all(&rest).unwrap();
+
+        for sent in [cut, &last] {
+            let received = stream.next().await.unwrap().unwrap();
+            assert_eq!(&received.data()[..], &sent.data()[..]);
+        }
+
+        // The connection that took over is handed over in turn, in the middle of a message too.
+        (&peer).write_all(&cut.data()[..at]).unwrap();
+        wait_until(|| rustix::io::ioctl_fionread(&probe).unwrap() == 0);
+        let handover = stream.hand_over().await.unwrap();
+        assert_eq!(unread(&handover), &cut.data()[..at]);
+        assert!(
+            matches!(handover.socket, HandoverSocket::UnixStream(_)),
+            "a unix socket was handed over again as {:?}",
+            handover.socket,
+        );
+
+        room
+    }
+
+    /// The halves of `socket`, registered on `runtime`, of which the read half only receives
+    /// bytes, and says that it can take out what it read as `can_take_unread` says.
+    fn recvmsg_only(runtime: &Runtime, socket: UnixStream, can_take_unread: bool) -> BoxedSplit {
+        let socket = Arc::new(registered(runtime, socket, UnixOps).unwrap());
+        let read = RecvmsgOnly {
+            socket: socket.clone(),
+            can_take_unread,
+        };
+
+        Split::new(Box::new(read), Box::new(socket) as Box<dyn WriteHalf>)
+    }
+
+    /// A read half that only receives bytes, and leaves everything else to the defaults of
+    /// `ReadHalf`, but for whether it can take out what it read.
+    #[derive(Debug)]
+    struct RecvmsgOnly {
+        socket: Arc<RegisteredIo<UnixOps>>,
+        can_take_unread: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl ReadHalf for RecvmsgOnly {
+        async fn recvmsg(&mut self, buffer: &mut [u8]) -> RecvmsgResult {
+            self.socket.recv(buffer).await
+        }
+
+        // Whether it says so is up to the test. It could, as the default `receive_message` keeps
+        // all that it reads in what it is given, and a receipt that is dropped loses nothing.
+        fn can_take_unread(&self) -> bool {
+            self.can_take_unread
+        }
+    }
+
+    /// The stream of the server end of a peer-to-peer connection over a unix socket pair, on
+    /// `runtime`, and the other end of the pair, through which the test plays the client. Also a
+    /// descriptor of the server's end of the pair, which tells how much of what the client sent
+    /// the connection is yet to read.
+    async fn served(runtime: &Runtime) -> (MessageStream, UnixStream, UnixStream) {
+        let (client, server) = UnixStream::pair().unwrap();
+        let probe = server.try_clone().unwrap();
+        // The client's side of the handshake, all at once, which the server takes as it comes.
+        let id = hex::encode(rustix::process::geteuid().as_raw().to_string());
+        let commands = format!("\0AUTH EXTERNAL {id}\r\nNEGOTIATE_UNIX_FD\r\nBEGIN\r\n");
+        (&client).write_all(commands.as_bytes()).unwrap();
+        let guid = Guid::generate();
+
+        let stream = on(Builder::unix_stream(server).server(&guid).p2p(), runtime)
+            .build_message_stream()
+            .await
+            .unwrap();
+
+        let answer = format!("OK {guid}\r\nAGREE_UNIX_FD\r\n");
+        let mut answered = vec![0; answer.len()];
+        (&client).read_exact(&mut answered).unwrap();
+        assert_eq!(answered, answer.as_bytes());
+
+        (stream, client, probe)
+    }
+
+    /// The stream of a connection over one end of a unix socket pair, on `runtime`, with no
+    /// handshake, and the other end of the pair, through which the test plays its peer.
+    async fn over_a_socket_pair(runtime: &Runtime) -> (MessageStream, UnixStream) {
+        let (peer, theirs) = UnixStream::pair().unwrap();
+        let socket = registered(runtime, theirs, UnixOps).unwrap();
+        let stream = on(
+            Builder::authenticated_socket(socket, Guid::generate()),
+            runtime,
+        )
+        .p2p()
+        .build_message_stream()
+        .await
+        .unwrap();
+
+        (stream, peer)
+    }
+
+    /// As `over_a_socket_pair`, but through a write half of your own that only sends bytes, and
+    /// can't resume writes, so that a send that is cut off midway can leave part of a message in
+    /// the socket.
+    async fn over_a_socket_pair_of_your_own(runtime: &Runtime) -> (MessageStream, UnixStream) {
+        let (peer, theirs) = UnixStream::pair().unwrap();
+        let socket = Arc::new(registered(runtime, theirs, UnixOps).unwrap());
+        let split = Split::new(
+            Box::new(Reader::new(socket.clone())) as Box<dyn ReadHalf>,
+            Box::new(SendmsgOnly(socket)) as Box<dyn WriteHalf>,
+        );
+        let stream = on(
+            Builder::authenticated_socket(split, Guid::generate()),
+            runtime,
+        )
+        .p2p()
+        .build_message_stream()
+        .await
+        .unwrap();
+
+        (stream, peer)
+    }
+
+    /// A write half that only sends bytes, and leaves everything else to the defaults of
+    /// `WriteHalf`, which can't resume writes.
+    #[derive(Debug)]
+    struct SendmsgOnly(Arc<RegisteredIo<UnixOps>>);
+
+    #[async_trait::async_trait]
+    impl WriteHalf for SendmsgOnly {
+        async fn sendmsg(&mut self, buffer: &[u8], fds: &[BorrowedFd<'_>]) -> io::Result<usize> {
+            WriteHalf::sendmsg(&mut self.0, buffer, fds).await
+        }
+
+        async fn close(&mut self) -> io::Result<()> {
+            WriteHalf::close(&mut self.0).await
+        }
+
+        fn can_pass_unix_fd(&self) -> bool {
+            true
+        }
+    }
+
+    /// Has `peer` send two signals to the connection of `conn`, and waits for them to be queued
+    /// on its streams. Gives their bytes.
+    fn queue_two(conn: &Connection, peer: &UnixStream) -> Vec<u8> {
+        let queued: Vec<u8> = [signal(1), signal(2)]
+            .iter()
+            .flat_map(|msg| msg.data().to_vec())
+            .collect();
+        (&*peer).write_all(&queued).unwrap();
+        wait_until(|| conn.inner.msg_receiver.len() == 2);
+
+        queued
+    }
+
+    /// A hand-over of a connection over `socket`, with nothing left unread or unwritten: a
+    /// peer-to-peer one if `p2p` says so, and otherwise one to a bus, whose unique name is
+    /// `UNIQUE_NAME`.
+    fn handover(socket: HandoverSocket, p2p: bool) -> Handover {
+        Handover {
+            socket,
+            server_guid: Guid::generate().into(),
+            unique_name: (!p2p).then(|| UNIQUE_NAME.try_into().unwrap()),
+            unix_fd_passing: false,
+            p2p,
+            next_serial: NonZeroU32::MIN,
+            queued: vec![],
+            tail: vec![],
+            tail_fds: vec![],
+            unwritten: Unwritten::default(),
+        }
+    }
+
+    /// A hand-over of a peer-to-peer connection over one end of a new unix socket pair, and the
+    /// other end, with some of everything: a unique name, the passing of file descriptors, two
+    /// messages queued, the first of which carries a descriptor, the start of a third read after
+    /// them, with a descriptor that came with it, and, left to write, the last 15 bytes of a
+    /// message that a write ended in the middle of, then two more, the first of which carries a
+    /// descriptor.
+    fn every_part() -> (Handover, UnixStream) {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let mut handover = handover(HandoverSocket::UnixStream(ours), true);
+        handover.unique_name = Some(UNIQUE_NAME.try_into().unwrap());
+        handover.unix_fd_passing = true;
+        handover.next_serial = NonZeroU32::new(42).unwrap();
+        handover.queued = nobody_had(&[with_fd(1), signal(2)]);
+        handover.tail = with_fd(3).data()[..10].to_vec();
+        handover.tail_fds = vec![pipe()];
+        let cut = signal(4);
+        let written = cut.data().len() - 15;
+        handover.unwritten = Unwritten {
+            cut: Some((cut.data().clone(), written)),
+            kept: VecDeque::from([with_fd(5), signal(6)]),
+        };
+
+        (handover, theirs)
+    }
+
+    /// `handover`, passed on through its record, which `save` copies into memory `at` bytes into
+    /// a buffer, and its file descriptors, duplicated, as passing them on does: what `restore`
+    /// gives back of them.
+    fn through_a_record<H>(handover: H, at: usize) -> H
+    where
+        H: Save + Restore<Error = Error>,
+    {
+        let len = handover
+            .saved_len()
+            .expect("the hand-over of a socket that zbus drives");
+        assert_eq!(len % 8, 0, "{len} bytes of record");
+        let mut memory = vec![0xa5; at + len + 7];
+        handover.save(&mut memory[at..][..len]).unwrap();
+        let fds = duplicates(&handover);
+        drop(handover);
+
+        H::restore(&memory[at..][..len], fds).unwrap()
+    }
+
+    /// The record of `handover`, and duplicates of its file descriptors.
+    fn saved<H>(handover: &H) -> (Vec<u8>, Vec<OwnedFd>)
+    where
+        H: Save,
+    {
+        let mut record = vec![0; handover.saved_len().unwrap()];
+        handover.save(&mut record).unwrap();
+
+        (record, duplicates(handover))
+    }
+
+    /// The record of the hand-over of [`every_part`], changed by `change`, and duplicates of its
+    /// file descriptors.
+    fn changed(change: impl Fn(&mut Vec<u8>)) -> (Vec<u8>, Vec<OwnedFd>) {
+        let (handover, _peer) = every_part();
+        let (mut record, fds) = saved(&handover);
+        change(&mut record);
+
+        (record, fds)
+    }
+
+    /// A change to the bytes of a record.
+    type Change = fn(&mut Vec<u8>);
+
+    /// Duplicates of the file descriptors of `handover`, as passing them on makes.
+    fn duplicates<H>(handover: &H) -> Vec<OwnedFd>
+    where
+        H: Save,
+    {
+        handover
+            .fds()
+            .into_iter()
+            .map(|fd| fd.try_clone_to_owned().unwrap())
+            .collect()
+    }
+
+    /// The bytes that `handover` left unread: those of the messages that were queued, then those
+    /// that were read after them.
+    fn unread(handover: &Handover) -> Vec<u8> {
+        let queued: Vec<_> = handover.queued().cloned().collect();
+
+        [concat(&queued), handover.tail.clone()].concat()
+    }
+
+    /// `msgs`, as a hand-over holds the messages that neither the stream nor the object server
+    /// of its connection had.
+    fn nobody_had(msgs: &[Message]) -> Vec<(Message, Had)> {
+        msgs.iter().map(|msg| (msg.clone(), Had::NONE)).collect()
+    }
+
+    /// The bytes of `msgs`, one after the other.
+    fn concat(msgs: &[Message]) -> Vec<u8> {
+        msgs.iter().flat_map(|msg| msg.data().to_vec()).collect()
+    }
+
+    /// Reads `len` bytes off `peer`, on a thread of its own, as a peer that reads at last.
+    fn read_in_the_background(peer: &UnixStream, len: usize) -> thread::JoinHandle<Vec<u8>> {
+        let peer = peer.try_clone().unwrap();
+
+        thread::spawn(move || {
+            let mut received = vec![0; len];
+            (&peer).read_exact(&mut received).unwrap();
+
+            received
+        })
+    }
+
+    /// Asserts that `peer` has nothing to read, which leaves it in non-blocking mode.
+    fn assert_nothing_to_read(peer: &UnixStream) {
+        peer.set_nonblocking(true).unwrap();
+        let read = (&*peer).read(&mut [0; 1]);
+        assert!(
+            matches!(&read, Err(e) if e.kind() == ErrorKind::WouldBlock),
+            "the peer got {read:?}",
+        );
+    }
+
+    /// Polls `sending` until it wrote part of its message to the socket of `peer`, which doesn't
+    /// read, and waits for room for the rest.
+    async fn stuck<F>(runtime: &Runtime, mut sending: Pin<&mut F>, peer: &UnixStream)
+    where
+        F: Future<Output = Result<()>>,
+    {
+        while rustix::io::ioctl_fionread(peer).unwrap() == 0 {
+            let sent = futures_lite::future::poll_once(sending.as_mut()).await;
+            assert!(
+                sent.is_none(),
+                "the socket took the whole message: {sent:?}"
+            );
+            // For the runtime to see the socket writable, if it waits for that first.
+            runtime.sleep(Duration::from_millis(1)).await;
+        }
+    }
+
+    /// Writes `bytes` to `socket`, with `fds` along with them.
+    fn send_with_fds(socket: &UnixStream, bytes: &[u8], fds: &[BorrowedFd<'_>]) {
+        use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags, sendmsg};
+
+        let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(2))];
+        let mut ancillary = SendAncillaryBuffer::new(&mut space);
+        assert!(ancillary.push(SendAncillaryMessage::ScmRights(fds)));
+        let sent = sendmsg(
+            socket,
+            &[IoSlice::new(bytes)],
+            &mut ancillary,
+            SendFlags::empty(),
+        )
+        .unwrap();
+        assert_eq!(sent, bytes.len());
+    }
+
+    /// The read end of a pipe of its own.
+    fn pipe() -> OwnedFd {
+        io::pipe().unwrap().0.into()
+    }
+
+    /// The inode of the file that `fd` is open on.
+    fn inode(fd: &impl AsFd) -> u64 {
+        use std::os::unix::fs::MetadataExt;
+
+        std::fs::File::from(fd.as_fd().try_clone_to_owned().unwrap())
+            .metadata()
+            .unwrap()
+            .ino()
+    }
+
+    /// Checks that `socket`, which a connection to `peer` handed over, is in non-blocking mode, as
+    /// the connection left it, and gets what `peer` sends.
+    async fn carries_what_is_sent<S>(socket: S, peer: &Connection)
+    where
+        S: AsFd,
+        for<'s> &'s S: Read,
+    {
+        let read = (&socket).read(&mut [0; 1]);
+        assert!(
+            matches!(&read, Err(e) if e.kind() == ErrorKind::WouldBlock),
+            "the read didn't find the socket empty: {read:?}",
+        );
+        let msg = signal(1);
+        peer.send(&msg).await.unwrap();
+        rustix::io::ioctl_fionbio(&socket, false).unwrap();
+        let mut received = vec![0; msg.data().len()];
+        (&socket).read_exact(&mut received).unwrap();
+        assert_eq!(received, &msg.data()[..]);
+    }
+
+    /// A connection that isn't built with an object server keeps none of the method calls that it
+    /// took over for one: a call that its stream yielded doesn't go on with its next hand-over.
+    #[test]
+    #[timeout(15000)]
+    fn a_call_that_the_stream_yielded_is_not_handed_on() {
+        under_every_runtime(|runtime| async move {
+            let (mut stream, peer) = channel_pair(&runtime).await;
+            let conn = Connection::from(&stream);
+            peer.send(&echo("handed")).await.unwrap();
+            wait_until(|| conn.inner.msg_receiver.len() == 1);
+            let handover = stream.hand_over().await.unwrap();
+            assert_eq!(handover.queued.len(), 1);
+
+            let mut stream = on(Builder::take_over(handover), &runtime)
+                .build_message_stream()
+                .await
+                .unwrap();
+            #[cfg(feature = "service")]
+            assert!(Connection::from(&stream).inner.calls.existing().is_none());
+            let call = stream.next().await.unwrap().unwrap();
+            assert_eq!(call.body().deserialize::<&str>().unwrap(), "handed");
+            let handover = stream.hand_over().await.unwrap();
+
+            assert!(handover.queued.is_empty(), "{:?}", handover.queued);
+        });
+    }
+
+    /// A method call that a connection took over, and that its object server left as the
+    /// connection was handed over in turn, goes on as a call that no object server had, and the
+    /// object server of the connection that takes over then answers it, once.
+    #[cfg(feature = "service")]
+    #[test]
+    #[timeout(15000)]
+    fn a_call_that_the_object_server_was_handed_and_left_is_handed_on() {
+        under_every_runtime(|runtime| async move {
+            let (mut stream, peer) = channel_pair(&runtime).await;
+            let conn = Connection::from(&stream);
+            let mut peer_stream = MessageStream::from(&peer);
+            let ask = Message::method_call(PATH, "Ask")
+                .interface(INTERFACE)
+                .build(&())
+                .unwrap();
+            peer.send(&ask).await.unwrap();
+            peer.send(&echo("left")).await.unwrap();
+            wait_until(|| conn.inner.msg_receiver.len() == 2);
+            let handover = stream.hand_over().await.unwrap();
+            assert_eq!(who_had(&handover), [(Type::MethodCall, Had::NONE); 2]);
+
+            // The object server is handed both calls. The method of the first one asks the peer,
+            // so the call is under way, and the object server leaves the next one.
+            let conn = on(Builder::take_over(handover), &runtime)
+                .serve_at(PATH, InlineAsker)
+                .build()
+                .await
+                .unwrap();
+            let question = peer_stream.next().await.unwrap().unwrap();
+            let handover = {
+                let mut handing_over = pin!(conn.hand_over());
+                let handed_over = futures_lite::future::poll_once(handing_over.as_mut()).await;
+                assert!(handed_over.is_none(), "{handed_over:?}");
+                peer.reply(&question.header(), &"told").await.unwrap();
+
+                handing_over.await.unwrap()
+            };
+            assert_eq!(who_had(&handover), [(Type::MethodCall, Had::NONE)]);
+
+            let _conn = on(Builder::take_over(handover), &runtime)
+                .serve_at(PATH, Echo)
+                .build()
+                .await
+                .unwrap();
+            assert_eq!(replies(&mut peer_stream, 2).await, ["left", "told"]);
+            peer.send(&echo("after")).await.unwrap();
+            assert_eq!(replies(&mut peer_stream, 1).await, ["after"]);
+        });
+    }
+
+    /// An object server that starts once the connection is built gets none of the method calls
+    /// that the connection took over, so they go on as calls that no object server had.
+    #[cfg(feature = "service")]
+    #[test]
+    #[timeout(15000)]
+    fn an_object_server_that_starts_late_gets_no_call_of_a_hand_over() {
+        under_every_runtime(|runtime| async move {
+            let (mut stream, peer) = channel_pair(&runtime).await;
+            let conn = Connection::from(&stream);
+            let mut peer_stream = MessageStream::from(&peer);
+            peer.send(&echo("handed")).await.unwrap();
+            wait_until(|| conn.inner.msg_receiver.len() == 1);
+            let handover = stream.hand_over().await.unwrap();
+
+            let mut stream = on(Builder::take_over(handover), &runtime)
+                .build_message_stream()
+                .await
+                .unwrap();
+            let conn = Connection::from(&stream);
+            conn.object_server().at(PATH, Echo).await.unwrap();
+            wait_until(|| conn.inner.msg_receiver.len() == 1);
+            let handover = stream.hand_over().await.unwrap();
+            assert_eq!(who_had(&handover), [(Type::MethodCall, Had::NONE)]);
+
+            let _conn = on(Builder::take_over(handover), &runtime)
+                .serve_at(PATH, Echo)
+                .build()
+                .await
+                .unwrap();
+            assert_eq!(replies(&mut peer_stream, 1).await, ["handed"]);
+            peer.send(&echo("after")).await.unwrap();
+            assert_eq!(replies(&mut peer_stream, 1).await, ["after"]);
+        });
+    }
+
+    /// The object server of a connection that took a method call over answers it before the
+    /// reader yields it, as it gets it from the connection directly. Handed over again before
+    /// the reader yielded anything, the connection hands the call on as one that an object server
+    /// had, and the object server of the connection that takes over leaves it alone.
+    #[cfg(feature = "service")]
+    #[test]
+    #[timeout(15000)]
+    fn a_call_answered_before_the_reader_yielded_it_is_handed_on_as_answered() {
+        futures_lite::future::block_on(async {
+            let runtime = Runtime::from_external(TestRuntime::new());
+            let (mut stream, peer) = channel_pair(&runtime).await;
+            let mut peer_stream = MessageStream::from(&peer);
+            let conn = Connection::from(&stream);
+            peer.send(&echo("handed")).await.unwrap();
+            wait_until(|| conn.inner.msg_receiver.len() == 1);
+            let handover = stream.hand_over().await.unwrap();
+            assert_eq!(who_had(&handover), [(Type::MethodCall, Had::NONE)]);
+
+            // The reader of the connection that takes over doesn't run until the gate opens.
+            let gated = GatedRuntime::new();
+            let conn = Builder::take_over(handover)
+                .runtime(gated.clone())
+                .serve_at(PATH, Echo)
+                .build()
+                .await
+                .unwrap();
+            assert_eq!(replies(&mut peer_stream, 1).await, ["handed"]);
+            let handover = {
+                let mut handing_over = pin!(conn.clone().hand_over());
+                // The reader finds that it is to stop as it starts, before it yields anything.
+                until_asked_to_stop(&conn, handing_over.as_mut()).await;
+                gated.open();
+
+                handing_over.await.unwrap()
+            };
+
+            assert_eq!(who_had(&handover), [(Type::MethodCall, Had::SERVER)]);
+            let _conn = on(Builder::take_over(handover), &runtime)
+                .serve_at(PATH, Echo)
+                .build()
+                .await
+                .unwrap();
+            peer.send(&echo("after")).await.unwrap();
+            assert_eq!(replies(&mut peer_stream, 1).await, ["after"]);
+        });
+    }
+
+    /// The object server of a connection that took method calls over is handed them ahead of the
+    /// reader. Handed over again before the reader yielded anything, the connection hands the
+    /// call that its object server answered on as one that an object server had, and the call
+    /// that it left as one that no object server had, which the object server of the connection
+    /// that takes over answers.
+    #[cfg(feature = "service")]
+    #[test]
+    #[timeout(15000)]
+    fn a_call_left_before_the_reader_yielded_it_is_handed_on_as_left() {
+        futures_lite::future::block_on(async {
+            let runtime = Runtime::from_external(TestRuntime::new());
+            let (mut stream, peer) = channel_pair(&runtime).await;
+            let mut peer_stream = MessageStream::from(&peer);
+            let conn = Connection::from(&stream);
+            let wait = Message::method_call(PATH, "Wait")
+                .interface(INTERFACE)
+                .build(&())
+                .unwrap();
+            peer.send(&wait).await.unwrap();
+            peer.send(&echo("left")).await.unwrap();
+            wait_until(|| conn.inner.msg_receiver.len() == 2);
+            let handover = stream.hand_over().await.unwrap();
+
+            // The reader of the connection that takes over doesn't run until the gate of its
+            // runtime opens. The method of the first call waits at a gate of its own, so the call
+            // is under way, and the object server leaves the next one.
+            let gated = GatedRuntime::new();
+            let waiter = InlineWaiter::default();
+            let (started, released) = (waiter.started.clone(), waiter.released.clone());
+            let conn = Builder::take_over(handover)
+                .runtime(gated.clone())
+                .serve_at(PATH, waiter)
+                .build()
+                .await
+                .unwrap();
+            started.passed().await;
+            let handover = {
+                let mut handing_over = pin!(conn.clone().hand_over());
+                let handed_over = futures_lite::future::poll_once(handing_over.as_mut()).await;
+                assert!(handed_over.is_none(), "{handed_over:?}");
+                released.open();
+                assert_eq!(replies(&mut peer_stream, 1).await, ["waited"]);
+                // The reader finds that it is to stop as it starts, before it yields anything.
+                until_asked_to_stop(&conn, handing_over.as_mut()).await;
+                gated.open();
+
+                handing_over.await.unwrap()
+            };
+            assert_eq!(
+                who_had(&handover),
+                [
+                    (Type::MethodCall, Had::SERVER),
+                    (Type::MethodCall, Had::NONE)
+                ]
+            );
+
+            let _conn = on(Builder::take_over(handover), &runtime)
+                .serve_at(PATH, Echo)
+                .build()
+                .await
+                .unwrap();
+            assert_eq!(replies(&mut peer_stream, 1).await, ["left"]);
+            peer.send(&echo("after")).await.unwrap();
+            assert_eq!(replies(&mut peer_stream, 1).await, ["after"]);
+        });
+    }
+
+    /// A call that comes in once the object server takes no more calls, as from when a hand-over
+    /// of its connection started, and that a stream for a match rule for method calls got, is
+    /// answered by the object server of the connection that takes over, once, and a stream for
+    /// the same rule there, made before the reader yields anything, doesn't get it. That goes for
+    /// a rule of its own, and for the rule of the object server itself, whose queue an equal rule
+    /// shares.
+    #[cfg(feature = "service")]
+    #[test]
+    #[timeout(15000)]
+    fn only_the_object_server_gets_the_calls_of_a_hand_over() {
+        let rules = [
+            MatchRule::builder()
+                .msg_type(Type::MethodCall)
+                .interface(INTERFACE)
+                .build()
+                .unwrap(),
+            calls(),
+        ];
+        for rule in rules {
+            futures_lite::future::block_on(async {
+                let runtime = Runtime::from_external(TestRuntime::new());
+                let guid = Guid::generate();
+                let (ours, theirs) = Channel::pair();
+                let (service, peer) = futures_util::try_join!(
+                    on(Builder::authenticated_socket(ours, guid.clone()), &runtime)
+                        .p2p()
+                        .serve_at(PATH, Echo)
+                        .build(),
+                    on(Builder::authenticated_socket(theirs, guid), &runtime)
+                        .p2p()
+                        .build(),
+                )
+                .unwrap();
+                let mut audit = MessageStream::for_match_rule(rule.clone(), &service, None)
+                    .await
+                    .unwrap();
+                let mut peer_stream = MessageStream::from(&peer);
+                // The object server takes no more calls, as once a hand-over started.
+                service.calls().hold();
+                peer.send(&echo("left")).await.unwrap();
+                let call = audit.next().await.unwrap().unwrap();
+                assert_eq!(call.body().deserialize::<&str>().unwrap(), "left");
+
+                let handover = service.hand_over().await.unwrap();
+
+                let gated = GatedRuntime::new();
+                let service = Builder::take_over(handover)
+                    .runtime(gated.clone())
+                    .serve_at(PATH, Echo)
+                    .build()
+                    .await
+                    .unwrap();
+                let mut audit = MessageStream::for_match_rule(rule.clone(), &service, None)
+                    .await
+                    .unwrap();
+                gated.open();
+                assert_eq!(replies(&mut peer_stream, 1).await, ["left"], "{rule}");
+                peer.send(&echo("after")).await.unwrap();
+                assert_eq!(replies(&mut peer_stream, 1).await, ["after"], "{rule}");
+                let call = audit.next().await.unwrap().unwrap();
+                assert_eq!(
+                    call.body().deserialize::<&str>().unwrap(),
+                    "after",
+                    "{rule}"
+                );
+            });
+        }
+    }
+
+    /// A stream for a match rule for method calls, which a connection has besides the stream that
+    /// it is handed over through, got a call and answered it while the stream still had it
+    /// queued. The stream that the connection that takes over builds yields the call, and a
+    /// stream for the same rule there, made before the reader yields anything, gets none of the
+    /// hand-over: the first call that it gets is the next one that the peer makes.
+    #[test]
+    #[timeout(15000)]
+    fn a_stream_for_method_calls_gets_none_of_a_hand_over() {
+        futures_lite::future::block_on(async {
+            let runtime = Runtime::from_external(TestRuntime::new());
+            let (mut stream, peer) = channel_pair(&runtime).await;
+            let conn = Connection::from(&stream);
+            let mut dispatcher = MessageStream::for_match_rule(calls(), &conn, None)
+                .await
+                .unwrap();
+            let mut peer_stream = MessageStream::from(&peer);
+            peer.send(&echo("handed")).await.unwrap();
+            let call = dispatcher.next().await.unwrap().unwrap();
+            conn.reply(&call.header(), &"answered").await.unwrap();
+            assert_eq!(replies(&mut peer_stream, 1).await, ["answered"]);
+
+            let handover = stream.hand_over().await.unwrap();
+
+            let gated = GatedRuntime::new();
+            let mut stream = Builder::take_over(handover)
+                .runtime(gated.clone())
+                .build_message_stream()
+                .await
+                .unwrap();
+            let conn = Connection::from(&stream);
+            let mut dispatcher = MessageStream::for_match_rule(calls(), &conn, None)
+                .await
+                .unwrap();
+            gated.open();
+            let call = stream.next().await.unwrap().unwrap();
+            assert_eq!(call.body().deserialize::<&str>().unwrap(), "handed");
+            peer.send(&echo("after")).await.unwrap();
+            let call = dispatcher.next().await.unwrap().unwrap();
+            assert_eq!(call.body().deserialize::<&str>().unwrap(), "after");
+        });
+    }
+
+    /// How the hand-overs of the connections at the two ends of a channel get to the connections
+    /// that take over.
+    #[cfg(feature = "service")]
+    #[derive(Clone, Copy, Debug)]
+    enum Carry {
+        /// As they are, with the ends of the channel.
+        AsTheyAre,
+        /// Put together, which takes them off the channel, and put at the ends of a new one.
+        Together,
+        /// Put together, passed on through their record, and put at the ends of a new one.
+        Records,
+    }
+
+    #[cfg(feature = "service")]
+    impl Carry {
+        /// What this makes of `first` and `second`, the hand-overs of the two ends of a channel.
+        fn carried(self, first: Handover, second: Handover) -> (Handover, Handover) {
+            if matches!(self, Self::AsTheyAre) {
+                return (first, second);
+            }
+            assert_eq!(first.saved_len(), None);
+            assert_eq!(second.saved_len(), None);
+            let mut channel = ChannelHandover::new(first, second).unwrap();
+            if matches!(self, Self::Records) {
+                channel = through_a_record(channel, 3);
+            }
+
+            channel.into_ends()
+        }
+    }
+
+    /// The hand-overs of the two ends of a channel, put together, with a signal that the stream of
+    /// the first end is yet to yield, and a message that carries `sent`, a file descriptor, which
+    /// the channel held for it, with how many bytes the first end left unread before it was taken
+    /// off the channel.
+    async fn holding_a_message(runtime: &Runtime) -> (OwnedFd, Message, usize, ChannelHandover) {
+        let (mut stream, peer) = channel_pair(runtime).await;
+        let conn = Connection::from(&stream);
+        let sent = pipe();
+        let with_fd = Message::signal(PATH, INTERFACE, "WithFd")
+            .build(&crate::Fd::from(&sent))
+            .unwrap();
+
+        // The stream is yet to yield the first signal, and the channel holds the second one,
+        // which nothing reads any more.
+        peer.send(&signal(1)).await.unwrap();
+        queued(&conn).await;
+        let handover = stream.hand_over().await.unwrap();
+        peer.send(&with_fd).await.unwrap();
+        let peer_handover = peer.hand_over().await.unwrap();
+        assert_eq!(handover.saved_len(), None);
+        assert!(handover.fds().is_empty());
+        let unread = handover.unread_len();
+        let channel = ChannelHandover::new(handover, peer_handover).unwrap();
+
+        (sent, with_fd, unread, channel)
+    }
+
+    /// Where the records of the two ends start in `record`, that of the hand-overs of the two ends
+    /// of a channel.
+    fn parts_of(record: &[u8]) -> [usize; 2] {
+        let first = u64::from_le_bytes(record[24..32].try_into().unwrap()) as usize;
+
+        [CHANNEL_HEADER, CHANNEL_HEADER + first]
+    }
+
+    /// A copy of `record` with `bytes` at `at`.
+    fn changed_at(record: &[u8], at: usize, bytes: &[u8]) -> Vec<u8> {
+        let mut record = record.to_vec();
+        record[at..at + bytes.len()].copy_from_slice(bytes);
+
+        record
+    }
+
+    /// Waits for `conn` to have queued a message for its streams, which its reader does in a task
+    /// of its own, as it reads one.
+    async fn queued(conn: &Connection) {
+        while conn.inner.msg_receiver.is_empty() {
+            futures_lite::future::yield_now().await;
+        }
+    }
+
+    /// The stream of a connection and its peer, over a channel, both on `runtime`.
+    async fn channel_pair(runtime: &Runtime) -> (MessageStream, Connection) {
+        let guid = Guid::generate();
+        let (ours, theirs) = Channel::pair();
+
+        futures_util::try_join!(
+            on(Builder::authenticated_socket(ours, guid.clone()), runtime)
+                .p2p()
+                .build_message_stream(),
+            on(Builder::authenticated_socket(theirs, guid), runtime)
+                .p2p()
+                .build(),
+        )
+        .unwrap()
+    }
+
+    /// `builder`, to build its connection on `runtime`.
+    fn on<'a>(builder: Builder<'a>, runtime: &Runtime) -> Builder<'a> {
+        match runtime {
+            // A builder that is given no runtime takes the one that the test runs on: the one of
+            // zruntime for this thread, or the Tokio runtime that the test is polled in.
+            #[cfg(feature = "default-rt")]
+            Runtime::ZRuntime(_) => builder,
+            #[cfg(feature = "tokio")]
+            Runtime::Tokio(_) => builder,
+            Runtime::External(runtime) => builder.runtime(runtime.clone()),
+        }
+    }
+
+    /// Asserts that `result` is the error of a connection that stopped reading, was closed or was
+    /// handed over.
+    fn assert_not_connected<T: Debug>(result: Result<T>) {
+        let Err(Error::InputOutput(e)) = &result else {
+            panic!("expected the error of a connection that is not connected: {result:?}");
+        };
+        assert_eq!(e.kind(), io::ErrorKind::NotConnected, "{e}");
+    }
+
+    /// Asserts that `result` is the error of a stream that can't be made, as the reader of the
+    /// connection ended, or of a send to a peer that went.
+    fn assert_broken_pipe<T: Debug>(result: Result<T>) {
+        let Err(Error::InputOutput(e)) = &result else {
+            panic!("expected the error of a broken pipe: {result:?}");
+        };
+        assert_eq!(e.kind(), io::ErrorKind::BrokenPipe, "{e}");
+    }
+
+    /// Asserts that `result` is the error of a connection that came to the end of the input, as
+    /// its peer closed its end.
+    fn assert_end_of_input<T: Debug>(result: Result<T>) {
+        let Err(Error::InputOutput(e)) = &result else {
+            panic!("expected the error of the end of the input: {result:?}");
+        };
+        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof, "{e}");
+    }
+
+    /// Asserts that `result` is the error of a record and file descriptors that are not those of a
+    /// hand-over.
+    fn assert_invalid_data<T: Debug>(result: Result<T>) {
+        let Err(Error::InputOutput(e)) = &result else {
+            panic!("expected the error of what is not a record: {result:?}");
+        };
+        assert_eq!(e.kind(), io::ErrorKind::InvalidData, "{e}");
+    }
+
+    /// The stream of a connection over a channel, which serves `iface` at `PATH`, and its peer,
+    /// both on `runtime`.
+    #[cfg(feature = "service")]
+    async fn serving<I>(runtime: &Runtime, iface: I) -> (MessageStream, Connection)
+    where
+        I: crate::object_server::Interface,
+    {
+        let guid = Guid::generate();
+        let (ours, theirs) = Channel::pair();
+
+        futures_util::try_join!(
+            on(Builder::authenticated_socket(ours, guid.clone()), runtime)
+                .p2p()
+                .serve_at(PATH, iface)
+                .build_message_stream(),
+            on(Builder::authenticated_socket(theirs, guid), runtime)
+                .p2p()
+                .build(),
+        )
+        .unwrap()
+    }
+
+    /// The type of each message that `handover` hands over of those that its connection read, and
+    /// who had it.
+    fn who_had(handover: &Handover) -> Vec<(Type, Had)> {
+        handover
+            .queued
+            .iter()
+            .map(|(msg, had)| (msg.message_type(), *had))
+            .collect()
+    }
+
+    /// What the next `count` messages of `stream` answer calls of `Echo` with, sorted, as an
+    /// interface with a task for each call answers them in any order.
+    async fn replies(stream: &mut MessageStream, count: usize) -> Vec<String> {
+        let mut replies = Vec::new();
+        for _ in 0..count {
+            let reply = stream.next().await.unwrap().unwrap();
+            assert_eq!(reply.message_type(), Type::MethodReturn, "{reply:?}");
+            replies.push(reply.body().deserialize::<String>().unwrap());
+        }
+        replies.sort();
+
+        replies
+    }
+
+    /// A call to the `Echo` method of the interfaces of the tests, with `text`.
+    fn echo(text: &str) -> Message {
+        Message::method_call(PATH, "Echo")
+            .interface(INTERFACE)
+            .build(&text)
+            .unwrap()
+    }
+
+    /// A match rule for every method call, as that of the object server of a peer-to-peer
+    /// connection is.
+    fn calls() -> MatchRule<'static> {
+        MatchRule::builder()
+            .msg_type(Type::MethodCall)
+            .build()
+            .unwrap()
+    }
+
+    /// A match rule for every signal.
+    fn signals() -> MatchRule<'static> {
+        MatchRule::builder().msg_type(Type::Signal).build().unwrap()
+    }
+
+    /// A signal that carries `n`.
+    fn signal(n: u32) -> Message {
+        Message::signal(PATH, INTERFACE, "Test").build(&n).unwrap()
+    }
+
+    /// A signal that carries `n` and the file descriptor of a pipe of its own.
+    fn with_fd(n: u32) -> Message {
+        Message::signal(PATH, INTERFACE, "WithFd")
+            .build(&(n, crate::Fd::from(&pipe())))
+            .unwrap()
+    }
+
+    /// The members of `msgs`.
+    fn members(msgs: &[Message]) -> Vec<String> {
+        msgs.iter()
+            .map(|msg| msg.header().member().unwrap().to_string())
+            .collect()
+    }
+
+    /// A signal longer than the buffer of a socket holds.
+    fn big_signal() -> Message {
+        Message::signal(PATH, INTERFACE, "Big")
+            .build(&vec![0u8; 1024 * 1024])
+            .unwrap()
+    }
+
+    /// Poll `handing_over`, a hand-over of `conn`, until it asked the connection to stop reading.
+    #[cfg(feature = "service")]
+    async fn until_asked_to_stop<F>(conn: &Connection, mut handing_over: Pin<&mut F>)
+    where
+        F: Future<Output = Result<Handover>>,
+    {
+        while !conn.inner.socket_status.stop.asked() {
+            let handed_over = futures_lite::future::poll_once(handing_over.as_mut()).await;
+            assert!(handed_over.is_none(), "{handed_over:?}");
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// Waits for `condition` to hold, which a task on another thread is to bring about.
+    fn wait_until(mut condition: impl FnMut() -> bool) {
+        while !condition() {
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// An interface that answers a call with what it was given.
+    #[cfg(all(unix, feature = "service"))]
+    struct Echo;
+
+    #[cfg(all(unix, feature = "service"))]
+    #[crate::interface(name = "org.zbus.Test")]
+    impl Echo {
+        fn echo(&self, text: String) -> String {
+            text
+        }
+    }
+
+    /// An interface that answers a call with what it was given, or once it was released, in the
+    /// task that takes the calls of its object server.
+    #[cfg(all(unix, feature = "service"))]
+    #[derive(Default)]
+    struct InlineWaiter {
+        /// Open once `wait` started.
+        started: Arc<Gate>,
+        /// What `wait` waits for.
+        released: Arc<Gate>,
+    }
+
+    #[cfg(all(unix, feature = "service"))]
+    #[crate::interface(name = "org.zbus.Test", spawn = false)]
+    impl InlineWaiter {
+        fn echo(&self, text: String) -> String {
+            text
+        }
+
+        /// Tells that it started, and waits to be released.
+        async fn wait(&self) -> String {
+            self.started.open();
+            self.released.passed().await;
+
+            "waited".to_string()
+        }
+    }
+
+    /// An interface whose method sends a signal once its reply was sent, and the test released
+    /// it.
+    #[cfg(all(unix, feature = "service"))]
+    struct Announcer(Arc<Announcement>);
+
+    /// What a test knows of the signal that follows a reply of an [`Announcer`].
+    #[cfg(all(unix, feature = "service"))]
+    #[derive(Default)]
+    struct Announcement {
+        /// Open once the method that waits to be let go started.
+        entered: Gate,
+        /// What that method waits for.
+        let_go: Gate,
+        /// Open once the reply was sent.
+        answered: Gate,
+        /// What the signal waits for.
+        released: Gate,
+        /// Open once the signal was sent, or failed to be.
+        tried: Gate,
+        /// How sending the signal went.
+        sent: std::sync::Mutex<Option<Result<()>>>,
+    }
+
+    #[cfg(all(unix, feature = "service"))]
+    impl Announcement {
+        /// What follows the reply: the signal, once the test released it.
+        async fn follow_up(self: Arc<Self>, emitter: SignalEmitter<'static>) {
+            self.answered.open();
+            self.released.passed().await;
+            let sent = Announcer::announced(&emitter).await;
+            *self.sent.lock().unwrap() = Some(sent);
+            self.tried.open();
+        }
+    }
+
+    #[cfg(all(unix, feature = "service"))]
+    #[crate::interface(name = "org.zbus.Test")]
+    impl Announcer {
+        /// Answers, and sends the signal from a task that waits for the listener of the response.
+        fn announce(
+            &self,
+            #[zbus(connection)] conn: &Connection,
+            #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        ) -> ResponseDispatchNotifier<String> {
+            let (response, listener) = ResponseDispatchNotifier::new("announcing".to_string());
+            let follow_up = self.0.clone().follow_up(emitter.to_owned());
+            conn.spawn("announce", async move {
+                listener.await;
+                follow_up.await;
+            })
+            .detach();
+
+            response
+        }
+
+        /// Answers, and sends the signal as the work that follows the response.
+        fn announce_after(
+            &self,
+            #[zbus(connection)] conn: &Connection,
+            #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        ) -> ResponseDispatchNotifier<String> {
+            let follow_up = self.0.clone().follow_up(emitter.to_owned());
+
+            ResponseDispatchNotifier::followed_by("announcing".to_string(), conn, follow_up)
+        }
+
+        /// Tells that it started, and waits to be let go before it answers, with the signal as
+        /// the work that follows the response.
+        async fn announce_once_let_go(
+            &self,
+            #[zbus(connection)] conn: &Connection,
+            #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        ) -> ResponseDispatchNotifier<String> {
+            self.0.entered.open();
+            self.0.let_go.passed().await;
+            let follow_up = self.0.clone().follow_up(emitter.to_owned());
+
+            ResponseDispatchNotifier::followed_by("announcing".to_string(), conn, follow_up)
+        }
+
+        #[zbus(signal)]
+        async fn announced(emitter: &SignalEmitter<'_>) -> Result<()>;
+    }
+
+    /// Defines an interface that answers a call with what it was given, or with what the peer of
+    /// its connection tells it, in a task for each call or not, as `spawn` says.
+    #[cfg(all(unix, feature = "service"))]
+    macro_rules! asker {
+        ($name:ident, $spawn:literal) => {
+            struct $name;
+
+            #[crate::interface(name = "org.zbus.Test", spawn = $spawn)]
+            impl $name {
+                fn echo(&self, text: String) -> String {
+                    text
+                }
+
+                /// Asks the peer, and answers with what it tells.
+                async fn ask(
+                    &self,
+                    #[zbus(connection)] conn: &Connection,
+                ) -> crate::fdo::Result<String> {
+                    let told = conn
+                        .call_method(None::<()>, PATH, Some(INTERFACE), "Tell", &())
+                        .await?;
+
+                    Ok(told.body().deserialize()?)
+                }
+            }
+        };
+    }
+
+    #[cfg(all(unix, feature = "service"))]
+    asker!(Asker, true);
+    #[cfg(all(unix, feature = "service"))]
+    asker!(InlineAsker, false);
+
+    const PATH: &str = "/org/zbus/Test";
+    const INTERFACE: &str = "org.zbus.Test";
+    /// The unique name that a bus gave a connection that it handed over.
+    const UNIQUE_NAME: &str = ":1.42";
+}
+
+/// The tests of a build without the `p2p` feature, whose hand-overs are those of connections to a
+/// bus.
+#[cfg(all(test, not(feature = "p2p")))]
+mod tests_without_p2p {
+    use std::{
+        num::NonZeroU32,
+        os::{fd::OwnedFd, unix::net::UnixStream},
+    };
+
+    use zoter::{Restore, Save};
+
+    use super::{Handover, HandoverSocket, P2P};
+    use crate::{Error, Guid, OwnedGuid, connection::socket_write::Unwritten};
+
+    /// The hand-over of a connection to a bus goes through its record and its file descriptors.
+    #[test]
+    fn a_bus_hand_over_goes_through_its_record() {
+        let handover = bus_handover();
+        let guid = handover.server_guid.clone();
+        let (record, fds) = saved(&handover);
+        drop(handover);
+
+        let handover = Handover::restore(&record, fds).unwrap();
+
+        assert!(
+            matches!(handover.socket, HandoverSocket::UnixStream(_)),
+            "a unix socket was restored as {:?}",
+            handover.socket,
+        );
+        assert_eq!(handover.server_guid, guid);
+        assert_eq!(handover.unique_name.unwrap().as_str(), ":1.42");
+        assert_eq!(handover.tail, [1, 2, 3]);
+        assert!(handover.tail_fds.is_empty());
+        assert!(handover.unix_fd_passing);
+        assert_eq!(handover.next_serial.get(), 77);
+    }
+
+    /// The record of a peer-to-peer connection isn't restored in a build that can't build one.
+    #[test]
+    fn a_peer_to_peer_record_is_not_restored() {
+        let (mut record, fds) = saved(&bus_handover());
+        // The flags of the record.
+        record[25] |= P2P;
+
+        let restored = Handover::restore(&record, fds);
+
+        assert!(matches!(restored, Err(Error::Unsupported)), "{restored:?}");
+    }
+
+    /// A hand-over of a connection to a bus over one end of a new unix socket pair, with a few
+    /// bytes left unread.
+    fn bus_handover() -> Handover {
+        let (ours, _theirs) = UnixStream::pair().unwrap();
+
+        Handover {
+            socket: HandoverSocket::UnixStream(ours),
+            server_guid: guid(),
+            unique_name: Some(":1.42".try_into().unwrap()),
+            unix_fd_passing: true,
+            next_serial: NonZeroU32::new(77).unwrap(),
+            queued: vec![],
+            tail: vec![1, 2, 3],
+            tail_fds: vec![],
+            unwritten: Unwritten::default(),
+        }
+    }
+
+    /// The record of `handover`, and duplicates of its file descriptors.
+    fn saved(handover: &Handover) -> (Vec<u8>, Vec<OwnedFd>) {
+        let mut record = vec![0; handover.saved_len().unwrap()];
+        handover.save(&mut record).unwrap();
+        let fds = handover
+            .fds()
+            .into_iter()
+            .map(|fd| fd.try_clone_to_owned().unwrap())
+            .collect();
+
+        (record, fds)
+    }
+
+    /// The GUID of a server, which a build without the `p2p` feature can't generate.
+    fn guid() -> OwnedGuid {
+        Guid::from_static_str("0123456789abcdef0123456789abcdef")
+            .unwrap()
+            .into()
+    }
+}
