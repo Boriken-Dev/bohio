@@ -7,16 +7,40 @@
 
 mod pty;
 mod tree;
+#[cfg(windows)]
+mod winproc;
 
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use bohio_proto::exec::Env;
 
 use self::tree::{Poll, Tree};
+#[cfg(windows)]
+use self::winproc::Child;
+
+/// The parent's end of a started process's standard input.
+#[cfg(unix)]
+pub type Stdin = ChildStdin;
+/// The parent's end of a started process's standard output.
+#[cfg(unix)]
+pub type Stdout = ChildStdout;
+/// The parent's end of a started process's standard error.
+#[cfg(unix)]
+pub type Stderr = ChildStderr;
+/// The parent's end of a started process's standard input.
+#[cfg(windows)]
+pub type Stdin = std::io::PipeWriter;
+/// The parent's end of a started process's standard output.
+#[cfg(windows)]
+pub type Stdout = std::io::PipeReader;
+/// The parent's end of a started process's standard error.
+#[cfg(windows)]
+pub type Stderr = std::io::PipeReader;
 
 #[cfg(windows)]
 pub use self::pty::{CURSOR_REPORT, CursorQueries};
@@ -54,46 +78,52 @@ pub struct Spawned {
     /// Ends and observes the process; ends the whole tree when the last handle drops.
     pub control: Arc<Control>,
     /// Standard input, when asked for.
-    pub stdin: Option<ChildStdin>,
+    pub stdin: Option<Stdin>,
     /// Standard output.
-    pub stdout: ChildStdout,
+    pub stdout: Stdout,
     /// Standard error.
-    pub stderr: ChildStderr,
+    pub stderr: Stderr,
 }
 
 /// Starts `spec` in a tree of its own.
+///
+/// On Windows the child inherits its three standard streams and no other handle of this process.
 pub fn spawn(spec: Spec) -> io::Result<Spawned> {
-    let mut command = Command::new(&spec.program);
-    command.args(&spec.args);
+    #[cfg(unix)]
+    let mut child = {
+        let mut command = Command::new(&spec.program);
+        command.args(&spec.args);
+        let _ = &spec.raw_args;
+        if let Some(cwd) = &spec.cwd {
+            command.current_dir(cwd);
+        }
+        if spec.env.clear {
+            command.env_clear();
+        }
+        for (name, value) in &spec.env.set {
+            command.env(name, value);
+        }
+        for name in &spec.env.remove {
+            command.env_remove(name);
+        }
+        command
+            .stdin(if spec.stdin {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        tree::prepare(&mut command);
+        command.spawn()?
+    };
     #[cfg(windows)]
-    if let Some(raw) = &spec.raw_args {
-        std::os::windows::process::CommandExt::raw_arg(&mut command, raw);
-    }
-    #[cfg(not(windows))]
-    let _ = &spec.raw_args;
-    if let Some(cwd) = &spec.cwd {
-        command.current_dir(cwd);
-    }
-    if spec.env.clear {
-        command.env_clear();
-    }
-    for (name, value) in &spec.env.set {
-        command.env(name, value);
-    }
-    for name in &spec.env.remove {
-        command.env_remove(name);
-    }
-    command
-        .stdin(if spec.stdin {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    tree::prepare(&mut command);
-
-    let mut child = command.spawn()?;
+    let winproc::Started {
+        mut child,
+        stdin,
+        stdout,
+        stderr,
+    } = winproc::start(&spec)?;
     let tree = match tree::contain(&child) {
         Ok(tree) => tree,
         Err(error) => {
@@ -103,11 +133,15 @@ pub fn spawn(spec: Spec) -> io::Result<Spawned> {
             return Err(error);
         }
     };
-    let stdin = child.stdin.take();
-    let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(io::Error::other("the child's pipes are missing"));
+    #[cfg(unix)]
+    let (stdin, stdout, stderr) = {
+        let stdin = child.stdin.take();
+        let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(io::Error::other("the child's pipes are missing"));
+        };
+        (stdin, stdout, stderr)
     };
     Ok(Spawned {
         control: Arc::new(Control {
@@ -242,3 +276,6 @@ pub fn resolve_listed(program: &str, path: &OsStr) -> Option<PathBuf> {
     }?;
     std::path::absolute(found).ok()
 }
+
+#[cfg(all(test, windows))]
+mod inherit_tests;

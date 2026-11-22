@@ -291,8 +291,8 @@ fn start<'a>(
 }
 
 enum Reader {
-    Stdout(std::process::ChildStdout),
-    Stderr(std::process::ChildStderr),
+    Stdout(platform::Stdout),
+    Stderr(platform::Stderr),
 }
 
 impl Read for Reader {
@@ -432,7 +432,7 @@ fn wait_for(pumps: &Receiver<()>, open: &mut u8, limit: Duration) -> bool {
 fn receive_frames(
     shared: &Shared,
     control: &Control,
-    stdin: &mut Option<std::process::ChildStdin>,
+    stdin: &mut Option<platform::Stdin>,
     decoder: &mut Option<Decoder>,
 ) {
     while !shared.done.load(Ordering::Acquire) {

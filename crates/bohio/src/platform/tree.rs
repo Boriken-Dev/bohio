@@ -1,7 +1,10 @@
 //! Ending a process together with everything it started, which std cannot do: a job object on
 //! Windows, a process group on Unix.
 
+#[cfg(windows)]
+use super::winproc::Child;
 use std::io;
+#[cfg(unix)]
 use std::process::{Child, Command};
 
 /// How a poll of the child found it.
@@ -29,7 +32,7 @@ pub(super) fn exit_of(status: std::process::ExitStatus) -> super::ProcessExit {
 #[cfg(unix)]
 pub(super) use self::unix::{Tree, contain, end, end_group, poll, poll_id, prepare};
 #[cfg(windows)]
-pub(super) use self::windows::{Tree, contain, contain_handle, end, end_tree, poll, prepare};
+pub(super) use self::windows::{Tree, contain, contain_handle, end, end_tree, poll};
 
 #[cfg(unix)]
 mod unix {
@@ -192,17 +195,11 @@ mod unix {
 mod windows {
     use std::sync::Mutex;
 
-    use super::{Child, Command, Poll, exit_of, io};
+    use super::{Child, Poll, exit_of, io};
 
     /// A job object that holds the child and everything it starts and ends them all when its
     /// handle closes, which the operating system does too when this process ends.
     pub(in crate::platform) struct Tree(Mutex<Option<win32job::Job>>);
-
-    /// Without a console of its own the child opens no window, whoever started this process.
-    pub(in crate::platform) fn prepare(command: &mut Command) {
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        std::os::windows::process::CommandExt::creation_flags(command, CREATE_NO_WINDOW);
-    }
 
     /// Puts the child in a job of its own. A process it starts in the instant before it joins is
     /// outside the job.

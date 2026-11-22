@@ -56,6 +56,7 @@ windows-service = "0.8"
 rustix = { version = "1", default-features = false, features = ["std", "process"] }
 # A job object that ends every process in it when its handle closes.
 win32job = "2.0.3"
+windows-sys = { version = "0.61", default-features = false, features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }
 # Raw mode and the size of the local terminal, for `bohio remote shell`.
 crossterm = { version = "0.29", default-features = false, features = ["windows"] }
 # Tests: arbitrary bytes for the codecs; the process list for the survivor checks.

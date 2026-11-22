@@ -74,6 +74,7 @@ rustix.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 win32job.workspace = true
+windows-sys.workspace = true
 windows-service = { workspace = true, optional = true }
 
 [dev-dependencies]
@@ -112,8 +113,9 @@ required-features = ["cli"]
 name = "windows"
 required-features = ["cli"]
 
-[lints]
-workspace = true
+[lints.rust]
+missing_docs = "warn"
+unsafe_code = "deny"
 
 [[test]]
 name = "pairing"
