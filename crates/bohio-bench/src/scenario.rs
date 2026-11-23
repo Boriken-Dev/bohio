@@ -34,6 +34,15 @@ pub enum Kind {
     StatSerial(u64),
     /// `n` control streams opened and closed.
     OpenClose(u64),
+    /// `n` control streams each opened, asked one `stat` and closed: the open's cost as the host's admission adds it.
+    #[cfg(feature = "pipeline")]
+    OpenCall(u64),
+    /// `n` `stat`s sent before the first answer is read.
+    #[cfg(feature = "pipeline")]
+    StatPipelined(u64),
+    /// A read of the random corpus file of this size on `streams` streams at once, on a link that has carried one.
+    #[cfg(feature = "pipeline")]
+    ReadParallel { size: String, streams: u64 },
     /// A read of the random corpus file of this size, on a new link per sample or on one link.
     Read { size: String, warm: bool },
     /// A replace of this many bytes.
@@ -108,6 +117,9 @@ pub enum Kind {
     SyncUnchanged(u64),
     /// `bohio remote ... read` as a child process.
     RemoteRead { size: String },
+    /// `bohio remote --via HOST ... read` as a child process, over the link a running node already holds.
+    #[cfg(feature = "pipeline")]
+    RemoteViaRead { size: String },
     /// `bohio remote ... info` as a child process.
     RemoteInfo,
     /// A raw TCP download.
@@ -191,6 +203,19 @@ impl Kind {
             ["info"] => Self::Info,
             ["stat", n, "serial"] => Self::StatSerial(count(n)?),
             ["open", "close", n] => Self::OpenClose(count(n)?),
+            #[cfg(feature = "pipeline")]
+            ["open", "call", n] => Self::OpenCall(count(n)?),
+            #[cfg(feature = "pipeline")]
+            ["stat", n, "pipelined"] => Self::StatPipelined(count(n)?),
+            #[cfg(feature = "pipeline")]
+            ["read", s, mode] if mode.starts_with("parallel") => Self::ReadParallel {
+                size: size(s)?,
+                streams: mode["parallel".len()..]
+                    .parse()
+                    .ok()
+                    .filter(|streams| *streams >= 1)
+                    .ok_or_else(|| format!("`{mode}` in `{name}` is not parallelN"))?,
+            },
             ["read", s, mode @ ("cold" | "warm")] => Self::Read {
                 size: size(s)?,
                 warm: *mode == "warm",
@@ -251,6 +276,8 @@ impl Kind {
             #[cfg(feature = "walk")]
             ["sync", "tree", "unchanged", n] => Self::SyncUnchanged(thousands(n, name)?),
             ["remote", "read", s] => Self::RemoteRead { size: size(s)? },
+            #[cfg(feature = "pipeline")]
+            ["remote", "via", "read", s] => Self::RemoteViaRead { size: size(s)? },
             ["remote", "info"] => Self::RemoteInfo,
             ["raw", "down", s] => Self::RawDown { size: size(s)? },
             ["raw", "up", s] => Self::RawUp { size: size(s)? },
@@ -334,6 +361,12 @@ pub struct Env {
     pub client_config: PathBuf,
     /// The host's id to trust instead of the stored keys.
     pub server: Option<String>,
+    /// The host's id as a running node of the client's configuration holds a link to it, for `remote --via`.
+    #[cfg_attr(
+        not(feature = "pipeline"),
+        allow(dead_code, reason = "read only by the pipeline scenarios")
+    )]
+    pub via: Option<String>,
     /// The raw control server.
     pub raw: Option<SocketAddr>,
     /// The host process tree's CPU time, when the host runs where the harness can see it.
@@ -508,6 +541,39 @@ impl Runner {
                     Ok(())
                 })?;
                 self.record(name, &taken, None);
+            }
+            #[cfg(feature = "pipeline")]
+            Kind::OpenCall(count) => {
+                let file = self.path("random-1KiB");
+                let link = warm_link(&self.env, &mut self.warm)?;
+                let taken = timed(&mut self.env.cpu, samples, || {
+                    for _ in 0..count {
+                        compat::open_call(link, &file)?;
+                    }
+                    Ok(())
+                })?;
+                self.record(name, &taken, None);
+            }
+            #[cfg(feature = "pipeline")]
+            Kind::StatPipelined(count) => {
+                let link = warm_link(&self.env, &mut self.warm)?;
+                let fs = compat::fs(link)?;
+                let file = self.path("random-1KiB");
+                let taken = timed(&mut self.env.cpu, samples, || {
+                    compat::stat_pipelined(&fs, &file, count)
+                })?;
+                self.record(name, &taken, None);
+            }
+            #[cfg(feature = "pipeline")]
+            Kind::ReadParallel { size, streams } => {
+                let bytes = parse_size(&size)?;
+                let file = self.path(&format!("random-{size}"));
+                let link = warm_link(&self.env, &mut self.warm)?;
+                compat::read(link, &file)?;
+                let taken = timed(&mut self.env.cpu, samples, || {
+                    compat::read_parallel(link, &file, bytes, streams).map(drop)
+                })?;
+                self.record(name, &taken, Some(bytes));
             }
             Kind::OpenClose(count) => {
                 let link = warm_link(&self.env, &mut self.warm)?;
@@ -774,6 +840,16 @@ impl Runner {
                 let mut cpu = self.env.cpu.take();
                 let taken = timed(&mut cpu, samples, || {
                     remote_child(&self.env, &["read", &file])
+                });
+                self.env.cpu = cpu;
+                self.record(name, &taken?, Some(parse_size(&size)?));
+            }
+            #[cfg(feature = "pipeline")]
+            Kind::RemoteViaRead { size } => {
+                let file = self.path(&format!("random-{size}"));
+                let mut cpu = self.env.cpu.take();
+                let taken = timed(&mut cpu, samples, || {
+                    remote_child_via(&self.env, &["read", &file])
                 });
                 self.env.cpu = cpu;
                 self.record(name, &taken?, Some(parse_size(&size)?));
@@ -1088,6 +1164,31 @@ fn edit_file(path: &std::path::Path, size: u64, edit: Edit) -> Result<(), String
 }
 
 /// `bohio remote ENDPOINT ... action` as a child, its output thrown away; ends when it does.
+/// `bohio remote --via HOST ACTION` as a child process.
+#[cfg(feature = "pipeline")]
+fn remote_child_via(env: &Env, action: &[&str]) -> Result<(), String> {
+    let via = env
+        .via
+        .as_deref()
+        .ok_or("no node: --via scenarios need a local run")?;
+    let status = Command::new(&env.bohio)
+        .args(["remote", "--via", via, "--config"])
+        .arg(&env.client_config)
+        .args(action)
+        .env_remove("BOHIO_CONFIG")
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .status()
+        .map_err(|error| format!("{}: {error}", env.bohio.display()))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("bohio remote --via {action:?} ended with {status}"))
+    }
+}
+
 fn remote_child(env: &Env, action: &[&str]) -> Result<(), String> {
     let mut command = Command::new(&env.bohio);
     command

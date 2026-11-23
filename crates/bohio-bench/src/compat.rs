@@ -254,6 +254,46 @@ pub fn open_close(link: &dyn Open) -> Result<(), String> {
     Ok(())
 }
 
+/// A control stream opened, asked one `stat` and closed.
+#[cfg(feature = "pipeline")]
+pub fn open_call(link: &dyn Open, path: &str) -> Result<(), String> {
+    let fs = Fs::connect(link)
+        .map(|fs| fs.with_timeout(Some(LIMIT)))
+        .map_err(|error| error.to_string())?;
+    let found = fs
+        .stat(path, true)
+        .map(|_| ())
+        .map_err(|error| error.to_string());
+    fs.control().close();
+    found
+}
+
+/// `count` `stat`s sent before the first answer is read.
+#[cfg(feature = "pipeline")]
+pub fn stat_pipelined(fs: &Fs, path: &str, count: u64) -> Result<(), String> {
+    let paths = vec![path; usize::try_from(count).map_err(|error| error.to_string())?];
+    for answer in fs.stat_many(&paths, true) {
+        answer.map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// The whole of `path`, `size` bytes, read on `streams` streams at once (one range each) and thrown away; the bytes read.
+/// No digest is asked for, so this is the transfer alone, as `read` is.
+#[cfg(feature = "pipeline")]
+pub fn read_parallel(link: &dyn Open, path: &str, size: u64, streams: u64) -> Result<u64, String> {
+    let streams = usize::try_from(streams).map_err(|error| error.to_string())?;
+    let options = bohio_client::parallel::ParallelOptions {
+        streams,
+        range: Some(size.div_ceil(streams as u64).max(1)),
+        hashes: Vec::new(),
+        timeout: Some(LIMIT),
+        ..bohio_client::parallel::ParallelOptions::default()
+    };
+    bohio_client::parallel::read_parallel(&[link], path, &mut std::io::sink(), &options)
+        .map_err(|error| error.to_string())
+}
+
 /// A filesystem handle (one control stream).
 pub fn fs(link: &dyn Open) -> Result<Fs, String> {
     Fs::connect(link)

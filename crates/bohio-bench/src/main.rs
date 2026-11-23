@@ -425,6 +425,15 @@ fn local(args: &LocalArgs) -> Result<bool, String> {
         }
         let endpoint = Endpoint::parse(&endpoint_text)?;
         let proof = proof_of(&local.client_data, &local.client_config, None)?;
+        let node = if common
+            .scenario
+            .iter()
+            .any(|name| name.starts_with("remote_via_"))
+        {
+            Some(host::node(&bohio, &local, &endpoint_text)?)
+        } else {
+            None
+        };
         let mut runner = Runner::new(Env {
             endpoint,
             endpoint_text: endpoint_text.clone(),
@@ -435,6 +444,7 @@ fn local(args: &LocalArgs) -> Result<bool, String> {
             bohio: bohio.clone(),
             client_config: local.client_config.clone(),
             server: None,
+            via: node.as_ref().map(|node| node.host_id.clone()),
             raw: Some(raw_address),
             cpu: Some(host::Cpu::of(local.host.id())),
             samples: common.samples,
@@ -442,6 +452,7 @@ fn local(args: &LocalArgs) -> Result<bool, String> {
             compress: compress.clone(),
         });
         let ok = run_all(&mut runner, &common.scenario);
+        drop(node);
         drop(local);
         drop(raw_server);
         finish(common, &extra, compress.as_deref(), runner, !ok)
@@ -465,6 +476,7 @@ fn remote(args: &RunArgs) -> Result<bool, String> {
         bohio,
         client_config: args.client_config.clone(),
         server: args.server.clone(),
+        via: None,
         raw: args.raw,
         cpu: args.host_pid.map(host::Cpu::of),
         samples: common.samples,

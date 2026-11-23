@@ -196,10 +196,73 @@ pub struct Local {
     pub host: Proc,
     /// What the host listens on, `tcp://address:port`.
     pub endpoint: String,
+    /// The host's configuration file.
+    pub host_config: PathBuf,
     /// The client's configuration file.
     pub client_config: PathBuf,
     /// The client's data directory.
     pub client_data: PathBuf,
+}
+
+/// A node of the client's configuration, running with a link to the host: what `bohio remote --via` goes through.
+pub struct Node {
+    /// The node process.
+    pub _process: Proc,
+    /// The host's id.
+    pub host_id: String,
+}
+
+/// Starts a node of `local`'s client configuration that dials `endpoint` (the host's, or the path to it) and waits until
+/// it holds a link to the host.
+///
+/// # Errors
+///
+/// The first command that fails, or a node that has no link to the host within a minute.
+pub fn node(bohio: &Path, local: &Local, endpoint: &str) -> Result<Node, String> {
+    let bohio_text = bohio.to_string_lossy().into_owned();
+    let client_config = local.client_config.to_string_lossy().into_owned();
+    let host_config = local.host_config.to_string_lossy().into_owned();
+    let words =
+        |list: &[&str]| -> Vec<String> { list.iter().map(|word| (*word).to_owned()).collect() };
+    let argv = |args: &[&str]| -> Vec<String> {
+        let mut argv = vec![bohio_text.clone()];
+        argv.extend(words(args));
+        argv
+    };
+    let host_id = run(&argv(&["id", "--config", &host_config]))?
+        .trim()
+        .to_owned();
+    run(&argv(&[
+        "peer",
+        "approve",
+        &host_id,
+        "--config",
+        &client_config,
+        "--endpoint",
+        endpoint,
+    ]))?;
+    let node = Proc::start(&argv(&["serve", "--config", &client_config]), &[])?;
+    let until = Instant::now() + START;
+    let probe = argv(&[
+        "remote",
+        "--via",
+        &host_id,
+        "--config",
+        &client_config,
+        "info",
+    ]);
+    loop {
+        if run(&probe).is_ok() {
+            return Ok(Node {
+                _process: node,
+                host_id,
+            });
+        }
+        if Instant::now() >= until {
+            return Err("the node holds no link to the host".to_owned());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// What a local setup needs.
@@ -317,6 +380,7 @@ pub fn start(setup: &Setup<'_>) -> Result<Local, String> {
     Ok(Local {
         host,
         endpoint,
+        host_config,
         client_config,
         client_data: setup.dir.join("bench-client-data"),
     })
