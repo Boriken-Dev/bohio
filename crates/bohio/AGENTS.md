@@ -16,8 +16,8 @@ MSRV Rust 1.89. A library-only build (`default-features = false`) depends on `bo
 `win32job` (Windows). Version `0.0.0-alpha.0`, not published.
 
 Imports: the root holds `Config`, `ConfigError`, `Environment`, `Grant`, `Peers`, `Permission`. Public modules:
-`config`, `control`, `exec`, `forward`, `fs`, `gui`, `info`, `limit`, `link`, `listen`, `node`, `peer`, `policy`, `shell`, `cli` (feature `cli`). `unsafe_code` is denied crate-wide and allowed in one file,
-`platform/winproc.rs` (starting a Windows process with a handle list; `tests/unsafe_files.rs` lists it and why). The library prints nothing, reads no environment variable and installs no logger; it starts threads only inside
+`config`, `control`, `exec`, `forward`, `fs`, `gui`, `info`, `limit`, `link`, `listen`, `node`, `peer`, `policy`, `shell`, `cli` (feature `cli`). `unsafe_code` is denied crate-wide and allowed only in the files `tests/unsafe_files.rs` lists with why each needs it (among them
+`platform/winproc.rs`, starting a Windows process with a handle list, and the Windows desktop backend's `platform/gui/windows.rs` and `windows_capture.rs`). The library prints nothing, reads no environment variable and installs no logger; it starts threads only inside
 `exec::serve`, `shell::serve`, the transfer and control engines, `node::Node` (a thread per connection, per stream and per relay) and
 `pair::Armed` waits and the pairing a node answers.
 
@@ -441,16 +441,30 @@ pub fn covers(grant: &Grant, metadata: &[u8]) -> bool;
 `[gui]` (`GuiConfig`; every key in `examples/bohio.cfg`): `enabled` `false`, `backend` `"auto"`, `max_streams` `4`, `max_streams_per_peer` `2`, `snapshots_per_minute` `120`, `max_snapshot_pixels` `33554432`,
 `formats` `["png","jpeg","webp"]`, `jpeg_quality` `80`, `max_input_rate` `1000`, `max_batch_events` `256`, `max_text` `4096`, `max_batch_wait` `5s`, `input_when_locked` `false`, `settle_interval` `100ms`,
 `settle_quiet` `300ms`, `settle_timeout` `5s`, `settle_ignore_tiles` `1`, `clipboard_max_bytes` `1048576`, `chunk_size` `65536`, `poll_interval` `50ms`, `state_interval` `500ms`, `idle_timeout` `30m`,
-`indicator` `"notify"`, `indicator_linger` `30s`, `approval` `"none"`, `approval_timeout` `60s`, `approval_ttl` `15m`; the watch's `default_fps` `5`, `max_fps` `15`, `min_fps` `1`, `tile` `64`, `frames_in_flight` `2`,
+`indicator` `"notify"`, `indicator_linger` `30s`, `approval` `"none"`, `approval_timeout` `60s`, `approval_ttl` `15m`; the Windows backend's `windows_capture` `"auto"` (`WindowsCapture::{Auto, Dxgi, Gdi}`), `windows_frame_wait` `250ms`, `windows_capture_idle` `10s`, `windows_clipboard_wait` `500ms`; the watch's `default_fps` `5`, `max_fps` `15`, `min_fps` `1`, `tile` `64`, `frames_in_flight` `2`,
 `lossless_max_bpp` `0.75` (a float: `GuiConfig` is not `Eq`), `refine_after` `1s`, `zstd_level` `3`, `watch_quality` `90`, `adapt` `true`, `adapt_ladder` `["85","70","50","50@0.75","40@0.5"]` (`LadderStep::parse`: `QUALITY[@SCALE]`),
 `adapt_window` `32`, `adapt_down_after` `3`, `adapt_up_after` `5`, `adapt_late` `1.5`, `adapt_early` `0.5`, `max_rate` unset (bytes a second), `max_rect_bytes` `33554432`; a zero count or time is an error naming the key.
 A `watch` (`gui/stream.rs`, `gui/adapt.rs`): the stream thread captures only while fewer than `frames_in_flight` updates are unacknowledged and at most `fps` times a second, compares the frame in `tile` tiles
 (`bohio_transfer::screen::TileGrid`), sends the changed rectangles (`zstd_rgb` where it costs at most `lossless_max_bpp` bytes a pixel, else JPEG; a JPEG rectangle that stays unchanged for `refine_after` is sent
 again lossless), and moves along the ladder by how late each `ack` was, judged by its excess over the least delay of the last `adapt_window` acks (`adapt_down_after` late in a row step down, `adapt_up_after` early ones step up; a lossless watch lowers only the rate). The grant is read again
 every `state_interval`. Without feature `gui` a watch is `unsupported`. `examples/gui_host.rs` serves a synthetic desktop (`examples/support/synthetic.rs`: `text` or `motion`) over TCP, for measuring a watch with the built command. A node serves a stream only with `enabled`, a desktop
-(`with_desktop`; no platform backend ships yet, so `bohio serve` has none) and a peer whose grant holds what the request wants (`gui.clipboard` only beside `gui.view` or `gui.input`). Each request is decided by the grant
+(`with_desktop`; `bohio serve` gives a Windows node `WindowsDesktop` when `[gui] enabled` and `backend` is `auto` or `windows`, and no other platform has a backend yet) and a peer whose grant holds what the request wants (`gui.clipboard` only beside `gui.view` or `gui.input`). Each request is decided by the grant
 as it is then; the stream ends `revoked` at the next `[link] recheck`. An engagement (one peer, one session) starts at its first stream and ends `indicator_linger` after its last, so many short streams make one notice.
 `bohio-gui-approve/1` is served on the local endpoint only (`LocalLink::gui_pending`, `gui_decide`; `bohio gui pending|allow|deny`).
+
+```rust
+// Windows only (`cfg(windows)`), `bohio::gui`: the screen of the interactive session this process runs in.
+pub struct WindowsDesktop;   // impl Desktop; `new(WindowsSettings)` sets the process to per-monitor DPI awareness v2 (once, process-wide), so every coordinate is a physical pixel
+pub struct WindowsSettings { pub capture: WindowsCapture, pub frame_wait: Duration, pub capture_idle: Duration, pub clipboard_wait: Duration, pub clipboard_max_bytes: usize }   // From<&GuiConfig>, Default; read once at start, not live
+```
+
+`WindowsDesktop`: displays from `EnumDisplayMonitors` (id `display1`, `display2`, ... from the device name, `scale` is the effective DPI over 96, `rotation` from the current display settings); the session is in
+`state` (`user`, `active` from the terminal service's connect state, `locked` when the input desktop is not `Default` or cannot be opened); session 0 is `unavailable` ("run the node in the user's session, or use the
+GUI helper"). `capture` takes DXGI duplication (one per display, on a thread of its own, kept `windows_capture_idle` after the last capture; a still display is read from the copy of the last frame) and falls back to GDI when
+`windows_capture = "auto"` and DXGI cannot serve; no capture or input while the session is not active or the secure desktop has the screen (`unavailable`, naming it). `input` plans every event before it sends one (a point
+outside its display is `bad_request` and nothing is sent), sends one event's operations in one `SendInput`, and returns how many events were taken (none taken: `unavailable`, "input was blocked"). The pure rules live in
+`platform/gui/input.rs` (virtual-screen normalisation, the virtual-key table, text as strokes) and `session.rs` (what the session's answers mean, the clipboard text's CR LF encoding), tested on every platform.
+`tests/gui_windows.rs` makes its own window (`tests/support/gui_probe.ps1`) and drives only it, and only with `BOHIO_TEST_GUI_LIVE=1`.
 
 ## Capabilities (`bohio::info`)
 

@@ -132,6 +132,8 @@ bohio remote tcp://host.example:7620 gui type "hello" && bohio remote tcp://host
 
 `gui watch` receives the screen as a stream of the tiles that changed, lossless where that is cheap and JPEG where it is not, never more than `frames_in_flight` updates ahead of what the client acknowledged, and steps down in quality, size and rate when the link falls behind (`--stats` prints the rate, the bytes and the host's own measure of how late acknowledgements are). The client keeps the frame the updates build (`--out DIR` writes it as PNG files).
 
+On Windows the node must run in the user's own session (a terminal, or a task that runs at logon), not as the service: a service is in session 0, which has no desktop, and says so in `gui info` (`available: false`). `bohio serve` with `[gui] enabled = true` then serves that session's displays (DXGI Desktop Duplication, with GDI where it cannot serve), keyboard, mouse and clipboard text; it refuses input and capture, and says why, while the lock screen or an elevation prompt has the screen.
+
 [The protocol](protocol.md#desktop-bohio-gui1) has the wire and [Security](security.md#what-gui-access-gives-a-peer) what a view of the screen gives a peer. A host that already runs a VNC server is reached with `forward -L` under a `forward.connect` rule for it.
 ## Having a host listen for you
 
