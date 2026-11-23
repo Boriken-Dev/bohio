@@ -1,0 +1,65 @@
+{
+  "encoding": "hex is the stream message exactly as it travels: open metadata and control messages are bare CBOR, a frame is one tag byte then its body",
+  "protocol": "bohio-media/1",
+  "vectors": [
+    {
+      "direction": "client_to_host",
+      "hex": "a1626f7066737461747573",
+      "kind": "open",
+      "name": "open_status",
+      "type": "media.Request",
+      "value": {
+        "op": "status"
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a3626f7066696e7365727464736c6f7462636465696d616765a264747970656375726c6375726c782468747470733a2f2f696d616765732e6578616d706c652f696e7374616c6c65722e69736f",
+      "kind": "open",
+      "name": "open_insert_url",
+      "type": "media.Request",
+      "value": {
+        "image": {
+          "type": "url",
+          "url": "https://images.example/installer.iso"
+        },
+        "op": "insert",
+        "slot": "cd"
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a2626f7066696e7365727465696d616765a264747970656470617468647061746878192f7372762f696d616765732f696e7374616c6c65722e69736f",
+      "kind": "open",
+      "name": "open_insert_path",
+      "type": "media.Request",
+      "value": {
+        "image": {
+          "path": "/srv/images/installer.iso",
+          "type": "path"
+        },
+        "op": "insert"
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "01a165736c6f747381a464736c6f7462636468696e736572746564f565696d6167656d696e7374616c6c65722e69736f6473697a651b0000000118244f00",
+      "kind": "frame",
+      "name": "answer_slots",
+      "type": "media.Answer",
+      "value": {
+        "message": {
+          "slots": [
+            {
+              "image": "installer.iso",
+              "inserted": true,
+              "size": 4700000000,
+              "slot": "cd"
+            }
+          ]
+        },
+        "tag": 1
+      }
+    }
+  ]
+}

@@ -150,3 +150,7 @@ required-features = ["cli"]
 [[test]]
 name = "console"
 required-features = ["cli"]
+
+[[test]]
+name = "power_media"
+required-features = ["cli"]

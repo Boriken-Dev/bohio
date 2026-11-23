@@ -565,11 +565,7 @@ impl Sessions {
             .filter(|entry| {
                 admin
                     || entry.owner == peer
-                    || (entry.console
-                        && entry
-                            .id
-                            .strip_prefix("console:")
-                            .is_some_and(permits))
+                    || (entry.console && entry.id.strip_prefix("console:").is_some_and(permits))
             })
             .map(|entry| (entry.started, entry.listed(admin)))
             .collect();

@@ -60,6 +60,21 @@ use crate::control::Current;
 use crate::limit::Slots;
 use crate::policy::{Grant, Permission};
 
+/// Opens the regular file `path` for reading inside `roots`, as a read of it would, and says its size: what a source that
+/// reads an image of the node is given.
+///
+/// # Errors
+///
+/// `outside_root`, `not_found`, `denied` and the other refusals of a read's open.
+pub(crate) fn open_confined(
+    roots: &[std::path::PathBuf],
+    path: &str,
+) -> Result<(std::fs::File, u64), bohio_proto::ErrorBody> {
+    let roots = ops::Roots::new(roots);
+    let (file, meta) = ops::open_regular(&roots, path)?;
+    Ok((file.into_std(), meta.len()))
+}
+
 pub use hash::{HashContext, serve_hash};
 pub use prepare::sweep as sweep_prepared;
 pub use read::serve_read;

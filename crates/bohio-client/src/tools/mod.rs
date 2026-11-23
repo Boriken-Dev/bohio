@@ -31,6 +31,7 @@ mod net;
 mod process;
 mod registry;
 mod screen;
+mod system;
 
 pub use registry::REGISTRY;
 
@@ -287,6 +288,10 @@ pub enum Need {
     Exec,
     /// `session`.
     Session,
+    /// `power`, and a power source the node serves.
+    Power,
+    /// `media`, and a media source the node serves.
+    Media,
     /// `forward.connect`.
     ForwardConnect,
     /// `forward.listen`.
@@ -313,6 +318,8 @@ impl Need {
             Self::FsWrite => "fs.write",
             Self::Exec => "exec",
             Self::Session => "session",
+            Self::Power => "power",
+            Self::Media => "media",
             Self::ForwardConnect => "forward.connect",
             Self::ForwardListen => "forward.listen",
             Self::GuiView => "gui.view",
@@ -476,6 +483,8 @@ impl Tools {
                     Need::FsRead | Need::FsWrite => off(info.filesystem.enabled, "files"),
                     Need::Exec => off(info.exec.enabled, "running programs"),
                     Need::Session => off(info.sessions.enabled, "detached sessions"),
+                    Need::Power => off(!info.access.power.is_empty(), "a power source"),
+                    Need::Media => off(!info.access.media.is_empty(), "a media source"),
                     Need::ForwardConnect => off(
                         info.forward.enabled && !info.forward.connect.is_empty(),
                         "forwarding to targets",

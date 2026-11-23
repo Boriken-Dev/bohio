@@ -27,7 +27,7 @@ use bohio_proto::protocol;
 use crate::policy::{Grant, Permission};
 
 /// The protocols a host serves, each with the permissions of which a peer needs at least one to open it.
-pub const PROTOCOLS: [(&str, &[Permission]); 14] = [
+pub const PROTOCOLS: [(&str, &[Permission]); 16] = [
     (
         protocol::CONTROL,
         &[
@@ -50,6 +50,8 @@ pub const PROTOCOLS: [(&str, &[Permission]); 14] = [
     (protocol::LISTEN, &[Permission::ForwardListen]),
     (protocol::ACCEPT, &[Permission::ForwardListen]),
     (protocol::ATTACH, &[Permission::Session]),
+    (protocol::POWER, &[Permission::Power]),
+    (protocol::MEDIA, &[Permission::Media]),
 ];
 
 /// Which keys a node accepts.
@@ -298,6 +300,30 @@ pub enum NodeEvent {
         /// How long until the next attempt.
         retry_in: Duration,
     },
+    /// A peer used a power source: the action, and what came of it. No credential or address of the source is in it.
+    Power {
+        /// The peer.
+        peer: PeerId,
+        /// The source's name; empty when the request named none and the node has no default.
+        source: String,
+        /// The action asked for.
+        action: String,
+        /// The state it left, or the error's code.
+        outcome: String,
+    },
+    /// A peer used a media source. The image is not named: a URL's query may be a credential.
+    Media {
+        /// The peer.
+        peer: PeerId,
+        /// The source's name; empty when the request named none.
+        source: String,
+        /// `status`, `insert` or `eject`.
+        op: String,
+        /// The slot asked for.
+        slot: Option<String>,
+        /// `done`, or the error's code.
+        outcome: String,
+    },
     /// A peer paired by the armed PIN and [`Keys::paired`] recorded it; it holds nothing until granted.
     Paired {
         /// The peer.
@@ -533,6 +559,19 @@ impl NodeEvents for LogEvents {
                 session,
                 change,
             } => tracing::info!(%peer, %session, ?change, "session"),
+            NodeEvent::Power {
+                peer,
+                source,
+                action,
+                outcome,
+            } => tracing::info!(%peer, %source, %action, %outcome, "power"),
+            NodeEvent::Media {
+                peer,
+                source,
+                op,
+                slot,
+                outcome,
+            } => tracing::info!(%peer, %source, %op, ?slot, %outcome, "media"),
         }
     }
 }

@@ -51,7 +51,7 @@ use crate::pair::PairState;
 use crate::pair::{Answered, answer};
 pub use crate::pair::{Armed, PairEnd};
 use crate::policy::Grant;
-use crate::{control, exec, forward, fs, info, session, shell};
+use crate::{control, exec, forward, fs, info, media, power, session, shell};
 
 /// Why a node could not start.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -112,6 +112,8 @@ struct Shared {
     walks: Slots,
     searches: Slots,
     sessions: Arc<Slots>,
+    power: Slots,
+    media: Slots,
     detached: Arc<session::Sessions>,
     forwards: Slots,
     forwards_per_peer: Counted<String>,
@@ -165,6 +167,8 @@ impl Shared {
             walks: Slots::new(config.walk.max_streams),
             searches: Slots::new(config.search.max_searches),
             sessions: Arc::new(Slots::new(config.shell.max_sessions)),
+            power: Slots::new(config.power.max_streams),
+            media: Slots::new(config.media.max_streams),
             detached: session::Sessions::new(
                 &config.sessions,
                 Arc::clone(grants),
@@ -1281,6 +1285,41 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
             match gui::serve(channel, &accepted.metadata, &context) {
                 Ok(ended) => tracing::debug!(snapshots = ended.snapshots, "gui ended"),
                 Err(error) => tracing::info!(code = ?error.code, "gui refused"),
+            }
+            relay.close();
+        });
+        return;
+    }
+    if matches!(
+        accepted.protocol.as_str(),
+        protocol::POWER | protocol::MEDIA
+    ) {
+        let Ok(peer) = accepted.peer.parse::<PeerId>() else {
+            return stream.close_with(CloseReason::Refused, "that is not a peer id");
+        };
+        thread::scope(|scope| {
+            let relay = relay(scope, stream, &shared.settings);
+            let channel: Arc<dyn Channel> = relay.clone();
+            if accepted.protocol == protocol::POWER {
+                let context = power::Context {
+                    grant: &grant,
+                    config: &shared.config.power,
+                    slots: &shared.power,
+                    sources: &shared.sources,
+                    peer,
+                    events: shared.events.as_ref(),
+                };
+                let _ = power::serve(&channel, &accepted.metadata, &context);
+            } else {
+                let context = media::Context {
+                    grant: &grant,
+                    config: &shared.config.media,
+                    slots: &shared.media,
+                    sources: &shared.sources,
+                    peer,
+                    events: shared.events.as_ref(),
+                };
+                let _ = media::serve(&channel, &accepted.metadata, &context);
             }
             relay.close();
         });

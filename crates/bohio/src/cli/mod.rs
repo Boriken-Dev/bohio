@@ -457,6 +457,12 @@ pub enum RemoteAction {
     /// program is started, and what the source serves is what you get. Leave it with Ctrl-] then q; the console stays
     /// open on the host, and `attach` picks its kept output up again.
     Console(RemoteConsoleArgs),
+    /// The power of the system this node is for, through a power source: its state, or `on`, `off`, `soft-off`, `cycle`,
+    /// `reset` and `nmi`. The peer needs `power`, and the node `[power] enabled`.
+    Power(RemotePowerArgs),
+    /// The virtual media of the system this node is for: `status`, `insert` an image (a URL the source fetches, or a file of
+    /// the node under the peer's `fs_roots` with `--path`) and `eject`. The peer needs `media`, and the node `[media] enabled`.
+    Media(RemoteMediaArgs),
     /// List the detached sessions this peer holds on the host.
     Sessions,
     /// End a detached session: its program is sent a signal (`kill`, ending the whole tree, unless `--signal` says otherwise).
@@ -570,6 +576,81 @@ pub struct RemoteAttachArgs {
     /// instead of interrupting it again.
     #[arg(long, value_name = "SPAN", default_value = "2s", value_parser = parse_span)]
     pub kill_after: std::time::Duration,
+}
+
+/// What `power` does.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum PowerWord {
+    /// The state; changes nothing.
+    Status,
+    /// Power on.
+    On,
+    /// Power off at once.
+    Off,
+    /// Ask the system to shut down.
+    SoftOff,
+    /// Power off and on.
+    Cycle,
+    /// Reset without cutting power.
+    Reset,
+    /// A non-maskable interrupt.
+    Nmi,
+}
+
+/// `bohio remote ... power`.
+#[derive(Debug, Args)]
+pub struct RemotePowerArgs {
+    /// What to do.
+    #[arg(value_enum)]
+    pub action: PowerWord,
+    /// The power source; the host's default one when absent.
+    #[arg(long, value_name = "NAME")]
+    pub source: Option<String>,
+}
+
+/// `bohio remote ... media`.
+#[derive(Debug, Args)]
+pub struct RemoteMediaArgs {
+    /// What to do.
+    #[command(subcommand)]
+    pub op: MediaOp,
+    /// The media source; the host's default one when absent.
+    #[arg(long, value_name = "NAME", global = true)]
+    pub source: Option<String>,
+}
+
+/// What `media` does.
+#[derive(Debug, Subcommand)]
+pub enum MediaOp {
+    /// List the slots and what each holds.
+    Status,
+    /// Put an image in a slot.
+    Insert(MediaInsertArgs),
+    /// Take the image out of a slot.
+    Eject(MediaEjectArgs),
+}
+
+/// `media insert`.
+#[derive(Debug, Args)]
+pub struct MediaInsertArgs {
+    /// A URL the media source fetches itself.
+    #[arg(conflicts_with = "path", required_unless_present = "path")]
+    pub url: Option<String>,
+    /// A file of the node, under the peer's `fs_roots` (the peer needs `fs.read` too): the source reads it through the host.
+    #[arg(long, value_name = "PATH")]
+    pub path: Option<String>,
+    /// The slot.
+    #[arg(long, default_value = "cd")]
+    pub slot: String,
+}
+
+/// `media eject`.
+#[derive(Debug, Args)]
+pub struct MediaEjectArgs {
+    /// The slot.
+    #[arg(long, default_value = "cd")]
+    pub slot: String,
 }
 
 /// `bohio remote ... console`.

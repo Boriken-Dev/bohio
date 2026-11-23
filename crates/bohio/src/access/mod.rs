@@ -98,6 +98,12 @@ impl<K: ?Sized> Source<K> {
         }
     }
 
+    /// The instance, shared: what a call that may outlive its stream holds.
+    #[must_use]
+    pub fn arc(&self) -> Arc<K> {
+        Arc::clone(&self.instance)
+    }
+
     /// The name `[source.<name>]` gave it.
     #[must_use]
     pub fn name(&self) -> &str {

@@ -2653,6 +2653,89 @@ fn accept_cases() -> Vec<Case> {
     ]
 }
 
+fn power_cases() -> Vec<Case> {
+    let mut named = bohio_proto::power::Request::new(bohio_proto::power::Action::SoftOff);
+    named.source = Some("bmc".into());
+    let on = bohio_proto::power::State {
+        state: "on".into(),
+        done: true,
+    };
+    let refused = ErrorBody::new(ErrorCode::Timeout, "the source did not answer in time");
+    vec![
+        message(
+            "open_status",
+            OPEN,
+            "open",
+            "power.Request",
+            &bohio_proto::power::Request::new(bohio_proto::power::Action::Status),
+        ),
+        message(
+            "open_soft_off_of_a_source",
+            OPEN,
+            "open",
+            "power.Request",
+            &named,
+        ),
+        frame(
+            "answer_state",
+            "host_to_client",
+            "power.Answer",
+            bohio_proto::power::Answer::State(on.clone())
+                .encode()
+                .unwrap(),
+            to_json(&on),
+        ),
+        frame(
+            "answer_error",
+            "host_to_client",
+            "power.Answer",
+            bohio_proto::power::Answer::Error(refused.clone())
+                .encode()
+                .unwrap(),
+            to_json(&refused),
+        ),
+    ]
+}
+
+fn media_cases() -> Vec<Case> {
+    use bohio_proto::media::{Answer, Image, Op, Request, Slot, Slots};
+    let mut url = Request::new(Op::Insert);
+    url.slot = Some("cd".into());
+    url.image = Some(Image::Url {
+        url: "https://images.example/installer.iso".into(),
+    });
+    let mut path = Request::new(Op::Insert);
+    path.image = Some(Image::Path {
+        path: "/srv/images/installer.iso".into(),
+    });
+    let slots = Slots {
+        slots: vec![Slot {
+            slot: "cd".into(),
+            inserted: true,
+            image: Some("installer.iso".into()),
+            size: Some(4_700_000_000),
+        }],
+    };
+    vec![
+        message(
+            "open_status",
+            OPEN,
+            "open",
+            "media.Request",
+            &Request::new(Op::Status),
+        ),
+        message("open_insert_url", OPEN, "open", "media.Request", &url),
+        message("open_insert_path", OPEN, "open", "media.Request", &path),
+        frame(
+            "answer_slots",
+            "host_to_client",
+            "media.Answer",
+            Answer::Slots(slots.clone()).encode().unwrap(),
+            to_json(&slots),
+        ),
+    ]
+}
+
 fn files() -> Vec<(&'static str, &'static str, Vec<Case>)> {
     vec![
         ("control.json", "bohio/1", control()),
@@ -2668,6 +2751,8 @@ fn files() -> Vec<(&'static str, &'static str, Vec<Case>)> {
         ("listen.json", "bohio-listen/1", listen_cases()),
         ("accept.json", "bohio-accept/1", accept_cases()),
         ("attach.json", "bohio-attach/1", attach_cases()),
+        ("power.json", "bohio-power/1", power_cases()),
+        ("media.json", "bohio-media/1", media_cases()),
     ]
 }
 
@@ -2803,6 +2888,14 @@ fn check(entry: &Value) {
         "gui.ApproveInput" => check_message::<ApproveInput>(entry, &bytes),
         "gui.Output" => check_frame(entry, &bytes, GuiOutput::decode, |v| v.encode().unwrap()),
         "gui.Input" => check_frame(entry, &bytes, GuiInput::decode, |v| v.encode().unwrap()),
+        "power.Request" => check_message::<bohio_proto::power::Request>(entry, &bytes),
+        "power.Answer" => check_frame(entry, &bytes, bohio_proto::power::Answer::decode, |v| {
+            v.encode().unwrap()
+        }),
+        "media.Request" => check_message::<bohio_proto::media::Request>(entry, &bytes),
+        "media.Answer" => check_frame(entry, &bytes, bohio_proto::media::Answer::decode, |v| {
+            v.encode().unwrap()
+        }),
         other => panic!("a vector names a type this test does not know: {other}"),
     }
 }

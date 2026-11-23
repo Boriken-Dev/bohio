@@ -1,0 +1,55 @@
+{
+  "encoding": "hex is the stream message exactly as it travels: open metadata and control messages are bare CBOR, a frame is one tag byte then its body",
+  "protocol": "bohio-power/1",
+  "vectors": [
+    {
+      "direction": "client_to_host",
+      "hex": "a166616374696f6e66737461747573",
+      "kind": "open",
+      "name": "open_status",
+      "type": "power.Request",
+      "value": {
+        "action": "status"
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a266736f7572636563626d6366616374696f6e68736f66745f6f6666",
+      "kind": "open",
+      "name": "open_soft_off_of_a_source",
+      "type": "power.Request",
+      "value": {
+        "action": "soft_off",
+        "source": "bmc"
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "01a2657374617465626f6e64646f6e65f5",
+      "kind": "frame",
+      "name": "answer_state",
+      "type": "power.Answer",
+      "value": {
+        "message": {
+          "done": true,
+          "state": "on"
+        },
+        "tag": 1
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "05a264636f64656774696d656f7574676d657373616765782174686520736f7572636520646964206e6f7420616e7377657220696e2074696d65",
+      "kind": "frame",
+      "name": "answer_error",
+      "type": "power.Answer",
+      "value": {
+        "message": {
+          "code": "timeout",
+          "message": "the source did not answer in time"
+        },
+        "tag": 5
+      }
+    }
+  ]
+}

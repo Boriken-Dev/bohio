@@ -12,6 +12,8 @@ pub mod gui;
 pub mod hash;
 pub mod info;
 pub mod local;
+pub mod media;
+pub mod power;
 pub mod search;
 pub mod session;
 pub mod shell;
@@ -53,4 +55,8 @@ pub mod protocol {
     pub const ACCEPT: &str = "bohio-accept/1";
     /// A detached session's output and input picked up again, from an offset.
     pub const ATTACH: &str = "bohio-attach/1";
+    /// The system's power, through a power source: one request, one answer.
+    pub const POWER: &str = "bohio-power/1";
+    /// Virtual media, through a media source: one request, one answer.
+    pub const MEDIA: &str = "bohio-media/1";
 }

@@ -2,7 +2,7 @@
 
 use serde_json::{Value, json};
 
-use super::{Effect, Need, ToolSpec, discover, files, net, object, process, screen};
+use super::{Effect, Need, ToolSpec, discover, files, net, object, process, screen, system};
 
 fn text(description: &str) -> Value {
     json!({"type": "string", "description": description})
@@ -275,6 +275,13 @@ fn session_start_schema() -> Value {
                 "linger_ms": count("how long an unattached session is kept"),
             }),
         ),
+        &[],
+    )
+}
+
+fn source_schema() -> Value {
+    object(
+        json!({"source": text("the source's name, as `info` lists it; the host's default one when absent")}),
         &[],
     )
 }
@@ -651,6 +658,22 @@ pub static REGISTRY: &[ToolSpec] = &[
         needs: &[Need::Session],
         effect: Effect::Runs,
         run: process::session_signal,
+    },
+    ToolSpec {
+        name: "power_status",
+        description: "Whether the system this host is for is powered on, through the host's power source. It only reads: switching power is for a person.",
+        schema: source_schema,
+        needs: &[Need::Power],
+        effect: Effect::ReadOnly,
+        run: system::power_status,
+    },
+    ToolSpec {
+        name: "media_status",
+        description: "The virtual media slots of the system this host is for, and what each holds. It only reads: inserting and ejecting is for a person.",
+        schema: source_schema,
+        needs: &[Need::Media],
+        effect: Effect::ReadOnly,
+        run: system::media_status,
     },
     ToolSpec {
         name: "session_list",

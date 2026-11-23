@@ -161,6 +161,10 @@ pub struct Config {
     pub client: ClientConfig,
     /// `[control]`: the node's local endpoint.
     pub control: ControlConfig,
+    /// `[power]`.
+    pub power: PowerConfig,
+    /// `[media]`.
+    pub media: MediaConfig,
     /// `[secrets]`.
     pub secrets: SecretsConfig,
     /// `[source.<name>]`: the sources of terminals, desktops, power and media, each a configured provider.
@@ -1761,6 +1765,10 @@ pub struct NodeConfig {
     pub gui: GuiConfig,
     /// `[pairing]`.
     pub pairing: PairingConfig,
+    /// `[power]`.
+    pub power: PowerConfig,
+    /// `[media]`.
+    pub media: MediaConfig,
     /// `[secrets]`.
     pub secrets: SecretsConfig,
     /// `[source.<name>]`.
@@ -1786,9 +1794,57 @@ impl Default for NodeConfig {
             forward: ForwardConfig::default(),
             gui: GuiConfig::default(),
             pairing: PairingConfig::default(),
+            power: PowerConfig::default(),
+            media: MediaConfig::default(),
             secrets: SecretsConfig::default(),
             source: SourceTables::new(),
             access: AccessConfig::default(),
+        }
+    }
+}
+
+/// `[power]`: the system's power through a power source. Off until the owner turns it on: a peer needs `power` too.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct PowerConfig {
+    /// Whether the host serves power at all. Default `false`.
+    pub enabled: bool,
+    /// How long an action may take before the host answers `timeout` (the source goes on and its answer is dropped).
+    /// Not zero. Default `60s`.
+    pub action_timeout: Span,
+    /// The most power requests at once, across peers; one past it is `busy`. At least 1. Default `4`.
+    pub max_streams: usize,
+}
+
+impl Default for PowerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            action_timeout: Span(Duration::from_secs(60)),
+            max_streams: 4,
+        }
+    }
+}
+
+/// `[media]`: virtual media through a media source. Off until the owner turns it on: a peer needs `media` too.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct MediaConfig {
+    /// Whether the host serves media at all. Default `false`.
+    pub enabled: bool,
+    /// How long an operation may take before the host answers `timeout`; an insert of an image of the node includes the
+    /// source reading it. Not zero. Default `60s`.
+    pub action_timeout: Span,
+    /// The most media requests at once, across peers; one past it is `busy`. At least 1. Default `4`.
+    pub max_streams: usize,
+}
+
+impl Default for MediaConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            action_timeout: Span(Duration::from_secs(60)),
+            max_streams: 4,
         }
     }
 }
@@ -2069,6 +2125,28 @@ impl NodeConfig {
         if let Err((key, message)) = self.gui.validate() {
             return Err(invalid(key, message));
         }
+        for (key, zero) in [
+            ("power.max_streams", self.power.max_streams == 0),
+            ("media.max_streams", self.media.max_streams == 0),
+        ] {
+            if zero {
+                return Err(invalid(key, "must be at least 1"));
+            }
+        }
+        for (key, zero) in [
+            (
+                "power.action_timeout",
+                self.power.action_timeout.0.is_zero(),
+            ),
+            (
+                "media.action_timeout",
+                self.media.action_timeout.0.is_zero(),
+            ),
+        ] {
+            if zero {
+                return Err(invalid(key, "must not be zero"));
+            }
+        }
         if self.secrets.max_bytes == 0 {
             return Err(invalid("secrets.max_bytes", "must be at least 1"));
         }
@@ -2137,6 +2215,8 @@ impl Config {
             forward: self.forward.clone(),
             gui: self.gui.clone(),
             pairing: self.pairing.clone(),
+            power: self.power.clone(),
+            media: self.media.clone(),
             secrets: self.secrets.clone(),
             source: self.source.clone(),
             access: self.access.clone(),

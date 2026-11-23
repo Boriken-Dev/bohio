@@ -406,6 +406,8 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
         RemoteAction::Shell(shell) => shell_command(&*link, shell, &client),
         RemoteAction::Attach(attach) => attach_command(&*link, attach, &client),
         RemoteAction::Console(console) => console_command(&*link, console, &client),
+        RemoteAction::Power(power) => power_command(&*link, power, &client),
+        RemoteAction::Media(media) => media_command(&*link, media, &client),
         RemoteAction::Sessions => sessions_command(&*link, &client),
         RemoteAction::End(end) => end_command(&*link, end, &client),
         RemoteAction::Connect(connect) => {
@@ -2136,6 +2138,69 @@ fn shell_command(
     let mut request = ShellRequest::kind(kind);
     request.cwd.clone_from(&args.cwd);
     terminal_command(link, request, args.kill_after, client)
+}
+
+/// `bohio remote ... power`.
+fn power_command(
+    link: &dyn Open,
+    args: &super::RemotePowerArgs,
+    client: &Client,
+) -> Result<ExitCode, String> {
+    use super::PowerWord;
+    use bohio_proto::power::Action;
+    let action = match args.action {
+        PowerWord::Status => Action::Status,
+        PowerWord::On => Action::On,
+        PowerWord::Off => Action::Off,
+        PowerWord::SoftOff => Action::SoftOff,
+        PowerWord::Cycle => Action::Cycle,
+        PowerWord::Reset => Action::Reset,
+        PowerWord::Nmi => Action::Nmi,
+    };
+    // An action may take as long as the host's `[power] action_timeout` and then says so; this waits a little longer.
+    let wait = client.reply.max(Duration::from_secs(90));
+    let state = bohio_client::power::act(link, args.source.as_deref(), action, Some(wait))
+        .map_err(|error| explain(&error))?;
+    println!(
+        "{}{}",
+        state.state,
+        if state.done { "" } else { " (not finished)" }
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `bohio remote ... media`.
+fn media_command(
+    link: &dyn Open,
+    args: &super::RemoteMediaArgs,
+    client: &Client,
+) -> Result<ExitCode, String> {
+    use super::MediaOp;
+    use bohio_proto::media::Image;
+    let wait = Some(client.reply.max(Duration::from_secs(90)));
+    let source = args.source.as_deref();
+    let slots = match &args.op {
+        MediaOp::Status => bohio_client::media::status(link, source, wait),
+        MediaOp::Insert(insert) => {
+            let image = match (&insert.url, &insert.path) {
+                (_, Some(path)) => Image::Path { path: path.clone() },
+                (Some(url), None) => Image::Url { url: url.clone() },
+                (None, None) => return Err("name a URL, or a file with --path".to_owned()),
+            };
+            bohio_client::media::insert(link, source, &insert.slot, image, wait)
+        }
+        MediaOp::Eject(eject) => bohio_client::media::eject(link, source, &eject.slot, wait),
+    }
+    .map_err(|error| explain(&error))?;
+    for slot in slots {
+        println!(
+            "{} {} {}",
+            slot.slot,
+            if slot.inserted { "inserted" } else { "empty" },
+            slot.image.as_deref().unwrap_or("-")
+        );
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// `bohio remote ... console`: the node's console of a terminal source, left with Ctrl-] then q.
