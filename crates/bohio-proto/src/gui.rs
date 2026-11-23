@@ -14,13 +14,18 @@
 //! | host to client | `0x01` | [`GuiOutput::Ready`] | CBOR [`Ready`] |
 //! | host to client | `0x02` | [`GuiOutput::Image`] | CBOR [`ImageHeader`] |
 //! | host to client | `0x03` | [`GuiOutput::Data`] | the image's bytes, raw |
+//! | host to client | `0x04` | [`GuiOutput::Update`] | CBOR [`UpdateHeader`], then `0x03` frames |
 //! | host to client | `0x05` | [`GuiOutput::Error`] | CBOR [`ErrorBody`]; the last frame |
 //! | host to client | `0x06` | [`GuiOutput::InputDone`] | CBOR [`InputDone`] |
 //! | host to client | `0x07` | [`GuiOutput::Settled`] | CBOR [`SettledFrame`] |
 //! | host to client | `0x08` | [`GuiOutput::Clipboard`] | CBOR [`ClipboardText`] |
 //! | host to client | `0x09` | [`GuiOutput::State`] | CBOR [`State`], whenever it changes |
+//! | host to client | `0x0a` | [`GuiOutput::Cursor`] | CBOR [`CursorFrame`] |
 //! | host to client | `0x0b` | [`GuiOutput::RequestError`] | CBOR [`RequestError`] |
 //! | client to host | `0x10` | [`GuiInput::Snapshot`] | CBOR [`Snapshot`] |
+//! | client to host | `0x11` | [`GuiInput::Watch`] | CBOR [`Watch`] |
+//! | client to host | `0x12` | [`GuiInput::Unwatch`] | CBOR [`Unwatch`] |
+//! | client to host | `0x13` | [`GuiInput::Ack`] | CBOR [`Ack`] |
 //! | client to host | `0x14` | [`GuiInput::Input`] | CBOR [`Input`] |
 //! | client to host | `0x15` | [`GuiInput::Settle`] | CBOR [`Settle`] |
 //! | client to host | `0x16` | [`GuiInput::ClipboardGet`] | CBOR [`ClipboardGet`] |
@@ -674,6 +679,182 @@ pub struct ClipboardText {
     pub text: String,
 }
 
+/// What a watch's rectangles are encoded with when the client leaves the choice to the host or pins one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WatchEncoding {
+    /// The host picks per rectangle: lossless when it compresses below `lossless_max_bpp` bytes a pixel, else JPEG; a
+    /// rectangle that stays unchanged is later resent lossless.
+    #[default]
+    Auto,
+    /// Every rectangle lossless; the host never lowers quality or size, only the frame rate.
+    Lossless,
+    /// Every rectangle JPEG.
+    Jpeg,
+}
+
+/// How one rectangle of an update is encoded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RectEncoding {
+    /// RGB24 rows, one zstd frame for the rectangle; lossless.
+    ZstdRgb,
+    /// RGB24 rows as they are; lossless, for a build without zstd.
+    RawRgb,
+    /// A JPEG of the rectangle.
+    Jpeg,
+    /// A PNG of the rectangle; lossless.
+    Png,
+}
+
+impl RectEncoding {
+    /// The name on the wire.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::ZstdRgb => "zstd_rgb",
+            Self::RawRgb => "raw_rgb",
+            Self::Jpeg => "jpeg",
+            Self::Png => "png",
+        }
+    }
+
+    /// Whether decoding gives back exactly what was encoded.
+    pub const fn lossless(self) -> bool {
+        !matches!(self, Self::Jpeg)
+    }
+}
+
+impl fmt::Display for RectEncoding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// The client's `0x11` frame: send the changes of a display as they happen. A `watch` while one is running replaces its
+/// settings (an absent field is the host's default again, not the earlier value), and `key: true` asks for a key frame.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Watch {
+    /// Matches an error answer; updates carry their own `frame` numbers.
+    pub seq: u64,
+    /// The display; the primary one when absent.
+    #[serde(default)]
+    pub display: Option<DisplayId>,
+    /// The part of the display; all of it when absent.
+    #[serde(default)]
+    pub region: Option<Rect>,
+    /// Updates a second at most; the host's `default_fps` when absent, never more than its `max_fps`.
+    #[serde(default)]
+    pub fps: Option<u32>,
+    /// How rectangles are encoded; [`WatchEncoding::Auto`] when absent.
+    #[serde(default)]
+    pub encoding: Option<WatchEncoding>,
+    /// The JPEG quality a rectangle starts at, 1 to 100; the host's `watch_quality` when absent. The host lowers it, never
+    /// raises it, to keep up with the link.
+    #[serde(default)]
+    pub quality: Option<u8>,
+    /// The frame is scaled down, keeping its proportions, to fit this width; never scaled up.
+    #[serde(default)]
+    pub max_width: Option<u32>,
+    /// As `max_width`, for the height.
+    #[serde(default)]
+    pub max_height: Option<u32>,
+    /// Bytes a second the updates may add up to, on top of what the link allows; the host's `max_rate` (when set) is a
+    /// ceiling for it. Not zero.
+    #[serde(default)]
+    pub max_rate: Option<u64>,
+    /// Report where the pointer is.
+    #[serde(default)]
+    pub cursor: bool,
+    /// Resend lossy rectangles lossless once they stay unchanged; on for `auto` and off for `jpeg` when absent.
+    #[serde(default)]
+    pub refine: Option<bool>,
+    /// Send a key frame (the whole frame) next.
+    #[serde(default)]
+    pub key: bool,
+}
+
+/// The client's `0x12` frame: stop the watch. Updates already sent may still arrive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Unwatch {
+    /// Matches an error answer.
+    pub seq: u64,
+}
+
+/// The client's `0x13` frame: the update `frame` is applied. The host sends at most `frames_in_flight` updates that are
+/// not acknowledged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ack {
+    /// The update's `frame`.
+    pub frame: u64,
+}
+
+/// One rectangle of an update; its bytes are the next `length` bytes of the update's `0x03` frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateRect {
+    /// Left edge in the frame.
+    pub x: u32,
+    /// Top edge in the frame.
+    pub y: u32,
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+    /// How the bytes encode the pixels.
+    pub encoding: RectEncoding,
+    /// How many bytes the rectangle takes of the update's data.
+    pub length: u64,
+}
+
+impl UpdateRect {
+    /// The rectangle's place in the frame.
+    pub const fn rect(&self) -> Rect {
+        Rect::new(self.x, self.y, self.width, self.height)
+    }
+}
+
+/// The host's `0x04` frame: what changed in the frame of a watch, followed by `0x03` frames that carry the rectangles'
+/// bytes in order, exactly the sum of their `length`s. The frame is the display (or region) scaled by `scale`; applying
+/// every update in order to the earlier ones gives the screen as it was when the last was captured.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UpdateHeader {
+    /// This update's number, counting from 1; the client's [`Ack`] names it.
+    pub frame: u64,
+    /// The display watched.
+    pub display: DisplayId,
+    /// The frame's width in pixels, after any scaling.
+    pub width: u32,
+    /// The frame's height in pixels, after any scaling.
+    pub height: u32,
+    /// Frame pixels per display pixel: `1` unless the host scaled the frame down.
+    pub scale: f64,
+    /// The rectangles hold the whole frame; the first update, one after the size changed and one asked for with `key`.
+    pub key: bool,
+    /// The changed rectangles.
+    pub rects: Vec<UpdateRect>,
+    /// Where the pointer is, in the display's pixels, when asked for and it is on this display.
+    #[serde(default)]
+    pub cursor: Option<Point>,
+    /// The host's quality step: `0` is full quality at the requested rate; each higher step is cheaper.
+    #[serde(default)]
+    pub level: u32,
+    /// The host's average of how long clients took to acknowledge an update, in milliseconds, once it has one.
+    #[serde(default)]
+    pub ack_ms: Option<u64>,
+}
+
+/// The host's `0x0a` frame: only the pointer moved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CursorFrame {
+    /// The display the pointer is on.
+    pub display: DisplayId,
+    /// Pixels from the display's left edge.
+    pub x: i32,
+    /// Pixels from the display's top edge.
+    pub y: i32,
+    /// Whether the pointer is on the watched display.
+    pub visible: bool,
+}
+
 /// The host's `0x0b` frame: one request failed and the stream goes on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequestError {
@@ -705,13 +886,18 @@ impl RequestError {
 const READY: u8 = 0x01;
 const IMAGE: u8 = 0x02;
 const DATA: u8 = 0x03;
+const UPDATE: u8 = 0x04;
 const ERROR: u8 = 0x05;
 const INPUT_DONE: u8 = 0x06;
 const SETTLED: u8 = 0x07;
 const CLIPBOARD: u8 = 0x08;
 const STATE: u8 = 0x09;
+const CURSOR: u8 = 0x0a;
 const REQUEST_ERROR: u8 = 0x0b;
 const SNAPSHOT: u8 = 0x10;
+const WATCH: u8 = 0x11;
+const UNWATCH: u8 = 0x12;
+const ACK: u8 = 0x13;
 const INPUT: u8 = 0x14;
 const SETTLE: u8 = 0x15;
 const CLIPBOARD_GET: u8 = 0x16;
@@ -739,8 +925,12 @@ pub enum GuiOutput {
     Ready(Ready),
     /// An image header; its bytes follow.
     Image(ImageHeader),
-    /// A piece of the image's bytes.
+    /// A piece of the bytes of an image or of an update's rectangles.
     Data(Vec<u8>),
+    /// What changed on the screen of a watch; its bytes follow.
+    Update(UpdateHeader),
+    /// The pointer moved and nothing else did.
+    Cursor(CursorFrame),
     /// The stream failed or was refused; the last frame.
     Error(ErrorBody),
     /// Input was applied.
@@ -766,6 +956,8 @@ impl GuiOutput {
             Self::Ready(body) => tagged(READY, &encode(body)?),
             Self::Image(body) => tagged(IMAGE, &encode(body)?),
             Self::Data(body) => tagged(DATA, body),
+            Self::Update(body) => tagged(UPDATE, &encode(body)?),
+            Self::Cursor(body) => tagged(CURSOR, &encode(body)?),
             Self::Error(body) => tagged(ERROR, &encode(body)?),
             Self::InputDone(body) => tagged(INPUT_DONE, &encode(body)?),
             Self::Settled(body) => tagged(SETTLED, &encode(body)?),
@@ -787,6 +979,8 @@ impl GuiOutput {
             READY => decode(body).map(Self::Ready),
             IMAGE => decode(body).map(Self::Image),
             DATA => Ok(Self::Data(body.to_vec())),
+            UPDATE => decode(body).map(Self::Update),
+            CURSOR => decode(body).map(Self::Cursor),
             ERROR => decode(body).map(Self::Error),
             INPUT_DONE => decode(body).map(Self::InputDone),
             SETTLED => decode(body).map(Self::Settled),
@@ -804,6 +998,12 @@ impl GuiOutput {
 pub enum GuiInput {
     /// Capture an image.
     Snapshot(Snapshot),
+    /// Send the changes of a display as they happen.
+    Watch(Watch),
+    /// Stop the watch.
+    Unwatch(Unwatch),
+    /// An update was applied.
+    Ack(Ack),
     /// Apply input events.
     Input(Input),
     /// Wait for the screen to settle.
@@ -823,6 +1023,9 @@ impl GuiInput {
     pub fn encode(&self) -> Result<Vec<u8>, Error> {
         Ok(match self {
             Self::Snapshot(body) => tagged(SNAPSHOT, &encode(body)?),
+            Self::Watch(body) => tagged(WATCH, &encode(body)?),
+            Self::Unwatch(body) => tagged(UNWATCH, &encode(body)?),
+            Self::Ack(body) => tagged(ACK, &encode(body)?),
             Self::Input(body) => tagged(INPUT, &encode(body)?),
             Self::Settle(body) => tagged(SETTLE, &encode(body)?),
             Self::ClipboardGet(body) => tagged(CLIPBOARD_GET, &encode(body)?),
@@ -840,6 +1043,9 @@ impl GuiInput {
         let (tag, body) = split(frame)?;
         match tag {
             SNAPSHOT => decode(body).map(Self::Snapshot),
+            WATCH => decode(body).map(Self::Watch),
+            UNWATCH => decode(body).map(Self::Unwatch),
+            ACK => decode(body).map(Self::Ack),
             INPUT => decode(body).map(Self::Input),
             SETTLE => decode(body).map(Self::Settle),
             CLIPBOARD_GET => decode(body).map(Self::ClipboardGet),

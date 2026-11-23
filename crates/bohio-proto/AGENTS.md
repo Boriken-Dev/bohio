@@ -150,14 +150,18 @@ pub struct ImageHeader { seq, display, format, width, height, region, scale: f64
 pub enum InputEvent { Move, Button, Scroll, Key, Text, Wait }     // tagged by `type`; `InputEvent::combo("ctrl+shift+t") -> Result<Vec<_>, BadCombo>` (xdotool names)
 pub const KEY_NAMES: &[&str];   pub fn is_key(key: &str) -> bool;  // a listed name or exactly one character
 pub struct Input { seq, events }   pub struct InputDone { seq, applied }   pub struct Settle { seq, display, region, quiet_ms, timeout_ms }   pub struct SettledFrame { seq, settled, waited_ms }
+pub enum WatchEncoding { Auto /* default */, Lossless, Jpeg }   pub enum RectEncoding { ZstdRgb, RawRgb, Jpeg, Png }   // `name()`, `lossless()`; "zstd_rgb", "raw_rgb", "jpeg", "png"
+pub struct Watch { seq, display, region, fps, encoding, quality, max_width, max_height, max_rate: Option<u64>, cursor: bool, refine: Option<bool>, key: bool }   // Default; an absent field is the host default
+pub struct Unwatch { seq }   pub struct Ack { frame: u64 }   pub struct UpdateRect { x, y, width, height, encoding: RectEncoding, length: u64 }   // `rect()`
+pub struct UpdateHeader { frame, display, width, height, scale: f64, key: bool, rects: Vec<UpdateRect>, cursor: Option<Point>, level: u32, ack_ms: Option<u64> }   pub struct CursorFrame { display, x, y, visible }
 pub struct ClipboardGet { seq }   pub struct ClipboardSet { seq, text }   pub struct ClipboardText { seq, text }   pub struct RequestError { seq, code, message }   // `new(seq, body)`, `body()`
-#[non_exhaustive] pub enum GuiOutput { Ready, Image, Data(Vec<u8>), Error, InputDone, Settled, Clipboard, State, RequestError }   // encode / decode; tags 0x01 0x02 0x03 0x05 0x06 0x07 0x08 0x09 0x0b
-#[non_exhaustive] pub enum GuiInput { Snapshot, Input, Settle, ClipboardGet, ClipboardSet }                                       // tags 0x10 0x14 0x15 0x16 0x17
+#[non_exhaustive] pub enum GuiOutput { Ready, Image, Data(Vec<u8>), Update, Cursor, Error, InputDone, Settled, Clipboard, State, RequestError }   // encode / decode; tags 0x01 0x02 0x03 0x04 0x05 0x06 0x07 0x08 0x09 0x0a 0x0b
+#[non_exhaustive] pub enum GuiInput { Snapshot, Watch, Unwatch, Ack, Input, Settle, ClipboardGet, ClipboardSet }                                  // tags 0x10 0x11 0x12 0x13 0x14 0x15 0x16 0x17
 pub struct GuiInfo { enabled, available, reason, backend, input, clipboard, lock_detection, formats, sessions: Vec<GuiSession> }   // `info.gui`
 pub enum ApproveOutput { Pending { requests: Vec<PendingRequest> }, Decided { id, found } }   pub enum ApproveInput { Decide { id, allow } }   // `bohio-gui-approve/1` (`local::GUI_APPROVE`)
 ```
 
-`Info` is no longer `Eq` (a scale is a float). Tags `0x04`, `0x0a`, `0x11` to `0x13` are reserved for a screen stream.
+`Info` is no longer `Eq` (a scale is a float). An `update` rectangles' bytes follow in `Data` frames, exactly the sum of their `length`s.
 
 ## Info (`bohio_proto::info`)
 

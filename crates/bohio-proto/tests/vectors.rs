@@ -21,10 +21,11 @@ use bohio_proto::fs::{
     WriteMode, WriteOutput, WriteRequest,
 };
 use bohio_proto::gui::{
-    ApproveInput, ApproveOutput, Button, ButtonAction, ClipboardGet, ClipboardSet, ClipboardText,
-    Display, DisplayId, GuiInfo, GuiInput, GuiOutput, GuiRequest, GuiSession, ImageFormat,
-    ImageHeader, Input, InputDone, InputEvent, KeyAction, PendingRequest, Point, Ready, Rect,
-    RequestError, Settle, SettleOptions, Settled, SettledFrame, Snapshot, State, Want,
+    Ack, ApproveInput, ApproveOutput, Button, ButtonAction, ClipboardGet, ClipboardSet,
+    ClipboardText, CursorFrame, Display, DisplayId, GuiInfo, GuiInput, GuiOutput, GuiRequest,
+    GuiSession, ImageFormat, ImageHeader, Input, InputDone, InputEvent, KeyAction, PendingRequest,
+    Point, Ready, Rect, RectEncoding, RequestError, Settle, SettleOptions, Settled, SettledFrame,
+    Snapshot, State, Unwatch, UpdateHeader, UpdateRect, Want, Watch, WatchEncoding,
 };
 use bohio_proto::hash::{
     Algorithm, BlockOptions, Digests, HashBlocks, HashDone, HashInput, HashItem, HashOutput,
@@ -1708,6 +1709,55 @@ fn gui_cases() -> Vec<Case> {
         text: "copied".into(),
     };
     let unavailable = ErrorBody::new(ErrorCode::Unavailable, "the desktop is not at the screen");
+    let watch = Watch {
+        seq: 10,
+        display: Some(DisplayId::from("0")),
+        region: Some(Rect::new(0, 0, 640, 480)),
+        fps: Some(10),
+        encoding: Some(WatchEncoding::Auto),
+        quality: Some(85),
+        max_width: Some(1280),
+        max_height: Some(800),
+        max_rate: Some(500_000),
+        cursor: true,
+        refine: Some(true),
+        key: true,
+    };
+    let update = UpdateHeader {
+        frame: 3,
+        display: DisplayId::from("0"),
+        width: 1280,
+        height: 720,
+        scale: 0.6666666666666666,
+        key: false,
+        rects: vec![
+            UpdateRect {
+                x: 64,
+                y: 128,
+                width: 128,
+                height: 64,
+                encoding: RectEncoding::ZstdRgb,
+                length: 3,
+            },
+            UpdateRect {
+                x: 0,
+                y: 0,
+                width: 64,
+                height: 64,
+                encoding: RectEncoding::Jpeg,
+                length: 1,
+            },
+        ],
+        cursor: Some(Point { x: 10, y: 20 }),
+        level: 2,
+        ack_ms: Some(180),
+    };
+    let cursor = CursorFrame {
+        display: DisplayId::from("0"),
+        x: 31,
+        y: 42,
+        visible: true,
+    };
     vec![
         message(
             "open_view_and_input",
@@ -1747,6 +1797,16 @@ fn gui_cases() -> Vec<Case> {
             to_json(&sample_state()),
         ),
         output(
+            "update",
+            GuiOutput::Update(update.clone()),
+            to_json(&update),
+        ),
+        output(
+            "cursor",
+            GuiOutput::Cursor(cursor.clone()),
+            to_json(&cursor),
+        ),
+        output(
             "request_error_denied",
             GuiOutput::RequestError(denied.clone()),
             to_json(&denied),
@@ -1765,6 +1825,22 @@ fn gui_cases() -> Vec<Case> {
             "snapshot_defaults",
             GuiInput::Snapshot(Snapshot::default()),
             to_json(&Snapshot::default()),
+        ),
+        input("watch", GuiInput::Watch(watch.clone()), to_json(&watch)),
+        input(
+            "watch_defaults",
+            GuiInput::Watch(Watch::default()),
+            to_json(&Watch::default()),
+        ),
+        input(
+            "unwatch",
+            GuiInput::Unwatch(Unwatch { seq: 11 }),
+            to_json(&Unwatch { seq: 11 }),
+        ),
+        input(
+            "ack",
+            GuiInput::Ack(Ack { frame: 3 }),
+            to_json(&Ack { frame: 3 }),
         ),
         input("input", GuiInput::Input(events.clone()), to_json(&events)),
         input("settle", GuiInput::Settle(settle.clone()), to_json(&settle)),

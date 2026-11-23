@@ -177,6 +177,64 @@
     },
     {
       "direction": "host_to_client",
+      "hex": "04aa656672616d650367646973706c61796130657769647468190500666865696768741902d0657363616c65fb3fe5555555555555636b6579f465726563747382a66178184061791880657769647468188066686569676874184068656e636f64696e67687a7374645f726762666c656e67746803a6617800617900657769647468184066686569676874184068656e636f64696e67646a706567666c656e6774680166637572736f72a261780a617914656c6576656c026661636b5f6d7318b4",
+      "kind": "frame",
+      "name": "update",
+      "type": "gui.Output",
+      "value": {
+        "message": {
+          "ack_ms": 180,
+          "cursor": {
+            "x": 10,
+            "y": 20
+          },
+          "display": "0",
+          "frame": 3,
+          "height": 720,
+          "key": false,
+          "level": 2,
+          "rects": [
+            {
+              "encoding": "zstd_rgb",
+              "height": 64,
+              "length": 3,
+              "width": 128,
+              "x": 64,
+              "y": 128
+            },
+            {
+              "encoding": "jpeg",
+              "height": 64,
+              "length": 1,
+              "width": 64,
+              "x": 0,
+              "y": 0
+            }
+          ],
+          "scale": 0.6666666666666666,
+          "width": 1280
+        },
+        "tag": 4
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "0aa467646973706c617961306178181f6179182a6776697369626c65f5",
+      "kind": "frame",
+      "name": "cursor",
+      "type": "gui.Output",
+      "value": {
+        "message": {
+          "display": "0",
+          "visible": true,
+          "x": 31,
+          "y": 42
+        },
+        "tag": 10
+      }
+    },
+    {
+      "direction": "host_to_client",
       "hex": "0ba3637365710564636f64656664656e696564676d6573736167657821746869732073747265616d20776173206e6f74206772616e74656420696e707574",
       "kind": "frame",
       "name": "request_error_denied",
@@ -252,6 +310,85 @@
           "settle": null
         },
         "tag": 16
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "11ac637365710a67646973706c6179613066726567696f6ea4617800617900657769647468190280666865696768741901e0636670730a68656e636f64696e67646175746f677175616c6974791855696d61785f77696474681905006a6d61785f686569676874190320686d61785f726174651a0007a12066637572736f72f566726566696e65f5636b6579f5",
+      "kind": "frame",
+      "name": "watch",
+      "type": "gui.Input",
+      "value": {
+        "message": {
+          "cursor": true,
+          "display": "0",
+          "encoding": "auto",
+          "fps": 10,
+          "key": true,
+          "max_height": 800,
+          "max_rate": 500000,
+          "max_width": 1280,
+          "quality": 85,
+          "refine": true,
+          "region": {
+            "height": 480,
+            "width": 640,
+            "x": 0,
+            "y": 0
+          },
+          "seq": 10
+        },
+        "tag": 17
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "11ac637365710067646973706c6179f666726567696f6ef663667073f668656e636f64696e67f6677175616c697479f6696d61785f7769647468f66a6d61785f686569676874f6686d61785f72617465f666637572736f72f466726566696e65f6636b6579f4",
+      "kind": "frame",
+      "name": "watch_defaults",
+      "type": "gui.Input",
+      "value": {
+        "message": {
+          "cursor": false,
+          "display": null,
+          "encoding": null,
+          "fps": null,
+          "key": false,
+          "max_height": null,
+          "max_rate": null,
+          "max_width": null,
+          "quality": null,
+          "refine": null,
+          "region": null,
+          "seq": 0
+        },
+        "tag": 17
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "12a1637365710b",
+      "kind": "frame",
+      "name": "unwatch",
+      "type": "gui.Input",
+      "value": {
+        "message": {
+          "seq": 11
+        },
+        "tag": 18
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "13a1656672616d6503",
+      "kind": "frame",
+      "name": "ack",
+      "type": "gui.Input",
+      "value": {
+        "message": {
+          "frame": 3
+        },
+        "tag": 19
       }
     },
     {
