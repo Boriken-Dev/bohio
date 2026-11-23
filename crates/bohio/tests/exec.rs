@@ -363,6 +363,34 @@ fn the_environment_and_working_directory_apply() {
     assert_eq!(printed, directory);
 }
 
+/// A reader that is slow when the process has already ended holds output back: the drain time is for a descendant that
+/// keeps the pipe open, not for the reader, so what the process wrote still arrives whole, and before the exit.
+#[test]
+fn output_a_slow_reader_has_not_taken_when_the_process_ends_is_not_cut() {
+    let mut link = Link::new(
+        Grant::allowing([Permission::Exec]),
+        ExecutionConfig {
+            drain_timeout: Span(Duration::from_millis(20)),
+            chunk_size: 1024,
+            ..ExecutionConfig::default()
+        },
+    );
+    link.capacity = 4096;
+    let total = 60_000;
+    // Each round is a chance for the exit to pass the output still waiting for room.
+    for round in 0..10 {
+        let exec = Exec::start(
+            &link,
+            &Request::argv([helper().as_str(), "flood", &total.to_string()]),
+        )
+        .expect("the stream opens");
+        std::thread::sleep(Duration::from_millis(150));
+        let done = exec.wait(WAIT).expect("the process ends");
+        assert_eq!(done.stdout.len(), total, "round {round}");
+        assert_eq!(done.exit.code, Some(0));
+    }
+}
+
 #[test]
 fn a_cleared_environment_starts_with_only_what_is_set() {
     let link = runner();

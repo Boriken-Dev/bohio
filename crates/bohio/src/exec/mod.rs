@@ -12,7 +12,7 @@ mod command;
 use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -76,6 +76,7 @@ pub fn serve(
         gone: AtomicBool::new(false),
         done: AtomicBool::new(false),
         killed: AtomicBool::new(false),
+        sending: AtomicUsize::new(0),
     });
     let (request, spawned, _permit, negotiated) = match start(metadata, context) {
         Ok(started) => started,
@@ -171,6 +172,8 @@ struct Shared {
     done: AtomicBool,
     /// The host ended the tree on purpose (kill frame, closed stream or deadline).
     killed: AtomicBool,
+    /// Output pumps that hold a chunk the stream has not yet taken: they wait on the reader, not on a process.
+    sending: AtomicUsize,
 }
 
 impl Shared {
@@ -340,7 +343,10 @@ fn pump(
                     Some(Ok(Piece::Compressed(piece))) => Output::StdoutCompressed(piece),
                     _ => raw(buffer[..count].to_vec()),
                 };
-                if !shared.send(&encode(&output)) {
+                shared.sending.fetch_add(1, Ordering::AcqRel);
+                let sent = shared.send(&encode(&output));
+                shared.sending.fetch_sub(1, Ordering::AcqRel);
+                if !sent {
                     // Nobody is listening: keep emptying the pipe so the process is not
                     // held up on a full one while it is being ended.
                     drain(&mut reader, &mut buffer);
@@ -389,9 +395,9 @@ fn monitor(
     // The process is gone. Its output is complete once both pipes end; a descendant that still
     // holds one open is ended with the rest of the tree after `drain`.
     let mut open = 2_u8;
-    if !wait_for(pumps, &mut open, drain) {
+    if !wait_for(pumps, &mut open, drain, &shared.sending) {
         let _ = control.kill();
-        wait_for(pumps, &mut open, drain);
+        wait_for(pumps, &mut open, drain, &shared.sending);
     }
     let _ = control.kill();
 
@@ -414,9 +420,11 @@ fn ended(control: &Control) -> ProcessExit {
     })
 }
 
-/// Waits until `open` more pumps have reported or `limit` passes; whether they all reported.
-fn wait_for(pumps: &Receiver<()>, open: &mut u8, limit: Duration) -> bool {
-    let deadline = Instant::now() + limit;
+/// Waits until `open` more pumps have reported or `limit` passes; whether they all reported. A pump
+/// that is handing output to a reader still being slow is waiting for the reader, not for a process
+/// that holds its pipe, so `limit` starts again for as long as one is.
+fn wait_for(pumps: &Receiver<()>, open: &mut u8, limit: Duration, sending: &AtomicUsize) -> bool {
+    let mut deadline = Instant::now() + limit;
     while *open > 0 {
         let left = deadline.saturating_duration_since(Instant::now());
         match pumps.recv_timeout(left) {
@@ -425,7 +433,12 @@ fn wait_for(pumps: &Receiver<()>, open: &mut u8, limit: Duration) -> bool {
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 *open = 0;
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => return false,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if sending.load(Ordering::Acquire) == 0 {
+                    return false;
+                }
+                deadline = Instant::now() + limit;
+            }
         }
     }
     true
