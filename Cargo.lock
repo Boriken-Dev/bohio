@@ -307,6 +307,7 @@ dependencies = [
  "coqui-transport-serial",
  "coqui-transport-web",
  "rustls",
+ "serde",
  "serde_json",
  "socket2",
  "tempfile",

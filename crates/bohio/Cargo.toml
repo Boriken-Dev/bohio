@@ -128,3 +128,8 @@ unsafe_code = "deny"
 [[test]]
 name = "pairing"
 required-features = ["cli"]
+
+
+[[test]]
+name = "tools_gui"
+required-features = ["gui"]

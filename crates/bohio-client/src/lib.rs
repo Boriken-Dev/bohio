@@ -20,6 +20,7 @@ pub mod session;
 pub mod shell;
 pub mod socks;
 pub mod sync;
+pub mod tools;
 mod tree;
 pub mod walk;
 
