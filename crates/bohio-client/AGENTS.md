@@ -164,7 +164,7 @@ skipped by the next call), `Error::Closed` when the host closed the stream.
 ```rust
 pub struct Gui;                                                    // Debug; Drop closes. Every method takes &self; calls take turns
 impl Gui {
-    pub fn open(link: &dyn Open, request: &GuiRequest) -> Result<Gui, Error>;   // waits up to OPEN_WAIT (120 s: the host may wait for its owner); Error::Remote for a refusal the engine made, Transport(Permission) when the link's grant does not cover the request
+    pub fn open(link: &dyn Open, request: &GuiRequest) -> Result<Gui, Error>;   // waits up to OPEN_WAIT (120 s: the host may wait for its owner); `open_within(link, request, wait: Option<Duration>)` takes the wait (the command's `[client] gui_timeout`); Error::Remote for a refusal the engine made, Transport(Permission) when the link's grant does not cover the request
     pub fn granted(&self) -> &[Want];   pub fn session(&self) -> &str;   pub fn state(&self) -> State;   // state: the last the host said (`state` frames are kept as they pass)
     pub fn snapshot(&self, options: &SnapshotOptions, timeout: Option<Duration>) -> Result<Image, Error>;   // Image { header: ImageHeader, bytes }
     pub fn input(&self, events: &[InputEvent], timeout: Option<Duration>) -> Result<u32, Error>;            // applied; `denied`, `busy`, `unavailable`, `bad_request` are Error::Remote and the stream goes on
@@ -182,11 +182,11 @@ A local file and a file of a host, compared and moved without sending what the o
 ```rust
 pub enum Compare { Meta, Hash(Algorithm), Blocks }          // size and time; size then a digest of each side; size then the signatures
 pub enum Verdict { Same, Differs, RemoteMissing, LocalMissing }
-pub fn compare_file(link: &dyn Open, local: &Path, remote: &str, how: Compare) -> Result<Verdict, Error>;   // differing sizes differ at every depth; Meta compares times to the nanosecond
+pub fn compare_file(link: &dyn Open, local: &Path, remote: &str, how: Compare, options: &SyncOptions) -> Result<Verdict, Error>;   // differing sizes differ at every depth; Meta compares times to the nanosecond; `options` gives `timeout`, `read_size` and `strong`
 pub enum DeltaMode { Auto /* default */, Always, Never }    // Auto: a delta when the destination's copy is at least the host's [delta] min_size
 pub struct SyncOptions { delta, compression: Option<Compression>, compare: Option<Compare> /* skip a file that is the same */, caps: Caps, block_size: Option<u32>,
                          strong: Algorithm /* blake3 */, strong_len: Option<usize>, verify: Option<Algorithm> /* blake3, else sha256 */, chunk: usize /* 64 KiB */,
-                         timeout: Option<Duration> /* 5 min */, transfer: Option<TransferInfo> /* the host's, when the caller has it */, window_log_max: Option<u32> }   // Default; PutOptions and GetOptions are this type
+                         timeout: Option<Duration> /* 5 min */, read_size: usize /* 1 MiB: local reads and the downloaded file's buffer */, transfer: Option<TransferInfo> /* the host's, when the caller has it */, window_log_max: Option<u32> }   // Default; PutOptions and GetOptions are this type
 pub struct Moved { size, literal_bytes, copied_bytes, wire_bytes: u64, delta: bool, skipped: bool }   // wire_bytes: frames in both directions, signature included, as they travelled
 pub fn put(link: &dyn Open, local: &Path, remote: &str, options: &PutOptions) -> Result<Moved, Error>;   // replaces the host's file atomically; a delta needs fs.read as well as fs.write; `changed` when the host's copy moved meanwhile
 pub fn get(link: &dyn Open, remote: &str, local: &Path, options: &GetOptions) -> Result<Moved, Error>;   // rebuilds into a temporary sibling, checks the host's digest (Error::Mismatch), renames
@@ -341,7 +341,8 @@ impl Opens {
     pub tcp_send_buffer: Option<usize> /*None: system*/, pub tcp_receive_buffer: Option<usize> /*None: system*/,
     pub max_message: usize /*1 MiB*/, pub queue_bytes: usize /*256 KiB*/, pub read_ahead: usize /*8*/, pub queued_bytes: usize /*1 MiB*/,
     pub send_limit: Duration /*10 s*/, pub send_wait: Duration /*250 ms*/, pub open_wait: Duration /*250 ms; zero: refuse at once*/, pub poll_interval: Duration /*50 ms*/,
-    pub heartbeat: Duration /*25 s; zero is off*/, pub heartbeat_misses: u32 /*3; at least 1*/ }   // Default; the host's `[link]` section
+    pub heartbeat: Duration /*25 s; zero is off*/, pub heartbeat_misses: u32 /*3; at least 1*/,
+    pub accept_wait: Duration /*200 ms: a listener's wait before it looks at its stop flag*/, pub accept_poll: Duration /*20 ms: a non-blocking listener's sleep*/, pub serial_reopen: Duration /*250 ms*/ }   // Default; the host's `[link]` section
 impl Settings { pub fn limits(&self) -> coqui_link::mux::Limits; pub fn record_length(&self, method: coqui_link::auth::Method) -> usize; }
 pub fn framed<S: Split, C: Codec>(stream: S, codec: C, settings: &Settings) -> io::Result<StreamChannel>;   // an unproven peer held to one proof-sized message
 pub fn stream<S: Split>(stream: S, settings: &Settings) -> io::Result<StreamChannel>;   // framed with a 4-byte big-endian length: a pipe, a child's streams

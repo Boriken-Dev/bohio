@@ -29,7 +29,7 @@ pub struct Environment { pub windows: bool, pub local_app_data: Option<PathBuf>,
 impl Environment { pub fn default_data_dir(&self) -> PathBuf; }
 
 pub struct Config { pub service: ServiceConfig, pub listen: Vec<ListenConfig>, pub link: LinkConfig, pub filesystem: FilesystemConfig, pub hash: HashConfig, pub delta: DeltaConfig, pub gui: GuiConfig,
-                    pub execution: ExecutionConfig, pub shell: ShellConfig, pub forward: ForwardConfig, pub pairing: PairingConfig, pub control: ControlConfig, pub peer: Peers }     // Default; unknown keys refused; `peer` is `[peer.<id>]`
+                    pub execution: ExecutionConfig, pub shell: ShellConfig, pub forward: ForwardConfig, pub pairing: PairingConfig, pub client: ClientConfig, pub control: ControlConfig, pub peer: Peers }     // Default; unknown keys refused; `peer` is `[peer.<id>]`
 pub struct NodeConfig { pub name: String, pub link: LinkConfig, pub filesystem: FilesystemConfig, pub hash: HashConfig, pub delta: DeltaConfig,
                         pub execution: ExecutionConfig, pub shell: ShellConfig, pub forward: ForwardConfig, pub pairing: PairingConfig }   // Default, Deserialize, unknown keys refused: what a Node runs on, read by an app from any section of its own settings
 impl NodeConfig { pub fn validate(&self, label: &str) -> Result<(), ConfigError>; }   // every range check; `Node::new` calls it
@@ -58,6 +58,7 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[service] name` | `"bohio"` | name shown in `info` |
 | `[service] check_access` | `true` | refuse to start when another account may change a layer, the directory that holds it or (Windows) the data directory; `false` logs it and serves, except for a path another account owns, which is refused either way; lowest layer only |
 | `[service] user_layer` | `true` | whether the user's file is read over the system's when no layers are named; lowest layer only |
+| `[service] stop_wait` | `10s` | Windows: how long the service manager is told a start or a stop may take, and how long `service uninstall` waits for a running service to stop (`--wait` overrides); not zero |
 | `[service] data_dir` | `bohio` under `%LOCALAPPDATA%` / `$XDG_DATA_HOME` (else `~/.local/share`) | identity and the waiting list |
 | `[[listen]] endpoint` | none | `tcp://host:port`, `pipe://name` or `pipe:///path.sock`, `ws://host:port`, `wss://host:port`, `webtransport://host:port`, `serial://port?baud=N`; required in each entry |
 | `[[listen]] socket_mode` | `"0o600"` | `pipe`, Unix: the socket's mode, octal text with the `0o` prefix |
@@ -84,6 +85,18 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[pairing] attempt_delay` | `1s` | how long a source waits after a wrong guess; doubles at each further one from it up to `attempt_delay_max`; a source that tries sooner is refused without a try; `0` is no wait |
 | `[pairing] attempt_delay_max` | `30s` | the longest wait; at least `attempt_delay` |
 | `[pairing] pin_length` | `6` | digits in a PIN; at least 1 |
+| `[pairing] pending` | `32` | pairing exchanges in progress at once while a PIN is armed; a joiner that sends the marker and then nothing holds a place until `exchange_timeout`; at least 1 |
+| `[pairing] pending_per_source` | `4` | exchanges in progress at once from one source (an IPv4 address, or an IPv6 prefix of `ipv6_prefix` bits), which also bounds one source's simultaneous guesses; at least 1 |
+| `[pairing] ipv6_prefix` | `64` | the IPv6 prefix length sources are grouped by, 1 to 128 |
+| `[pairing] exchange_timeout` | `5s` | how long a joiner has to finish a pairing once it sent the marker (a proof has `[link] proof_timeout`); a silent joiner frees its place after it; a longer time tolerates a slower path and lets silent joiners hold places longer; not zero |
+| `[client] reply_timeout` | `30s` | the `bohio` command's wait for the host's first answer to a question (`info`, the start of a read, a shell or a desktop session); `remote --reply-timeout`; not zero |
+| `[client] transfer_timeout` | `5m` | one step of a `put`, `get` or `write` may wait this for the host; `remote --transfer-timeout`; `0` waits for good |
+| `[client] gui_timeout` | `2m` | a `gui` action's wait for the host, which may wait for the person at the desktop; not zero |
+| `[client] input_chunk` | `16384` | bytes of standard input read at a time by `exec --stdin`, `shell`, `write` and `listen`; at least 1 |
+| `[client] read_size` | `1048576` | bytes of a local file read at a time by `put`, `get` and a comparison; at least 1 |
+| `[client] input_queue` | `4` | chunks of standard input `listen --keep` holds ahead of a connection; at least 1 |
+| `[client] probe_timeout` | `1s` | how long `status` waits for an endpoint to answer before it reports it unreachable; not zero |
+| `[client] links_wait` | `5s` | how long `links` (`--wait`) and `remote --via` wait for each peer to say what it offers; not zero |
 | `[link] max_frame` | `65536` | most bytes of one message in one frame (a longer message is sent in parts); at least 1 |
 | `[link] max_metadata` | `4096` | most metadata one open may carry; an open with more is refused; at least 1 |
 | `[link] max_pending_opens` | `8` | streams a peer may have opened that nothing has accepted yet; at least 1 |
@@ -99,6 +112,9 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[link] poll_interval` | `50ms` | how often a stream's threads look at whether it was closed; not zero |
 | `[link] heartbeat` | `25s` | how often the link asks its peer whether it is there (both sides ask; also keeps a quiet link from a proxy's or NAT's idle timeout); `0` is off |
 | `[link] heartbeat_misses` | `3` | heartbeat intervals with nothing heard after which the link is lost; at least 1 |
+| `[link] accept_wait` | `200ms` | how long a listener (the node's, and the local endpoint's) waits for a connection before it looks at whether it was stopped, so a stop is noticed within it; not zero |
+| `[link] accept_poll` | `20ms` | how long a listener that cannot block sleeps between looks for a connection, and after one it could not take; not zero |
+| `[link] serial_reopen` | `250ms` | how long a serial host leaves the port closed between links; a shorter wait can lose a reconnecting peer's first message |
 | `[filesystem] enabled` | `true` | whether filesystem calls are served |
 | `[filesystem] max_transfers` | `16` | concurrent `bohio-read/1` and `bohio-write/1` streams across peers; at least 1 |
 | `[filesystem] chunk_size` | `65536` | most file bytes in one frame, and the buffer a copy reads with; at least 1; a smaller message bound of the stream wins |
@@ -416,7 +432,7 @@ impl Node {
     pub const fn host(&self) -> coqui_peer::PeerId;
     pub fn serve_listening(&self, listening: &Listening, stop: &AtomicBool) -> io::Result<()>;   // accepts until `stop`; a thread per connection (a serial line: one link at a time, the port reopened after each)
     pub fn serve_stdio(&self) -> io::Result<()>;                   // the one link on standard input and output; nothing else may write to standard output
-    pub fn serve_channel<C: Channel>(&self, channel: &C, source: Option<SocketAddr>);   // proves the peer on any unproven channel, serves its link to the end (at most max_links_per_peer per peer); the caller closes it
+    pub fn serve_channel<C: Channel>(&self, channel: &C, source: Option<SocketAddr>);   // proves the peer on any unproven channel, serves its link to the end; refuses (logs, returns) past `max_connections` and, for a known `source`, `max_unproven_per_source`; at most max_links_per_peer per peer; the caller closes it
     pub fn connect_channel<C: Channel>(&self, channel: &C, expect: &PeerId, source: Option<SocketAddr>) -> Result<(), NodeError>;   // dials over an unproven channel (framed as `bohio_client::link::framed`): proves `expect` before sending its own key, serves the link as an answered one is, returns when it ends
     pub fn connect(&self, endpoint: &Endpoint, expect: &PeerId, trust: &ServerTrust, timeout: Duration) -> Result<(), NodeError>;   // dials any endpoint, then connect_channel; the link lists `endpoint`
     pub fn peer(&self, peer: &PeerId) -> Option<PeerLink>;          // the oldest link that is up to `peer`, whichever side made it
@@ -446,7 +462,7 @@ pub trait NodeEvents: Send + Sync { fn event(&self, event: &NodeEvent); }   // r
 pub struct LogEvents;                                              // the default: log lines
 
 pub mod pair;   // Armed { pin(), lifetime(), wait(up_to) -> Option<PairEnd>, withdraw() } (Debug hides the PIN); #[non_exhaustive] PairEnd { Paired(PeerId), Expired, UsedUp, Replaced, Withdrawn, Failed(String) }
-// PairingConfig { timeout, max_attempts, attempt_delay, attempt_delay_max, pin_length } is `[pairing]`; one PIN at a time, in memory; a connection's first message `coqui_link::pairing::MARKER` makes it a pairing (else a proof)
+// PairingConfig { timeout, max_attempts, attempt_delay, attempt_delay_max, pin_length, pending, pending_per_source, ipv6_prefix, exchange_timeout } is `[pairing]`; ClientConfig { reply_timeout, transfer_timeout, gui_timeout, input_chunk, read_size, input_queue, probe_timeout, links_wait } is `[client]` (`transfer()` is `None` for `0`); one PIN at a time, in memory; a connection's first message `coqui_link::pairing::MARKER` makes it a pairing (else a proof)
 
 pub const PROTOCOLS: [(&str, &[Permission]); 9];                   // each protocol with the permissions of which a peer needs one to open it (`bohio-connect/1` and `tcp/1` need `forward.connect`, `bohio-gui/1` `gui.view` or `gui.input`)
 pub const PROTOCOLS: [(&str, &[Permission]); 10];                  // each protocol with the permissions of which a peer needs one to open it (`bohio-connect/1` and `tcp/1` need `forward.connect`, `bohio-listen/1` and `bohio-accept/1` `forward.listen`)
@@ -571,7 +587,7 @@ a person or a script reads is printed to standard output and flushed; diagnostic
 | `info [--format text\|json]` | prints this host's capabilities (`json` is `bohio_proto::info::Info`) |
 | `serve [--listen ENDPOINT]...` | also dials each peer whose `[peer.<id>]` table has an `endpoint` (printing `dialing <endpoint> peer <id>`; with no `[[listen]]` and no `--listen`, a node that only dials is fine); serves each `[[listen]]` endpoint and `--listen` (`tcp://host:port`, port 0 picks one; `pipe://name`, `ws://host:port`, `wss://host:port` (needs a `[[listen]]` entry with `tls_cert` and `tls_key`), `webtransport://host:port`, `serial://port?baud=N`) until killed; prints `listening <endpoint>` for each, then `host <id>` |
 | `serve --stdio` | serves one link on standard input and output until it ends; prints nothing to standard output, logs to standard error; excludes `--listen` and binds no `[[listen]]` |
-| `links [--format text\|json] [--wait TIME]` | lists the links the running node of this configuration holds, through its local control endpoint (default wait `5s` for each peer's offers): `<peer> <dialed\|answered> <endpoint or source> offers-to-peer: ... offers-from-peer: ...` |
+| `links [--format text\|json] [--wait TIME]` | lists the links the running node of this configuration holds, through its local control endpoint (default wait `[client] links_wait`, `5s`, for each peer's offers): `<peer> <dialed\|answered> <endpoint or source> offers-to-peer: ... offers-from-peer: ...` |
 | `status` | the host's id, key method, data directory, one `config: <file>` line per layer read, counts of accepted and waiting peers, one `dial: <endpoint> peer <id>` line per peer dialed, one `keeps: local|remote <entry> peer <id>` line per forward a peer's table keeps up, and one `listen: <endpoint> <state>` line per configured endpoint: `reachable` / `not reachable` (a connect is made; a TCP, WebSocket or pipe host sees it), `device present` / `device missing` (serial, Unix) or `device not checked` (Windows), `UDP not checked` (WebTransport), `not served by this build` |
 | `id` | the id of this machine's key, made on first use |
 | `peer list` | `accepted <id> allow: ...` (then ` dial: <endpoint>` when the table has one) and `waiting <id> from <ip>` lines |
@@ -580,8 +596,9 @@ a person or a script reads is printed to standard output and flushed; diagnostic
 | `pair [--timeout TIME] [--listen ENDPOINT]` | arms a PIN: on the running node through `[control]` (`bohio-pair/1`), or, when none runs, by serving pairing alone on the `[[listen]]` entries (the ports `serve` uses; the node accepts nobody else meanwhile). Prints `pairing on <endpoint>` for each entry, `host <id>` and `pin <PIN>`, waits for one peer, prints `paired <id>`: the joiner's key is accepted as a `[peer.<id>]` table, holding nothing. `--timeout` is the PIN's lifetime (default `[pairing] timeout`); `--listen` is only for a configuration with no `[[listen]]` entry, and is refused when it has some |
 | `join <endpoint> [--pin PIN] [--ca FILE]... [--cert-hash HASH]... [--clock-skew SPAN] [--fallback ENDPOINT] [--mtu-initial BYTES] [--mtu-min BYTES] [--mtu-discovery BOOL] [--mtu-upper-bound BYTES]` | pairs with a host that shows a PIN over any endpoint `remote` takes (the PIN is read from standard input when absent; the TLS options are `remote`'s); each side writes the other's key as a `[peer.<id>]` table into its layers; the joiner holds nothing until approved |
 | `service install [--config FILE] [--name NAME] [--account ACCOUNT]` | Windows: registers the service `NAME` (default `bohio`), automatic start, as `ACCOUNT` (default `NT AUTHORITY\LocalService`), running `bohio service run --name NAME [--config ABSOLUTE FILE]`; needs an elevated prompt (`access denied: run this from an elevated prompt` otherwise); elsewhere an error naming the systemd unit |
-| `service uninstall [--name NAME]` | Windows: stops and deletes the service |
+| `service uninstall [--name NAME] [--wait TIME]` | Windows: stops (waiting up to `--wait`, default `[service] stop_wait`) and deletes the service |
 | `service run [--config FILE] [--name NAME]` | Windows: the service's entry point, started by the service manager (a person running it gets a one-line explanation); serves the configured `[[listen]]` endpoints until the manager sends stop or shutdown, then reports stopped and the process exits, which closes the job objects that end every process it started |
+| `remote [--reply-timeout TIME] [--transfer-timeout TIME] ...` | any `remote` form takes these two before the action: the wait for the host's first answer to a question (default `[client] reply_timeout`, 30s) and for one step of a transfer (default `[client] transfer_timeout`, 5m; `0` waits for good) |
 | `remote --via ID <action>` | the same actions over the link the running node holds to the peer ID, whichever side made it (a host that dialed in); exclusive with an endpoint and `--command`; `no link to ID` when there is none |
 | `remote <endpoint> [--server ID] [--ca FILE]... [--cert-hash HASH]... [--clock-skew SPAN] [--fallback ENDPOINT] info [--format text\|json]` | the host's capabilities over the link; the endpoint is any scheme above, or `stdio://program args`; `--ca`/`--cert-hash` check a `wss://` or `webtransport://` host's certificate (the system's roots without them), `--clock-skew` accepts a certificate whose start or end is within SPAN of this clock (default none: a pinned certificate is still held to its dates, and a refusal names the start and the clock difference), `--fallback` is a `ws://` (loopback) or `wss://` endpoint of the same host for a blocked UDP path |
 | `remote --command "program args" [--server ID] info` | the same over a program the command starts, its standard streams the link (for example `docker exec -i NAME bohio serve --stdio`); the program is run directly, never through a shell, and its tree ends when the command does |

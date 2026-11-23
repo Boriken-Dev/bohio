@@ -60,7 +60,7 @@ let dial = DialConfig::default();
 scope.spawn(|| node.run_dial(&station, "wss://station.example:7622", &dial, &stop));
 ```
 
-`Node::connect` dials once, and `Node::serve_channel` and `Node::connect_channel` serve a channel the application opened itself. Only `serve_listening` bounds unproven connections (`max_connections`, `max_unproven_per_source`): an application that accepts its own connections bounds how many it hands over.
+`Node::connect` dials once, and `Node::serve_channel` and `Node::connect_channel` serve a channel the application opened itself. `serve_listening` and `serve_channel` bound the connections they take (`max_connections`, and `max_unproven_per_source` from the `source` a caller passes: a channel with none is counted against the first only); one past a bound is refused at once and the application closes the channel. A dial the application makes with `connect_channel` is its own choice and counts toward `max_links_per_peer` only.
 
 ## Controlling a peer
 
