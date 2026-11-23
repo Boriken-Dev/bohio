@@ -1175,6 +1175,10 @@ pub struct ForwardConfig {
     pub open_retry: Span,
     /// How long to wait between those attempts, each moved by up to a quarter of itself either way. Not zero. Default `100ms`.
     pub open_retry_interval: Span,
+    /// How long a SOCKS5 client of `bohio remote ... forward -D` has to finish its handshake: its greeting and its request. A
+    /// slower client is closed. A shorter wait frees a slot of `max_local_connections` sooner from a client that connects and
+    /// says nothing; a longer one suits a client on a slow path. Not zero. Default `10s`.
+    pub socks_timeout: Span,
     /// The most listeners (`bohio-listen/1`) open at once, across peers; one past it is `busy`. At least 1. Default `16`.
     pub max_listeners: usize,
     /// The most listeners one peer has open at once; one past it is `busy`. At least 1. Default `8`.
@@ -1211,6 +1215,7 @@ impl Default for ForwardConfig {
             wait_for_link: Span(Duration::from_secs(30)),
             open_retry: Span(Duration::from_secs(10)),
             open_retry_interval: Span(Duration::from_millis(100)),
+            socks_timeout: Span(Duration::from_secs(10)),
             max_listeners: 16,
             max_listeners_per_peer: 8,
             max_pending: 16,
@@ -1244,6 +1249,7 @@ impl ForwardConfig {
         settings.wait_for_link = self.wait_for_link.0;
         settings.open_retry = self.open_retry.0;
         settings.open_retry_interval = self.open_retry_interval.0;
+        settings.socks_timeout = self.socks_timeout.0;
         settings
     }
 }
@@ -1870,6 +1876,7 @@ impl NodeConfig {
                 "forward.open_retry_interval",
                 forward.open_retry_interval.0.is_zero(),
             ),
+            ("forward.socks_timeout", forward.socks_timeout.0.is_zero()),
         ] {
             if zero {
                 return Err(invalid(key, "must not be zero"));

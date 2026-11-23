@@ -16,6 +16,7 @@ pub mod link;
 pub mod relay;
 pub mod session;
 pub mod shell;
+pub mod socks;
 pub mod sync;
 
 pub use error::Error;

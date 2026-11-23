@@ -60,24 +60,7 @@ impl FromStr for LocalSpec {
                     .map_err(|error| BadSpec(error.to_string()))?,
             )
         } else {
-            let (bind, port) = match listen.rsplit_once(':') {
-                Some((bind, port)) => (Some(bind), port),
-                None => (None, listen),
-            };
-            let port: u16 = port
-                .parse()
-                .map_err(|_| BadSpec("the port is a number from 0 to 65535".to_owned()))?;
-            let address: IpAddr = match bind {
-                None => Ipv4Addr::LOCALHOST.into(),
-                Some(bind) => bind
-                    .strip_prefix('[')
-                    .and_then(|inner| inner.strip_suffix(']'))
-                    .unwrap_or(bind)
-                    .parse()
-                    .map_err(|_| {
-                        BadSpec("BIND is an address (an IPv6 one in brackets)".to_owned())
-                    })?,
-            };
+            let (address, port) = tcp_listen(listen)?;
             Listen::Tcp(address, port)
         };
         Ok(Self {
@@ -133,6 +116,66 @@ impl LocalSpec {
                 Ok((Bound::Ipc(listener), shown))
             }
         }
+    }
+}
+
+/// `[BIND:]PORT`: the address (loopback by default, an IPv6 one in brackets) and the port a listener binds.
+fn tcp_listen(text: &str) -> Result<(IpAddr, u16), BadSpec> {
+    let (bind, port) = match text.rsplit_once(':') {
+        Some((bind, port)) => (Some(bind), port),
+        None => (None, text),
+    };
+    let port: u16 = port
+        .parse()
+        .map_err(|_| BadSpec("the port is a number from 0 to 65535".to_owned()))?;
+    let address: IpAddr = match bind {
+        None => Ipv4Addr::LOCALHOST.into(),
+        Some(bind) => bind
+            .strip_prefix('[')
+            .and_then(|inner| inner.strip_suffix(']'))
+            .unwrap_or(bind)
+            .parse()
+            .map_err(|_| BadSpec("BIND is an address (an IPv6 one in brackets)".to_owned()))?,
+    };
+    Ok((address, port))
+}
+
+/// One SOCKS5 listener (`-D`): this machine listens, and each client names its own target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SocksSpec {
+    address: IpAddr,
+    port: u16,
+}
+
+impl FromStr for SocksSpec {
+    type Err = BadSpec;
+
+    fn from_str(text: &str) -> Result<Self, BadSpec> {
+        let (address, port) = tcp_listen(text)?;
+        Ok(Self { address, port })
+    }
+}
+
+impl SocksSpec {
+    /// The address when it is not loopback: whoever can reach it has what the peer's grant allows.
+    #[must_use]
+    pub fn non_default(&self) -> Option<IpAddr> {
+        (!self.address.is_loopback()).then_some(self.address)
+    }
+
+    /// Binds the listener, and says what it is bound to (the port the system chose for port 0).
+    ///
+    /// # Errors
+    ///
+    /// Why it could not be bound.
+    pub fn bind(&self) -> Result<(TcpListener, String), String> {
+        let listener =
+            TcpListener::bind((self.address, self.port)).map_err(|error| error.to_string())?;
+        let shown = listener.local_addr().map_or_else(
+            |_| format!("{}:{}", self.address, self.port),
+            |bound| bound.to_string(),
+        );
+        Ok((listener, shown))
     }
 }
 

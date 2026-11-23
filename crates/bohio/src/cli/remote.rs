@@ -36,7 +36,7 @@ use super::{
     RemoteSessionsArgs, RemoteShellArgs, RemoteWriteArgs, SessionArgs,
 };
 use crate::config::{DialConfig, Environment, Layers};
-use crate::forward::{BadSpec, LocalSpec, RemoteKeep, RemoteSpec, keep_remote};
+use crate::forward::{BadSpec, LocalSpec, RemoteKeep, RemoteSpec, SocksSpec, keep_remote};
 use crate::link::KeptState;
 use crate::local::{ANOTHER_ACCOUNT, Server, Via};
 use crate::node::Endpoint;
@@ -625,6 +625,14 @@ fn forward_command(
                             stop.store(true, std::sync::atomic::Ordering::SeqCst);
                             break;
                         }
+    let mut adjusted = *settings;
+    if let Some(wait) = args.socks_timeout {
+        if wait.is_zero() {
+            return Err("--socks-timeout is not zero".to_owned());
+        }
+        adjusted.socks_timeout = wait;
+    }
+    let settings = &adjusted;
                         thread::sleep(settings.options.listen_poll);
                     }
                     failure
@@ -632,12 +640,25 @@ fn forward_command(
             });
         }
         let _ = std::io::stdout().flush();
-        let handles: Vec<_> = bound
+        let mut handles: Vec<_> = bound
             .iter()
             .map(|(spec, listener, _)| {
                 let (stop, report) = (&stop, &report);
                 scope.spawn(move || {
                     let ended = listener.serve(open, spec.target(), settings, stop, report);
+    let mut socks = Vec::new();
+    for text in &args.dynamic {
+        let spec: SocksSpec = text
+            .parse()
+            .map_err(|error: BadSpec| format!("-D `{text}`: {error}"))?;
+        let (listener, shown) = spec
+            .bind()
+            .map_err(|error| format!("-D `{text}`: {error}"))?;
+        if let Some(address) = spec.non_default() {
+            println!("non-default: bind {address}");
+        }
+        socks.push((listener, shown));
+    }
                     // One listener ending ends them all: the link is gone, or this one could not go on.
                     stop.store(true, std::sync::atomic::Ordering::SeqCst);
                     ended
@@ -651,6 +672,9 @@ fn forward_command(
                 Ok(Ok(_)) => failure = Some("the link to the host ended".to_owned()),
                 Ok(Err(error)) => failure = Some(format!("a listener failed: {error}")),
                 Err(_) => failure = Some("a listener failed".to_owned()),
+    for (_, shown) in &socks {
+        println!("socks5 {shown}");
+    }
             }
         }
         for handle in asking {
@@ -658,7 +682,7 @@ fn forward_command(
         }
         if let Some(watcher) = watcher {
             // With no local listener nothing has ended yet: the watcher is what the command waits for.
-            if !bound.is_empty() {
+            if !(bound.is_empty() && socks.is_empty()) {
                 stop.store(true, std::sync::atomic::Ordering::SeqCst);
             }
             if let Ok(Some(reason)) = watcher.join() {
@@ -775,6 +799,14 @@ fn write_command(
     } else if args.create {
         request.mode = WriteMode::Create;
     }
+        for (listener, _) in &socks {
+            let (stop, report) = (&stop, &report);
+            handles.push(scope.spawn(move || {
+                let ended = bohio_client::socks::serve(open, listener, settings, stop, report);
+                stop.store(true, std::sync::atomic::Ordering::SeqCst);
+                ended
+            }));
+        }
     let compression = match wanted(args.compress.as_deref(), args.window_log)? {
         Some(compression) if compression.algorithm == Codec::None => None,
         Some(compression) => Some(named(link, compression, client)?),

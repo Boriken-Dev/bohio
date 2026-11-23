@@ -733,7 +733,7 @@ pub struct RemoteForwardArgs {
         short = 'L',
         long = "local",
         value_name = "SPEC",
-        required_unless_present = "remote"
+        required_unless_present_any = ["remote", "dynamic"]
     )]
     pub local: Vec<String>,
     /// Have the host listen and bring each connection to a target on this side: `[BIND:]PORT=LOCAL`, `unix:PATH=LOCAL` or
@@ -747,7 +747,7 @@ pub struct RemoteForwardArgs {
         short = 'R',
         long = "remote",
         value_name = "SPEC",
-        required_unless_present = "local"
+        required_unless_present_any = ["local", "dynamic"]
     )]
     pub remote: Vec<String>,
     /// Whether and how the link is made again when it is lost.
@@ -760,6 +760,23 @@ pub struct RemoteForwardArgs {
 pub struct RemoteListenArgs {
     /// What the host binds: `BIND:PORT` (an IPv6 address in brackets; port 0 lets the host choose), `unix:PATH` or
     /// `pipe:NAME`. The peer's grant must hold `forward.listen` and a rule that covers it.
+    /// Serve SOCKS5 here and have the host connect to whatever each client asks for (`ssh -D`): `[BIND:]PORT`. BIND is an address
+    /// and defaults to `127.0.0.1`; port 0 picks a free one. Clients use CONNECT with IPv4, IPv6 or a domain name, which the host
+    /// resolves, with no authentication, and the peer's grant decides every target: whoever can reach the port has what the
+    /// peer may connect to, so another address is used as named and reported as `non-default: bind ADDRESS`. BIND and UDP
+    /// ASSOCIATE are answered "command not supported". Prints `socks5 BOUND`. The peer needs `forward.connect` and rules for the
+    /// targets (repeat; mix with `-L` and `-R`).
+    #[arg(
+        short = 'D',
+        long = "dynamic",
+        value_name = "SPEC",
+        required_unless_present_any = ["local", "remote"]
+    )]
+    pub dynamic: Vec<String>,
+    /// How long a SOCKS5 client has to finish its handshake before it is closed (`10s`; a bare number is seconds). Default
+    /// `[forward] socks_timeout`.
+    #[arg(long, value_name = "TIME", value_parser = parse_span)]
+    pub socks_timeout: Option<std::time::Duration>,
     pub bind: String,
     /// Take the next arrival after each connection ends, until interrupted or the link ends. Without it, the first
     /// connection ends the command: status 0 when both directions ended in order.

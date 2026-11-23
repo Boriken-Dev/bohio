@@ -814,3 +814,307 @@ fn forward_dash_l_listens_on_a_local_socket_or_pipe() {
     assert_eq!(reply, b"local ipc: query");
     answered.join().expect("the target ended");
 }
+
+// SOCKS5 (`forward -D`): a client speaking RFC 1928 through the node to a real TCP target.
+
+mod socks {
+    use std::io::{Read, Write};
+    use std::net::{SocketAddr, TcpListener, TcpStream};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use bohio_client::connect::Connection;
+    use bohio_client::forward::ForwardSettings;
+    use bohio_client::socks::{self, reply};
+    use bohio_client::{Error, Open};
+
+    use super::{
+        Deadline, Running, Spawned, WAIT, bohio, client_config, closed_port, granting, id_of,
+        listening, remote_args, serve_once,
+    };
+
+    /// Ends the server when the test ends, however it ends.
+    struct StopOnDrop<'a>(&'a AtomicBool);
+
+    impl Drop for StopOnDrop<'_> {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Runs a SOCKS5 server over `link` for the length of `run`, which is given its address.
+    fn serving<R>(
+        link: &Connection,
+        settings: &ForwardSettings,
+        run: impl FnOnce(SocketAddr) -> R,
+    ) -> R {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a listener");
+        let address = listener.local_addr().expect("an address");
+        let stop = AtomicBool::new(false);
+        thread::scope(|scope| {
+            let _guard = StopOnDrop(&stop);
+            let link: &dyn Open = link;
+            let server = scope.spawn(|| socks::serve(link, &listener, settings, &stop, &|_| {}));
+            let result = run(address);
+            stop.store(true, Ordering::SeqCst);
+            server
+                .join()
+                .expect("the server ran")
+                .expect("the server ended");
+            result
+        })
+    }
+
+    /// A client: the greeting, then `command` for `address` (an address type byte and its bytes) and `port`. The reply code
+    /// and the connection, which carries the target's bytes after a success.
+    fn ask(proxy: SocketAddr, command: u8, address: &[u8], port: u16) -> (u8, TcpStream) {
+        let mut stream = TcpStream::connect(proxy).expect("the proxy answers");
+        stream.set_read_timeout(Some(WAIT)).expect("a read timeout");
+        stream.write_all(&[5, 1, 0]).expect("a greeting");
+        let mut method = [0_u8; 2];
+        stream.read_exact(&mut method).expect("a method");
+        assert_eq!(method, [5, 0]);
+        let mut request = vec![5, command, 0];
+        request.extend_from_slice(address);
+        request.extend_from_slice(&port.to_be_bytes());
+        stream.write_all(&request).expect("a request");
+        let mut head = [0_u8; 4];
+        stream.read_exact(&mut head).expect("a reply");
+        assert_eq!(head[0], 5);
+        let rest = match head[3] {
+            1 => 4 + 2,
+            4 => 16 + 2,
+            other => panic!("a reply with address type {other}"),
+        };
+        let mut tail = vec![0_u8; rest];
+        stream.read_exact(&mut tail).expect("the bound address");
+        (head[1], stream)
+    }
+
+    fn name(host: &str) -> Vec<u8> {
+        let mut address = vec![3, u8::try_from(host.len()).expect("a short name")];
+        address.extend_from_slice(host.as_bytes());
+        address
+    }
+
+    /// The address type and bytes of 127.0.0.1.
+    fn ipv4() -> Vec<u8> {
+        vec![1, 127, 0, 0, 1]
+    }
+
+    /// A target that answers after it has read the end of what the client sent.
+    fn echo_after_end(prefix: &'static [u8]) -> (u16, thread::JoinHandle<()>) {
+        let (listener, port) = listening();
+        let served = serve_once(listener, move |mut connection| {
+            let mut request = Vec::new();
+            connection.read_to_end(&mut request).expect("a request");
+            connection
+                .write_all(&[prefix, request.as_slice()].concat())
+                .expect("a reply");
+        });
+        (port, served)
+    }
+
+    fn exchange(mut stream: TcpStream, payload: &[u8]) -> Vec<u8> {
+        stream.write_all(payload).expect("written");
+        stream
+            .shutdown(std::net::Shutdown::Write)
+            .expect("half-closed");
+        let mut reply = Vec::new();
+        stream.read_to_end(&mut reply).expect("a reply");
+        reply
+    }
+
+    #[test]
+    fn a_connect_by_address_and_by_name_reaches_an_echo_with_a_half_close() {
+        let _deadline = Deadline::start();
+        let node = Running::start();
+        let (by_ip, first) = echo_after_end(b"by address: ");
+        let (by_name, second) = echo_after_end(b"by name: ");
+        let rules = [
+            format!("127.0.0.1:{by_ip}"),
+            // The name goes to the host as it is, so the host's resolver answers and a name rule is what the grant needs.
+            format!("localhost:{by_name}"),
+        ];
+        let (link, _) = node.link(granting(&[rules[0].as_str(), rules[1].as_str()]));
+        serving(&link, &ForwardSettings::default(), |proxy| {
+            let (code, stream) = ask(proxy, 1, &ipv4(), by_ip);
+            assert_eq!(code, reply::SUCCEEDED);
+            assert_eq!(exchange(stream, b"one"), b"by address: one");
+            // Upper case is the same name.
+            let (code, stream) = ask(proxy, 1, &name("LocalHost"), by_name);
+            assert_eq!(code, reply::SUCCEEDED);
+            assert_eq!(exchange(stream, b"two"), b"by name: two");
+        });
+        first.join().expect("the first target ended");
+        second.join().expect("the second target ended");
+    }
+
+    #[test]
+    fn each_error_maps_to_its_reply_code() {
+        let _deadline = Deadline::start();
+        let node = Running::start();
+        let closed = closed_port();
+        let (_listener, uncovered) = listening();
+        let rules = [format!("127.0.0.1:{closed}"), "*.invalid:*".to_owned()];
+        let (link, _) = node.link(granting(&[rules[0].as_str(), rules[1].as_str()]));
+        serving(&link, &ForwardSettings::default(), |proxy| {
+            // The grant covers the port and nothing listens there: the target refused.
+            assert_eq!(ask(proxy, 1, &ipv4(), closed).0, reply::REFUSED);
+            // A port no rule covers: not allowed by the ruleset.
+            assert_eq!(ask(proxy, 1, &ipv4(), uncovered).0, reply::NOT_ALLOWED);
+            // A name the host cannot resolve.
+            assert_eq!(
+                ask(proxy, 1, &name("no-such-host.invalid"), 80).0,
+                reply::UNREACHABLE
+            );
+            // Not a host name at all: it never becomes another kind of target.
+            assert_eq!(
+                ask(proxy, 1, &name("unix:/run/x.sock"), 80).0,
+                reply::FAILURE
+            );
+        });
+    }
+
+    #[test]
+    fn bind_and_udp_associate_are_not_supported_and_an_unknown_address_type_is_refused() {
+        let _deadline = Deadline::start();
+        let node = Running::start();
+        let (link, _) = node.link(granting(&["127.0.0.1:1"]));
+        serving(&link, &ForwardSettings::default(), |proxy| {
+            assert_eq!(
+                ask(proxy, 2, &ipv4(), 1).0,
+                reply::COMMAND_NOT_SUPPORTED,
+                "BIND"
+            );
+            assert_eq!(
+                ask(proxy, 3, &ipv4(), 1).0,
+                reply::COMMAND_NOT_SUPPORTED,
+                "UDP ASSOCIATE"
+            );
+            // An address type that is not 1, 3 or 4.
+            let mut stream = TcpStream::connect(proxy).expect("the proxy answers");
+            stream.set_read_timeout(Some(WAIT)).expect("a read timeout");
+            stream.write_all(&[5, 1, 0]).expect("a greeting");
+            let mut method = [0_u8; 2];
+            stream.read_exact(&mut method).expect("a method");
+            stream.write_all(&[5, 1, 0, 9]).expect("a request");
+            let mut answer = [0_u8; 10];
+            stream.read_exact(&mut answer).expect("a reply");
+            assert_eq!(answer[1], reply::ADDRESS_NOT_SUPPORTED);
+            // A greeting that offers only a method this server does not use.
+            let mut stream = TcpStream::connect(proxy).expect("the proxy answers");
+            stream.set_read_timeout(Some(WAIT)).expect("a read timeout");
+            stream.write_all(&[5, 1, 2]).expect("a greeting");
+            let mut method = [0_u8; 2];
+            stream.read_exact(&mut method).expect("a method");
+            assert_eq!(method, [5, 0xFF]);
+        });
+    }
+
+    #[test]
+    fn a_client_that_never_finishes_its_handshake_is_closed_after_the_timeout() {
+        let _deadline = Deadline::start();
+        let node = Running::start();
+        let (link, _) = node.link(granting(&["127.0.0.1:1"]));
+        let mut settings = ForwardSettings::default();
+        settings.socks_timeout = Duration::from_millis(400);
+        settings.max_connections = 1;
+        serving(&link, &settings, |proxy| {
+            let mut silent = TcpStream::connect(proxy).expect("the proxy answers");
+            silent.set_read_timeout(Some(WAIT)).expect("a read timeout");
+            let began = Instant::now();
+            let mut byte = [0_u8; 1];
+            // The server ends it without a word: the end of the stream, not a hang.
+            let ended = silent.read(&mut byte);
+            assert!(
+                matches!(ended, Ok(0) | Err(_)),
+                "the silent client is closed: {ended:?}"
+            );
+            assert!(
+                began.elapsed() >= Duration::from_millis(300),
+                "not before the timeout: {:?}",
+                began.elapsed()
+            );
+            assert!(
+                began.elapsed() < Duration::from_secs(10),
+                "within a few timeouts: {:?}",
+                began.elapsed()
+            );
+            // Its slot is free again: with one slot a real client is served (the grant covers port 1; nothing listens).
+            let (code, _) = ask(proxy, 1, &ipv4(), 1);
+            assert_eq!(code, reply::REFUSED);
+        });
+    }
+
+    #[test]
+    fn the_reply_codes_follow_the_hosts_answers() {
+        use bohio_proto::{ErrorBody, ErrorCode};
+        let body = |code| {
+            Error::Remote(ErrorBody {
+                code,
+                message: "x".to_owned(),
+            })
+        };
+        assert_eq!(
+            socks::reply_code(&body(ErrorCode::Denied)),
+            reply::NOT_ALLOWED
+        );
+        assert_eq!(
+            socks::reply_code(&body(ErrorCode::NotFound)),
+            reply::UNREACHABLE
+        );
+        assert_eq!(
+            socks::reply_code(&body(ErrorCode::Unreachable)),
+            reply::UNREACHABLE
+        );
+        assert_eq!(socks::reply_code(&body(ErrorCode::Refused)), reply::REFUSED);
+        assert_eq!(socks::reply_code(&body(ErrorCode::Timeout)), reply::TIMEOUT);
+        assert_eq!(socks::reply_code(&body(ErrorCode::Busy)), reply::FAILURE);
+        assert_eq!(
+            socks::reply_code(&Error::Transport(coqui_transport::Failure::Permission)),
+            reply::NOT_ALLOWED
+        );
+        assert_eq!(socks::reply_code(&Error::Timeout), reply::TIMEOUT);
+    }
+
+    #[test]
+    fn forward_dash_d_serves_socks5_through_the_binary() {
+        let _deadline = Deadline::start();
+        let dir = tempfile::tempdir().expect("a directory");
+        let (by_ip, served) = echo_after_end(b"via -D: ");
+        let rule = format!("127.0.0.1:{by_ip}");
+        let node = Running::start();
+        let config = client_config(dir.path(), "peer");
+        let peer = id_of(&config);
+        node.keys.accept(peer);
+        node.grants.set(peer, granting(&[rule.as_str()]));
+        let config = config.to_string_lossy().into_owned();
+        let server = node.id.to_string();
+        let mut args = remote_args(&node, &config, &server);
+        args.extend(["forward", "-D", "0", "--socks-timeout", "3s"]);
+        let forward = Spawned::start(bohio(&args));
+        let bound = forward.line("socks5 ");
+        let proxy: SocketAddr = bound.parse().expect("socks5 BOUND");
+        assert!(proxy.ip().is_loopback(), "{bound}");
+        let (code, stream) = ask(proxy, 1, &ipv4(), by_ip);
+        assert_eq!(code, reply::SUCCEEDED);
+        assert_eq!(exchange(stream, b"hello"), b"via -D: hello");
+        served.join().expect("the target ended");
+        // A target the grant does not cover is refused with the rule code, and the proxy goes on.
+        assert_eq!(ask(proxy, 1, &ipv4(), by_ip ^ 1).0, reply::NOT_ALLOWED);
+
+        // A bind beyond loopback is said, as for -L; a zero timeout is not a timeout.
+        let mut args = remote_args(&node, &config, &server);
+        args.extend(["forward", "-D", "0.0.0.0:0"]);
+        let wide = Spawned::start(bohio(&args));
+        assert_eq!(wide.line("non-default: bind "), "0.0.0.0");
+        wide.line("socks5 ");
+        let mut args = remote_args(&node, &config, &server);
+        args.extend(["forward", "-D", "0", "--socks-timeout", "0"]);
+        let mut zero = Spawned::start(bohio(&args));
+        assert_eq!(zero.finish(), Some(1));
+        assert!(zero.stderr().contains("socks-timeout"), "{}", zero.stderr());
+    }
+}

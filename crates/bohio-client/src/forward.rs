@@ -52,6 +52,9 @@ pub struct ForwardSettings {
 }
 
 impl Default for ForwardSettings {
+    /// How long a SOCKS5 client ([`socks::serve`](crate::socks::serve)) has to finish its handshake: its greeting and its request.
+    /// A client that is slower is closed. Not zero. Default 10 seconds.
+    pub socks_timeout: Duration,
     fn default() -> Self {
         Self {
             options: Options::default(),
@@ -63,6 +66,7 @@ impl Default for ForwardSettings {
         }
     }
 }
+            socks_timeout: Duration::from_secs(10),
 
 /// A connected forward: the host's connection to the target, as a stream of raw bytes in both directions. Dropping it closes
 /// the stream, which resets the host's connection unless both directions ended in order.

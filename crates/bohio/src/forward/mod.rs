@@ -39,7 +39,7 @@ pub use keep::{Declarations, Declared, RemoteKeep, keep_remote};
 pub(crate) use keep::{Keeper, run as keep_forwards, same_port};
 pub use listen::{Listeners, covers_listen, listen_kinds, serve_accept, serve_listen};
 pub use rules::{Addresses, BadRule, ConnectRule, ListenRule, PortSet, tcp_target};
-pub use spec::{BadSpec, Bound, LocalSpec, RemoteSpec};
+pub use spec::{BadSpec, Bound, LocalSpec, RemoteSpec, SocksSpec};
 
 /// The kinds of target this host connects to, as `info` lists them: TCP everywhere, a Unix socket on Unix and a named pipe on
 /// Windows.
