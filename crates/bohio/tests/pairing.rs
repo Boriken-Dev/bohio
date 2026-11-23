@@ -8,7 +8,7 @@ use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, Once, PoisonError};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bohio::config::{ControlConfig, LinkConfig, ListenConfig, NodeConfig, PairingConfig, Span};
 use bohio::link::{Keys, NodeEvent, NodeEvents};
@@ -403,11 +403,44 @@ fn no_limit_keeps_the_pin_until_its_lifetime() {
         .expect("the right PIN pairs");
 }
 
+/// Whether the most recent refusal the host reported was "too soon": the source was still within its wait, nothing was tried.
+fn last_refusal_was_too_soon(host: &Host) -> bool {
+    host.events
+        .all()
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            NodeEvent::PairingRefused { reason, .. } => Some(reason.starts_with("too soon")),
+            _ => None,
+        })
+        .unwrap_or(false)
+}
+
+/// Guesses wrong until the host takes the guess (a refusal that is not "too soon" is the host having tried it), asking again
+/// every `poll`; a guess made within the source's wait is refused untried and counts for nothing. Returns when the host took it.
+fn guess_when_allowed(host: &Host, listener: &Where, wrong: &str, poll: Duration) -> Instant {
+    loop {
+        let before = host.events.all().len();
+        assert!(host.join(listener, wrong).is_err());
+        let ended = Instant::now();
+        if host.events.all().len() > before && !last_refusal_was_too_soon(host) {
+            return ended;
+        }
+        thread::sleep(poll);
+    }
+}
+
 #[test]
 fn a_source_that_guessed_wrong_waits_and_the_wait_grows() {
+    // The waits are measured, never slept against: each is the time from one taken guess to the next, which can only be
+    // longer than the host's wait (a late machine makes it longer, not shorter). The slack for the host's clock starting a
+    // moment after the joiner saw its refusal is a quarter of the configured delay.
+    let delay = Duration::from_millis(600);
+    let max = Duration::from_millis(1200);
+    let slack = delay / 4;
     let settings = PairingConfig {
-        attempt_delay: Span(Duration::from_millis(600)),
-        attempt_delay_max: Span(Duration::from_millis(1200)),
+        attempt_delay: Span(delay),
+        attempt_delay_max: Span(max),
         ..PairingConfig::default()
     };
     let host = Host::start_with(true, settings);
@@ -415,13 +448,16 @@ fn a_source_that_guessed_wrong_waits_and_the_wait_grows() {
     let armed = host.node.arm_pairing(None).expect("a PIN is armed");
     let wrong = wrong_of(armed.pin());
     assert!(host.join(listener, wrong).is_err());
-    // Too soon: refused without a try, even with the right PIN, and it does not count as a guess.
+    let first = Instant::now();
+    // Too soon: refused without a try, and it does not count as a guess.
+    assert!(host.join(listener, wrong).is_err());
     assert!(
-        host.join(listener, armed.pin()).is_err(),
-        "no wait after a wrong guess"
+        first.elapsed() < delay - slack,
+        "the machine stalled for most of a wait: the test cannot tell too soon from late"
     );
-    let refused = host.events.all();
-    let reasons: Vec<String> = refused
+    let reasons: Vec<String> = host
+        .events
+        .all()
         .iter()
         .filter_map(|event| match event {
             NodeEvent::PairingRefused {
@@ -431,17 +467,37 @@ fn a_source_that_guessed_wrong_waits_and_the_wait_grows() {
         })
         .collect();
     assert!(reasons[1].starts_with("0 too soon"), "{reasons:?}");
-    thread::sleep(Duration::from_millis(700));
-    // The second wrong guess doubles the wait.
-    assert!(host.join(listener, wrong).is_err());
-    thread::sleep(Duration::from_millis(700));
+
+    let poll = delay / 12;
+    let second = guess_when_allowed(&host, listener, wrong, poll);
     assert!(
-        host.join(listener, armed.pin()).is_err(),
-        "the wait did not grow"
+        second.duration_since(first) >= delay - slack,
+        "the first wait was {:?}, not {delay:?}",
+        second.duration_since(first)
     );
-    thread::sleep(Duration::from_millis(700));
-    host.join(listener, armed.pin())
-        .expect("the right PIN pairs after the wait");
+    let third = guess_when_allowed(&host, listener, wrong, poll);
+    assert!(
+        third.duration_since(second) >= delay * 2 - slack,
+        "the wait did not grow: {:?} after the second guess",
+        third.duration_since(second)
+    );
+    // The right PIN pairs once the wait is over, and is refused untried before it.
+    let paired = (0..200).find_map(|_| match host.join(listener, armed.pin()) {
+        Ok(joined) => Some(joined),
+        Err(_) => {
+            thread::sleep(poll);
+            None
+        }
+    });
+    assert!(
+        paired.is_some(),
+        "the right PIN never paired after the wait"
+    );
+    assert!(
+        third.elapsed() >= max - slack,
+        "it paired {:?} after the third guess, inside the wait capped at {max:?}",
+        third.elapsed()
+    );
 }
 
 #[test]
