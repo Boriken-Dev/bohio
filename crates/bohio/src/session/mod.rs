@@ -55,6 +55,7 @@ pub(crate) struct ShellHost<'a> {
     pub config: &'a ShellConfig,
     pub slots: &'a Arc<Slots>,
     pub path: &'a std::ffi::OsStr,
+    pub sources: &'a Arc<crate::access::Sources>,
 }
 
 /// How an attached stream ended.
@@ -721,6 +722,7 @@ impl Sessions {
             let config = host.config.clone();
             let slots = Arc::clone(host.slots);
             let path: OsString = host.path.to_owned();
+            let sources = Arc::clone(host.sources);
             let metadata = starting.metadata.clone();
             thread::Builder::new()
                 .name("bohio-session-shell".to_owned())
@@ -731,6 +733,7 @@ impl Sessions {
                         config: &config,
                         slots: &slots,
                         path: &path,
+                        sources: &sources,
                     };
                     let _ = crate::shell::serve(Arc::clone(&channel), &metadata, &context);
                     channel.close();

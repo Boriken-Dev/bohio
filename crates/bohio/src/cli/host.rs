@@ -75,15 +75,6 @@ fn node(
     let node = node.with_path(environment.path.clone().unwrap_or_default());
     #[cfg(feature = "notify")]
     let node = node.with_notifier(Arc::new(crate::gui::DesktopNotifier::new()));
-    #[cfg(windows)]
-    let node = if config.gui.enabled && matches!(config.gui.backend.as_str(), "auto" | "windows") {
-        // The desktop of the session this process runs in; in session 0 (a service) it answers `unavailable` and says why.
-        node.with_desktop(Arc::new(crate::gui::WindowsDesktop::new(
-            crate::gui::WindowsSettings::from(&config.gui),
-        )))
-    } else {
-        node
-    };
     Ok((node, peers))
 }
 

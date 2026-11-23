@@ -98,6 +98,8 @@ pub struct TerminalOpen {
     pub env: Vec<EnvVar>,
     /// The host's own `PATH`, where a program without a directory is looked for.
     pub path: Option<String>,
+    /// What happens to the program's tree if the host dies without ending it: `kill`, `term` or `leave`. Absent is `kill`.
+    pub on_host_death: Option<String>,
     /// Columns.
     pub cols: u16,
     /// Rows.
@@ -112,6 +114,7 @@ impl Default for TerminalOpen {
             clear_env: false,
             env: Vec::new(),
             path: None,
+            on_host_death: None,
             cols: 80,
             rows: 24,
         }
@@ -124,8 +127,8 @@ impl Default for TerminalOpen {
 pub struct TerminalExit {
     /// The exit code, when the source knows one.
     pub code: Option<i64>,
-    /// The signal that ended it, by name, when one did.
-    pub signal: Option<String>,
+    /// The signal number that ended it, when one did.
+    pub signal: Option<i64>,
 }
 
 /// What a signal request came to.

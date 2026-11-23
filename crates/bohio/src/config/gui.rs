@@ -48,9 +48,6 @@ pub enum WindowsCapture {
 pub struct GuiConfig {
     /// Whether the host serves its desktop at all. Default `false`.
     pub enabled: bool,
-    /// Which desktop backend: `auto` (the one that fits where the node runs), `windows`, `x11`, `wayland`, `macos` or
-    /// `helper`. A node an application gave a desktop (`Node::with_desktop`) uses that one. Default `auto`.
-    pub backend: String,
     /// The most GUI streams open at once, across peers; one past it is `busy`. At least 1. Default `4`.
     pub max_streams: usize,
     /// The most GUI streams one peer has open at once; one past it is `busy`. At least 1. Default `2`.
@@ -152,24 +149,12 @@ pub struct GuiConfig {
     pub approval_timeout: Span,
     /// How long a peer allowed on a session is not asked again. `0s` asks for every stream. Default `15m`.
     pub approval_ttl: Span,
-    /// How the Windows backend captures: `auto`, `dxgi` or `gdi`. Default `auto`.
-    pub windows_capture: WindowsCapture,
-    /// How long the Windows backend waits for a display's first frame from DXGI before it captures that display with
-    /// GDI instead. `0s` never waits. Default `250ms`.
-    pub windows_frame_wait: Span,
-    /// How long the Windows backend keeps its DXGI duplications after the last capture: each makes the compositor track
-    /// the display's changes. `0s` releases them after every capture. Default `10s`.
-    pub windows_capture_idle: Span,
-    /// How long the Windows backend retries the clipboard while another program holds it open. `0s` tries once.
-    /// Default `500ms`.
-    pub windows_clipboard_wait: Span,
 }
 
 impl Default for GuiConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            backend: "auto".to_owned(),
             max_streams: 4,
             max_streams_per_peer: 2,
             snapshots_per_minute: 120,
@@ -215,10 +200,6 @@ impl Default for GuiConfig {
             approval: ApprovalMode::None,
             approval_timeout: Span(Duration::from_secs(60)),
             approval_ttl: Span(Duration::from_secs(15 * 60)),
-            windows_capture: WindowsCapture::Auto,
-            windows_frame_wait: Span(Duration::from_millis(250)),
-            windows_capture_idle: Span(Duration::from_secs(10)),
-            windows_clipboard_wait: Span(Duration::from_millis(500)),
         }
     }
 }
@@ -245,18 +226,9 @@ impl LadderStep {
     }
 }
 
-/// The backends `backend` may name.
-pub const BACKENDS: [&str; 6] = ["auto", "windows", "x11", "wayland", "macos", "helper"];
-
 impl GuiConfig {
     /// The first value out of range, as the key and what is wrong with it.
     pub(super) fn validate(&self) -> Result<(), (&'static str, &'static str)> {
-        if !BACKENDS.contains(&self.backend.as_str()) {
-            return Err((
-                "gui.backend",
-                "must be auto, windows, x11, wayland, macos or helper",
-            ));
-        }
         for (key, zero) in [
             ("gui.max_streams", self.max_streams == 0),
             ("gui.max_streams_per_peer", self.max_streams_per_peer == 0),

@@ -4,8 +4,9 @@
 //! peer may ask (the rates, the sizes, the clipboard), tells the person at the screen ([`presence`]) and asks them first
 //! when `[gui] approval` says so. What reaches the desktop is a request that passed all of that, one call at a time.
 //!
-//! A node serves its desktop only when an application gave it one (`Node::with_desktop`); a platform backend is such a
-//! desktop. Everything here is tested against an in-memory one, with no screen.
+//! A node serves the desktop of its default desktop source ([`crate::access::Sources`]): the platform's, an
+//! application's own (`Node::with_desktop`) or any provider's. Everything here is tested against an in-memory one, with
+//! no screen.
 
 #![forbid(unsafe_code)]
 
@@ -65,7 +66,7 @@ pub use presence::{
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -78,6 +79,7 @@ use bohio_proto::{ErrorBody, ErrorCode};
 use coqui_peer::PeerId;
 use coqui_transport::{Channel, Failure};
 
+use crate::access::{KindDesktop, Sources};
 use crate::config::{ApprovalMode, GuiConfig, Indicator};
 use crate::control::Current;
 use crate::limit::{Counted, Slots};
@@ -90,7 +92,7 @@ use presence::{Engagements, NotifierCell};
 /// What a node holds for its desktop: the desktop itself, the bounds shared by every stream, the engagements and the
 /// approvals.
 pub struct GuiState {
-    desktop: RwLock<Option<Arc<dyn Desktop>>>,
+    sources: Arc<Sources>,
     /// One call into the desktop at a time: platform input and capture are not concurrent.
     io: Mutex<()>,
     slots: Slots,
@@ -113,7 +115,7 @@ const SESSION: &str = "default";
 
 impl GuiState {
     /// The state of a node whose settings are `config`: no desktop yet, [`LocalPresence`] for its presence.
-    pub fn new(config: &GuiConfig) -> Arc<Self> {
+    pub fn new(config: &GuiConfig, sources: Arc<Sources>) -> Arc<Self> {
         let notifier = Arc::new(NotifierCell::default());
         let approvals = Arc::new(Approvals::default());
         let presence: Arc<dyn Presence> = Arc::new(LocalPresence::new(
@@ -121,7 +123,7 @@ impl GuiState {
             Arc::clone(&approvals),
         ));
         Arc::new(Self {
-            desktop: RwLock::new(None),
+            sources,
             io: Mutex::new(()),
             slots: Slots::new(config.max_streams),
             per_peer: Counted::new(config.max_streams_per_peer),
@@ -135,11 +137,6 @@ impl GuiState {
             notifier,
             allowed: Mutex::new(HashMap::new()),
         })
-    }
-
-    /// The desktop served from now on.
-    pub fn set_desktop(&self, desktop: Arc<dyn Desktop>) {
-        *self.desktop.write().unwrap_or_else(PoisonError::into_inner) = Some(desktop);
     }
 
     /// Replaces [`LocalPresence`] with an application's own.
@@ -157,11 +154,16 @@ impl GuiState {
         Arc::clone(&self.approvals)
     }
 
-    fn desktop(&self) -> Option<Arc<dyn Desktop>> {
-        self.desktop
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+    /// The node's sources.
+    pub(crate) fn sources(&self) -> Arc<Sources> {
+        Arc::clone(&self.sources)
+    }
+
+    /// A session on the default desktop source: what a stream drives.
+    fn desktop(&self) -> Result<Arc<dyn Desktop>, ErrorBody> {
+        let source = self.sources.desktop(None)?;
+        let session = KindDesktop::open(source)?;
+        Ok(Arc::new(session))
     }
 
     fn call<R>(&self, call: impl FnOnce() -> R) -> R {
@@ -199,15 +201,29 @@ impl GuiState {
             info.reason = Some("this host does not serve its desktop ([gui] enabled)".to_owned());
             return info;
         }
-        let Some(desktop) = self.desktop() else {
-            info.reason = Some("this node has no desktop backend".to_owned());
-            return info;
+        let source = match self.sources.desktop(None) {
+            Ok(source) => source,
+            Err(error) => {
+                info.reason = Some(error.message);
+                return info;
+            }
         };
-        let capabilities = desktop.capabilities();
-        info.backend = Some(capabilities.backend);
-        info.input = capabilities.input;
-        info.clipboard = capabilities.clipboard;
-        info.lock_detection = capabilities.lock_detection;
+        // Asked now, never cached: a source can lose its screen while the node runs.
+        let described = source.get().describe();
+        if let Ok(described) = &described {
+            info.backend = Some(described.provider.clone());
+            info.input = !described.lacks(bohio_api::vocab::desktop::INPUT);
+            info.clipboard = !described.lacks(bohio_api::vocab::desktop::CLIPBOARD);
+            info.lock_detection = !described.lacks(bohio_api::vocab::desktop::LOCK_DETECTION);
+        }
+        let opened = KindDesktop::open(source);
+        let desktop = match opened {
+            Ok(desktop) => desktop,
+            Err(error) => {
+                info.reason = Some(error.message);
+                return info;
+            }
+        };
         match self.call(|| desktop.state()) {
             Ok(state) => {
                 info.available = true;
@@ -341,9 +357,7 @@ fn open(
             "this host does not serve its desktop",
         ));
     }
-    let desktop = context.state.desktop().ok_or_else(|| {
-        ErrorBody::new(ErrorCode::Unsupported, "this node has no desktop backend")
-    })?;
+    let desktop = context.state.desktop()?;
     let wants = request.wants();
     if let Some(missing) = wants.iter().find(|want| !permits(context.grant, **want)) {
         return Err(denied(&format!("this peer may not {missing} the desktop")));

@@ -272,6 +272,7 @@ impl Open for Link {
                     config: &shells,
                     slots: &sessions,
                     path: &path,
+                    sources: &bohio::access::Sources::default(),
                 };
                 let result = shell::serve(Arc::clone(&host), &metadata, &context);
                 host.close();

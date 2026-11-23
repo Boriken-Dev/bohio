@@ -38,6 +38,9 @@ gui = ["dep:image", "dep:image-webp", "bohio-transfer/screen", "bohio-client/scr
 notify = ["dep:notify-rust"]
 
 [dependencies]
+bohio-api.workspace = true
+# The registry that holds the node's providers: the kinds crate brings guatiao without it.
+guatiao = { workspace = true, features = ["load"] }
 bohio-proto.workspace = true
 bohio-client.workspace = true
 bohio-transfer.workspace = true
@@ -84,6 +87,7 @@ windows.workspace = true
 windows-service = { workspace = true, optional = true }
 
 [dev-dependencies]
+bohio-api = { workspace = true, features = ["testing"] }
 ctrlc.workspace = true
 tempfile.workspace = true
 rcgen.workspace = true

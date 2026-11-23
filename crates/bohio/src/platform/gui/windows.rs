@@ -58,7 +58,7 @@ use bohio_proto::gui::{Display, DisplayId, InputEvent, Rect};
 use super::input::{self, Op, Virtual};
 use super::session::{self, Connection, Facts};
 use super::windows_capture::{self, Duplication, Target, Timing};
-use crate::config::{GuiConfig, WindowsCapture};
+use crate::config::WindowsCapture;
 use crate::gui::{Capabilities, Desktop, DesktopState, Frame, GuiError};
 
 // The flag and key values `input` writes out are Windows' own.
@@ -81,7 +81,7 @@ const _: () = {
     assert!(input::KEYEVENTF_UNICODE == KEYEVENTF_UNICODE.0);
 };
 
-/// How the Windows backend runs; [`WindowsSettings::from`] reads them from `[gui]`.
+/// How the Windows backend runs; the `native` source builds it from `[source.native]`.
 #[derive(Debug, Clone)]
 pub struct WindowsSettings {
     /// How the screen is captured.
@@ -96,21 +96,15 @@ pub struct WindowsSettings {
     pub clipboard_max_bytes: usize,
 }
 
-impl From<&GuiConfig> for WindowsSettings {
-    fn from(config: &GuiConfig) -> Self {
-        Self {
-            capture: config.windows_capture,
-            frame_wait: config.windows_frame_wait.0,
-            capture_idle: config.windows_capture_idle.0,
-            clipboard_wait: config.windows_clipboard_wait.0,
-            clipboard_max_bytes: config.clipboard_max_bytes,
-        }
-    }
-}
-
 impl Default for WindowsSettings {
     fn default() -> Self {
-        Self::from(&GuiConfig::default())
+        Self {
+            capture: WindowsCapture::Auto,
+            frame_wait: Duration::from_millis(250),
+            capture_idle: Duration::from_secs(10),
+            clipboard_wait: Duration::from_millis(500),
+            clipboard_max_bytes: 1024 * 1024,
+        }
     }
 }
 

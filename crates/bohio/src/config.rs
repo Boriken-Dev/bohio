@@ -7,11 +7,13 @@
 
 #![forbid(unsafe_code)]
 
+mod access;
 mod gui;
 mod hosts;
 mod layers;
 
-pub use gui::{ApprovalMode, BACKENDS, GuiConfig, Indicator, LadderStep, WindowsCapture};
+pub use access::{AccessConfig, NATIVE, SourceTable, SourceTables, Switch};
+pub use gui::{ApprovalMode, GuiConfig, Indicator, LadderStep, WindowsCapture};
 pub use hosts::{Hop, HostConfig, Hosts};
 pub use layers::{Layered, Layers};
 
@@ -159,6 +161,10 @@ pub struct Config {
     pub client: ClientConfig,
     /// `[control]`: the node's local endpoint.
     pub control: ControlConfig,
+    /// `[source.<name>]`: the sources of terminals, desktops, power and media, each a configured provider.
+    pub source: SourceTables,
+    /// `[access]`: which sources serve each capability.
+    pub access: AccessConfig,
     /// `[peer.<id>]`: each accepted peer and what it may do. A key is accepted while any layer holds
     /// its table, even an empty one.
     pub peer: Peers,
@@ -1130,6 +1136,18 @@ pub enum HostDeath {
     Leave,
 }
 
+impl HostDeath {
+    /// The word `[shell] host_death` and a terminal request use.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Kill => "kill",
+            Self::Term => "term",
+            Self::Leave => "leave",
+        }
+    }
+}
+
 impl Default for ExecutionConfig {
     fn default() -> Self {
         Self {
@@ -1741,6 +1759,10 @@ pub struct NodeConfig {
     pub gui: GuiConfig,
     /// `[pairing]`.
     pub pairing: PairingConfig,
+    /// `[source.<name>]`.
+    pub source: SourceTables,
+    /// `[access]`.
+    pub access: AccessConfig,
 }
 
 impl Default for NodeConfig {
@@ -1760,6 +1782,8 @@ impl Default for NodeConfig {
             forward: ForwardConfig::default(),
             gui: GuiConfig::default(),
             pairing: PairingConfig::default(),
+            source: SourceTables::new(),
+            access: AccessConfig::default(),
         }
     }
 }
@@ -2026,6 +2050,9 @@ impl NodeConfig {
         if let Err((key, message)) = self.gui.validate() {
             return Err(invalid(key, message));
         }
+        if let Err((key, message)) = crate::access::check(&self.source, &self.access) {
+            return Err(invalid(&key, &message));
+        }
         if link.max_message <= self.gui.chunk_size {
             return Err(invalid(
                 "link.max_message",
@@ -2088,6 +2115,8 @@ impl Config {
             forward: self.forward.clone(),
             gui: self.gui.clone(),
             pairing: self.pairing.clone(),
+            source: self.source.clone(),
+            access: self.access.clone(),
         }
     }
 

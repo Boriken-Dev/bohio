@@ -36,7 +36,8 @@ use coqui_link::mux::{CloseReason, LinkStream};
 use coqui_peer::{Established, Handshake, KeyMaterial, Method as ProofMethod, PeerId};
 use coqui_transport::Channel;
 
-use crate::config::ConfigError;
+use crate::access::{Capability, DesktopOf, Sources};
+use crate::config::{ConfigError, Switch};
 pub use crate::config::{DialConfig, NodeConfig};
 use crate::gui::{self, Desktop, GuiState, Notifier, Presence};
 use crate::limit::{Counted, Hold, Slots};
@@ -117,6 +118,7 @@ struct Shared {
     listeners: forward::Listeners,
     events: Arc<EventCell>,
     gui: Arc<GuiState>,
+    sources: Arc<Sources>,
 }
 
 impl Shared {
@@ -129,6 +131,16 @@ impl Shared {
         gui: &Arc<GuiState>,
         keys: &Arc<dyn Keys>,
     ) -> Arc<Self> {
+        let sources = &gui.sources();
+        // `[access] fs` and `exec` say whether an engine over the operating system is served at all.
+        let mut config = config.clone();
+        if sources.fs() == Switch::None {
+            config.filesystem.enabled = false;
+        }
+        if sources.exec() == Switch::None {
+            config.execution.enabled = false;
+        }
+        let config = &config;
         if let Some(dir) = &config.compression.prepare_dir {
             crate::fs::sweep_prepared(dir, config.compression.prepare_ttl.0);
         }
@@ -164,6 +176,7 @@ impl Shared {
             listeners: forward::Listeners::new(&config.forward),
             events: Arc::clone(events),
             gui: Arc::clone(gui),
+            sources: Arc::clone(sources),
             config: config.clone(),
         })
     }
@@ -373,6 +386,7 @@ pub struct Node {
     keys: Arc<dyn Keys>,
     events: Arc<EventCell>,
     gui: Arc<GuiState>,
+    sources: Arc<Sources>,
     proof: Proof,
     identity: Identity,
     registry: Arc<Registry>,
@@ -465,7 +479,16 @@ impl Node {
                 false
             })
         };
-        let gui = GuiState::new(&config.gui);
+        let sources = Arc::new(
+            Sources::from_config(&config.source, &config.access).map_err(|(key, message)| {
+                NodeError::Config(ConfigError::Invalid {
+                    path: "the node settings".to_owned(),
+                    key,
+                    message,
+                })
+            })?,
+        );
+        let gui = GuiState::new(&config.gui, Arc::clone(&sources));
         let proof = Proof::builder(identity.clone())
             .initiators(asked)
             .build()
@@ -483,6 +506,7 @@ impl Node {
                 &keys,
             ),
             gui,
+            sources,
             peers: NodePeers::new(Arc::clone(&keys), Arc::clone(&grants)),
             grants,
             keys,
@@ -522,11 +546,38 @@ impl Node {
         self
     }
 
+    /// The sources this node serves from, to change what they are while it runs ([`Sources::reconfigure`]).
+    #[must_use]
+    pub fn sources(&self) -> Arc<Sources> {
+        Arc::clone(&self.sources)
+    }
+
+    /// Serves from `sources` instead of the ones the settings describe. Call it first: it rebuilds what holds them, so
+    /// a presence or notifier set before is lost.
+    #[must_use]
+    pub fn with_sources(mut self, sources: Sources) -> Self {
+        let sources = Arc::new(sources);
+        self.gui = GuiState::new(&self.shared.config.gui, Arc::clone(&sources));
+        self.sources = sources;
+        self.shared = Shared::new(
+            &self.shared.config,
+            &self.grants,
+            self.host,
+            self.shared.path.clone(),
+            &self.events,
+            &self.gui,
+            &self.keys,
+        );
+        self
+    }
+
     /// The desktop this node serves over `bohio-gui/1` (needs `[gui] enabled` and a peer holding `gui.view` or
     /// `gui.input`). A platform backend and an application's own are the same thing: a [`Desktop`].
     #[must_use]
     pub fn with_desktop(self, desktop: Arc<dyn Desktop>) -> Self {
-        self.gui.set_desktop(desktop);
+        self.sources
+            .add_desktop("app", Arc::new(DesktopOf::new(desktop)));
+        self.sources.make_default(Capability::Desktop, "app");
         self
     }
 
@@ -1256,6 +1307,7 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
                     config: &config.shell,
                     slots: &shared.sessions,
                     path: &shared.path,
+                    sources: &shared.sources,
                 };
                 match shared
                     .detached
@@ -1293,6 +1345,7 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
                     config: &config.shell,
                     slots: &shared.sessions,
                     path: &shared.path,
+                    sources: &shared.sources,
                 };
                 match shell::serve(channel, metadata, &context) {
                     Ok(exit) => tracing::debug!(code = ?exit.code, "shell ended"),

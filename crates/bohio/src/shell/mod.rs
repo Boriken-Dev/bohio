@@ -1,21 +1,22 @@
-//! Interactive shells: serves one `bohio-shell/1` stream on a pseudo-terminal.
+//! Interactive shells: serves one `bohio-shell/1` stream on a terminal source.
 //!
-//! [`serve`] checks the peer's grant, starts a shell (or an explicit program) on a terminal in a
-//! tree of its own, streams what the terminal produces as it is written, applies the client's
-//! typing, resizes and kill requests, and always ends the whole tree: when the stream closes, on
-//! a kill request and after the program exits. It is separate from `bohio-exec/1`: a terminal
-//! merges the program's output and error and renders them, and takes typed input.
+//! [`serve`] checks the peer's grant, asks the node's terminal source ([`crate::access::Sources`]) to open a terminal
+//! on a shell (or an explicit program), streams what the terminal produces as it is written, applies the client's
+//! typing, resizes and kill requests, and always ends the whole tree: when the stream closes, on a kill request and
+//! after the program exits. It is separate from `bohio-exec/1`: a terminal merges the program's output and error and
+//! renders them, and takes typed input. Which source opens the terminal, and how it starts a program, is the source's.
 
 #![forbid(unsafe_code)]
 
 use std::ffi::OsStr;
-use std::io::{Read, Write};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use bohio_api::guatiao::library::Object;
+use bohio_api::model::{EnvVar, ProgramSpec, TerminalExit, TerminalOpen};
+use bohio_api::{Terminal, TerminalSource};
 use bohio_proto::exec::Env;
 use bohio_proto::shell::{
     Exit, Input, MAX_DIMENSION, Output, Program, Request, ShellKind, Signal, Signalled, Started,
@@ -23,11 +24,9 @@ use bohio_proto::shell::{
 use bohio_proto::{ErrorBody, ErrorCode};
 use coqui_transport::{Channel, Failure};
 
+use crate::access::{Source, Sources, code_of};
 use crate::config::ShellConfig;
 use crate::limit::{Permit, Slots};
-use crate::platform::{
-    self, ProcessExit, PtySpec, Session, Terminal, find_program, resolve_listed,
-};
 use crate::policy::{Grant, Permission};
 
 /// What [`serve`] needs besides the stream.
@@ -41,6 +40,41 @@ pub struct Context<'a> {
     pub slots: &'a Slots,
     /// The host's `PATH`, where a shell kind or a program without a directory is looked for.
     pub path: &'a OsStr,
+    /// The node's sources: the default terminal one opens the terminal.
+    pub sources: &'a Sources,
+}
+
+/// What the engine drives: the open terminal and the source it came from.
+struct Open {
+    terminal: Object<dyn Terminal>,
+    source: Source<dyn TerminalSource>,
+}
+
+impl Open {
+    /// Ends the program and its tree, and says how it ended.
+    fn kill(&self) -> Exit {
+        self.terminal
+            .kill()
+            .map(|exit| exit_of(&exit))
+            .unwrap_or_default()
+    }
+
+    /// How the program ended, `None` while it runs; `Err` when it cannot be looked at, or the source was reconfigured
+    /// and what ran on it ends.
+    fn exited(&self) -> Result<Option<TerminalExit>, ()> {
+        if !self.source.is_current() {
+            return Err(());
+        }
+        self.terminal.exit().map_err(|_| ())
+    }
+}
+
+fn exit_of(exit: &TerminalExit) -> Exit {
+    Exit {
+        code: exit.code.and_then(|code| i32::try_from(code).ok()),
+        signal: exit.signal.and_then(|signal| i32::try_from(signal).ok()),
+        ..Exit::default()
+    }
 }
 
 /// Serves one `bohio-shell/1` stream whose open carried `metadata`, until the program has ended
@@ -56,7 +90,7 @@ pub struct Context<'a> {
 ///
 /// The [`ErrorBody`] sent to the peer: `bad_request` for an undecodable request, an empty or
 /// impossible program, a kind this host does not know or a size outside `1..=MAX_DIMENSION`;
-/// `unsupported` when shells are disabled; `denied` for a peer without `shell` or an explicit
+/// `unsupported` when shells are disabled or the node serves no terminal source; `denied` for a peer without `shell` or an explicit
 /// program its grant's program list does not hold; `not_found` for a shell the host lacks, a
 /// program or a working directory that does not exist; `busy` at `max_sessions`; `io` for other
 /// start failures.
@@ -66,23 +100,25 @@ pub fn serve(
     context: &Context<'_>,
 ) -> Result<Exit, ErrorBody> {
     let shared = Arc::new(Shared::new(channel, context.config.poll_interval.0));
-    let (terminal, _permit, timeout) = match start(metadata, context) {
+    let (open, _permit, timeout) = match start(metadata, context) {
         Ok(started) => started,
         Err(error) => {
             let _ = shared.send(&encode(&Output::Error(error.clone())));
             return Err(error);
         }
     };
-    let Terminal {
-        session,
-        reader,
-        writer,
-    } = terminal;
-    tracing::debug!(pid = session.id(), "shell started");
+    let open = Arc::new(open);
+    let pid = open
+        .terminal
+        .pid()
+        .ok()
+        .flatten()
+        .and_then(|pid| u32::try_from(pid).ok())
+        .unwrap_or(0);
+    tracing::debug!(pid, "shell started");
 
-    if !shared.send(&encode(&Output::Started(Started::new(session.id())))) {
-        let _ = session.kill();
-        session.close_terminal();
+    if !shared.send(&encode(&Output::Started(Started::new(pid)))) {
+        let _ = open.kill();
         return Ok(Exit {
             killed: true,
             ..Exit::default()
@@ -92,29 +128,29 @@ pub fn serve(
     let chunk = chunk_size(&shared, context.config.chunk_size);
     let spawned = {
         let shared = Arc::clone(&shared);
-        let writer = Arc::clone(&writer);
+        let open = Arc::clone(&open);
         thread::Builder::new()
             .name("bohio-shell-reader".to_owned())
-            .spawn(move || read_output(&shared, reader, &writer, chunk))
+            .spawn(move || read_output(&shared, &open, chunk))
     };
     if spawned.is_err() {
-        return Err(abandon(&shared, &session));
+        return Err(abandon(&shared, &open));
     }
     let monitor = {
         let shared = Arc::clone(&shared);
-        let session = Arc::clone(&session);
+        let open = Arc::clone(&open);
         let drain_quiet = context.config.drain_quiet.0;
         let kill_wait = context.config.kill_wait.0;
         thread::Builder::new()
             .name("bohio-shell-monitor".to_owned())
-            .spawn(move || monitor(&shared, &session, drain_quiet, kill_wait, timeout))
+            .spawn(move || monitor(&shared, &open, drain_quiet, kill_wait, timeout))
     };
     let Ok(monitor) = monitor else {
-        return Err(abandon(&shared, &session));
+        return Err(abandon(&shared, &open));
     };
 
-    receive_frames(&shared, &session, &writer);
-    Ok(finish(monitor, &session))
+    receive_frames(&shared, &open);
+    Ok(finish(monitor, &open))
 }
 
 /// Whether `grant` still allows the request a `bohio-shell/1` stream opened with: an explicit
@@ -132,9 +168,8 @@ pub(crate) fn covers(grant: &Grant, metadata: &[u8]) -> bool {
 }
 
 /// Ends a session whose threads could not be started.
-fn abandon(shared: &Shared, session: &Session) -> ErrorBody {
-    let _ = session.kill();
-    session.close_terminal();
+fn abandon(shared: &Shared, open: &Open) -> ErrorBody {
+    let _ = open.kill();
     let error = ErrorBody::new(ErrorCode::Internal, "a thread could not be started");
     let _ = shared.send(&encode(&Output::Error(error.clone())));
     error
@@ -230,11 +265,11 @@ fn refuse(code: ErrorCode, message: &'static str) -> ErrorBody {
     ErrorBody::new(code, message)
 }
 
-/// Checks the request and starts the program, returning the slot it holds.
+/// Checks the request, asks the terminal source to open it, and returns the slot it holds.
 fn start<'a>(
     metadata: &[u8],
     context: &Context<'a>,
-) -> Result<(Terminal, Permit<'a>, Option<Duration>), ErrorBody> {
+) -> Result<(Open, Permit<'a>, Option<Duration>), ErrorBody> {
     let request = Request::from_metadata(metadata)
         .map_err(|_| refuse(ErrorCode::BadRequest, "the request cannot be read"))?;
     if !context.config.enabled {
@@ -246,21 +281,13 @@ fn start<'a>(
     if !context.grant.allows(Permission::Shell) {
         return Err(refuse(ErrorCode::Denied, "this peer may not open shells"));
     }
-    let (program, args) = resolve(&request.program, &request.env, context)?;
+    let source = context.sources.terminal(None)?;
+    let program = resolve(&request.program, &request.env, context)?;
     let sized = |n: u16| (1..=MAX_DIMENSION).contains(&n);
     if !sized(request.cols) || !sized(request.rows) {
         return Err(refuse(
             ErrorCode::BadRequest,
             "a terminal is 1 to 32767 columns and rows",
-        ));
-    }
-    let cwd = request.cwd.as_deref().map(PathBuf::from);
-    if let Some(cwd) = &cwd
-        && !cwd.is_dir()
-    {
-        return Err(refuse(
-            ErrorCode::NotFound,
-            "the working directory does not exist",
         ));
     }
     let permit = context.slots.acquire().ok_or_else(|| {
@@ -269,37 +296,42 @@ fn start<'a>(
             "the host is running as many shell sessions as it allows",
         )
     })?;
-    let env: Env = request.env.clone();
-    let terminal = platform::spawn_terminal(PtySpec {
-        program,
-        args,
-        cwd,
-        env,
+    let env: &Env = &request.env;
+    let mut changes: Vec<EnvVar> = env
+        .set
+        .iter()
+        .map(|(name, value)| EnvVar {
+            name: name.clone(),
+            value: Some(value.clone()),
+        })
+        .collect();
+    changes.extend(env.remove.iter().map(|name| EnvVar {
+        name: name.clone(),
+        value: None,
+    }));
+    let open = TerminalOpen {
+        program: Some(program),
+        cwd: request.cwd.clone(),
+        clear_env: env.clear,
+        env: changes,
+        path: Some(context.path.to_string_lossy().into_owned()),
+        on_host_death: Some(context.config.host_death.name().to_owned()),
         cols: request.cols,
         rows: request.rows,
-        on_host_death: context.config.host_death,
-    })
-    .map_err(|error| match error.kind() {
-        std::io::ErrorKind::NotFound => refuse(ErrorCode::NotFound, "the program was not found"),
-        std::io::ErrorKind::PermissionDenied => refuse(
-            ErrorCode::Denied,
-            "the operating system refused to run the program",
-        ),
-        _ => refuse(ErrorCode::Io, "the shell could not be started"),
-    })?;
+    };
+    let terminal = source
+        .get()
+        .open(open)
+        .map_err(|error| ErrorBody::new(code_of(error.status), error.message().to_string()))?;
     Ok((
-        terminal,
+        Open { terminal, source },
         permit,
         request.timeout_ms.map(Duration::from_millis),
     ))
 }
 
-/// The program and arguments a request names, checked against the grant.
-fn resolve(
-    program: &Program,
-    env: &Env,
-    context: &Context<'_>,
-) -> Result<(std::ffi::OsString, Vec<std::ffi::OsString>), ErrorBody> {
+/// The program a request names, checked against the grant. Finding it on the host is the source's.
+fn resolve(program: &Program, env: &Env, context: &Context<'_>) -> Result<ProgramSpec, ErrorBody> {
     match program {
         Program::Kind { kind } => {
             if *kind == ShellKind::Other {
@@ -308,12 +340,13 @@ fn resolve(
                     "this host does not know that kind of shell",
                 ));
             }
-            let found = find_program(kind.program(), context.path)
-                .ok_or_else(|| refuse(ErrorCode::NotFound, "this host has no such shell"))?;
-            Ok((found.into_os_string(), Vec::new()))
+            Ok(ProgramSpec {
+                kind: Some(kind.program().to_owned()),
+                ..ProgramSpec::default()
+            })
         }
         Program::Argv { argv } => {
-            let Some((first, rest)) = argv.split_first() else {
+            let Some(first) = argv.first() else {
                 return Err(refuse(ErrorCode::BadRequest, "the program is empty"));
             };
             if first.is_empty() || argv.iter().any(|word| word.contains('\0')) {
@@ -332,25 +365,18 @@ fn resolve(
             }
             // Under a list the program is the one the host finds at the listed name on its own
             // `PATH`, and the request changes only the variables the grant names.
-            let named = std::path::Path::new(first);
-            let located = if context.grant.restricts_programs() {
-                if !context.grant.permits_env(env) {
-                    return Err(refuse(
-                        ErrorCode::Denied,
-                        "under a program list a peer may change only the variables its grant names, and may not clear the environment",
-                    ));
-                }
-                resolve_listed(first, context.path)
-            } else if named.components().count() > 1 {
-                named.is_file().then(|| named.to_owned())
-            } else {
-                find_program(first, context.path)
+            let listed = context.grant.restricts_programs();
+            if listed && !context.grant.permits_env(env) {
+                return Err(refuse(
+                    ErrorCode::Denied,
+                    "under a program list a peer may change only the variables its grant names, and may not clear the environment",
+                ));
             }
-            .ok_or_else(|| refuse(ErrorCode::NotFound, "the program was not found"))?;
-            Ok((
-                located.into_os_string(),
-                rest.iter().map(Into::into).collect(),
-            ))
+            Ok(ProgramSpec {
+                kind: None,
+                argv: argv.clone(),
+                listed,
+            })
         }
         _ => Err(refuse(
             ErrorCode::Unsupported,
@@ -360,50 +386,26 @@ fn resolve(
 }
 
 /// Copies the terminal's output to the stream in frames until it ends, then reports so.
-fn read_output(
-    shared: &Shared,
-    mut reader: Box<dyn Read + Send>,
-    writer: &Arc<Mutex<Box<dyn Write + Send>>>,
-    chunk: usize,
-) {
+fn read_output(shared: &Shared, open: &Open, chunk: usize) {
     let mut buffer = vec![0_u8; chunk];
-    #[cfg(windows)]
-    let mut queries = platform::CursorQueries::default();
-    #[cfg(windows)]
-    let asks = answer_queries(writer);
-    #[cfg(not(windows))]
-    let _ = writer;
+    let wait = u64::try_from(shared.poll.as_millis())
+        .unwrap_or(u64::MAX)
+        .max(1);
     loop {
-        match reader.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(count) => {
-                #[cfg(windows)]
-                let output = {
-                    let (output, asked) = queries.filter(&buffer[..count]);
-                    for _ in 0..asked {
-                        let _ = asks.send(());
-                    }
-                    output
-                };
-                #[cfg(not(windows))]
-                let output = buffer[..count].to_vec();
-                if output.is_empty() {
-                    continue;
-                }
+        if shared.gone.load(Ordering::Acquire) || shared.done.load(Ordering::Acquire) {
+            break;
+        }
+        match open.terminal.read(&mut buffer, wait) {
+            Ok(0) => {}
+            Ok(count) if count > 0 => {
+                let count = usize::try_from(count).unwrap_or(0).min(buffer.len());
                 shared.touch();
-                if !deliver(shared, output) {
+                if !deliver(shared, buffer[..count].to_vec()) {
                     break;
                 }
             }
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(_) => break,
-        }
-    }
-    #[cfg(windows)]
-    {
-        let held = queries.finish();
-        if !held.is_empty() {
-            deliver(shared, held);
+            // The terminal ended for good, or its device is gone.
+            Ok(_) | Err(_) => break,
         }
     }
     shared.reader_done.store(true, Ordering::Release);
@@ -417,29 +419,10 @@ fn deliver(shared: &Shared, output: Vec<u8>) -> bool {
     sent
 }
 
-/// Answers the terminal's cursor position queries on a thread of their own, so the reader never
-/// waits on a write that holds the writer.
-#[cfg(windows)]
-fn answer_queries(writer: &Arc<Mutex<Box<dyn Write + Send>>>) -> std::sync::mpsc::Sender<()> {
-    let (asks, asked) = std::sync::mpsc::channel::<()>();
-    let writer = Arc::clone(writer);
-    let _ = thread::Builder::new()
-        .name("bohio-shell-answers".to_owned())
-        .spawn(move || {
-            for () in asked {
-                let mut writer = writer.lock().unwrap_or_else(PoisonError::into_inner);
-                let _ = writer
-                    .write_all(platform::CURSOR_REPORT)
-                    .and_then(|()| writer.flush());
-            }
-        });
-    asks
-}
-
 /// Watches the program until it has ended and its output is sent, then sends the last frame.
 fn monitor(
     shared: &Shared,
-    session: &Session,
+    open: &Open,
     drain_quiet: Duration,
     kill_wait: Duration,
     timeout: Option<Duration>,
@@ -461,10 +444,13 @@ fn monitor(
             shared.killed.store(true, Ordering::Release);
             break false;
         }
-        match session.try_wait() {
+        match open.exited() {
             Ok(Some(_)) => break true,
             Ok(None) => thread::sleep(shared.poll),
-            Err(_) => break false,
+            Err(()) => {
+                shared.killed.store(true, Ordering::Release);
+                break false;
+            }
         }
     };
 
@@ -478,11 +464,7 @@ fn monitor(
             thread::sleep(shared.poll);
         }
     }
-    let ended = session.kill().unwrap_or(ProcessExit {
-        code: None,
-        signal: None,
-    });
-    session.close_terminal();
+    let ended = open.kill();
 
     // The tree is gone, so the terminal's output ends; a reader still waiting for the stream to
     // take a frame is given all the time it needs, one that is not is given `kill_wait`.
@@ -506,19 +488,18 @@ fn monitor(
 }
 
 /// Applies the client's frames until the exchange is over or the stream ends.
-fn receive_frames(shared: &Shared, session: &Session, writer: &Arc<Mutex<Box<dyn Write + Send>>>) {
+fn receive_frames(shared: &Shared, open: &Open) {
     while !shared.done.load(Ordering::Acquire) {
         match shared.channel.receive(Some(shared.poll)) {
             Ok(Some(frame)) => match Input::decode(&frame) {
                 Ok(Input::Data(bytes)) => {
-                    let mut writer = writer.lock().unwrap_or_else(PoisonError::into_inner);
                     // A failed write means the program is gone; the monitor sees that.
-                    let _ = writer.write_all(&bytes).and_then(|()| writer.flush());
+                    let _ = open.terminal.write(&bytes);
                 }
                 Ok(Input::Resize(size)) => {
                     let sized = |n: u16| (1..=MAX_DIMENSION).contains(&n);
                     if sized(size.cols) && sized(size.rows) {
-                        let _ = session.resize(size.cols, size.rows);
+                        let _ = open.terminal.resize(size.cols, size.rows);
                     }
                 }
                 Ok(Input::Kill | Input::Signal(Signal::Kill)) => {
@@ -532,16 +513,25 @@ fn receive_frames(shared: &Shared, session: &Session, writer: &Arc<Mutex<Box<dyn
                     }
                 }
                 Ok(Input::Signal(signal)) => {
-                    let running = matches!(session.try_wait(), Ok(None));
-                    let delivery = session.signal(signal, writer);
-                    if delivery.ended && running {
-                        shared.killed.store(true, Ordering::Release);
-                    }
-                    let _ = shared.send(&encode(&Output::Signalled(Signalled {
-                        signal,
-                        delivered: delivery.delivered,
-                        message: delivery.message.map(str::to_owned),
-                    })));
+                    let delivery = open.terminal.signal(signal.name());
+                    let signalled = match delivery {
+                        Ok(delivery) => {
+                            if delivery.ended {
+                                shared.killed.store(true, Ordering::Release);
+                            }
+                            Signalled {
+                                signal,
+                                delivered: delivery.delivered,
+                                message: delivery.message,
+                            }
+                        }
+                        Err(error) => Signalled {
+                            signal,
+                            delivered: false,
+                            message: Some(error.message().to_string()),
+                        },
+                    };
+                    let _ = shared.send(&encode(&Output::Signalled(signalled)));
                 }
                 // A frame this version does not know, or a body that is not what its tag says,
                 // is skipped: the session goes on.
@@ -557,17 +547,9 @@ fn receive_frames(shared: &Shared, session: &Session, writer: &Arc<Mutex<Box<dyn
 }
 
 /// Waits for the monitor, which always ends once the program is gone.
-fn finish(monitor: JoinHandle<Exit>, session: &Session) -> Exit {
-    monitor.join().unwrap_or_else(|_| {
-        let ended = session.kill().unwrap_or(ProcessExit {
-            code: None,
-            signal: None,
-        });
-        Exit {
-            code: ended.code,
-            signal: ended.signal,
-            timed_out: false,
-            killed: true,
-        }
+fn finish(monitor: JoinHandle<Exit>, open: &Open) -> Exit {
+    monitor.join().unwrap_or_else(|_| Exit {
+        killed: true,
+        ..open.kill()
     })
 }
