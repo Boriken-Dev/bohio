@@ -84,6 +84,28 @@ pub enum Kind {
         size: String,
         edit: Edit,
     },
+    /// One walk stream over a tree of this many small files, made first and left alone (`walk_10k`).
+    #[cfg(feature = "walk")]
+    Walk(u64),
+    /// This many files of this size read (`read`) or written as one bundle on one stream (`bundle_read_1000x4KiB`).
+    #[cfg(feature = "walk")]
+    Bundle {
+        read: bool,
+        count: u64,
+        size: String,
+    },
+    /// The same files, one stream for each (`file_read_1000x4KiB`): the control a bundle is measured against. Needs the
+    /// client link's `max_opens_per_minute` raised past the count (`--set link.max_opens_per_minute=...`).
+    #[cfg(feature = "walk")]
+    PerFile {
+        read: bool,
+        count: u64,
+        size: String,
+    },
+    /// A second `sync_tree` of a local tree of this many small files that is already on the host (`sync_tree_unchanged_10k`):
+    /// it moves no file.
+    #[cfg(feature = "walk")]
+    SyncUnchanged(u64),
     /// `bohio remote ... read` as a child process.
     RemoteRead { size: String },
     /// `bohio remote ... info` as a child process.
@@ -150,6 +172,16 @@ impl Kind {
             parse_size(text)?;
             Ok(text.to_owned())
         };
+        #[cfg(feature = "walk")]
+        if let Some((read, rest)) = direction_of(name, "bundle_") {
+            let (count, size) = files_of(rest, name)?;
+            return Ok(Self::Bundle { read, count, size });
+        }
+        #[cfg(feature = "walk")]
+        if let Some((read, rest)) = direction_of(name, "file_") {
+            let (count, size) = files_of(rest, name)?;
+            return Ok(Self::PerFile { read, count, size });
+        }
         // The host's SHA-256 of a file keeps the metric name the committed baselines use.
         if let Some(rest) = name.strip_prefix("checksum_") {
             return Ok(Self::Checksum { size: size(rest)? });
@@ -214,6 +246,10 @@ impl Kind {
                 size: size(s)?,
                 edit: edit_of(edit, name)?,
             },
+            #[cfg(feature = "walk")]
+            ["walk", n] => Self::Walk(thousands(n, name)?),
+            #[cfg(feature = "walk")]
+            ["sync", "tree", "unchanged", n] => Self::SyncUnchanged(thousands(n, name)?),
             ["remote", "read", s] => Self::RemoteRead { size: size(s)? },
             ["remote", "info"] => Self::RemoteInfo,
             ["raw", "down", s] => Self::RawDown { size: size(s)? },
@@ -233,6 +269,38 @@ impl Kind {
             _ => return Err(format!("no scenario is named `{name}`")),
         })
     }
+}
+
+/// A count like `10k` or `500`.
+#[cfg(feature = "walk")]
+fn thousands(text: &str, name: &str) -> Result<u64, String> {
+    let (digits, factor) = text
+        .strip_suffix('k')
+        .map_or((text, 1), |digits| (digits, 1000));
+    digits
+        .parse::<u64>()
+        .ok()
+        .and_then(|count| count.checked_mul(factor))
+        .ok_or_else(|| format!("`{text}` in `{name}` is not a count like 500 or 10k"))
+}
+
+/// `prefix` then `read_` or `write_`: which, and what follows.
+#[cfg(feature = "walk")]
+fn direction_of<'a>(name: &'a str, prefix: &str) -> Option<(bool, &'a str)> {
+    let rest = name.strip_prefix(prefix)?;
+    rest.strip_prefix("read_")
+        .map(|rest| (true, rest))
+        .or_else(|| rest.strip_prefix("write_").map(|rest| (false, rest)))
+}
+
+/// `1000x4KiB`: a count of files and the size of each.
+#[cfg(feature = "walk")]
+fn files_of(text: &str, name: &str) -> Result<(u64, String), String> {
+    let (count, size) = text
+        .split_once('x')
+        .ok_or_else(|| format!("`{text}` in `{name}` is not files like 1000x4KiB"))?;
+    parse_size(size)?;
+    Ok((thousands(count, name)?, size.to_owned()))
 }
 
 /// The algorithm a scenario name spells.
@@ -570,6 +638,88 @@ impl Runner {
                 size,
                 edit,
             } => self.sync(name, delta, push, &size, edit)?,
+            #[cfg(feature = "walk")]
+            Kind::Walk(count) => {
+                let dir = self.path(&format!("written/walk-{count}"));
+                let link = warm_link(&self.env, &mut self.warm)?;
+                // The tree is made once, in bundles, and not timed.
+                let present = compat::walk_tree(link, &dir).unwrap_or(0);
+                if present <= count {
+                    for start in (0..count).step_by(2000) {
+                        let part = (count - start).min(2000);
+                        compat::bundle_write(link, &format!("{dir}/part{start:07}"), part, 16)?;
+                    }
+                }
+                let taken = timed(&mut self.env.cpu, samples, || {
+                    compat::walk_tree(link, &dir).map(drop)
+                })?;
+                self.record(name, &taken, None);
+            }
+            #[cfg(feature = "walk")]
+            Kind::Bundle { read, count, size } => {
+                let bytes = parse_size(&size)?;
+                let dir = self.path(&format!("written/files-{count}x{size}"));
+                let link = warm_link(&self.env, &mut self.warm)?;
+                if read {
+                    compat::bundle_write(link, &dir, count, bytes)?;
+                    let taken = timed(&mut self.env.cpu, samples, || {
+                        compat::bundle_read(link, &dir, count).map(drop)
+                    })?;
+                    self.record(name, &taken, Some(bytes * count));
+                } else {
+                    let taken = timed(&mut self.env.cpu, samples, || {
+                        compat::bundle_write(link, &dir, count, bytes).map(drop)
+                    })?;
+                    self.record(name, &taken, Some(bytes * count));
+                }
+            }
+            #[cfg(feature = "walk")]
+            Kind::PerFile { read, count, size } => {
+                let bytes = parse_size(&size)?;
+                let dir = self.path(&format!("written/files-{count}x{size}"));
+                let link = warm_link(&self.env, &mut self.warm)?;
+                if read {
+                    compat::bundle_write(link, &dir, count, bytes)?;
+                    let taken = timed(&mut self.env.cpu, samples, || {
+                        compat::file_read(link, &dir, count).map(drop)
+                    })?;
+                    self.record(name, &taken, Some(bytes * count));
+                } else {
+                    let taken = timed(&mut self.env.cpu, samples, || {
+                        compat::file_write(link, &dir, count, bytes)
+                    })?;
+                    self.record(name, &taken, Some(bytes * count));
+                }
+            }
+            #[cfg(feature = "walk")]
+            Kind::SyncUnchanged(count) => {
+                let scratch = Scratch::new(name)?;
+                for index in 0..count {
+                    let path = scratch
+                        .dir
+                        .join(format!("d{:03}/f{index:05}.bin", index % 100));
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+                    }
+                    std::fs::write(&path, index.to_le_bytes())
+                        .map_err(|error| error.to_string())?;
+                }
+                let remote = self.path(&format!("written/sync-tree-{count}"));
+                let link = warm_link(&self.env, &mut self.warm)?;
+                // The first sync puts the tree on the host; only the later ones are timed.
+                compat::sync_tree_push(link, &scratch.dir, &remote)?;
+                let mut wires = Vec::new();
+                let taken = timed(&mut self.env.cpu, samples, || {
+                    let (moved, wire) = compat::sync_tree_push(link, &scratch.dir, &remote)?;
+                    if moved != 0 {
+                        return Err(format!("{name}: {moved} files moved though none changed"));
+                    }
+                    wires.push(wire as f64);
+                    Ok(())
+                })?;
+                self.record(name, &taken, None);
+                self.record_values(&format!("{name}_wire_bytes"), &wires, None);
+            }
             Kind::Checksum { size } => {
                 let file = self.path(&format!("random-{size}"));
                 let link = warm_link(&self.env, &mut self.warm)?;
@@ -861,13 +1011,13 @@ impl Runner {
     }
 }
 
-/// A scratch directory of a delta scenario, removed when it goes: under the system's temporary directory (`TMPDIR`).
-#[cfg(feature = "delta")]
+/// A scratch directory of a delta or tree scenario, removed when it goes: under the system's temporary directory (`TMPDIR`).
+#[cfg(any(feature = "delta", feature = "walk"))]
 struct Scratch {
     dir: PathBuf,
 }
 
-#[cfg(feature = "delta")]
+#[cfg(any(feature = "delta", feature = "walk"))]
 impl Scratch {
     fn new(name: &str) -> Result<Self, String> {
         let dir = std::env::temp_dir().join(format!("bohio-bench-{}-{name}", std::process::id()));
@@ -876,7 +1026,7 @@ impl Scratch {
     }
 }
 
-#[cfg(feature = "delta")]
+#[cfg(any(feature = "delta", feature = "walk"))]
 impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);

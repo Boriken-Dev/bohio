@@ -14,7 +14,7 @@ publish = false
 hash = ["dep:bohio-transfer"]
 compress = ["bohio/zstd", "bohio-client/zstd"]
 delta = ["dep:bohio-transfer"]
-walk = []
+walk = ["dep:bohio-transfer"]
 pipeline = []
 
 [dependencies]

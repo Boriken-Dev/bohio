@@ -65,6 +65,120 @@ pub fn sync_get(
     Ok(moved.wire_bytes)
 }
 
+/// The names of the `count` files a tree scenario keeps under `dir` on the host.
+#[cfg(feature = "walk")]
+pub fn tree_names(dir: &str, count: u64) -> Vec<String> {
+    (0..count)
+        .map(|index| format!("{dir}/d{:03}/f{index:05}.bin", index % 100))
+        .collect()
+}
+
+/// `size` bytes that differ from file to file and do not compress.
+#[cfg(feature = "walk")]
+fn tree_bytes(index: u64, size: u64) -> Vec<u8> {
+    let mut random = crate::corpus::Xorshift::new(index + 1);
+    let mut bytes = vec![0_u8; usize::try_from(size).unwrap_or(0)];
+    random.fill(&mut bytes);
+    bytes
+}
+
+/// Writes the `count` files of `size` bytes under `dir`, as one bundle.
+#[cfg(feature = "walk")]
+pub fn bundle_write(link: &dyn Open, dir: &str, count: u64, size: u64) -> Result<u64, String> {
+    use bohio_client::bundle::{BundleFile, BundleOptions, put_many};
+    let names = tree_names(dir, count);
+    let mut cursors: Vec<std::io::Cursor<Vec<u8>>> = (0..count)
+        .map(|index| std::io::Cursor::new(tree_bytes(index, size)))
+        .collect();
+    let mut files: Vec<BundleFile<'_>> = names
+        .iter()
+        .zip(cursors.iter_mut())
+        .map(|(name, cursor)| {
+            let mut file = BundleFile::replace(name.clone(), cursor);
+            file.item.parents = true;
+            file
+        })
+        .collect();
+    let put =
+        put_many(link, &mut files, &BundleOptions::default()).map_err(|error| error.to_string())?;
+    if let Some(Err(body)) = put.results.iter().find(|result| result.is_err()) {
+        return Err(body.message.clone());
+    }
+    Ok(put.stats.wire_bytes)
+}
+
+/// Reads the `count` files under `dir` as one bundle; returns the bytes read.
+#[cfg(feature = "walk")]
+pub fn bundle_read(link: &dyn Open, dir: &str, count: u64) -> Result<u64, String> {
+    use bohio_client::bundle::{BundleOptions, get_many};
+    let items: Vec<bohio_proto::fs::ReadItem> = tree_names(dir, count)
+        .into_iter()
+        .map(bohio_proto::fs::ReadItem::whole)
+        .collect();
+    let (fetched, _) =
+        get_many(link, &items, &BundleOptions::default()).map_err(|error| error.to_string())?;
+    let mut bytes = 0_u64;
+    for file in fetched {
+        bytes += file.map_err(|body| body.message)?.data.len() as u64;
+    }
+    Ok(bytes)
+}
+
+/// Writes the `count` files of `size` bytes under `dir`, one stream each.
+#[cfg(feature = "walk")]
+pub fn file_write(link: &dyn Open, dir: &str, count: u64, size: u64) -> Result<(), String> {
+    for (index, name) in tree_names(dir, count).iter().enumerate() {
+        write(link, name, size, &tree_bytes(index as u64, size))?;
+    }
+    Ok(())
+}
+
+/// Reads the `count` files under `dir`, one stream each; returns the bytes read.
+#[cfg(feature = "walk")]
+pub fn file_read(link: &dyn Open, dir: &str, count: u64) -> Result<u64, String> {
+    let mut bytes = 0_u64;
+    for name in tree_names(dir, count) {
+        bytes += read(link, &name)?;
+    }
+    Ok(bytes)
+}
+
+/// Lists everything under `dir` on one walk stream; returns how many entries.
+#[cfg(feature = "walk")]
+pub fn walk_tree(link: &dyn Open, dir: &str) -> Result<u64, String> {
+    let walk = bohio_client::walk::walk(link, &[dir], &bohio_client::walk::WalkOptions::default())
+        .map_err(|error| error.to_string())?;
+    let mut entries = 0_u64;
+    for item in walk {
+        if let bohio_client::walk::WalkItem::Entry { .. } =
+            item.map_err(|error| error.to_string())?
+        {
+            entries += 1;
+        }
+    }
+    Ok(entries)
+}
+
+/// Pushes the local tree to `remote`; returns the files that moved and the bytes of file frames that travelled.
+#[cfg(feature = "walk")]
+pub fn sync_tree_push(
+    link: &dyn Open,
+    local: &std::path::Path,
+    remote: &str,
+) -> Result<(u64, u64), String> {
+    let report = bohio_client::sync::sync_tree(
+        link,
+        local,
+        remote,
+        &bohio_client::sync::TreeOptions::default(),
+    )
+    .map_err(|error| error.to_string())?;
+    if let Some((path, why)) = report.failures.first() {
+        return Err(format!("{path}: {why}"));
+    }
+    Ok((report.bundled + report.singles, report.wire_bytes))
+}
+
 /// Whether the host's file and the local file hold the same bytes, by their BLAKE3 digests.
 #[cfg(feature = "delta")]
 pub fn same_bytes(
