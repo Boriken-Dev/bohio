@@ -67,8 +67,9 @@ built `bohio` binary (cargo builds it for the test): `bohio serve` runs as a chi
   and documented where they are defined.
 - Threads, not Tokio: one thread per stream. Nothing buffers without bound; a full stream makes the sender wait. A link stream borrows
   its link, so an engine and a client reach it through a `bohio_client::relay::Relay` whose queues are `[link]` settings.
-- A started process runs in a tree that is always ended: after it exits, when its stream closes and at its deadline. A test
-  that leaves a process behind fails.
+- A started process runs in a tree that is always ended: after it exits, when its stream closes and at its deadline, unless
+  it runs as a session, which ends at its exit, `end_session`, its linger, a revoke or the host's stop (a session is the
+  same engine on a channel nobody closes: `crates/bohio/src/session/`). A test that leaves a process behind fails.
 - Tests that start processes use the `exec_helper` example, read with timeouts, and kill what they start.
 - Nothing logs a key, a PIN or a token; argument vectors are never logged.
 - `unsafe` is used only where no safe API does the job, and only in the files `crates/bohio/tests/unsafe_files.rs` lists with the reason each

@@ -15,6 +15,7 @@ Imports: the root holds `decode`, `decode_with_depth`, `encode`, `DEFAULT_DEPTH`
 ```rust
 pub const CONTROL: &str = "bohio/1";   pub const EXEC: &str = "bohio-exec/1";   pub const SHELL: &str = "bohio-shell/1";
 pub const READ: &str = "bohio-read/1"; pub const WRITE: &str = "bohio-write/1"; pub const HASH: &str = "bohio-hash/1";
+pub const ATTACH: &str = "bohio-attach/1";   // a detached session's output from an offset, then live
 pub const CONNECT: &str = "bohio-connect/1"; pub const TCP: &str = "tcp/1"; pub const LISTEN: &str = "bohio-listen/1"; pub const ACCEPT: &str = "bohio-accept/1";   // `tcp/1` is coqui-link's: metadata is the text HOST:PORT, raw bytes at once, no answer
 ```
 
@@ -51,11 +52,12 @@ pub struct Request { pub id: u64, pub call: Call }
     Stat { path, follow }, List { path, after: Option<String>, limit: Option<u64> }, Mkdir { path, parents, mode: Option<u32> },
     Remove { path, recursive }, Rename { from, to, overwrite }, Copy { from, to, overwrite }, Symlink { target, link }, Readlink { path },
     SetTimes { path, accessed: Option<Timestamp>, modified: Option<Timestamp> }, SetMode { path, mode: u32 },
-    SetAttributes { path, readonly: Option<bool> } }   // `bool`s default false
+    SetAttributes { path, readonly: Option<bool> },   // `bool`s default false
+    Sessions, EndSession { id: String, signal: Option<Signal> } }   // the caller's detached sessions; end one (kill when no signal)
 pub struct Response { pub id: u64, pub reply: Option<Reply>, pub error: Option<ErrorBody> }   // exactly one is present
 impl Response { pub const fn ok(id, reply) -> Self; pub const fn failed(id, error) -> Self; pub fn into_result(self) -> Result<Reply, ErrorBody>; }
 #[non_exhaustive] pub enum Reply { Hello { version: u32, transfer: TransferInfo }, Info(Box<Info>), Stat(Box<Metadata>), List(Listing), Done,
-                                    Link { target: String } }
+                                    Link { target: String }, Sessions { sessions: Vec<session::Listed> } }
 ```
 
 The control stream's messages are bare CBOR, one request or response per stream message (no tag byte). `Done` answers every call
@@ -163,7 +165,8 @@ pub enum ApproveOutput { Pending { requests: Vec<PendingRequest> }, Decided { id
 pub const PROTOCOL_VERSION: u32 = 1;
 pub struct Info { protocol, service: Service{name, version}, host_id: Option<String>, os, arch, shells: Vec<ShellInfo{kind, path}>,
                   filesystem: FilesystemInfo{enabled, symlinks, unix_modes, windows_attributes, case_sensitive, separator},
-                  exec: ExecInfo{enabled}, shell: SessionInfo{enabled}, limits: Limits{max_streams, max_processes, max_sessions: Option<u64>},
+                  exec: ExecInfo{enabled, signals: Vec<Signal>}, shell: SessionInfo{enabled, signals: Vec<Signal>},
+                  sessions: DetachedInfo{enabled, scrollback, max_scrollback, linger_ms: u64}, limits: Limits{max_streams, max_processes, max_sessions: Option<u64>},
                   transfer: TransferInfo{hashes: Vec<Algorithm>, hash_limits: HashLimits{max_streams: u64, rate: u64 /* 0 unlimited */},
                          compression: Vec<CompressionInfo{algorithm: Codec, levels: Levels{min, max}, default_level: i32, window_log_max: u32}>,
                          compression_default: Option<Compression>, prepared: bool,
@@ -181,36 +184,38 @@ Every field has a default and unknown keys are ignored: a client works with a ho
 impl ShellKind { pub const KNOWN: [Self; 6]; pub const fn program(self) -> &'static str; }  // the PATH name; "" for Other
 pub const DEFAULT_COLS: u16 = 80;  pub const DEFAULT_ROWS: u16 = 24;  pub const MAX_DIMENSION: u16 = 32_767;   // ConPTY holds sizes as i16
 
-pub struct Request { pub program: Program, pub cwd: Option<String>, pub env: exec::Env, pub cols: u16 /* 80 */, pub rows: u16 /* 24 */ }
+pub struct Request { pub program: Program, pub cwd: Option<String>, pub env: exec::Env, pub cols: u16 /* 80 */, pub rows: u16 /* 24 */,
+                     pub timeout_ms: Option<u64> /* the deadline: `Exit::timed_out` */, pub session: Option<session::SessionRequest> }
 impl Request { pub fn kind(ShellKind) -> Self; pub fn argv(argv) -> Self;
                pub fn to_metadata(&self) -> Result<Vec<u8>, Error>; pub fn from_metadata(&[u8]) -> Result<Self, Error>; }
 #[non_exhaustive] pub enum Program { Kind { kind: ShellKind }, Argv { argv: Vec<String> } }       // tagged by "type"
-pub struct Started { pub pid: u32 }
-pub struct Exit { pub code: Option<i32>, pub signal: Option<i32>, pub killed: bool }              // Default
+pub struct Started { pub pid: u32, pub session: Option<String> }                                   // Started::new(pid)
+pub struct Exit { pub code: Option<i32>, pub signal: Option<i32>, pub timed_out: bool, pub killed: bool }   // Default
 pub struct Size { pub cols: u16, pub rows: u16 }
-#[non_exhaustive] pub enum Output { Started(Started), Data(Vec<u8>), Exit(Exit), Error(ErrorBody) }   // host to client
-#[non_exhaustive] pub enum Input { Data(Vec<u8>), Resize(Size), Kill }                                  // client to host
+#[non_exhaustive] pub enum Output { Started(Started), Data(Vec<u8>), Signalled(Signalled) /* 0x08 */, Exit(Exit), Error(ErrorBody) }   // host to client
+#[non_exhaustive] pub enum Input { Data(Vec<u8>), Resize(Size), Kill, Signal(Signal) /* 0x15 */ }                                       // client to host
 impl Output { pub fn encode(&self) -> Result<Vec<u8>, Error>; pub fn decode(&[u8]) -> Result<Self, Error>; }
 impl Input  { pub fn encode(&self) -> Result<Vec<u8>, Error>; pub fn decode(&[u8]) -> Result<Self, Error>; }
 ```
 
 `bohio-shell/1`: one stream is one session; the open's metadata is the `Request`. Tags: host to client `0x01` started (CBOR),
-`0x02` data (raw terminal bytes, escape sequences included), `0x04` exit (CBOR), `0x05` error (CBOR); client to host `0x10` data
-(raw; Enter is `\r`), `0x11` resize (CBOR `Size`), `0x12` kill. `Started` is the first frame; `Exit` and `Error` are the last
+`0x02` data (raw terminal bytes, escape sequences included), `0x04` exit (CBOR), `0x05` error (CBOR), `0x08` signalled (CBOR); client to host `0x10` data
+(raw; Enter is `\r`), `0x11` resize (CBOR `Size`), `0x12` kill, `0x15` signal (CBOR `SignalRequest`). With `argv` the request is `exec` on a terminal, `timeout_ms` its deadline. `Started` is the first frame; `Exit` and `Error` are the last
 the host sends, and `Exit` follows every output byte. `Output::decode` and `Input::decode` return `Error::Tag` for a tag this
 version does not know, which a reader may skip.
 
 ## Exec (`bohio_proto::exec`)
 
 ```rust
-pub struct Request { pub command: Command, pub cwd: Option<String>, pub env: Env, pub stdin: Stdin, pub timeout_ms: Option<u64>, pub output_compression: Option<Compression>, pub stdin_compression: Option<Compression> }
+pub struct Request { pub command: Command, pub cwd: Option<String>, pub env: Env, pub stdin: Stdin, pub timeout_ms: Option<u64>, pub output_compression: Option<Compression>, pub stdin_compression: Option<Compression>,
+                     pub session: Option<session::SessionRequest> /* detached: needs the peer's `session` */ }
 impl Request { pub fn argv(argv) -> Self; pub fn shell(kind: ShellKind, script) -> Self;
                pub fn to_metadata(&self) -> Result<Vec<u8>, Error>; pub fn from_metadata(&[u8]) -> Result<Self, Error>; }
 #[non_exhaustive] pub enum Command { Argv { argv: Vec<String> }, Shell { kind: ShellKind, script: String } }
-pub struct Started { pub pid: u32, pub output_compression: Option<Compression>, pub stdin_compression: Option<Compression> }   // Started::new(pid)
+pub struct Started { pub pid: u32, pub output_compression: Option<Compression>, pub stdin_compression: Option<Compression>, pub session: Option<String> }   // Started::new(pid); `session`: the id (128 bits as hex)
 #[non_exhaustive] pub enum Stdin { Closed /* default */, Open }
-#[non_exhaustive] pub enum Output { Started(Started), Stdout(Vec<u8>), Stderr(Vec<u8>), StdoutCompressed(Vec<u8>) /* 0x06 */, StderrCompressed(Vec<u8>) /* 0x07 */, Exit(Exit), Error(ErrorBody) }   // host to client
-#[non_exhaustive] pub enum Input { Stdin(Vec<u8>), StdinCompressed(Vec<u8>) /* 0x13 */, StdinEnd, Kill }                              // client to host
+#[non_exhaustive] pub enum Output { Started(Started), Stdout(Vec<u8>), Stderr(Vec<u8>), StdoutCompressed(Vec<u8>) /* 0x06 */, StderrCompressed(Vec<u8>) /* 0x07 */, Signalled(Signalled) /* 0x08 */, Exit(Exit), Error(ErrorBody) }   // host to client
+#[non_exhaustive] pub enum Input { Stdin(Vec<u8>), StdinCompressed(Vec<u8>) /* 0x13 */, StdinEnd, Kill, Signal(Signal) /* 0x15 */ }                              // client to host
 #[non_exhaustive] pub enum Output { Started(Started), Stdout(Vec<u8>), Stderr(Vec<u8>), Exit(Exit), Error(ErrorBody) }   // host to client
 #[non_exhaustive] pub enum Input { Stdin(Vec<u8>), StdinEnd, Kill }                                                    // client to host
 impl Output { pub fn encode(&self) -> Result<Vec<u8>, Error>; pub fn decode(&[u8]) -> Result<Self, Error>; }
@@ -218,10 +223,33 @@ impl Input  { pub fn encode(&self) -> Vec<u8>;                pub fn decode(&[u8
 ```
 
 One stream message is one frame: a tag byte, then the body. Tags: host to client `0x01` started (CBOR), `0x02` stdout (raw),
-`0x03` stderr (raw), `0x04` exit (CBOR), `0x05` error (CBOR); client to host `0x10` stdin (raw), `0x11` stdin end, `0x12` kill.
+`0x03` stderr (raw), `0x04` exit (CBOR), `0x05` error (CBOR), `0x08` signalled (CBOR); client to host `0x10` stdin (raw), `0x11` stdin end, `0x12` kill, `0x15` signal (CBOR `SignalRequest`).
 `Exit` and `Error` are the last frame the host sends; `Exit` follows every output byte. `Command::Argv` runs the first element
 directly and never through a shell; `Command::Shell` is only for a caller that chose a shell. `Output::decode` and
 `Input::decode` return `Error::Tag` for a tag this version does not know, which a reader may skip.
+
+## Signals (`bohio_proto::signal`)
+
+```rust
+#[non_exhaustive] pub enum Signal { Interrupt, Terminate, Hangup, Quit, User1, User2, Kill }   // snake_case on the wire; Signal::ALL, name(), from_name(), Display
+pub struct SignalRequest { pub signal: Signal }                                                // the body of the client's 0x15 frame (exec and shell)
+pub struct Signalled { pub signal: Signal, pub delivered: bool, pub message: Option<String> }   // the host's 0x08 answer; `delivered: false` is an answer, not an error
+```
+
+What each does on each system, and `info.exec.signals` / `info.shell.signals` (what a host delivers): `docs/protocol.md` "Signals".
+
+## Sessions (`bohio_proto::session`)
+
+```rust
+pub struct SessionRequest { pub name: Option<String>, pub scrollback: Option<u64>, pub on_full: Option<OnFull>, pub linger_ms: Option<u64> }   // Default; `session` of an exec or shell request
+#[non_exhaustive] pub enum OnFull { DropOldest, Pause }                       // snake_case; the host's default is `Pause` for an exec, `DropOldest` for a shell
+#[non_exhaustive] pub enum Kind { Exec, Shell, Other }
+pub struct Attach { pub session: String, pub from: Option<u64> }             // the open's metadata of `bohio-attach/1`: to_metadata(), from_metadata()
+pub struct Attached { pub kind: Kind, pub from: u64, pub lost: u64 }         // the host's first frame, tag 0x09: encode(), decode(); frames of `kind` follow
+pub struct Listed { id, name: Option<String>, kind, program: String, started: Timestamp, attached: bool, exit: Option<exec::Exit>, next: u64, buffered: u64, peer: Option<String> }
+```
+
+`bohio-attach/1` answers `0x09` `attached` or `0x05` `error` (`not_found` for an id the peer does not hold), then the exec's or shell's own host frames from `from` and live; the client sends that protocol's client frames. The offset counts standard output and standard error together, in order.
 
 ## Gotchas
 

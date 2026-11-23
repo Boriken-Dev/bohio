@@ -155,6 +155,15 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[execution] drain_timeout` | `500ms` | wait for a process's remaining output after it exits, before the rest of its tree is ended |
 | `[execution] host_death` | `kill` | Unix: what happens to a process's group when the host dies without ending it: `kill` (SIGKILL), `term` (SIGTERM) or `leave` |
 | `[shell] host_death` | `kill` | Unix: what happens to a session's tree when the host dies without ending it: `kill`, `term` or `leave` |
+| `[sessions] enabled` | `true` | whether detached sessions run; a peer still needs `session` |
+| `[sessions] max_detached` | `16` | sessions across peers, the exited ones kept included; at least 1 |
+| `[sessions] max_per_peer` | `8` | sessions one peer holds; at least 1 |
+| `[sessions] scrollback` | `1048576` | output bytes kept when a request names no size; at least 1 |
+| `[sessions] max_scrollback` | `16777216` | the most a request may ask to keep (more is `bad_request`); at least `scrollback` |
+| `[sessions] linger` | `24h` | how long an unattached detached session is kept; not zero |
+| `[sessions] keep_exited` | `1h` | how long an exited session is kept for a reattach; not zero |
+| `[sessions] check_every` | `5s` | how often sessions are looked at for linger, kept time and a revoked grant; not zero |
+| `[sessions] queue_frames` | `16` | frames of a program's output that may wait before the session takes them; at least 1 |
 | `[shell] enabled` | `true` | whether shell sessions are opened |
 | `[shell] max_sessions` | `8` | concurrent sessions across peers; at least 1 |
 | `[shell] chunk_size` | `16384` | most terminal bytes in one frame; at least 1; a smaller message bound of the stream wins |
@@ -177,7 +186,7 @@ checks the system file when it exists, as `serve` checks every layer.
 
 ```rust
 #[non_exhaustive] pub enum Permission { Info, FsRead, FsWrite, Exec, Shell, Admin, ForwardConnect, GuiView, GuiInput, GuiClipboard }   // Ord; names "info","fs.read","fs.write","exec","shell","admin","forward.connect","gui.view","gui.input","gui.clipboard"
-#[non_exhaustive] pub enum Permission { Info, FsRead, FsWrite, Exec, Shell, Admin, ForwardConnect, ForwardListen }   // Ord; names "info","fs.read","fs.write","exec","shell","admin","forward.connect","forward.listen"
+#[non_exhaustive] pub enum Permission { Info, FsRead, FsWrite, Exec, Shell, Admin, ForwardConnect, ForwardListen, Session }   // Ord; names "info","fs.read","fs.write","exec","shell","admin","forward.connect","forward.listen","session"
 impl Permission { pub const fn name(self) -> &'static str; }
 pub struct Grant;                                                // Default = nothing
 impl Grant { pub fn none() -> Self; pub fn allowing(permissions) -> Self; pub fn with_fs_roots(self, roots) -> Self; pub fn with_programs(self, programs) -> Self; pub fn restricts_programs(&self) -> bool;
@@ -248,6 +257,8 @@ slows the process instead of growing a buffer. `serve` does not close the channe
 `bohio::limit`: `Slots::new(limit)`, `Slots::acquire() -> Option<Permit<'_>>`, `in_use()`, `limit()`; a `Permit` frees its slot
 when dropped. One `Slots` is shared by every stream that counts against a bound.
 
+Signals: a `signal` frame (`0x15`) is answered with `signalled` (`delivered`, and a `message` when it was not or when delivering meant something else). On Unix a signal goes to the program's process group (`SIGINT`, `SIGTERM`, `SIGHUP`, `SIGQUIT`, `SIGUSR1`, `SIGUSR2`) and `kill` ends the tree as the `kill` frame does. On Windows `terminate` and `kill` end the tree through the job object; `interrupt` is `CTRL_BREAK_EVENT` to the program's group when the host has a console (the program is then started in a group of its own on that console, so `platform::exec_signals()` lists `interrupt` only then) and `delivered: false` otherwise; the others are `delivered: false`. `info.exec.signals` and `info.shell.signals` say what the host delivers.
+
 ## Shells (`bohio::shell`)
 
 ```rust
@@ -262,7 +273,7 @@ without a directory is looked for; the library reads no environment variable). O
 or a NUL is `bad_request`, a name not on `path` is `not_found`, and under a non-empty `exec.programs` list a name not on it is `denied`,
 while a kind is always allowed: `shell` already means a shell), the size (`bad_request` outside `1..=32767`), the working
 directory (`not_found`), a free slot (`busy`), the start (`not_found`, `denied`, else `io`). A refused request gets one `error` frame,
-the same error is returned, and the stream stays open for the caller to close.
+the same error is returned, and the stream stays open for the caller to close. With `argv` the request is `exec` on a terminal: `timeout_ms` is its deadline (`Exit::timed_out`, `killed`). On Windows an `interrupt` signal types Ctrl-C (`0x03`) at the pseudo-console, which reaches the program unless Ctrl-C is ignored in the host's process chain (inherited; measured); on Unix signals go to the program's process group.
 
 The program runs on a terminal (`portable-pty`: `openpty` on Unix, ConPTY on Windows) in a tree of its own (a job object on Windows; on
 Unix `portable-pty` makes it a session and group leader, and the host also walks the descendants (`/proc` on Linux, `ps` elsewhere) for what left the group, such as a
@@ -332,10 +343,19 @@ target as it was and removes the temporary file. `create` removes the file it ma
 place and keep what was written. A read and a write hash the bytes they move for `hashes` and `expect` (a write: the union, one pass; only `hashes`, else `[filesystem] write_hashes`, is answered). A hash stream holds one `[hash] max_streams` slot, a transfer one `max_transfers` slot, until it ends; a hash stream reads at most `[hash] rate` bytes a second. Memory is one chunk plus what the
 link's channel queues and reads ahead: a channel that queues `n` bytes can hold `n` more.
 
+## Sessions (`bohio::session`, `[sessions]`)
+
+```rust
+pub struct Sessions;                     // a node's detached sessions: Sessions::new(&SessionsConfig, grants, keys, events) -> Arc<Self>; Debug; ends every session when dropped
+pub struct SessionsConfig { enabled, max_detached /* 16 */, max_per_peer /* 8 */, scrollback /* 1 MiB */, max_scrollback /* 16 MiB */, linger /* 24h */, keep_exited /* 1h */, check_every /* 5s */, queue_frames /* 16 */ }
+```
+
+An exec or shell request with a `session` (and the peer's `session` permission) runs the ordinary engine on an in-process channel that nothing closes when the client's stream ends; `Sessions` reads the engine's frames into a buffer with one byte offset across both output streams and serves `bohio-attach/1` from it. `on_full = pause` (the exec default) leaves frames in the engine's channel so the program waits; `drop_oldest` (the shell default) forgets the oldest. One stream is attached at a time (a newer one supersedes). The sweeper (one thread per node, started with the first session) every `check_every` ends and removes a session whose owner's key is not accepted or whose grant lost `session` or `exec`/`shell`, one detached past its linger, one exited past `keep_exited`; `Drop` ends all. `Node` serves it (`session::wants_exec`/`wants_shell` pick the request); `control` answers `sessions` and `end_session` through `control::SessionsView`. A session's streams are not compressed. `NodeEvent::Session` tells each change.
+
 ## Control stream (`bohio::control`)
 
 ```rust
-pub struct Context<'a> { pub filesystem: fs::Context<'a>, pub info: &'a Info, pub current: Option<Current<'a>> }   // Copy
+pub struct Context<'a> { pub filesystem: fs::Context<'a>, pub info: &'a Info, pub current: Option<Current<'a>>, pub gui: Option<GuiProbe<'a>>, pub sessions: Option<SessionsView<'a>> }   // Copy
 pub struct Current<'a>(pub &'a dyn Fn() -> Result<Grant, ErrorBody>);                         // Copy; the grant as it is now
 pub fn serve(channel: &Arc<dyn Channel>, context: &Context<'_>) -> u64;                       // requests answered
 ```
@@ -464,14 +484,14 @@ pub struct MemoryKeys;                                             // new(), acc
 pub struct MemoryGrants;                                           // new(), set(PeerId, Grant), remove(&PeerId) -> bool; FromIterator<(PeerId, Grant)>; no entry: Grant::none()
 
 pub trait NodeEvents: Send + Sync { fn event(&self, event: &NodeEvent); }   // runs on the link's thread: return quickly
-#[non_exhaustive] pub enum NodeEvent { LinkUp { peer, side }, LinkDown { peer }, Opened { peer, protocol }, Refused { peer, protocol }, Revoked { peer, protocol }, Dialing { peer, endpoint }, DialFailed { peer, endpoint, reason, retry_in }, Kept { peer, direction, spec, state }, Paired { peer }, PairingRefused { source, attempts, reason }, Stranger { peer, source }, Forwarded { peer, kind, target, outcome }, Gui { peer, session, change: GuiChange } }   // an id, a protocol, an address: never a key, PIN or request
+#[non_exhaustive] pub enum NodeEvent { LinkUp { peer, side }, LinkDown { peer }, Opened { peer, protocol }, Refused { peer, protocol }, Revoked { peer, protocol }, Dialing { peer, endpoint }, DialFailed { peer, endpoint, reason, retry_in }, Kept { peer, direction, spec, state }, Paired { peer }, PairingRefused { source, attempts, reason }, Stranger { peer, source }, Forwarded { peer, kind, target, outcome }, Gui { peer, session, change: GuiChange }, Session { peer, session: String, change: SessionChange } }   // an id, a protocol, an address: never a key, PIN or request; SessionChange { Started, Attached, Detached, Ended { reason } }
 pub struct LogEvents;                                              // the default: log lines
 
 pub mod pair;   // Armed { pin(), lifetime(), wait(up_to) -> Option<PairEnd>, withdraw() } (Debug hides the PIN); #[non_exhaustive] PairEnd { Paired(PeerId), Expired, UsedUp, Replaced, Withdrawn, Failed(String) }
 // PairingConfig { timeout, max_attempts, attempt_delay, attempt_delay_max, pin_length, pending, pending_per_source, ipv6_prefix, exchange_timeout } is `[pairing]`; ClientConfig { reply_timeout, transfer_timeout, gui_timeout, input_chunk, read_size, input_queue, probe_timeout, links_wait } is `[client]` (`transfer()` is `None` for `0`); one PIN at a time, in memory; a connection's first message `coqui_link::pairing::MARKER` makes it a pairing (else a proof)
 
 pub const PROTOCOLS: [(&str, &[Permission]); 9];                   // each protocol with the permissions of which a peer needs one to open it (`bohio-connect/1` and `tcp/1` need `forward.connect`, `bohio-gui/1` `gui.view` or `gui.input`)
-pub const PROTOCOLS: [(&str, &[Permission]); 10];                  // each protocol with the permissions of which a peer needs one to open it (`bohio-connect/1` and `tcp/1` need `forward.connect`, `bohio-listen/1` and `bohio-accept/1` `forward.listen`)
+pub const PROTOCOLS: [(&str, &[Permission]); 12];                  // each protocol with the permissions of which a peer needs one to open it (`bohio-connect/1` and `tcp/1` need `forward.connect`, `bohio-listen/1` and `bohio-accept/1` `forward.listen`, `bohio-attach/1` `session`; `bohio/1` also opens for `session`)
 pub struct NodePeers;                                              // coqui_link::peers::PeerStore over `Keys` and `Grants`: NodePeers::new(keys, grants); an accepted key may open each protocol its grant holds a permission for, which is what `link/1` offers it
 pub fn offered(grant: &Grant) -> Vec<&'static str>;                       // the PROTOCOLS tokens `grant` holds a permission for: what a node offers that peer
 pub fn admission(grants: Arc<dyn Grants>, protocol: &'static str) -> coqui_link::link::Admission;   // asks `grants` afresh each call
@@ -608,14 +628,17 @@ a person or a script reads is printed to standard output and flushed; diagnostic
 | `remote --via ID <action>` | the same actions over the link the running node holds to the peer ID, whichever side made it (a host that dialed in); exclusive with an endpoint and `--command`; `no link to ID` when there is none |
 | `remote <endpoint> [--server ID] [--ca FILE]... [--cert-hash HASH]... [--clock-skew SPAN] [--fallback ENDPOINT] info [--format text\|json]` | the host's capabilities over the link; the endpoint is any scheme above, or `stdio://program args`; `--ca`/`--cert-hash` check a `wss://` or `webtransport://` host's certificate (the system's roots without them), `--clock-skew` accepts a certificate whose start or end is within SPAN of this clock (default none: a pinned certificate is still held to its dates, and a refusal names the start and the clock difference), `--fallback` is a `ws://` (loopback) or `wss://` endpoint of the same host for a blocked UDP path |
 | `remote --command "program args" [--server ID] info` | the same over a program the command starts, its standard streams the link (for example `docker exec -i NAME bohio serve --stdio`); the program is run directly, never through a shell, and its tree ends when the command does |
-| `remote <endpoint> exec [--cwd D] [--timeout-ms N] [--env K=V]... [--stdin] -- <argv>` | runs the program, streams its output, and exits with its status (124 on a deadline, `128+signal` when signalled) |
+| `remote <endpoint> exec [--cwd D] [--timeout-ms N] [--env K=V]... [--stdin] [--pty] [--kill-after SPAN] [--detach [--name N] [--scrollback B] [--on-full pause\|drop-oldest] [--linger SPAN]] -- <argv>` | runs the program, streams its output, and exits with its status (124 on a deadline, `128+signal` when signalled); a Ctrl-C of the command is an `interrupt` to the program and a second within `--kill-after` (`2s`) a `kill`; `--pty` runs it on a terminal (the host's `bohio-shell/1`, under `shell`); `--detach` starts a session, prints its id and exits |
+| `remote <endpoint> attach ID [--from OFFSET] [--stdin] [--kill-after SPAN]` | picks a detached session up: its kept output from the offset (`0`: all; none: only what comes), then live; typing, Ctrl-C and the exit status as for `exec` or `shell`; says on standard error how much the host had forgotten |
+| `remote <endpoint> sessions [--format text\|json]` | lists this peer's sessions: `ID kind state next N kept N name program` |
+| `remote <endpoint> end ID [--signal NAME]` | ends a session with a signal (`kill` by default) |
 | `remote <endpoint> read <path>` | writes the host's file to standard output |
 | `remote <endpoint> connect [--check] <target>` | the host connects to `HOST:PORT` (an IPv6 address in brackets), `unix:PATH` or `pipe:NAME` and the connection's bytes meet standard input and output (netcat; `ssh -o ProxyCommand="bohio remote ENDPOINT connect %h:%p"`): the end of standard input is a half-close and the reply is still read; exit 0 when the host's direction ended in order, 1 with the reason (`the host did not connect (Refused): ...`, or that the peer holds no `forward.connect` rule for the target). `--check` connects, prints `connected ADDRESS` and exits. A link that ended before the host answered is waited for (`[forward] wait_for_link`) and the connect made again; a connection that is running ends with its link; `--once`, `--retry-min`, `--retry-max`, `--retry-factor`, `--retry-jitter`: after a link that was up is lost the command makes a new one (the waits of the `[peer."<id>".dial]` table found by `--server`, `--via` or the endpoint, else the dial defaults, then the flags) and goes on, printing `bohio: the link to the host was lost; making a new one` and `... is back` on standard error; `--once` ends instead (exit 1). The first link is made once either way |
 | `remote <endpoint> gui info\|snapshot\|click\|move\|scroll\|type\|key\|clipboard` | the host's desktop (`gui.view`, `gui.input`, `gui.clipboard`): `snapshot [--display ID] [--region X,Y,W,H] [--format F] [--quality N] [--max-size WxH] [--settle] -o FILE\|-`, `click X Y [--button B] [--count N]`, `move X Y`, `scroll DX DY [--at X,Y]`, `type TEXT\|-`, `key COMBO...`, `clipboard [--set TEXT\|-]` |
 | `gui pending\|allow ID\|deny ID` | answers a peer waiting for the person at the desk, through the running node's local endpoint (`[gui] approval = "local"`) |
 | `remote <endpoint> forward [-L SPEC]... [-R SPEC]...` | `-L` listens here and has the host connect for each connection: `[BIND:]PORT=TARGET`, `unix:PATH=TARGET` or `pipe:NAME=TARGET` (`BIND` an address, default `127.0.0.1`; another is printed as `non-default: bind ADDRESS`; port 0 picks one; a socket or pipe is for this user, `0o600`); prints `local BOUND -> TARGET` per entry, then runs until the process is interrupted (a lost link is made again and the `-L` listeners stay bound meanwhile, a connection that arrives then waits `[forward] wait_for_link`; with `--once` it runs until the link ends, exit 1); the `[forward]` bounds come from the client's own file. `-R [BIND:]PORT=LOCAL`, `unix:PATH=LOCAL` or `pipe:NAME=LOCAL` has the host listen (`BIND` an address on the host, default `127.0.0.1`, another printed as `non-default: bind ADDRESS`; port 0 lets the host choose; a socket or pipe the host makes is for its own account) and brings each arrival to LOCAL from this machine; prints `remote ADDRESS -> LOCAL` (again after each new link, for the same port); with `--once` exit 1 when the link ends or the host ends the listener (a revoke). `--once`, `--retry-min`, `--retry-max`, `--retry-factor`, `--retry-jitter`: after a link that was up is lost the command makes a new one (the waits of the `[peer."<id>".dial]` table found by `--server`, `--via` or the endpoint, else the dial defaults, then the flags) and goes on, printing `bohio: the link to the host was lost; making a new one` and `... is back` on standard error; `--once` ends instead (exit 1). The first link is made once either way. A running bridged connection still ends with its link. Over `--via` only the link to the node is kept: a connection that arrives while the node has no link to the peer is refused (declare the forward in the node's `bohio.cfg` to have it wait) |
 | `remote <endpoint> listen [--keep] <bind>` | the host binds `BIND:PORT`, `unix:PATH` or `pipe:NAME`, prints `listening ADDRESS` on standard error, and one arriving connection meets standard input and output (netcat `-l` on the host); exit 0 when both directions ended in order. `--keep` takes the next arrival after each ends (what is typed between connections goes to the next) until the link ends and, with `--once`, exit 1; without it a lost link is made again and the host is asked to listen for the same port (`listening ADDRESS` again). Works over `--via` |
-| `remote <endpoint> shell [--kind sh\|bash\|zsh\|cmd\|powershell\|pwsh] [--cwd D]` | an interactive shell; the local terminal is put in raw mode when standard input is one, and its size is followed |
+| `remote <endpoint> shell [--kind sh\|bash\|zsh\|cmd\|powershell\|pwsh] [--cwd D] [--kill-after SPAN] [--detach ...]` | an interactive shell; the local terminal is put in raw mode when standard input is one, and its size is followed; `--detach` starts a session (as for `exec`) |
 
 `serve`, `serve --stdio` and the service check every layer file and its directory, and the data directory (Windows only). On Unix a layer or its directory owned by an
 account other than the running one or root, or writable by its group or others, is refused (exit 1, one line naming the path); `[service] check_access = false`

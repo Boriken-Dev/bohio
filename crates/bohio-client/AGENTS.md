@@ -109,10 +109,13 @@ impl Exec {
     pub fn write_stdin(&self, bytes: &[u8]) -> Result<(), Error>;                     // split to the channel's message size, waits for room
     pub fn finish_stdin(&self) -> Result<(), Error>;
     pub fn kill(&self) -> Result<(), Error>;
+    pub fn signal(&self, signal: Signal) -> Result<(), Error>;      // the host answers with Event::Signalled (delivered or not)
+    pub fn session(&self) -> Option<String>;                          // the id, once `started` said the request made a session, or when attached
+    pub fn attach(link: &dyn Open, session: &str, from: Option<u64>) -> Result<(Self, Attached), Error>;   // `bohio-attach/1`; Error::Protocol for a shell session
     pub fn wait(&self, timeout: Option<Duration>) -> Result<Completed, Error>;
     pub fn close(&self);
 }
-#[non_exhaustive] pub enum Event { Started { pid: u32 }, Stdout(Vec<u8>), Stderr(Vec<u8>), Exit(Exit) }
+#[non_exhaustive] pub enum Event { Started { pid: u32 }, Stdout(Vec<u8>), Stderr(Vec<u8>), Signalled(Signalled), Exit(Exit) }
 pub struct Completed { pub pid: Option<u32>, pub stdout: Vec<u8>, pub stderr: Vec<u8>, pub exit: Exit }
 ```
 
@@ -127,7 +130,10 @@ for a request with `Stdin::Open`. Dropping an `Exec` before the exit closes the 
 pub struct Shell;                                                 // Debug; every method takes &self; Drop closes the stream: the host ends the tree
 impl Shell {
     pub fn start(link: &dyn Open, request: &bohio_proto::shell::Request, timeout: Option<Duration>) -> Result<Self, Error>;   // waits for `started`
-    pub const fn pid(&self) -> u32;                               // the host's process id of the shell
+    pub const fn pid(&self) -> u32;                               // the host's process id of the shell; 0 for a stream that attached
+    pub fn session(&self) -> Option<&str>;                        // the id, when the request made a session or the stream attached to one
+    pub fn attach(link: &dyn Open, session: &str, from: Option<u64>) -> Result<(Self, Attached), Error>;   // `bohio-attach/1`; Error::Protocol for an exec session
+    pub fn signal(&self, signal: Signal) -> Result<(), Error>;    // the host answers with Event::Signalled
     pub fn next(&self, timeout: Option<Duration>) -> Result<Option<Event>, Error>;          // Ok(None): the host closed in order
     pub fn write(&self, bytes: &[u8]) -> Result<(), Error>;       // typed input, split to the channel's message size; Enter is \r
     pub fn resize(&self, cols: u16, rows: u16) -> Result<(), Error>;
@@ -136,12 +142,21 @@ impl Shell {
     pub fn wait(&self, timeout: Option<Duration>) -> Result<(Vec<u8>, bohio_proto::shell::Exit), Error>;
     pub fn close(&self);
 }
-#[non_exhaustive] pub enum Event { Data(Vec<u8>), Exit(Exit) }
+#[non_exhaustive] pub enum Event { Data(Vec<u8>), Signalled(Signalled), Exit(Exit) }
 ```
 
 A refusal (`denied`, `not_found`, `busy`, `bad_request`, ...) comes from `Shell::start` as `Error::Remote`. `read_until` is
 `Error::Closed` when the shell ends before the text appears; the typed text is echoed by the terminal, so match something the
 echo does not hold. Output is a terminal's rendering with escape sequences, not the program's bytes.
+
+## Sessions (`bohio_client::session`)
+
+```rust
+#[non_exhaustive] pub enum Attachment { Exec(Exec), Shell(Shell) }
+pub fn attach(link: &dyn Open, session: &str, from: Option<u64>) -> Result<(Attachment, Attached), Error>;   // opens `bohio-attach/1` for a session of either kind
+```
+
+A session starts with a request whose `session` is set (`Exec::start`, `Shell::start`; the id is `Exec::session()` or `Shell::session()`) and needs the peer's `session` permission. `Attached { kind, from, lost }`: `from` is where the output starts (the offset asked for, or the oldest the host still keeps), `lost` the bytes between. Dropping the returned stream detaches: the program runs on.
 
 ## Control stream (`bohio_client::control`)
 
@@ -152,6 +167,8 @@ impl Control {
     pub fn call(&self, call: bohio_proto::control::Call, timeout: Option<Duration>) -> Result<Reply, Error>;
     pub fn hello(&self, client: &str, timeout: Option<Duration>) -> Result<u32, Error>;    // the version the host will speak
     pub fn info(&self, timeout: Option<Duration>) -> Result<Info, Error>;
+    pub fn sessions(&self, timeout: Option<Duration>) -> Result<Vec<bohio_proto::session::Listed>, Error>;   // the detached sessions this peer holds (an admin: all, with `peer`)
+    pub fn end_session(&self, id: &str, signal: Option<Signal>, timeout: Option<Duration>) -> Result<(), Error>;   // `kill` when None; `not_found` for another peer's id
     pub fn close(&self);
 }
 ```

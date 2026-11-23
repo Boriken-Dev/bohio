@@ -140,6 +140,21 @@ remote = ["127.0.0.1:0=127.0.0.1:8080"]                                    # -R:
 
 A `local` listener stays bound while the link is down; a connection that arrives then waits up to `[forward] wait_for_link` (30 s) and is closed after. Each `remote` entry is asked of the host again whenever the link is up, for the port the host chose the first time. The host must grant it (`forward.connect` and a `connect` rule for the targets, `forward.listen` and a `listen` rule that covers the port, such as `127.0.0.1:*`). Entries are read again every `[link] recheck`. `bohio remote ... forward`, `connect` and `listen` do the same for one run, and end when the link does only with `--once`; a connection that is running still ends with its link. [Security](security.md#what-a-kept-forward-costs) says what a standing forward costs.
 
+## Programs that survive a lost link
+
+`exec --detach` starts a program that keeps running when the command ends or the link is lost, with its output kept on the host; the command prints the session's id. The peer needs `session` as well as `exec` (or `shell`). A new link picks it up again from any offset, and a Ctrl-C of a command is an interrupt to the program, not the end of the command:
+
+```bash
+bohio remote tcp://host.example:7620 exec --detach --name build -- make all
+# prints 4f1c...e9
+bohio remote tcp://host.example:7620 sessions
+bohio remote tcp://host.example:7620 attach 4f1c...e9 --from 0       # everything the host still keeps, then live
+bohio remote tcp://host.example:7620 end 4f1c...e9 --signal interrupt
+bohio remote tcp://host.example:7620 exec --pty --timeout-ms 60000 -- top    # a program on a terminal, with a deadline
+```
+
+`shell --detach` does the same for a shell, whose terminal output the host keeps. [Security](security.md#what-a-session-gives-a-peer) says what a session costs the host.
+
 ## Configuration
 
 `bohio.cfg` is read as layers: the system file (`/etc/bohio/bohio.cfg`, `%ProgramData%\bohio\bohio.cfg`) and then the user's (`~/.config/bohio/bohio.cfg`, `%APPDATA%\bohio\bohio.cfg`) merged over it, or the files `--config` names, alone. Tables merge by key and lists and values replace, so a higher layer can narrow a list. Every setting, with its default, is in [`examples/bohio.cfg`](https://github.com/Boriken-Dev/bohio/blob/main/examples/bohio.cfg); the `[peer.*]` tables are read again at every decision, the rest when the node starts.

@@ -109,11 +109,13 @@ Errors become the exceptions `pathapi` and `subprocess` callers expect:
 | `write(data)` | `0x10` frames |
 | `send_eof()` | exec: `0x11`; a shell: the caller writes the terminal's end-of-file character |
 | `wait()` | the `exit` frame; `returncode` is its `code` |
-| `terminate()`, `kill()` | the `kill` frame, which ends the whole tree: Bohío has no gentler signal |
+| `terminate()` | the `signal` frame (`0x15`) with `terminate`: `SIGTERM` to the program's process group on Unix; on Windows there is no `SIGTERM`, so the host ends the whole tree through its job object and says so in the `signalled` answer |
+| `kill()` | the `kill` frame, which ends the whole tree |
+| `send_signal(signal)` | the `signal` frame with `interrupt`, `terminate`, `hangup`, `quit`, `user1`, `user2` or `kill`; `info.exec.signals` and `info.shell.signals` say which the host delivers, and a `signalled` answer with `delivered: false` says one that was not |
 | `resize(columns, rows)` | a shell's `0x11` frame; an exec process cannot be resized |
 | `close()`, leaving the `with` block | closing the stream, which ends the tree |
 
-A session lives as long as its stream. A dropped link or a revoked grant ends the stream and the host ends the tree, so a `Process` never outlives its connection on the host. A host started with `[shell] max_sessions` answers `busy` past the limit.
+A process lives as long as its stream unless it was started as a [detached session](protocol.md#detached-sessions-bohio-attach1): a dropped link or a revoked grant ends the stream and the host ends the tree, so a plain `Process` never outlives its connection on the host. A session started with a `session` request (a peer holding `session`) outlives its stream and a dropped link; a new stream picks its output up again with `bohio-attach/1`, from the offset the controller last read, and the program is still the host's to end (`end_session`, its linger, a revoked grant). A host started with `[shell] max_sessions` answers `busy` past the limit.
 
 `Host.shell_flavour` and `Host.shell` come from `info`: a `cmd` or `powershell` entry on a Windows host, `sh` or `bash` elsewhere, with the flavour's own quoting.
 

@@ -55,6 +55,7 @@ A stream's `open` carries a protocol token and metadata. A client ignores a toke
 | `bohio-gui/1` | a view of the host's desktop: snapshots, keyboard and mouse, the clipboard's text | CBOR [`gui-request`](#desktop-bohio-gui1) | one of `gui.view`, `gui.input`, and each thing the request wants |
 | `bohio-listen/1` | one listener the host binds for the peer, each arrival announced on the stream | CBOR [`listen-request`](#remote-forwards-bohio-listen1-and-bohio-accept1) | `forward.listen` and a `listen` rule that matches the bind |
 | `bohio-accept/1` | one arrival of the peer's own listener, then its bytes | CBOR [`accept-request`](#remote-forwards-bohio-listen1-and-bohio-accept1) | `forward.listen` |
+| `bohio-attach/1` | a detached session's kept output from an offset, then live, and its input | CBOR [`attach-request`](#detached-sessions-bohio-attach1) | `session` |
 
 Each `open` is decided against the peer's grant, and each running stream again at the host's recheck interval. Removing a grant closes the stream with reason `revoked`; the reason text reaches the peer.
 
@@ -111,7 +112,7 @@ request  = { id: uint, call: call }
 response = { id: uint, ? reply: opt<reply>, ? error: opt<error-body> }   ; exactly one of reply, error is not null
 
 call = hello / info / stat / list / mkdir / remove / rename / copy / symlink
-     / readlink / set-times / set-mode / set-attributes
+     / readlink / set-times / set-mode / set-attributes / sessions / end-session
 
 hello          = { type: "hello", ? version: uint, ? client: text }       ; version at least 1
 info           = { type: "info" }
@@ -126,6 +127,8 @@ readlink       = { type: "readlink", path: text }
 set-times      = { type: "set_times", path: text, ? accessed: opt<timestamp>, ? modified: opt<timestamp> }
 set-mode       = { type: "set_mode", path: text, mode: uint }
 set-attributes = { type: "set_attributes", path: text, ? readonly: opt<bool> }
+sessions       = { type: "sessions" }                                    ; the caller's detached sessions
+end-session    = { type: "end_session", id: text, ? signal: opt<signal-name> }   ; `kill` when no signal
 
 reply = { type: "hello", version: uint, ? transfer: transfer-info }   ; transfer-info as in info
 
@@ -134,6 +137,7 @@ reply = { type: "hello", version: uint, ? transfer: transfer-info }   ; transfer
       / { type: "list", * listing-field }       ; the keys of listing, beside type
       / { type: "done" }                        ; every call that returns nothing
       / { type: "link", target: text }
+      / { type: "sessions", sessions: [* session-entry] }   ; see "Detached sessions"
 
 timestamp = { secs: int, ? nanos: uint }        ; seconds since 1970-01-01T00:00:00Z, nanos below 10^9
 file-kind = "file" / "directory" / "symlink" / "other"
@@ -144,7 +148,7 @@ listing   = { ? entries: [* entry], ? next: opt<text>, ? skipped: uint }
 entry     = { name: text, metadata: metadata }                  ; a link is described, not followed
 ```
 
-What each call needs: `info` needs `info`; `hello` needs nothing; `stat`, `list` and `readlink` need `fs.read`; `mkdir`, `remove`, `rename`, `symlink`, `set_times`, `set_mode` and `set_attributes` need `fs.write`; `copy` needs both. Each needs the peer to hold a filesystem root, and resolves every path against the roots.
+What each call needs: `sessions` and `end_session` need `session`; `info` needs `info`; `hello` needs nothing; `stat`, `list` and `readlink` need `fs.read`; `mkdir`, `remove`, `rename`, `symlink`, `set_times`, `set_mode` and `set_attributes` need `fs.write`; `copy` needs both. Each needs the peer to hold a filesystem root, and resolves every path against the roots.
 
 - `hello`: the host answers with `min(version, its own)`. Both sides then speak that version. A `version` of 0 is `bad_request`.
 - `list`: entries are in ascending order by name. A reply holds as many entries as fit the stream's message size; `next` is then the name to send as `after`, and `skipped` counts names that are not valid text and so are left out. `limit` caps the count.
@@ -159,7 +163,9 @@ info = { ? protocol: uint, ? service: { ? name: text, ? version: text }, ? host_
          ? shells: [* { kind: shell-kind, path: text }],
          ? filesystem: { ? enabled: bool, ? symlinks: bool, ? unix_modes: bool, ? windows_attributes: bool,
                          ? case_sensitive: bool, ? separator: text },
-         ? exec: { ? enabled: bool }, ? shell: { ? enabled: bool },
+         ? exec: { ? enabled: bool, ? signals: [* signal-name] },        ; the signals delivered to a program without a terminal
+         ? shell: { ? enabled: bool, ? signals: [* signal-name] },       ; and to one on a terminal
+         ? sessions: { ? enabled: bool, ? scrollback: uint, ? max_scrollback: uint, ? linger_ms: uint },
          ? limits: { ? max_streams: opt<uint>, ? max_processes: opt<uint>, ? max_sessions: opt<uint> },
          ? transfer: transfer-info,
          ? forward: forward-info, ? gui: gui-info }
@@ -303,12 +309,17 @@ One process, run to its exit. The open's metadata is a CBOR `exec-request`.
 ```text
 exec-request = { command: command, ? cwd: opt<text>, ? env: env, ? stdin: stdin, ? timeout_ms: opt<uint>,
                  ? output_compression: compression,             ; how the host sends standard output and standard error
-                 ? stdin_compression: compression }             ; how the client sends standard input: a concrete algorithm
+                 ? stdin_compression: compression,              ; how the client sends standard input: a concrete algorithm
+                 ? session: session-request }                   ; run detached: see "Detached sessions"
 command      = { type: "argv", argv: [+ text] }                 ; the first element runs directly, never through a shell
              / { type: "shell", kind: shell-kind, script: text } ; only for a caller that chose a shell
 env          = { ? clear: bool, ? set: { * text => text }, ? remove: [* text] }   ; applied in that order
 stdin        = "closed" / "open"                                ; closed by default
-started      = { pid: uint, ? output_compression: compression, ? stdin_compression: compression }   ; what the host uses and accepts, never "auto"
+started      = { pid: uint, ? output_compression: compression, ? stdin_compression: compression,   ; what the host uses and accepts, never "auto"
+                 ? session: text }                              ; the session's id, for a request that had a `session`
+signal-name  = "interrupt" / "terminate" / "hangup" / "quit" / "user1" / "user2" / "kill"
+signal-request = { signal: signal-name }
+signalled    = { signal: signal-name, delivered: bool, ? message: opt<text> }
 exit         = { ? code: opt<int>, ? signal: opt<int>, ? timed_out: bool, ? killed: bool }
 ```
 
@@ -321,12 +332,27 @@ exit         = { ? code: opt<int>, ? signal: opt<int>, ? timed_out: bool, ? kill
 | host to client | `0x05` | CBOR `error-body` |
 | host to client | `0x06` | a piece of the compressed standard output |
 | host to client | `0x07` | a piece of the compressed standard error |
+| host to client | `0x08` | CBOR `signalled`: the answer to a `0x15` frame |
 | client to host | `0x10` | raw standard input (only with `stdin: "open"`) |
 | client to host | `0x11` | empty: end of standard input |
 | client to host | `0x12` | empty: kill the process tree |
 | client to host | `0x13` | a piece of the compressed standard input |
+| client to host | `0x15` | CBOR `signal-request`: deliver a signal to the process |
 
-Standard output and standard error have a compression context each, and standard input a third; a `0x02` frame ends the output context, `0x03` the error one and `0x10` the input one. The host sends `started`, then output as the process writes it, then `exit`. `exit` and `error` are the last frame the host sends. `killed` is true whenever the host ended the tree: a `kill` frame, a closed stream, or the deadline; `timed_out` says it was the deadline (`timeout_ms`). `code` is absent when a signal ended the process. A request the host refuses is one `error` frame (`bad_request`, `unsupported`, `denied`, `not_found`, `busy`). Standard input sent for `stdin: "closed"` is ignored. The tree is ended when the stream closes, on every path.
+Standard output and standard error have a compression context each, and standard input a third; a `0x02` frame ends the output context, `0x03` the error one and `0x10` the input one. The host sends `started`, then output as the process writes it, then `exit`. `exit` and `error` are the last frame the host sends. `killed` is true whenever the host ended the tree: a `kill` frame, a closed stream, or the deadline; `timed_out` says it was the deadline (`timeout_ms`). `code` is absent when a signal ended the process. A request the host refuses is one `error` frame (`bad_request`, `unsupported`, `denied`, `not_found`, `busy`). Standard input sent for `stdin: "closed"` is ignored. The tree is ended when the stream closes, on every path, unless the request asked for a [session](#detached-sessions-bohio-attach1).
+
+### Signals
+
+A `0x15` frame asks the host to deliver one signal to the running program; the host answers every one with a `0x08` `signalled` frame, in order with the output (it may arrive just before the `exit` of a program the signal ended). `delivered: false` is an answer, not an error: this system has no such signal for this program, or the program has ended, and `message` says why. `info.exec.signals` (and `info.shell.signals` for a terminal) lists what the host delivers, so a client need not ask to find out.
+
+| Signal | Unix | Windows, a program without a terminal | Windows, a program on a terminal |
+| --- | --- | --- | --- |
+| `interrupt` | `SIGINT` to the program's process group | `CTRL_BREAK_EVENT` to the program's group, when the host has a console the program shares; `delivered: false` ("this host has no console") when it does not, as a service has none | Ctrl-C (`0x03`) typed at the pseudo-console |
+| `terminate` | `SIGTERM` to the group | the whole tree is ended through its job object (`delivered: true`, with a message saying so; `killed` is true in the exit) | as for a program without a terminal |
+| `hangup`, `quit`, `user1`, `user2` | `SIGHUP`, `SIGQUIT`, `SIGUSR1`, `SIGUSR2` to the group | `delivered: false` | `delivered: false` |
+| `kill` | the whole tree ends at once, as the `0x12` frame does | the same | the same |
+
+The tree is still ended after the program exits however a signal ended it. Two differences on Windows were reproduced on the development machine and are the limits of what a host there can do: the break event reaches a program only through a console the host shares with it (a host started with no console, as a service, answers `delivered: false`), and a Ctrl-C typed at a pseudo-console reaches a program only when Ctrl-C is not ignored in the process chain that started the host (the ignore state is inherited: the same test reached the program when started from PowerShell and not from Git Bash, and again when the ignore state was cleared before the test started); the host still answers `delivered: true` for the typed byte, as it cannot tell.
 
 ## Compression
 
@@ -363,13 +389,15 @@ A host also decides per file for reads: a file whose extension is in `[compressi
 `bohio-shell/1`. One stream is one terminal session. The open's metadata is a CBOR `shell-request`.
 
 ```text
-shell-request = { program: program, ? cwd: opt<text>, ? env: env, ? cols: uint, ? rows: uint }   ; 80 by 24 by default, at most 32767
+shell-request = { program: program, ? cwd: opt<text>, ? env: env, ? cols: uint, ? rows: uint,   ; 80 by 24 by default, at most 32767
+                  ? timeout_ms: opt<uint>,                    ; the deadline: the host ends the tree and says `timed_out`
+                  ? session: session-request }                ; run detached: see "Detached sessions"
 program       = { type: "kind", kind: shell-kind } / { type: "argv", argv: [+ text] }
 size          = { cols: uint, rows: uint }
-shell-exit    = { ? code: opt<int>, ? signal: opt<int>, ? killed: bool }
+shell-exit    = { ? code: opt<int>, ? signal: opt<int>, ? timed_out: bool, ? killed: bool }
 ```
 
-`started` is `{pid: uint}` as in exec, and `env` is the exec `env`.
+`started` is `{pid: uint, ? session: text}` (the session's id when the request had a `session`), and `env` is the exec `env`. A request with `program: { type: "argv" }` runs that program on a terminal under the `shell` grant and its program list: it is `exec` with a terminal, which `bohio remote exec --pty` opens, with `timeout_ms` as its deadline.
 
 | Direction | Tag | Body |
 | --- | --- | --- |
@@ -377,11 +405,36 @@ shell-exit    = { ? code: opt<int>, ? signal: opt<int>, ? killed: bool }
 | host to client | `0x02` | raw terminal output, escape sequences included |
 | host to client | `0x04` | CBOR `shell-exit`: after every output byte |
 | host to client | `0x05` | CBOR `error-body` |
+| host to client | `0x08` | CBOR `signalled`: the answer to a `0x15` frame |
 | client to host | `0x10` | raw terminal input (Enter is `\r`) |
 | client to host | `0x11` | CBOR `size`: resize the terminal |
 | client to host | `0x12` | empty: kill the shell's tree |
+| client to host | `0x15` | CBOR `signal-request`: deliver a signal to the program ([Signals](#signals)) |
 
-`started` is the first frame; `shell-exit` and `error` are the last the host sends. The terminal merges standard output and error. The session's tree is ended when the stream closes.
+`started` is the first frame; `shell-exit` and `error` are the last the host sends. The terminal merges standard output and error. The session's tree is ended when the stream closes, unless the request asked for a [detached session](#detached-sessions-bohio-attach1).
+
+## Detached sessions: `bohio-attach/1`
+
+An exec or a shell whose request carries a `session` keeps running when its stream ends, with its output kept on the host for the next stream to pick up. It is opt-in twice: the peer holds `session` (and `exec` or `shell` for what it runs), and the request asks.
+
+```text
+session-request = { ? name: opt<text>,               ; for listings
+                    ? scrollback: opt<uint>,         ; bytes of output to keep, at most the host's max_scrollback; refused (bad_request) above it
+                    ? on_full: "drop_oldest" / "pause",   ; "pause" for an exec, "drop_oldest" for a shell when absent
+                    ? linger_ms: opt<uint>,          ; how long an unattached session is kept: at most the host's linger
+                    ? detach: bool }                 ; answer `started` and end the stream, sending it no output
+attach-request  = { session: text, ? from: opt<uint> }          ; the open's metadata of bohio-attach/1
+attached        = { kind: "exec" / "shell", from: uint, lost: uint }
+session-entry   = { id: text, ? name: opt<text>, kind: "exec" / "shell", program: text,   ; the program's first word, never its arguments
+                    started: timestamp, attached: bool, ? exit: opt<exit>,
+                    next: uint, buffered: uint, ? peer: opt<text> }   ; peer only in a listing an admin asked for
+```
+
+The host starts the program as it always does and answers `started` with `session` (a random 128-bit id in hex); the stream is then attached to it, and it is the exec's or the shell's own stream. When that stream ends the session is detached, not ended: the program runs on. With `detach: true` the host answers `started` and ends the stream at once, sending it none of the output (so nothing is sent to a stream whose reader only wanted the id); the first `bohio-attach/1` then reads from offset 0. A `kill` frame, `end_session`, the program's exit, the session's `linger`, a revoke and the host's stop end it.
+
+Output is kept in memory with one byte offset, counting standard output and standard error together in the order they were written (a shell's terminal bytes for a shell). When the kept output is full, `drop_oldest` forgets the oldest, and `pause` stops reading the program's output so the program waits and nothing it has not yet sent is lost (output already sent to a stream is forgotten first, oldest first: a stream cut in the instant it was sent to may have lost it, so a reattach should name the last offset that arrived; the output a cut link had in flight is at most the link's window and the relay's queue, which a `scrollback` of that size or more keeps). `bohio-attach/1` takes the open `{session, from}` and answers `0x09` `attached`, whose `from` is the offset the output starts at (the one asked for, or the oldest still kept, in which case `lost` is how many bytes lie between) and whose `kind` says whose frames follow: then the exec's or the shell's own host frames (`0x02`/`0x03`/`0x04`, from `from` and then live), and the client sends that protocol's own client frames (input, resize, signals, kill; compressed input is not taken). An absent `from` starts at the end. One stream is attached at a time: a new attach closes the earlier with the reason `superseded`. A session's streams are not compressed (`output_compression` and `stdin_compression` with a `session` are `unsupported`). The `exit` frame follows every byte, as it does on a stream that never detached, and an attach after the exit reads the kept output and the exit again until `keep_exited` passes.
+
+A peer sees and attaches to only its own sessions; another's id is `not_found`, the same words as an id that does not exist. `sessions` lists the caller's (an `admin` sees every peer's, each with its `peer`); `end_session` ends one with a signal (`kill` by default) and the session then reports its exit. The host bounds sessions with `[sessions]` (`max_detached`, `max_per_peer`, `scrollback`, `max_scrollback`, `linger`, `keep_exited`, `check_every`, `queue_frames`; a request past a bound is `busy` or, for a size, `bad_request`), looks at every session each `check_every` and ends one whose peer's key is no longer accepted or whose grant no longer holds `session` and the permission its kind needs, and ends them all when it stops. A session holds its `[execution] max_processes` or `[shell] max_sessions` slot for as long as its program runs.
 
 ## Forwarding: `bohio-connect/1` and `tcp/1`
 
@@ -544,7 +597,7 @@ Nothing is negotiated before a stream opens, and nothing falls back. A client le
 
 1. **The link's `link/1` stream** answers what this peer may open now (`offers`), the authoritative list of protocol tokens, as coqui-link specifies: a token is offered when the answering side's grant for this peer holds a permission it needs. A client does not open a token that is not offered. Either side of a link may ask, and see [Roles](#roles).
 2. **`bohio/1` `hello`** with the client's protocol version; the reply is the version both speak. This page is version 1.
-3. **`bohio/1` `info`** (a peer that holds `info`) reports the host's operating system and architecture, its shells, what its filesystem supports (`symlinks`, `unix_modes`, `windows_attributes`, `case_sensitive`, `separator`), whether `exec` and `shell` are enabled, its limits, and `forward` (whether it forwards and the kinds of target it connects to).
+3. **`bohio/1` `info`** (a peer that holds `info`) reports the host's operating system and architecture, its shells, what its filesystem supports (`symlinks`, `unix_modes`, `windows_attributes`, `case_sensitive`, `separator`), whether `exec` and `shell` are enabled and which signals each delivers, whether it runs detached sessions and what it keeps for one, its limits, and `forward` (whether it forwards and the kinds of target it connects to).
 
 A client reads `info` and adapts: it takes the path separator from `filesystem.separator`, does not send `set_mode` to a host without `unix_modes`, and picks a shell from `shells`. Every field has a default and unknown fields are ignored, so a client works with a host that reports less or more than it expects. A new protocol is a new token with its own version (`bohio-exec/2`); a host serving both offers both.
 
@@ -552,7 +605,7 @@ A client reads `info` and adapts: it takes the path separator from `filesystem.s
 
 A link has two ends and no fixed roles: either side may open streams on it, and either may answer them. Which side dialed (the carrier's direction) decides nothing; a firewalled host can dial out and be controlled over the link it made. Each side hosts what it offers and controls what it opens:
 
-- **What a side offers a peer** is the `offers` of the `link/1` document that side answers: the protocol tokens for which that peer's current grant holds a permission (`bohio/1` for `info`, `fs.read` or `fs.write`; `bohio-exec/1` for `exec`; `bohio-shell/1` for `shell`; `bohio-read/1` and `bohio-hash/1` for `fs.read`; `bohio-write/1` for `fs.write`; `bohio-connect/1` and `tcp/1` for `forward.connect`; `bohio-gui/1` for `gui.view` or `gui.input`). A node that grants a peer nothing offers it nothing, and may still open streams on that peer.
+- **What a side offers a peer** is the `offers` of the `link/1` document that side answers: the protocol tokens for which that peer's current grant holds a permission (`bohio/1` for `info`, `fs.read` or `fs.write`; `bohio-exec/1` for `exec`; `bohio-shell/1` for `shell`; `bohio-read/1` and `bohio-hash/1` for `fs.read`; `bohio-write/1` for `fs.write`; `bohio-connect/1` and `tcp/1` for `forward.connect`; `bohio-gui/1` for `gui.view` or `gui.input`; `bohio-attach/1` for `session`). A node that grants a peer nothing offers it nothing, and may still open streams on that peer.
 - **How a side learns its role** is by opening `link/1` on the link and reading the peer's `offers`. The intersection of those tokens and what the side wants to do is what it can do on that link; opening a token that is not offered is refused (a `Permission` failure), as it always was.
 - **Re-evaluation**: `offers` is computed each time the document is read, and admission is decided at every open and every `[link] recheck`, both from the peer's grants as they are then, so a grant added or removed on a live link changes the next document and ends what it no longer covers. Nothing is pushed to the peer.
 - **Nothing is stated on the wire** beyond `link/1`: there is no request for a role, and what a side asks for is only what it opens. A peer that is only a controller offers nothing and opens streams; a peer that is only a host offers its tokens and opens none; either can do both on one link.
@@ -593,7 +646,7 @@ A joiner on a listener sends one message first, `coqui-link/pairing/1`, which is
 
 ## Vectors
 
-`vectors/control.json`, `exec.json`, `shell.json`, `read.json`, `write.json`, `hash.json`, `forward.json`, `gui.json`, `listen.json` and `accept.json` hold one entry per message; `vectors/delta.json` holds the [weak sums, a signature and a stream of steps](#deltas) in its own shape. Each file is:
+`vectors/control.json`, `exec.json`, `shell.json`, `read.json`, `write.json`, `hash.json`, `forward.json`, `gui.json`, `listen.json`, `accept.json` and `attach.json` hold one entry per message; `vectors/delta.json` holds the [weak sums, a signature and a stream of steps](#deltas) in its own shape. Each file is:
 
 ```json
 { "protocol": "bohio-exec/1", "encoding": "...", "vectors": [ { "name": "stdout", "direction": "host_to_client", "kind": "frame",
@@ -605,7 +658,7 @@ A joiner on a listener sends one message first, `coqui-link/pairing/1`, which is
 | `name` | what the vector shows |
 | `direction` | `client_to_host` or `host_to_client`; an open's metadata is `client_to_host` |
 | `kind` | `open` (the open's metadata), `message` (a control message) or `frame` (a tag byte, then the body) |
-| `type` | the message's name in this page: `control.Request`, `control.Response`, `exec.Request`, `exec.Output`, `exec.Input`, `shell.Request`, `shell.Output`, `shell.Input`, `fs.ReadRequest`, `fs.ReadOutput`, `fs.ReadInput`, `fs.WriteRequest`, `fs.WriteOutput`, `fs.WriteInput`, `hash.Request`, `hash.Output`, `hash.Input`, `forward.ConnectRequest`, `forward.Answer`, `forward.ListenRequest`, `forward.ListenFrame`, `forward.AcceptRequest` |
+| `type` | the message's name in this page: `control.Request`, `control.Response`, `exec.Request`, `exec.Output`, `exec.Input`, `shell.Request`, `shell.Output`, `shell.Input`, `fs.ReadRequest`, `fs.ReadOutput`, `fs.ReadInput`, `fs.WriteRequest`, `fs.WriteOutput`, `fs.WriteInput`, `hash.Request`, `hash.Output`, `hash.Input`, `forward.ConnectRequest`, `forward.Answer`, `forward.ListenRequest`, `forward.ListenFrame`, `forward.AcceptRequest`, `session.Attach`, `session.Attached` |
 | `hex` | the stream message exactly as it travels |
 | `value` | its meaning: the decoded CBOR as JSON for a message; for a frame, `tag`, and `message` (the CBOR body as JSON) or `data_hex` (the raw body) |
 | `decode_only` | the bytes are not what a writer produces (a message with a key this version does not know): a decoder accepts them and finds `value`, and a test does not compare a re-encoding |
