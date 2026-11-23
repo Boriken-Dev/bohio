@@ -1641,11 +1641,20 @@ fn a_read_and_a_write_with_an_8_mib_bulk_window_on_both_sides_end_without_a_brok
     assert_eq!(told.max_frame, Some(Settings::default().max_frame));
 }
 
+/// Settings that start a stream at `window` bytes of credit and grant none beyond it.
+fn windowed(window: u32) -> Settings {
+    let mut settings = Settings::default();
+    settings.window = window;
+    settings.bulk_window = window;
+    settings.max_window = window;
+    settings
+}
+
 #[test]
-fn a_host_with_a_small_window_and_a_wide_bulk_window_serves_a_client_with_the_defaults() {
+fn a_host_with_a_small_window_and_a_wide_bulk_window_serves_a_client_with_the_same_small_window() {
     const SIZE: u64 = 8 * 1024 * 1024;
-    // The host starts its streams at 64 KiB and widens a bulk stream it receives to 4 MiB; the client has the
-    // defaults and starts at 1 MiB, so a write sends more ahead than the host's own window until it is widened.
+    // Both sides start a stream at 64 KiB, which is the credit each assumes of the other; the host widens a bulk
+    // stream it receives to 4 MiB.
     let world = World::new("window = 65536\nbulk_window = 4194304\n");
     let root = world.path("files");
     std::fs::create_dir_all(&root).unwrap();
@@ -1657,14 +1666,38 @@ fn a_host_with_a_small_window_and_a_wide_bulk_window_serves_a_client_with_the_de
         "mover",
         &["--allow", "fs.read,fs.write", "--fs-root", &root_text],
     );
-    let link = connect(&client, &host).expect("the link is up");
+    let link = connect_with(&client, &host, &windowed(65536)).expect("the link is up");
     let wait = Some(Duration::from_secs(60));
     assert_eq!(
         write_file(&link, &root.join("big.bin"), "copy.bin", wait),
         (SIZE, want.clone())
     );
     assert_eq!(read_hash(&link, "copy.bin", wait), (SIZE, want));
-    // The host announces its own, smaller window, which is what lets a side see the difference.
+    let told = link.opener().capabilities(Duration::from_secs(60)).unwrap();
+    assert_eq!(told.window, Some(65536));
+    assert_eq!(told.max_frame, Some(Settings::default().max_frame));
+}
+
+#[test]
+fn a_host_with_a_smaller_window_than_the_clients_serves_it_a_read_and_announces_its_own() {
+    const SIZE: u64 = 8 * 1024 * 1024;
+    // The host sends with 64 KiB of credit into a client that takes 1 MiB, which is safe: only a sender whose
+    // window is larger than the receiver's can overrun it, so a client with the defaults does not write to this
+    // host, and the window the host announces is what lets either side see the difference.
+    let world = World::new("window = 65536\nbulk_window = 4194304\n");
+    let root = world.path("files");
+    std::fs::create_dir_all(&root).unwrap();
+    let want = big_file(&root.join("big.bin"), SIZE);
+    let host = world.serve("warn");
+    let root_text = root.to_string_lossy().into_owned();
+    let client = approved(
+        &world,
+        "mover",
+        &["--allow", "fs.read", "--fs-root", &root_text],
+    );
+    let link = connect(&client, &host).expect("the link is up");
+    let wait = Some(Duration::from_secs(60));
+    assert_eq!(read_hash(&link, "big.bin", wait), (SIZE, want));
     let told = link.opener().capabilities(Duration::from_secs(60)).unwrap();
     assert_eq!(told.window, Some(65536));
     assert_eq!(told.max_frame, Some(Settings::default().max_frame));
