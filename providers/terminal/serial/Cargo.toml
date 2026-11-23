@@ -1,0 +1,25 @@
+[package]
+name = "bohio-provider-serial"
+description = "A Bohío terminal provider for a serial line: the console of a system reached through a serial cable, a KVM or a terminal server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["bohio", "serial", "console", "provider"]
+categories = ["hardware-support"]
+exclude = [".*", "*.local.*"]
+# Its git dependencies are unpublished: released once they are.
+publish = false
+
+[dependencies]
+bohio-api.workspace = true
+coqui-transport-serial.workspace = true
+coqui-transport.workspace = true
+
+[dev-dependencies]
+bohio-api = { workspace = true, features = ["testing"] }
+
+[lints]
+workspace = true

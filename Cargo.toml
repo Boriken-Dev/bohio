@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/bohio-api", "crates/bohio-proto", "crates/bohio-transfer", "crates/bohio-client", "crates/bohio", "crates/bohio-bench"]
+members = ["crates/bohio-api", "providers/terminal/serial", "crates/bohio-proto", "crates/bohio-transfer", "crates/bohio-client", "crates/bohio", "crates/bohio-bench"]
 
 [workspace.package]
 version = "0.0.0-alpha.0"
@@ -109,6 +109,7 @@ tempfile = "3"
 guatiao = { git = "https://github.com/Boriken-Dev/guatiao", rev = "e0136dcc9760ddd6dd8dc89fc4d41320eec6306e", features = ["provider"] }
 guatiao-serde = { git = "https://github.com/Boriken-Dev/guatiao", rev = "e0136dcc9760ddd6dd8dc89fc4d41320eec6306e", default-features = false }
 bohio-api = { path = "crates/bohio-api" }
+bohio-provider-serial = { path = "providers/terminal/serial" }
 bohio-proto = { path = "crates/bohio-proto" }
 bohio-transfer = { path = "crates/bohio-transfer", default-features = false }
 bohio-client = { path = "crates/bohio-client" }

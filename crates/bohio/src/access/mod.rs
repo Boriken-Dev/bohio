@@ -539,6 +539,10 @@ fn builtin_registry() -> Registry {
     registry
         .register_local("bohio-native", native::library)
         .expect("the native provider registers");
+    #[cfg(feature = "serial")]
+    registry
+        .register_local("bohio-serial", bohio_provider_serial::library)
+        .expect("the serial provider registers");
     registry
 }
 

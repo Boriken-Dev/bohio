@@ -233,8 +233,10 @@ name = "bohio"
 version = "0.0.0-alpha.0"
 dependencies = [
  "anycfg",
+ "bohio-api",
  "bohio-client",
  "bohio-proto",
+ "bohio-provider-serial",
  "bohio-transfer",
  "cap-fs-ext",
  "cap-std",
@@ -249,6 +251,7 @@ dependencies = [
  "ctrlc",
  "getrandom 0.4.3",
  "globset",
+ "guatiao",
  "image",
  "image-webp",
  "libc",
@@ -335,6 +338,15 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "bohio-provider-serial"
+version = "0.0.0-alpha.0"
+dependencies = [
+ "bohio-api",
+ "coqui-transport",
+ "coqui-transport-serial",
 ]
 
 [[package]]

@@ -30,8 +30,10 @@ default = ["cli", "zstd", "gui"]
 zstd = ["bohio-transfer/zstd", "bohio-client/zstd"]
 # zstd worker threads: `[compression] workers` above 0.
 zstdmt = ["zstd", "bohio-transfer/zstdmt"]
+# The serial console provider (`[source.NAME] provider = "serial"`): a terminal source over a serial line, registered with the built-in providers.
+serial = ["dep:bohio-provider-serial"]
 # The `bohio` command: arguments, output and the diagnostics subscriber. An embedding host takes the library alone.
-cli = ["dep:clap", "dep:tracing-subscriber", "dep:serde_json", "dep:crossterm", "dep:ctrlc", "dep:windows-service", "notify"]
+cli = ["serial", "dep:clap", "dep:tracing-subscriber", "dep:serde_json", "dep:crossterm", "dep:ctrlc", "dep:windows-service", "notify"]
 # Desktop access (`bohio-gui/1`): snapshot encoding (PNG, JPEG, lossless WebP), resizing, and the tiles and rectangle encodings of a watch. Without it a host has the engine and no image format, so a snapshot is `unsupported`.
 gui = ["dep:image", "dep:image-webp", "bohio-transfer/screen", "bohio-client/screen"]
 # The desktop notification of the GUI's presence notice (`DesktopNotifier`); without it a node logs the notice.
@@ -39,6 +41,7 @@ notify = ["dep:notify-rust"]
 
 [dependencies]
 bohio-api.workspace = true
+bohio-provider-serial = { workspace = true, optional = true }
 # The registry that holds the node's providers: the kinds crate brings guatiao without it.
 guatiao = { workspace = true, features = ["load"] }
 bohio-proto.workspace = true
@@ -142,4 +145,8 @@ required-features = ["gui"]
 
 [[test]]
 name = "mcp"
+required-features = ["cli"]
+
+[[test]]
+name = "console"
 required-features = ["cli"]
