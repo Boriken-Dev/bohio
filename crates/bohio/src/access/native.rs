@@ -177,12 +177,12 @@ impl TerminalSource for Native {
     }
 
     fn open(&self, request: TerminalOpen) -> Result<Object<dyn Terminal>, ProviderError> {
-        let program = request.program.as_ref().ok_or_else(|| {
-            refuse(
-                Status::GUATIAO_ERR_BAD_VALUE,
-                "the native terminal starts a program, and the request names none",
-            )
-        })?;
+        // A console request names no program: the node's console is its default shell.
+        let default = bohio_api::ProgramSpec {
+            kind: Some(if cfg!(windows) { "cmd" } else { "sh" }.to_owned()),
+            ..bohio_api::ProgramSpec::default()
+        };
+        let program = request.program.as_ref().unwrap_or(&default);
         let path = request
             .path
             .as_deref()

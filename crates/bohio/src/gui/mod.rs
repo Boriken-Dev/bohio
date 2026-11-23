@@ -160,8 +160,8 @@ impl GuiState {
     }
 
     /// A session on the default desktop source: what a stream drives.
-    fn desktop(&self) -> Result<Arc<dyn Desktop>, ErrorBody> {
-        let source = self.sources.desktop(None)?;
+    fn desktop(&self, name: Option<&str>) -> Result<Arc<dyn Desktop>, ErrorBody> {
+        let source = self.sources.desktop(name)?;
         let session = KindDesktop::open(source)?;
         Ok(Arc::new(session))
     }
@@ -357,7 +357,7 @@ fn open(
             "this host does not serve its desktop",
         ));
     }
-    let desktop = context.state.desktop()?;
+    let desktop = context.state.desktop(request.source.as_deref())?;
     let wants = request.wants();
     if let Some(missing) = wants.iter().find(|want| !permits(context.grant, **want)) {
         return Err(denied(&format!("this peer may not {missing} the desktop")));

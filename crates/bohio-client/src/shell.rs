@@ -61,7 +61,7 @@ impl Shell {
                 Ok(Output::Started(started)) => {
                     return Ok(Self {
                         channel,
-                        pid: started.pid,
+                        pid: started.pid.unwrap_or(0),
                         session: started.session,
                     });
                 }

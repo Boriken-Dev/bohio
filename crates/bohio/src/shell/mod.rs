@@ -48,6 +48,8 @@ pub struct Context<'a> {
 struct Open {
     terminal: Object<dyn Terminal>,
     source: Source<dyn TerminalSource>,
+    /// The request was for the node's console: a client's `kill` only lets go, the source is never ended by a peer.
+    console: bool,
 }
 
 impl Open {
@@ -281,8 +283,26 @@ fn start<'a>(
     if !context.grant.allows(Permission::Shell) {
         return Err(refuse(ErrorCode::Denied, "this peer may not open shells"));
     }
-    let source = context.sources.terminal(None)?;
+    let console = matches!(request.program, Program::Console { .. });
+    let named = match &request.program {
+        Program::Console { source } => source.as_deref(),
+        _ => None,
+    };
+    let source = context.sources.terminal(named)?;
     let program = resolve(&request.program, &request.env, context)?;
+    if !console
+        && let Ok(described) = source.get().describe()
+        && described.lacks(bohio_api::vocab::terminal::PROGRAMS)
+    {
+        return Err(ErrorBody::new(
+            ErrorCode::Unsupported,
+            format!(
+                "this node's terminal is the {} source {}; it starts no program",
+                described.provider,
+                source.name()
+            ),
+        ));
+    }
     let sized = |n: u16| (1..=MAX_DIMENSION).contains(&n);
     if !sized(request.cols) || !sized(request.rows) {
         return Err(refuse(
@@ -310,7 +330,7 @@ fn start<'a>(
         value: None,
     }));
     let open = TerminalOpen {
-        program: Some(program),
+        program,
         cwd: request.cwd.clone(),
         clear_env: env.clear,
         env: changes,
@@ -324,15 +344,25 @@ fn start<'a>(
         .open(open)
         .map_err(|error| ErrorBody::new(code_of(error.status), error.message().to_string()))?;
     Ok((
-        Open { terminal, source },
+        Open {
+            terminal,
+            source,
+            console,
+        },
         permit,
         request.timeout_ms.map(Duration::from_millis),
     ))
 }
 
 /// The program a request names, checked against the grant. Finding it on the host is the source's.
-fn resolve(program: &Program, env: &Env, context: &Context<'_>) -> Result<ProgramSpec, ErrorBody> {
+fn resolve(
+    program: &Program,
+    env: &Env,
+    context: &Context<'_>,
+) -> Result<Option<ProgramSpec>, ErrorBody> {
     match program {
+        // A console starts no program: whatever the source serves is what the peer gets.
+        Program::Console { .. } => Ok(None),
         Program::Kind { kind } => {
             if *kind == ShellKind::Other {
                 return Err(refuse(
@@ -340,10 +370,10 @@ fn resolve(program: &Program, env: &Env, context: &Context<'_>) -> Result<Progra
                     "this host does not know that kind of shell",
                 ));
             }
-            Ok(ProgramSpec {
+            Ok(Some(ProgramSpec {
                 kind: Some(kind.program().to_owned()),
                 ..ProgramSpec::default()
-            })
+            }))
         }
         Program::Argv { argv } => {
             let Some(first) = argv.first() else {
@@ -372,11 +402,11 @@ fn resolve(program: &Program, env: &Env, context: &Context<'_>) -> Result<Progra
                     "under a program list a peer may change only the variables its grant names, and may not clear the environment",
                 ));
             }
-            Ok(ProgramSpec {
+            Ok(Some(ProgramSpec {
                 kind: None,
                 argv: argv.clone(),
                 listed,
-            })
+            }))
         }
         _ => Err(refuse(
             ErrorCode::Unsupported,
@@ -502,6 +532,8 @@ fn receive_frames(shared: &Shared, open: &Open) {
                         let _ = open.terminal.resize(size.cols, size.rows);
                     }
                 }
+                // A console is the source's, not the peer's: asking to end it only detaches.
+                Ok(Input::Kill | Input::Signal(Signal::Kill)) if open.console => {}
                 Ok(Input::Kill | Input::Signal(Signal::Kill)) => {
                     shared.kill_asked.store(true, Ordering::Release);
                     if let Ok(Input::Signal(signal)) = Input::decode(&frame) {

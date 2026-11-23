@@ -33,9 +33,9 @@ use super::commands::{print_info, source};
 use super::output;
 use super::{
     KeepArgs, OnFullArg, RemoteAction, RemoteArgs, RemoteAttachArgs, RemoteConnectArgs,
-    RemoteEndArgs, RemoteExecArgs, RemoteForwardArgs, RemoteGlobArgs, RemoteHashArgs,
-    RemoteListenArgs, RemoteReadArgs, RemoteSearchArgs, RemoteShellArgs, RemoteSyncArgs,
-    RemoteWalkArgs, RemoteWhichArgs, RemoteWriteArgs, SessionArgs, SyncDirection,
+    RemoteConsoleArgs, RemoteEndArgs, RemoteExecArgs, RemoteForwardArgs, RemoteGlobArgs,
+    RemoteHashArgs, RemoteListenArgs, RemoteReadArgs, RemoteSearchArgs, RemoteShellArgs,
+    RemoteSyncArgs, RemoteWalkArgs, RemoteWhichArgs, RemoteWriteArgs, SessionArgs, SyncDirection,
 };
 use crate::config::{DialConfig, Environment, Layers};
 use crate::forward::{BadSpec, LocalSpec, RemoteKeep, RemoteSpec, SocksSpec, keep_remote};
@@ -405,6 +405,7 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
         }
         RemoteAction::Shell(shell) => shell_command(&*link, shell, &client),
         RemoteAction::Attach(attach) => attach_command(&*link, attach, &client),
+        RemoteAction::Console(console) => console_command(&*link, console, &client),
         RemoteAction::Sessions => sessions_command(&*link, &client),
         RemoteAction::End(end) => end_command(&*link, end, &client),
         RemoteAction::Connect(connect) => {
@@ -2137,6 +2138,44 @@ fn shell_command(
     terminal_command(link, request, args.kill_after, client)
 }
 
+/// `bohio remote ... console`: the node's console of a terminal source, left with Ctrl-] then q.
+fn console_command(
+    link: &dyn Open,
+    args: &RemoteConsoleArgs,
+    client: &Client,
+) -> Result<ExitCode, String> {
+    let interactive = std::io::stdin().is_terminal();
+    let size = if interactive { local_size() } else { (80, 24) };
+    let shell = if let Some(from) = args.from {
+        let id = format!("console:{}", args.source.as_deref().unwrap_or("native"));
+        let (shell, attached) =
+            Shell::attach(link, &id, Some(from)).map_err(|error| explain(&error))?;
+        if attached.lost > 0 {
+            eprintln!(
+                "bohio: the host had forgotten {} bytes before offset {}: the output starts there",
+                attached.lost, attached.from
+            );
+        }
+        shell
+    } else {
+        let mut request = ShellRequest::console(args.source.as_deref());
+        request.cols = size.0;
+        request.rows = size.1;
+        Shell::start(link, &request, Some(client.reply)).map_err(|error| explain(&error))?
+    };
+    if interactive {
+        eprintln!("bohio: connected to the console; Ctrl-] then q leaves it");
+    }
+    drive_terminal(
+        &Arc::new(shell),
+        interactive,
+        size,
+        args.kill_after,
+        client,
+        true,
+    )
+}
+
 /// Runs `request` on a terminal of the host and bridges it to this one, exiting with the program's status.
 fn terminal_command(
     link: &dyn Open,
@@ -2164,7 +2203,7 @@ fn terminal_command(
         }
         return Ok(ExitCode::SUCCESS);
     }
-    drive_terminal(&shell, interactive, size, kill_after, client)
+    drive_terminal(&shell, interactive, size, kill_after, client, false)
 }
 
 /// Bridges a terminal session of the host to this one until the program ends, and returns its status.
@@ -2174,7 +2213,10 @@ fn drive_terminal(
     size: (u16, u16),
     kill_after: Duration,
     client: &Client,
+    escape: bool,
 ) -> Result<ExitCode, String> {
+    // A console is left with Ctrl-] then q (telnet's pair); what is typed after Ctrl-] and is not q goes to the host.
+    let leave = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut size = size;
     // Typed keys go to the host as they are, so the local terminal must not echo or edit them, and a typed Ctrl-C is the
     // byte the host's terminal turns into an interrupt. Without a terminal here, Ctrl-C is a signal of this process, which
@@ -2192,18 +2234,46 @@ fn drive_terminal(
     {
         // Detached: it is blocked reading this process's input when the shell ends.
         let shell = Arc::clone(shell);
+        let leave = Arc::clone(&leave);
         let chunk = client.input_chunk.max(1);
         thread::spawn(move || {
             let mut buffer = vec![0_u8; chunk];
             let mut input = std::io::stdin().lock();
+            let mut escaped = false;
             while let Ok(count) = input.read(&mut buffer) {
-                if count == 0 || shell.write(&buffer[..count]).is_err() {
+                if count == 0 {
+                    break;
+                }
+                let mut typed = Vec::with_capacity(count + 1);
+                for &byte in &buffer[..count] {
+                    if escape && escaped {
+                        escaped = false;
+                        if byte == b'q' {
+                            leave.store(true, std::sync::atomic::Ordering::Release);
+                            return;
+                        }
+                        typed.push(0x1d);
+                    }
+                    if escape && byte == 0x1d {
+                        escaped = true;
+                    } else {
+                        typed.push(byte);
+                    }
+                }
+                if !typed.is_empty() && shell.write(&typed).is_err() {
                     break;
                 }
             }
         });
     }
     let result = loop {
+        if leave.load(std::sync::atomic::Ordering::Acquire) {
+            if raw {
+                let _ = crossterm::terminal::disable_raw_mode();
+            }
+            shell.close();
+            return Ok(ExitCode::SUCCESS);
+        }
         match shell.next(Some(client.poll)) {
             Ok(Some(ShellEvent::Data(bytes))) => {
                 let mut out = std::io::stdout().lock();
@@ -2269,7 +2339,14 @@ fn attach_command(
                 // The terminal of a shell that was started elsewhere takes this one's size.
                 let _ = shell.resize(size.0, size.1);
             }
-            drive_terminal(&Arc::new(shell), interactive, size, args.kill_after, client)
+            drive_terminal(
+                &Arc::new(shell),
+                interactive,
+                size,
+                args.kill_after,
+                client,
+                false,
+            )
         }
         _ => Err("this version does not know that kind of session".to_owned()),
     }

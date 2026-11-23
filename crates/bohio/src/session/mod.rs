@@ -116,6 +116,9 @@ struct State {
 struct Entry {
     id: String,
     owner: String,
+    /// A console the node itself owns (`console:<source>`): every peer that may use shells attaches to it, nobody's
+    /// grant ends it, and it lives until the node ends it.
+    console: bool,
     name: Option<String>,
     kind: Kind,
     program: String,
@@ -382,6 +385,8 @@ struct Starting {
     /// The engine's request: the one the client sent, without compression.
     metadata: Vec<u8>,
     poll: Duration,
+    /// The id of a console the node owns, when this starts one.
+    console: Option<String>,
 }
 
 impl Sessions {
@@ -524,6 +529,9 @@ impl Sessions {
     }
 
     fn reason_to_end(&self, entry: &Entry, now: Instant) -> Option<&'static str> {
+        if entry.console {
+            return entry.lock().ended.then_some("ended");
+        }
         let covered = entry.peer().is_some_and(|peer| {
             self.keys.is_accepted(&peer)
                 && self.grants.grant(&peer).is_ok_and(|grant| {
@@ -549,7 +557,7 @@ impl Sessions {
     pub(crate) fn list(&self, peer: &str, admin: bool) -> Vec<Listed> {
         let mut listed: Vec<(SystemTime, Listed)> = lock(&self.entries)
             .values()
-            .filter(|entry| admin || entry.owner == peer)
+            .filter(|entry| admin || entry.owner == peer || entry.console)
             .map(|entry| (entry.started, entry.listed(admin)))
             .collect();
         listed.sort_by_key(|(started, _)| *started);
@@ -573,7 +581,13 @@ impl Sessions {
             .filter(|entry| admin || entry.owner == peer)
             .cloned()
             .ok_or_else(not_found)?;
-        entry.end_with(signal);
+        if entry.console {
+            // Ending a console is letting go of the source: the engine's terminal is released with its channel.
+            entry.destroy("ended by an administrator");
+            lock(&self.entries).remove(&entry.id);
+        } else {
+            entry.end_with(signal);
+        }
         Ok(())
     }
 
@@ -633,6 +647,7 @@ impl Sessions {
                 ))
             })?,
             poll: host.config.poll_interval.0,
+            console: None,
         };
         let (mine, theirs) = pair(self.config.queue_frames);
         let engine = {
@@ -715,6 +730,7 @@ impl Sessions {
                 ))
             })?,
             poll: host.config.poll_interval.0,
+            console: None,
         };
         let (mine, theirs) = pair(self.config.queue_frames);
         let engine = {
@@ -726,6 +742,118 @@ impl Sessions {
             let metadata = starting.metadata.clone();
             thread::Builder::new()
                 .name("bohio-session-shell".to_owned())
+                .spawn(move || {
+                    let channel: Arc<dyn Channel> = Arc::new(theirs);
+                    let context = crate::shell::Context {
+                        grant: &grant,
+                        config: &config,
+                        slots: &slots,
+                        path: &path,
+                        sources: &sources,
+                    };
+                    let _ = crate::shell::serve(Arc::clone(&channel), &metadata, &context);
+                    channel.close();
+                })
+        };
+        if engine.is_err() {
+            return Err(refuse(ErrorBody::new(
+                ErrorCode::Internal,
+                "a thread could not be started",
+            )));
+        }
+        self.begin(channel, peer, starting, (scrollback, on_full, linger), mine)
+    }
+
+    /// Attaches `channel` live to the node's console of a terminal source (`bohio-shell/1` with `Program::Console`),
+    /// starting it first when nothing holds it. The console is the node's own session, `console:<source>`: a client's
+    /// `kill` or closed stream only detaches, a newer attach supersedes an older, and its output is kept for
+    /// `bohio-attach/1` from any offset still held.
+    ///
+    /// # Errors
+    ///
+    /// The [`ErrorBody`] sent to the client: `unsupported` when sessions or shells are off or the node serves no such
+    /// terminal source, `denied` without `shell`, else the source's own refusal.
+    pub(crate) fn serve_console(
+        self: &Arc<Self>,
+        channel: &Arc<dyn Channel>,
+        metadata: &[u8],
+        peer: &str,
+        host: &ShellHost<'_>,
+    ) -> Result<Ended, ErrorBody> {
+        let refuse = |error: ErrorBody| {
+            let _ = channel.send(&encode_error_shell(&error));
+            error
+        };
+        let request = shell::Request::from_metadata(metadata).map_err(|_| {
+            refuse(ErrorBody::new(
+                ErrorCode::BadRequest,
+                "the request cannot be read",
+            ))
+        })?;
+        let shell::Program::Console { source } = &request.program else {
+            return Err(refuse(ErrorBody::new(
+                ErrorCode::BadRequest,
+                "that is not a console request",
+            )));
+        };
+        if !self.config.enabled || !host.config.enabled {
+            return Err(refuse(ErrorBody::new(
+                ErrorCode::Unsupported,
+                "this host does not run consoles",
+            )));
+        }
+        if !host.grant.allows(Permission::Shell) {
+            return Err(refuse(ErrorBody::new(
+                ErrorCode::Denied,
+                "this peer may not open shells",
+            )));
+        }
+        let named = host.sources.terminal(source.as_deref()).map_err(refuse)?;
+        let id = format!("console:{}", named.name());
+        let held = lock(&self.entries)
+            .get(&id)
+            .filter(|entry| !entry.lock().ended)
+            .cloned();
+        if let Some(entry) = held {
+            let started = shell::Output::Started(shell::Started {
+                pid: None,
+                session: Some(id),
+            })
+            .encode()
+            .unwrap_or_default();
+            if !send_frame(channel, &started, entry.poll, &AtomicBool::new(false)) {
+                return Ok(Ended::Gone);
+            }
+            let from = entry.lock().next;
+            return Ok(self.attached(&entry, channel, from));
+        }
+        let wanted = SessionRequest::default();
+        let (scrollback, on_full, linger) =
+            self.terms(&wanted, OnFull::DropOldest).map_err(refuse)?;
+        let starting = Starting {
+            kind: Kind::Shell,
+            program: id.clone(),
+            needs: Permission::Shell,
+            request: wanted,
+            metadata: request.to_metadata().map_err(|_| {
+                refuse(ErrorBody::new(
+                    ErrorCode::Internal,
+                    "the request cannot be written",
+                ))
+            })?,
+            poll: host.config.poll_interval.0,
+            console: Some(id),
+        };
+        let (mine, theirs) = pair(self.config.queue_frames);
+        let engine = {
+            let grant = host.grant.clone();
+            let config = host.config.clone();
+            let slots = Arc::clone(host.slots);
+            let path: OsString = host.path.to_owned();
+            let sources = Arc::clone(host.sources);
+            let metadata = starting.metadata.clone();
+            thread::Builder::new()
+                .name("bohio-session-console".to_owned())
                 .spawn(move || {
                     let channel: Arc<dyn Channel> = Arc::new(theirs);
                     let context = crate::shell::Context {
@@ -772,9 +900,13 @@ impl Sessions {
                 }
             }
         };
+        let fresh_id = || match &starting.console {
+            Some(id) => Ok(id.clone()),
+            None => Self::id(),
+        };
         let (pid, id) = match starting.kind {
             Kind::Shell => match shell::Output::decode(&first) {
-                Ok(shell::Output::Started(started)) => (started.pid, Self::id()?),
+                Ok(shell::Output::Started(started)) => (started.pid, fresh_id()?),
                 Ok(shell::Output::Error(error)) => {
                     let _ = channel.send(&first);
                     return Err(error);
@@ -787,7 +919,7 @@ impl Sessions {
                 }
             },
             _ => match exec::Output::decode(&first) {
-                Ok(exec::Output::Started(started)) => (started.pid, Self::id()?),
+                Ok(exec::Output::Started(started)) => (Some(started.pid), Self::id()?),
                 Ok(exec::Output::Error(error)) => {
                     let _ = channel.send(&first);
                     return Err(error);
@@ -802,7 +934,12 @@ impl Sessions {
         };
         let entry = Arc::new(Entry {
             id: id.clone(),
-            owner: peer.to_owned(),
+            owner: if starting.console.is_some() {
+                "node".to_owned()
+            } else {
+                peer.to_owned()
+            },
+            console: starting.console.is_some(),
             name: starting.request.name.clone(),
             kind: starting.kind,
             program: starting.program,
@@ -862,7 +999,7 @@ impl Sessions {
             .encode(),
             _ => exec::Output::Started(exec::Started {
                 session: Some(id),
-                ..exec::Started::new(pid)
+                ..exec::Started::new(pid.unwrap_or(0))
             })
             .encode(),
         };
@@ -922,7 +1059,7 @@ impl Sessions {
         }
         let entry = lock(&self.entries)
             .get(&request.session)
-            .filter(|entry| entry.owner == peer)
+            .filter(|entry| entry.owner == peer || entry.console)
             .cloned()
             .ok_or_else(|| refuse(not_found()))?;
         if !grant.allows(entry.needs) {
@@ -1184,6 +1321,12 @@ pub(crate) fn wants_exec(metadata: &[u8]) -> bool {
 }
 
 /// As [`wants_exec`], for a shell request.
+pub(crate) fn wants_console(metadata: &[u8]) -> bool {
+    shell::Request::from_metadata(metadata)
+        .is_ok_and(|request| matches!(request.program, shell::Program::Console { .. }))
+}
+
+/// Whether a `bohio-shell/1` open asks to start a session.
 pub(crate) fn wants_shell(metadata: &[u8]) -> bool {
     shell::Request::from_metadata(metadata).is_ok_and(|request| request.session.is_some())
 }

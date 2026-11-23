@@ -1301,6 +1301,22 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
                     Err(error) => tracing::info!(code = ?error.code, "session refused"),
                 }
             }
+            protocol::SHELL if session::wants_console(metadata) => {
+                let host = session::ShellHost {
+                    grant: &grant,
+                    config: &config.shell,
+                    slots: &shared.sessions,
+                    path: &shared.path,
+                    sources: &shared.sources,
+                };
+                match shared
+                    .detached
+                    .serve_console(&channel, metadata, &peer, &host)
+                {
+                    Ok(ended) => finish_attached(&relay, ended),
+                    Err(error) => tracing::info!(code = ?error.code, "console refused"),
+                }
+            }
             protocol::SHELL if session::wants_shell(metadata) => {
                 let host = session::ShellHost {
                     grant: &grant,

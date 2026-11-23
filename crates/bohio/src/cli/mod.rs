@@ -452,6 +452,10 @@ pub enum RemoteAction {
     /// Pick up a detached session (started with `exec --detach` or `shell --detach`): its kept output from an offset, then
     /// live, with typing and Ctrl-C going to its program.
     Attach(RemoteAttachArgs),
+    /// Open the node's console of a terminal source (a serial line, a BMC's serial-over-LAN, or the host's own shell): no
+    /// program is started, and what the source serves is what you get. Leave it with Ctrl-] then q; the console stays
+    /// open on the host, and `attach` picks its kept output up again.
+    Console(RemoteConsoleArgs),
     /// List the detached sessions this peer holds on the host.
     Sessions,
     /// End a detached session: its program is sent a signal (`kill`, ending the whole tree, unless `--signal` says otherwise).
@@ -563,6 +567,21 @@ pub struct RemoteAttachArgs {
     pub stdin: bool,
     /// How soon a second Ctrl-C after the first (`1s`, `500ms`; a bare number is seconds) ends the program's whole tree
     /// instead of interrupting it again.
+    #[arg(long, value_name = "SPAN", default_value = "2s", value_parser = parse_span)]
+    pub kill_after: std::time::Duration,
+}
+
+/// `bohio remote ... console`.
+#[derive(Debug, Args)]
+pub struct RemoteConsoleArgs {
+    /// The terminal source; the host's default one when absent.
+    #[arg(long, value_name = "NAME")]
+    pub source: Option<String>,
+    /// Pick the console up from this output offset of what the host kept (`attach`, with the source named), then live.
+    #[arg(long, value_name = "OFFSET")]
+    pub from: Option<u64>,
+    /// How soon a second Ctrl-C after the first (`1s`, `500ms`; a bare number is seconds) interrupts again; a console's
+    /// program is never ended from here.
     #[arg(long, value_name = "SPAN", default_value = "2s", value_parser = parse_span)]
     pub kill_after: std::time::Duration,
 }
