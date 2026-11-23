@@ -8,6 +8,10 @@ Three rules hold the design together:
 - **One stream per operation.** A client opens a stream, names a protocol and sends the request as the open's metadata. Control messages are CBOR and file or process bytes travel raw, behind a one-byte tag, so a client in any language can speak it.
 - **No hard-coded limits.** Every bound is a setting in `bohio.cfg` with a documented default, and nothing buffers without bound.
 
+A node reaches the system it is for through **sources** (a console, a screen, power, virtual media), each a configured
+provider: its own pseudo-terminal and screen are the `native` provider, and a serial line, a BMC or a hypervisor are others. See
+[Sources and providers](providers.md).
+
 ## Installation
 
 ```bash

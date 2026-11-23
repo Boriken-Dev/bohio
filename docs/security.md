@@ -182,6 +182,33 @@ A peer that asks for compression makes the host compress (reads, exec output) an
 - **Prepared reads** write a compressed copy of a file the peer may already read into `prepare_dir` (in the data directory by default, which belongs to the service's account alone: keep `fs_roots` away from it), named by a random 128-bit token bound to the peer that made it. Another peer's token, a malformed one and an expired one are all `not_found`; a resume re-checks that the path is still under the peer's roots; a file is removed when it passes `prepare_ttl`, by the next prepared read and when the node starts; one result is bounded by `prepare_max_bytes`. The host does not bound the sum of the prepared files: a peer may keep as many as it prepares within `prepare_ttl`, so a host short of disk lowers `prepare_max_bytes` and `prepare_ttl`.
 - Compression is a request, not a negotiation: a host that does not allow an algorithm answers `unsupported` and a client picks another from `info.transfer.compression`.
 
+## What a source gives a peer
+
+A source is a path into the system the node is for, and **a peer reaches only each capability's default source** unless its
+`[peer."<id>"]` table names more with `sources = [..]`; a source added to `bohio.cfg` later grants nobody anything. The check is
+made when a stream opens and again every `[link] recheck`, so narrowing `sources` ends a console attach within it, and `info.access`
+and the session list show a peer only the sources it reaches (a name it may not use is not even told).
+
+- **Power and media are separate permissions**, `power` and `media`, each off in the node until `[power] enabled` or `[media]
+  enabled`. Switching a machine off is the owner's to grant; the image a machine boots decides what it runs. An agent gets only
+  `power_status` and `media_status`: actions stay off the tool surface. The node's event names the peer, the source, the action and
+  the outcome, and never an image or a URL (its query may be a credential). A source that outlives `action_timeout` finishes on
+  its own thread and its answer is dropped.
+- **An image of the node** (`media insert --path`) must lie under the peer's `fs_roots` and needs `fs.read`; the source reads it
+  through the host from the confined file and from nothing else.
+- **The console is shared.** A node's console of a source is one session every peer with `shell` and that source attaches to: a
+  newer attach supersedes an older one, and what one peer typed is in the scrollback the next peer reads (`[sessions] scrollback`).
+  Give a console only to peers that may see each other's session.
+- **Secrets are references.** A setting a provider's schema marks sensitive (`#[schema(sensitive)]`) must hold `file:PATH`,
+  `credential:NAME` or `keyring:SERVICE/ACCOUNT`; a literal is refused naming the key and never quoted. The `bohio` command reads
+  `file:` references only from a file that no other account may read (mode `0600` and its owner, on Unix; no access entry for
+  others on Windows) and `credential:` from a file of `$CREDENTIALS_DIRECTORY`, none larger than `[secrets] max_bytes` (`65536`);
+  this build has no keyring and refuses `keyring:`. A secret is resolved when its source is built, held in a `Secret` that prints
+  `[redacted]`, and handed to the provider, which then holds it: a provider's own care for it is the provider's.
+- **What loading a library would trust.** Providers are linked into the binary today: nothing is loaded at run time, and a library
+  placed on disk is never mapped. When `guatiao` can check a library's bytes before it maps them, loading will be opt-in by SHA-256
+  pin.
+
 ## Filesystem confinement
 
 Every path resolves against a directory handle of a peer's `fs_roots`: `..` and an absolute path outside a root are `outside_root`, and so is a symbolic link that leaves a root, whether at the end of a path or in the middle. On Linux each lookup is one `openat2` with `RESOLVE_BENEATH` (kernel 5.6 and later), and elsewhere an `openat` walk that refuses to follow a link at each component, so a link swapped in while a call runs cannot lead out.

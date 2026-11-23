@@ -768,6 +768,40 @@ running ends with the same reason.
 
 Nothing on the wire says "try again", and the client does not need it to: a host that is full answers in the words it always had, and a client that was built to wait tells them apart. A host over `[link] max_pending_opens`, `max_streams`, `max_per_protocol` or `max_opens_per_minute` closes the new stream with the reason `refused` and the text `over a limit` (`coqui-link`'s words; a grant's refusal has no such text). A client that sees that, a link whose queue is full when the open is sent, or an answer `busy` to `bohio-connect/1` or `bohio-accept/1`, opens the same stream again every `[forward] open_retry_interval` for `[forward] open_retry`, and only then fails the connection it was opening. A `denied`, a revoke or any other error is final at once, and so is a `busy` answer to `bohio-listen/1` (a kept `remote` entry asks again for the port the host chose, with the `[dial]` waits).
 
+## Sources: console, power, media and `info.access`
+
+A terminal source that starts no program is served on `bohio-shell/1` with `program` of type `console`:
+
+```cddl
+program = kind-program / argv-program / console-program
+console-program = { type: "console", ? source: text }   ; the node's default terminal source when absent
+started = { ? pid: uint, ? session: text }              ; no pid for a console; its session is "console:<source>"
+```
+
+The stream attaches live to the node's console of that source (one session the node owns; a newer attach supersedes, a `kill`
+only detaches); `bohio-attach/1` with `session: "console:<source>"` and `from` replays its kept output. `bohio-gui/1`'s request
+gains `? source: text`. `info` gains the sources the peer reaches:
+
+```cddl
+access-info = { terminal: [* source-entry], desktop: [* source-entry], power: [* source-entry], media: [* source-entry],
+                fs: "native" / "none", exec: "native" / "none" }
+source-entry = { name: text, provider: text, default: bool, available: bool, ? reason: text, offers: [* text], lacks: [* text] }
+```
+
+`bohio-power/1` and `bohio-media/1` are one request and one answer (tag `0x01` the result, `0x05` an error):
+
+```cddl
+power-request = { ? source: text, action: "status" / "on" / "off" / "soft_off" / "cycle" / "reset" / "nmi" }
+power-state = { state: "on" / "off" / "unknown", done: bool }
+media-request = { ? source: text, op: "status" / "insert" / "eject", ? slot: text, ? image: image }
+image = { type: "url", url: text } / { type: "path", path: text }   ; a path is the node's, under the peer's fs_roots
+media-slots = { slots: [* { slot: text, inserted: bool, ? image: text, ? size: uint }] }
+```
+
+Errors are the usual codes: `denied` (no `power` or `media`, or a source the grant does not reach), `unsupported` (the capability is
+off or the source lacks the action), `outside_root`, `busy`, `timeout` (the source took longer than `action_timeout`), `unavailable`.
+`vectors/power.json` and `vectors/media.json` hold the messages.
+
 ## Capability negotiation
 
 Nothing is negotiated before a stream opens, and nothing falls back. A client learns what a host does in this order:

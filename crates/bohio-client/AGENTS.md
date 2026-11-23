@@ -8,7 +8,7 @@ Cargo features: `zstd` (decode zstd), `screen` (the compositor of a watch: `bohi
 `coqui-transport-serial` (each a git revision, one copy), `url`, `socket2`, `serde`, `serde_json`, `tracing` and `thiserror`. Version
 `0.0.0-alpha.0`, not published.
 
-Imports: the root holds `Open` and `Error`. Public modules: `connect`, `control`, `dial`, `exec`, `forward`, `fs`, `gui`, `link`, `relay`, `shell`, `tools`. No `unsafe` code
+Imports: the root holds `Open` and `Error`. Public modules: `connect`, `control`, `dial`, `exec`, `forward`, `fs`, `gui`, `link`, `media`, `power`, `relay`, `shell`, `tools`. No `unsafe` code
 (`#![forbid(unsafe_code)]`). The operations start no threads and do no I/O of their own: every call blocks on the channel it was given
 (only `connect` and `relay` start threads, and `connect` opens a socket).
 
@@ -164,6 +164,16 @@ impl Shell {
 A refusal (`denied`, `not_found`, `busy`, `bad_request`, ...) comes from `Shell::start` as `Error::Remote`. `read_until` is
 `Error::Closed` when the shell ends before the text appears; the typed text is echoed by the terminal, so match something the
 echo does not hold. Output is a terminal's rendering with escape sequences, not the program's bytes.
+
+## Power and media (`bohio_client::power`, `bohio_client::media`)
+
+```rust
+power::act(link: &dyn Open, source: Option<&str>, action: Action, timeout: Option<Duration>) -> Result<State, Error>;  power::status(link, source, timeout)
+media::call(link, &Request, timeout) -> Result<Vec<Slot>, Error>;  media::{status, insert(link, source, slot, Image, timeout), eject(link, source, slot, timeout)}
+shell::Shell::start(link, &Request::console(Some("name")), timeout)   // the node's console of a terminal source; Shell::pid() is 0 for it
+```
+
+The agent tools `power_status` and `media_status` (needs `power`/`media` and a source in `info.access`) only read.
 
 ## Sessions (`bohio_client::session`)
 

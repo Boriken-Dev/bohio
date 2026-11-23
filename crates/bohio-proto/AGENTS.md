@@ -7,7 +7,7 @@ with the source at <https://github.com/Boriken-Dev/bohio>.
 No Cargo features. MSRV Rust 1.89. Depends on `serde`, `ciborium` and `thiserror`. Version `0.0.0-alpha.0`, not published.
 
 Imports: the root holds `decode`, `decode_with_depth`, `encode`, `DEFAULT_DEPTH`, `Error`, `ErrorBody`, `ErrorCode` and
-`PROTOCOL_VERSION`. Public modules: `codec`, `control`, `error`, `exec`, `forward`, `fs`, `gui`, `hash`, `info`, `local`, `protocol`, `search`, `shell`, `walk`. No `unsafe` code
+`PROTOCOL_VERSION`. Public modules: `codec`, `control`, `error`, `exec`, `forward`, `fs`, `gui`, `hash`, `info`, `local`, `media`, `power`, `protocol`, `search`, `shell`, `walk`. No `unsafe` code
 (`#![forbid(unsafe_code)]`); no I/O; no process-wide state.
 
 ## Protocols (`bohio_proto::protocol`)
@@ -199,6 +199,16 @@ pub struct Info { protocol, service: Service{name, version}, host_id: Option<Str
 
 Every field has a default and unknown keys are ignored: a client works with a host that reports less or more. `os` and `arch` are
 `std::env::consts` names. `separator` is the host's native path separator.
+
+## Power and media (`bohio_proto::power`, `bohio_proto::media`)
+
+```rust
+pub const POWER: &str = "bohio-power/1";  pub const MEDIA: &str = "bohio-media/1";   // one request, one answer; tag 0x01 the result, 0x05 an error
+power::Request { source: Option<String>, action: Action }  Action { Status, On, Off, SoftOff, Cycle, Reset, Nmi }  power::State { state: String, done: bool }  power::Answer { State, Error }
+media::Request { source, op: Op { Status, Insert, Eject }, slot: Option<String>, image: Option<Image> }  Image { Url { url }, Path { path } }  media::Slot { slot, inserted, image, size }  media::Slots  media::Answer { Slots, Error }
+info::AccessInfo { terminal, desktop, power, media: Vec<SourceEntry>, fs, exec: String }  info::SourceEntry { name, provider, default, available, reason, offers, lacks }   // Info.access
+shell::Program::Console { source: Option<String> }  shell::Request::console(Option<&str>)  shell::Started.pid: Option<u32>  gui::GuiRequest.source: Option<String>
+```
 
 ## Shells (`bohio_proto::shell`)
 

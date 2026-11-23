@@ -43,6 +43,20 @@ impl Grants for Roster {
 
 `Grant::none()` gives nothing and `Grant::allowing([Permission::Info, Permission::Exec]).with_programs(["git"])` builds one. A `Grants` error refuses the stream; a question `Keys` cannot answer should be `false`. `MemoryKeys` and `MemoryGrants` are in-memory versions for tests and small tools. `Keys::stranger` hears a key that proved itself and was refused (keep a bounded number, for an operator to approve), and `Keys::paired` records a key that paired by PIN, if the application offers pairing (`Node::with_pairing`, `Node::arm_pairing`).
 
+## Sources
+
+A node serves its terminal, desktop, power and media from its **sources** (`bohio::access::Sources`), which `Node::new` builds
+from `NodeConfig`'s `source` and `access` tables (today's node when they are empty: `native`). An application replaces or adds to
+them: `Sources::unconfigured()` has none, `with_terminal`, `with_desktop`, `with_power` and `with_media` add a source as a value
+of the kind's trait, `register_library` registers a `guatiao::local_providers!` library so `[source.<name>]` can name its
+providers, and `with_access(Capability, names)` says which serve each capability, the first the default. `Node::with_sources`
+gives the node its sources (call it first), `Node::with_desktop(desktop)` is the shortcut that adds the application's own desktop
+as the source `app` and makes it the default, `Node::sources()` reaches them for `Sources::reconfigure` (a source whose table did
+not change keeps its instance; one that changed is built anew, the old one retired, and what runs on it ends `unavailable`), and
+`Node::with_secrets(resolver)` says how a sensitive setting's `file:`, `credential:` or `keyring:` reference is read: the
+library reads no file and no environment variable, so a source whose settings hold a reference waits for it. `[access] fs` and
+`exec` are read when the node is built. [Sources and providers](providers.md) shows how to write one.
+
 ## Listening and dialing
 
 The node runs on the application's threads, until a stop flag is set. To answer, bind an endpoint and serve it:

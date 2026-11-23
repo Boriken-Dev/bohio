@@ -8,6 +8,7 @@ with the source at <https://github.com/Boriken-Dev/bohio>.
 | --- | --- | --- | --- |
 | `cli` | module `cli`, the `bohio` binary; `clap`, `tracing-subscriber`, `serde_`, `crossterm`, and `notify` | the command | on |
 | `gui` | snapshot encoding (`image`: PNG, JPEG; `image-webp`: lossless WebP), and a watch's tiles and rectangle encodings (`bohio-transfer/screen`); without it a snapshot and a watch are `unsupported` | `bohio-gui/1` | on |
+| `serial` | `bohio-provider-serial`: the `serial` terminal provider (`[source.NAME] provider = "serial"`), registered with the built-in providers | a serial console | on with `cli` |
 | `notify` | `gui::DesktopNotifier` (`notify-rust`) | the desktop notice of the presence indicator | on with `cli` |
 
 MSRV Rust 1.89. A library-only build (`default-features = false`) depends on `bohio-proto`, `bohio-client` (the link and its relay),
@@ -16,7 +17,7 @@ MSRV Rust 1.89. A library-only build (`default-features = false`) depends on `bo
 `win32job` (Windows). Version `0.0.0-alpha.0`, not published.
 
 Imports: the root holds `Config`, `ConfigError`, `Environment`, `Grant`, `Peers`, `Permission`. Public modules:
-`config`, `control`, `exec`, `forward`, `fs`, `gui`, `info`, `limit`, `link`, `listen`, `node`, `peer`, `policy`, `shell`, `cli` (feature `cli`). `unsafe_code` is denied crate-wide and allowed only in the files `tests/unsafe_files.rs` lists with why each needs it (among them
+`access`, `config`, `control`, `exec`, `forward`, `fs`, `gui`, `info`, `limit`, `link`, `listen`, `local`, `media`, `node`, `pair`, `peer`, `policy`, `power`, `secret`, `session`, `shell`, `cli` (feature `cli`). `unsafe_code` is denied crate-wide and allowed only in the files `tests/unsafe_files.rs` lists with why each needs it (among them
 `platform/winproc.rs`, starting a Windows process with a handle list, and the Windows desktop backend's `platform/gui/windows.rs` and `windows_capture.rs`). The library prints nothing, reads no environment variable and installs no logger; it starts threads only inside
 `exec::serve`, `shell::serve`, the transfer and control engines, `node::Node` (a thread per connection, per stream and per relay) and
 `pair::Armed` waits and the pairing a node answers.
@@ -163,6 +164,9 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[sessions] linger` | `24h` | how long an unattached detached session is kept; not zero |
 | `[sessions] keep_exited` | `1h` | how long an exited session is kept for a reattach; not zero |
 | `[sessions] check_every` | `5s` | how often sessions are looked at for linger, kept time and a revoked grant; not zero |
+| `[power] enabled`, `action_timeout`, `max_streams` | `false`, `60s`, `4` | whether power is served (a peer needs `power` too), how long an action may take before `timeout`, concurrent requests; not zero / at least 1 |
+| `[media] enabled`, `action_timeout`, `max_streams` | `false`, `60s`, `4` | as `[power]`, for virtual media (a peer needs `media`) |
+| `[secrets] max_bytes` | `65536` | the most bytes one secret reference may read; at least 1 |
 | `[sessions] queue_frames` | `16` | frames of a program's output that may wait before the session takes them; at least 1 |
 | `[shell] enabled` | `true` | whether shell sessions are opened |
 | `[shell] max_sessions` | `8` | concurrent sessions across peers; at least 1 |
@@ -185,8 +189,7 @@ checks the system file when it exists, as `serve` checks every layer.
 ## Peer grants (`bohio::policy`)
 
 ```rust
-#[non_exhaustive] pub enum Permission { Info, FsRead, FsWrite, Exec, Shell, Admin, ForwardConnect, GuiView, GuiInput, GuiClipboard }   // Ord; names "info","fs.read","fs.write","exec","shell","admin","forward.connect","gui.view","gui.input","gui.clipboard"
-#[non_exhaustive] pub enum Permission { Info, FsRead, FsWrite, Exec, Shell, Admin, ForwardConnect, ForwardListen, Session }   // Ord; names "info","fs.read","fs.write","exec","shell","admin","forward.connect","forward.listen","session"
+#[non_exhaustive] pub enum Permission { Info, FsRead, FsWrite, Exec, Shell, Admin, ForwardConnect, GuiView, GuiInput, GuiClipboard, ForwardListen, Session, Power, Media }   // Ord; names "info","fs.read","fs.write","exec","shell","admin","forward.connect","gui.view","gui.input","gui.clipboard","forward.listen","session","power","media"
 impl Permission { pub const fn name(self) -> &'static str; }
 pub struct Grant;                                                // Default = nothing
 impl Grant { pub fn none() -> Self; pub fn allowing(permissions) -> Self; pub fn with_fs_roots(self, roots) -> Self; pub fn with_programs(self, programs) -> Self; pub fn restricts_programs(&self) -> bool;
@@ -202,7 +205,7 @@ impl Peers { pub fn grant_for(&self, peer: &str) -> Grant; pub fn table(&self, p
              pub fn len(&self) -> usize; pub fn is_empty(&self) -> bool; }
 ```
 
-`[peer."<id>"]` (the id is `sha256:` and 64 hex digits, so it is quoted as a key) with `allow = [..]`, `fs_roots = [..]`, `[peer."<id>".exec]` with
+`[peer."<id>"]` (the id is `sha256:` and 64 hex digits, so it is quoted as a key) with `allow = [..]`, `fs_roots = [..]`, `sources = [..]` (the sources beyond each capability's default the peer may use; `Grant::with_sources`, `permits_source`; absent: the defaults alone), `[peer."<id>".exec]` with
 `programs = [..]` and `env = [..]`, and `[peer."<id>".forward]` with `connect = [RULE..]`. A table, even an empty one, accepts the key. An unknown key or permission is `ConfigError::Parse`. A peer with no table, or
 no `allow`, holds nothing. `programs` empty means any program and
 explicit shell scripts; non-empty means only those programs, each named exactly as the peer asks for it, and no shell script
@@ -442,6 +445,14 @@ lists the sources of each capability, the first the default: `terminal` and `des
 `queue_chunks` `16`, `windows_capture` `"auto"`, `windows_frame_wait` `250ms`, `windows_capture_idle` `10s`, `windows_clipboard_wait` `500ms`, `clipboard_max_bytes` `1048576`.
 `Node::with_sources(Sources)` replaces them (call it first); `Node::sources()` reaches them for a reload; `[gui] backend` and the `[gui] windows_*` keys moved here.
 
+## Power, media, secrets and the console
+
+`bohio::power::serve` and `bohio::media::serve(&Arc<dyn Channel>, metadata, &Context)` serve one `bohio-power/1` and `bohio-media/1` stream (one request, one answer; the checks and errors are in `docs/protocol.md`): `Context { grant, config, slots, sources, peer, events }`. A source call is bounded by `action_timeout` (`power::within`); one that outlives it finishes on its own thread and its answer is dropped. `NodeEvent::Power { peer, source, action, outcome }` and `NodeEvent::Media { peer, source, op, slot, outcome }` never name an image. An image path is opened by `fs::open_confined` inside the peer's `fs_roots` and read by the source through a `BlockReader`.
+
+`bohio::secret`: `Secret` (`expose()`, `Debug`/`Display` print `[redacted]`), `SecretResolver::resolve(&self, reference, max_bytes) -> Result<Secret, SecretError>`, `NoSecrets`, `split(reference)` (`file:`, `credential:`, `keyring:`). A sensitive setting of a provider's schema holds a reference or is refused naming `source.<name>.<key>`; `Node::new` leaves a source whose settings hold one out until `Node::with_secrets`.
+
+A terminal source that starts no program is a **console**: `bohio-shell/1` with `Program::Console { source }` is served by `session::Sessions::serve_console` as one session the node owns, `console:<source>` (kept output `[sessions] scrollback`, a newer attach supersedes, a `kill` only detaches, never swept for an owner or a linger); it is listed by `sessions` and read by `bohio-attach/1` for a peer whose grant reaches the source.
+
 ## Desktop (`bohio::gui`, `[gui]`)
 
 ```rust
@@ -454,7 +465,8 @@ pub trait Desktop: Send + Sync {                                   // what a bac
     fn capabilities(&self) -> Capabilities { .. }                  // provided: Capabilities { backend, input, clipboard, lock_detection }
 }
 pub struct GuiError { pub code: ErrorCode, pub message: String }   // unavailable(..), unsupported(..), not_found(..), io(..), bad_request(..); the message reaches the peer: no typed text, no clipboard
-impl Node { pub fn with_desktop(self, Arc<dyn Desktop>) -> Self; pub fn with_presence(self, Arc<dyn Presence>) -> Self; pub fn with_notifier(self, Arc<dyn Notifier>) -> Self; pub fn gui_approvals(&self) -> Arc<Approvals>; }
+impl Node { pub fn with_sources(self, Sources) -> Self; pub fn sources(&self) -> Arc<Sources>; pub fn with_secrets(self, Arc<dyn SecretResolver>) -> Result<Self, NodeError>;   // sources (see `bohio::access`): call with_sources first
+            pub fn with_desktop(self, Arc<dyn Desktop>) -> Self; pub fn with_presence(self, Arc<dyn Presence>) -> Self; pub fn with_notifier(self, Arc<dyn Notifier>) -> Self; pub fn gui_approvals(&self) -> Arc<Approvals>; }
 pub trait Presence: Send + Sync { fn engaged(&self, &Engagement); fn released(&self, &Engagement); fn approve(&self, &ApprovalRequest<'_>) -> Approval; }   // default: LocalPresence over a Notifier and Approvals
 pub struct Engagement { pub peer: PeerId, pub session: String, pub controlling: bool }
 pub trait Notifier: Send + Sync { fn notify(&self, notice: &Notice, decide: Option<Decide>); }   // LogNotifier (default), DesktopNotifier (feature `notify`); Notice { title, body }
