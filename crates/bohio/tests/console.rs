@@ -8,7 +8,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use bohio::access::{Capability, Sources};
-use bohio::config::{AccessConfig, NodeConfig, SourceTables};
+use bohio::config::{AccessConfig, NodeConfig, SourceTables, Span};
 use bohio::node::{MemoryGrants, MemoryKeys, Node, PeerLink};
 use bohio::policy::{Grant, Permission};
 use bohio_api::testing::{self, TerminalLink};
@@ -22,6 +22,7 @@ use coqui_link::auth::{Identity, Method};
 use coqui_transport::{Channel, StreamChannel, memory};
 
 const WAIT: Duration = Duration::from_secs(30);
+const RECHECK: Duration = Duration::from_millis(400);
 
 struct Wire {
     channels: [Arc<StreamChannel>; 2],
@@ -42,6 +43,9 @@ impl Drop for Wire {
 struct World {
     host: Arc<Node>,
     link: PeerLink,
+    /// The host's grants, to narrow while a stream runs.
+    grants: Arc<MemoryGrants>,
+    client_id: coqui_peer::PeerId,
     _wire: Wire,
 }
 
@@ -76,13 +80,19 @@ fn world_with(source_toml: &str, order: &[&str], grant: Grant) -> World {
             },
         )
         .expect("the sources build");
-    let make = |sources: Option<Sources>| {
+    let make = |sources: Option<Sources>, recheck: Duration| {
         let identity = Identity::generate(Method::DEFAULT).expect("an identity");
         let id = identity.peer_id();
         let keys = Arc::new(MemoryKeys::new());
         let grants = Arc::new(MemoryGrants::new());
         let mut node = Node::new(
-            NodeConfig::default(),
+            NodeConfig {
+                link: bohio::config::LinkConfig {
+                    recheck: Span(recheck),
+                    ..bohio::config::LinkConfig::default()
+                },
+                ..NodeConfig::default()
+            },
             identity,
             keys.clone(),
             grants.clone(),
@@ -94,8 +104,8 @@ fn world_with(source_toml: &str, order: &[&str], grant: Grant) -> World {
         }
         (Arc::new(node), id, keys, grants)
     };
-    let (host, host_id, host_keys, host_grants) = make(Some(sources));
-    let (client, client_id, client_keys, _) = make(None);
+    let (host, host_id, host_keys, host_grants) = make(Some(sources), RECHECK);
+    let (client, client_id, client_keys, _) = make(None, RECHECK);
     host_keys.accept(client_id);
     host_grants.set(client_id, grant);
     client_keys.accept(host_id);
@@ -130,6 +140,8 @@ fn world_with(source_toml: &str, order: &[&str], grant: Grant) -> World {
     World {
         host,
         link,
+        grants: host_grants,
+        client_id,
         _wire: Wire {
             channels: [dial_end, answer_end],
             threads,
@@ -341,6 +353,44 @@ link = \"console-spare\"
         .info(Some(WAIT))
         .expect("info");
     assert_eq!(info.access.terminal.len(), 1);
+}
+
+#[test]
+fn a_peer_cannot_attach_to_a_console_it_does_not_reach_and_a_revoke_ends_its_attach() {
+    let both = format!(
+        "{}[source.spare]\nprovider = \"fake_terminal\"\nlink = \"console-revoke-spare\"\n",
+        fake("console-revoke")
+    );
+    let spare = testing::terminal_link("console-revoke-spare");
+    let wider = world_with(
+        &both,
+        &["console", "spare"],
+        granted().with_sources(["spare"]),
+    );
+    let shell =
+        Shell::start(&wider.link, &Request::console(Some("spare")), Some(WAIT)).expect("allowed");
+    spare.device_writes(b"up ");
+    heard(&shell, "up ");
+
+    // Another peer, with the defaults alone, cannot pick that console up by its id.
+    let narrow = world_with(&both, &["console", "spare"], granted());
+    let refused = Shell::attach(&narrow.link, "console:spare", Some(0))
+        .map(drop)
+        .expect_err("not reached");
+    assert!(
+        matches!(&refused, Error::Transport(_))
+            || matches!(&refused, Error::Remote(body) if body.code == ErrorCode::NotFound),
+        "{refused:?}"
+    );
+
+    // The grant loses `spare`: the attach ends within the recheck.
+    wider.grants.set(wider.client_id, granted());
+    let until = Instant::now() + Duration::from_secs(10);
+    while let Err(Error::Timeout) | Ok(Some(Event::Data(_))) =
+        shell.next(Some(Duration::from_millis(200)))
+    {
+        assert!(Instant::now() < until, "the attach outlived its grant");
+    }
 }
 
 #[test]

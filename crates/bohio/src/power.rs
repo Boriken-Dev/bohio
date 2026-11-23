@@ -7,7 +7,7 @@
 #![forbid(unsafe_code)]
 
 use std::sync::Arc;
-use std::sync::mpsc::channel;
+use std::sync::mpsc::{RecvTimeoutError, channel};
 use std::thread;
 use std::time::Duration;
 
@@ -46,15 +46,22 @@ pub struct Context<'a> {
 pub(crate) fn within<T: Send + 'static>(
     limit: Duration,
     call: impl FnOnce() -> T + Send + 'static,
-) -> Option<T> {
+) -> Result<T, ErrorBody> {
     let (sender, receiver) = channel();
     thread::Builder::new()
         .name("bohio-source-call".to_owned())
         .spawn(move || {
             let _ = sender.send(call());
         })
-        .ok()?;
-    receiver.recv_timeout(limit).ok()
+        .map_err(|_| refuse(ErrorCode::Internal, "a thread could not be started"))?;
+    receiver.recv_timeout(limit).map_err(|error| match error {
+        RecvTimeoutError::Timeout => refuse(
+            ErrorCode::Timeout,
+            "the source did not answer in time ([power] or [media] action_timeout)",
+        ),
+        // The call ended without an answer: the provider panicked.
+        RecvTimeoutError::Disconnected => refuse(ErrorCode::Internal, "the source failed"),
+    })
 }
 
 fn refuse(code: ErrorCode, message: &str) -> ErrorBody {
@@ -121,12 +128,6 @@ fn decide(metadata: &[u8], context: &Context<'_>) -> Result<State, ErrorBody> {
         let answered = within(limit, move || match action {
             Action::Status => shared.state(),
             other => shared.act(other.name()),
-        })
-        .ok_or_else(|| {
-            refuse(
-                ErrorCode::Timeout,
-                "the power source did not answer in time ([power] action_timeout)",
-            )
         })?;
         let PowerState { state, done } = answered
             .map_err(|error| ErrorBody::new(code_of(error.status), error.message().to_string()))?;

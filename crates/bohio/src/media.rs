@@ -214,12 +214,6 @@ fn run(request: &Request, context: &Context<'_>) -> Result<Slots, ErrorBody> {
                 "not a request a source can take",
             )),
         }
-    })
-    .ok_or_else(|| {
-        refuse(
-            ErrorCode::Timeout,
-            "the media source did not answer in time ([media] action_timeout)",
-        )
     })?;
     let slots = answered.map_err(|error| provider(&error))?;
     Ok(Slots {

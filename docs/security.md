@@ -197,7 +197,7 @@ and the session list show a peer only the sources it reaches (a name it may not 
 - **An image of the node** (`media insert --path`) must lie under the peer's `fs_roots` and needs `fs.read`; the source reads it
   through the host from the confined file and from nothing else.
 - **The console is shared.** A node's console of a source is one session every peer with `shell` and that source attaches to: a
-  newer attach supersedes an older one, and what one peer typed is in the scrollback the next peer reads (`[sessions] scrollback`).
+  newer attach supersedes an older one, and what the far end echoes of what one peer typed (a password a serial login does not hide) is in the scrollback the next peer reads (`[sessions] scrollback`).
   Give a console only to peers that may see each other's session.
 - **Secrets are references.** A setting a provider's schema marks sensitive (`#[schema(sensitive)]`) must hold `file:PATH`,
   `credential:NAME` or `keyring:SERVICE/ACCOUNT`; a literal is refused naming the key and never quoted. The `bohio` command reads
