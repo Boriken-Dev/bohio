@@ -103,6 +103,9 @@ pub struct GuiRequest {
     /// What the stream is for: `view` when absent, never empty. A wanted item the peer's grant lacks is `denied`.
     #[serde(default)]
     pub want: Option<Vec<Want>>,
+    /// The desktop source; the node's default one when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 impl GuiRequest {
@@ -111,6 +114,7 @@ impl GuiRequest {
         Self {
             session: None,
             want: Some(want.into_iter().collect()),
+            source: None,
         }
     }
 

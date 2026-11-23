@@ -102,6 +102,14 @@ pub enum Program {
         /// The program, then its arguments.
         argv: Vec<String>,
     },
+    /// The node's console: whatever its terminal source serves, with no program started. For the `native` source this
+    /// is its default shell; for a serial line it is the line. A `Kind` or `Argv` request to a source that starts no
+    /// program is `unsupported`.
+    Console {
+        /// The terminal source; the node's default one when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<String>,
+    },
 }
 
 /// What a `bohio-shell/1` stream opens: the open's metadata.
@@ -148,6 +156,13 @@ impl Request {
         })
     }
 
+    /// A request for the node's console of `source` (its default terminal source when `None`): no program is started.
+    pub fn console(source: Option<&str>) -> Self {
+        Self::new(Program::Console {
+            source: source.map(str::to_owned),
+        })
+    }
+
     fn new(program: Program) -> Self {
         Self {
             program,
@@ -182,8 +197,9 @@ impl Request {
 /// The program is running on its terminal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Started {
-    /// The host's process id of the shell.
-    pub pid: u32,
+    /// The host's process id of the shell; absent for a console, which starts no program.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
     /// The session's id (128 bits as hex), when the request asked for a session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
@@ -192,7 +208,10 @@ pub struct Started {
 impl Started {
     /// A report for a program that is not a session.
     pub const fn new(pid: u32) -> Self {
-        Self { pid, session: None }
+        Self {
+            pid: Some(pid),
+            session: None,
+        }
     }
 }
 

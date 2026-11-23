@@ -1005,6 +1005,20 @@ fn shell_cases() -> Vec<Case> {
             "shell.Request",
             &shell::Request::kind(ShellKind::Bash),
         ),
+        message(
+            "open_console",
+            OPEN,
+            "open",
+            "shell.Request",
+            &shell::Request::console(Some("console")),
+        ),
+        message(
+            "open_console_default",
+            OPEN,
+            "open",
+            "shell.Request",
+            &shell::Request::console(None),
+        ),
         message("open_argv_sized", OPEN, "open", "shell.Request", &by_argv),
         message(
             "open_argv_with_deadline",
@@ -1022,12 +1036,23 @@ fn shell_cases() -> Vec<Case> {
         output(
             "started_session",
             shell::Output::Started(shell::Started {
-                pid: 77,
+                pid: Some(77),
                 session: Some("ffeeddccbbaa99887766554433221100".into()),
             }),
             to_json(&shell::Started {
-                pid: 77,
+                pid: Some(77),
                 session: Some("ffeeddccbbaa99887766554433221100".into()),
+            }),
+        ),
+        output(
+            "started_console",
+            shell::Output::Started(shell::Started {
+                pid: None,
+                session: Some("console:console".into()),
+            }),
+            to_json(&shell::Started {
+                pid: None,
+                session: Some("console:console".into()),
             }),
         ),
         output(

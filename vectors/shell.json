@@ -25,6 +25,47 @@
     },
     {
       "direction": "client_to_host",
+      "hex": "a56770726f6772616da2647479706567636f6e736f6c6566736f7572636567636f6e736f6c6563637764f663656e76a365636c656172f463736574a06672656d6f76658064636f6c73185064726f77731818",
+      "kind": "open",
+      "name": "open_console",
+      "type": "shell.Request",
+      "value": {
+        "cols": 80,
+        "cwd": null,
+        "env": {
+          "clear": false,
+          "remove": [],
+          "set": {}
+        },
+        "program": {
+          "source": "console",
+          "type": "console"
+        },
+        "rows": 24
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a56770726f6772616da1647479706567636f6e736f6c6563637764f663656e76a365636c656172f463736574a06672656d6f76658064636f6c73185064726f77731818",
+      "kind": "open",
+      "name": "open_console_default",
+      "type": "shell.Request",
+      "value": {
+        "cols": 80,
+        "cwd": null,
+        "env": {
+          "clear": false,
+          "remove": [],
+          "set": {}
+        },
+        "program": {
+          "type": "console"
+        },
+        "rows": 24
+      }
+    },
+    {
+      "direction": "client_to_host",
       "hex": "a56770726f6772616da264747970656461726776646172677682682f62696e2f7a7368622d6c63637764642f73727663656e76a365636c656172f463736574a06672656d6f76658064636f6c73188464726f7773182b",
       "kind": "open",
       "name": "open_argv_sized",
@@ -118,6 +159,19 @@
         "message": {
           "pid": 77,
           "session": "ffeeddccbbaa99887766554433221100"
+        },
+        "tag": 1
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "01a16773657373696f6e6f636f6e736f6c653a636f6e736f6c65",
+      "kind": "frame",
+      "name": "started_console",
+      "type": "shell.Output",
+      "value": {
+        "message": {
+          "session": "console:console"
         },
         "tag": 1
       }
