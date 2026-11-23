@@ -9,6 +9,7 @@ use bohio_proto::{ErrorBody, ErrorCode};
 use cap_fs_ext::{DirExt, SystemTimeSpec};
 use cap_std::fs::{Dir, File, OpenOptions};
 
+use super::native;
 use super::ops::{Roots, open_regular_in};
 use super::path::check_link_target;
 use super::stage::Staged;
@@ -19,12 +20,7 @@ fn bad(message: &'static str) -> ErrorBody {
 }
 
 /// The directory holding `relative` and its last name, both opened under `dir` without leaving it.
-#[cfg(any(
-    target_os = "linux",
-    target_os = "android",
-    target_os = "macos",
-    windows
-))]
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
 fn parent_of<'a>(dir: &Dir, relative: &'a Path) -> std::io::Result<(Dir, &'a std::ffi::OsStr)> {
     let name = relative
         .file_name()
@@ -56,7 +52,7 @@ pub(crate) fn rename_in(
     overwrite: bool,
 ) -> std::io::Result<()> {
     if overwrite {
-        return from_dir.rename(from, to_dir, to);
+        return super::native::rename_replacing(from_dir, from, to_dir, to);
     }
     rename_new(from_dir, from, to_dir, to)
 }
@@ -85,9 +81,7 @@ fn rename_new(from_dir: &Dir, from: &Path, to_dir: &Dir, to: &Path) -> std::io::
 
 #[cfg(windows)]
 fn rename_new(from_dir: &Dir, from: &Path, to_dir: &Dir, to: &Path) -> std::io::Result<()> {
-    let (from_parent, from_name) = parent_of(from_dir, from)?;
-    let (to_parent, to_name) = parent_of(to_dir, to)?;
-    crate::platform::rename::rename_no_replace(&from_parent, from_name, &to_parent, to_name)
+    super::native::rename(from_dir, from, to_dir, to, false)
 }
 
 #[cfg(not(any(
@@ -182,17 +176,17 @@ fn move_across(
         // A copy that failed leaves the original where it was; what it made of a new name goes.
         if made_target {
             let _ = if meta.is_dir() {
-                to.dir.remove_dir_all(to.relative)
+                native::remove_dir_all(to.dir, to.relative)
             } else {
-                to.dir.remove_file_or_symlink(to.relative)
+                native::remove_file_or_symlink(to.dir, to.relative)
             };
         }
         return Err(error);
     }
     let removed = if meta.is_dir() {
-        from.dir.remove_dir_all(from.relative)
+        native::remove_dir_all(from.dir, from.relative)
     } else {
-        from.dir.remove_file_or_symlink(from.relative)
+        native::remove_file_or_symlink(from.dir, from.relative)
     };
     removed.map_err(|error| io_error(&error))
 }
@@ -289,10 +283,7 @@ fn copy_file(
 
 /// A symbolic link made again at `to` with the same text, which must still stay inside the root.
 fn copy_link(from: &Place<'_>, to: &Place<'_>, overwrite: bool) -> Result<(), ErrorBody> {
-    let text = from
-        .dir
-        .read_link_contents(from.relative)
-        .map_err(|error| io_error(&error))?;
+    let text = native::read_link(from.dir, from.relative).map_err(|error| io_error(&error))?;
     let text = text.into_os_string().into_string().map_err(|_| {
         ErrorBody::new(
             ErrorCode::Io,
@@ -307,9 +298,7 @@ fn copy_link(from: &Place<'_>, to: &Place<'_>, overwrite: bool) -> Result<(), Er
             .symlink_metadata(to.relative)
             .is_ok_and(|meta| !meta.is_dir())
     {
-        to.dir
-            .remove_file_or_symlink(to.relative)
-            .map_err(|error| io_error(&error))?;
+        native::remove_file_or_symlink(to.dir, to.relative).map_err(|error| io_error(&error))?;
     }
     make_link(to, &text)
 }
@@ -323,18 +312,14 @@ fn make_link(to: &Place<'_>, text: &str) -> Result<(), ErrorBody> {
 
 #[cfg(windows)]
 fn make_link(to: &Place<'_>, text: &str) -> Result<(), ErrorBody> {
-    let native = text.replace('/', "\\");
-    let beside = to
-        .relative
-        .parent()
-        .map_or_else(|| PathBuf::from(&native), |parent| parent.join(&native));
+    let native_text = text.replace('/', "\\");
+    let beside = to.relative.parent().map_or_else(
+        || PathBuf::from(&native_text),
+        |parent| parent.join(&native_text),
+    );
     let to_directory = to.dir.metadata(&beside).is_ok_and(|meta| meta.is_dir());
-    if to_directory {
-        to.dir.symlink_dir(&native, to.relative)
-    } else {
-        to.dir.symlink_file(&native, to.relative)
-    }
-    .map_err(|error| io_error(&error))
+    native::symlink(to.dir, to.relative, native_text.as_ref(), to_directory)
+        .map_err(|error| io_error(&error))
 }
 
 /// A directory copied with everything in it, depth first and without recursion. Links are made again as
@@ -363,20 +348,20 @@ fn copy_tree(
                 }
             }
             Ok(_) => return Err(ErrorBody::new(ErrorCode::Exists, "the target exists")),
-            Err(_) => to
-                .dir
-                .create_dir(&target)
-                .map_err(|error| io_error(&error))?,
+            Err(_) => native::create_dir(
+                to.dir,
+                &target,
+                false,
+                #[cfg(unix)]
+                None,
+            )
+            .map_err(|error| io_error(&error))?,
         }
         if options.preserve {
             finish.push((target.clone(), meta));
         }
         let mut children = Vec::new();
-        for entry in from
-            .dir
-            .read_dir(&source)
-            .map_err(|error| io_error(&error))?
-        {
+        for entry in native::read_dir(from.dir, &source).map_err(|error| io_error(&error))? {
             let entry = entry.map_err(|error| io_error(&error))?;
             count += 1;
             if limit != 0 && count > limit {

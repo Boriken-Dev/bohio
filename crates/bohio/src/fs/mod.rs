@@ -23,13 +23,12 @@
 //! - macOS and other Unix: the component-by-component `openat` walk with `O_NOFOLLOW`; the same
 //!   guarantee, and `*at` calls on the parent's handle.
 //! - Windows: walking a path and opening a file or directory are relative to the root's handle
-//!   (`NtCreateFile` with a `RootDirectory`, reparse points not followed), so `stat`, hashes, reads
-//!   and the opens of writes are race-free. Listing a directory, reading a link, creating a
-//!   directory, removing, renaming, symlinking and changing permissions are not: the library
-//!   turns the parent's handle into its current path and acts on the parent's path joined with the name, so a peer or local
-//!   user who can rename a directory inside the root during that call can redirect it to wherever
-//!   that name then points. The root itself is opened by its path once per call, so what lies
-//!   above a configured root is the administrator's to protect.
+//!   (`NtCreateFile` with a `RootDirectory`, reparse points not followed), and so are listing a
+//!   directory, reading and making a link, creating a directory, removing (a tree too), renaming and
+//!   setting the read-only attribute (`platform::winfs`): the name is opened relative to the handle of
+//!   the directory that holds it and the call goes through the handle it gets, so no path is built
+//!   and a directory swapped for a junction cannot redirect it. The root itself is opened by its path
+//!   once per call, so what lies above a configured root is the administrator's to protect.
 //!
 //! On every system the host still trusts the roots' owner: a hard link made by another local user
 //! to a file outside a root exposes that file, and a bind mount or a Windows junction an
@@ -42,6 +41,7 @@ pub(crate) mod compress;
 mod delta;
 mod follow;
 mod hash;
+mod native;
 mod ops;
 mod path;
 mod prepare;

@@ -7,8 +7,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use bohio_proto::fs::{Entry, FileKind, Listing, Metadata, Timestamp};
 use bohio_proto::{ErrorBody, ErrorCode};
 use cap_fs_ext::{DirExt, SystemTimeSpec};
-use cap_std::fs::{Dir, DirBuilder, DirEntry, File};
+use cap_std::fs::{Dir, File};
 
+use super::native::{self, DirEntry};
 use super::path::{self, check_link_target};
 use super::{Context, io_error};
 
@@ -174,9 +175,7 @@ pub(crate) fn list(
         usize::try_from(wanted).unwrap_or(usize::MAX)
     });
     let page = page.clamp(1, context.config.list_page);
-    let read = dir
-        .read_dir(dot(&relative))
-        .map_err(|error| io_error(&error))?;
+    let read = native::read_dir(&dir, dot(&relative)).map_err(|error| io_error(&error))?;
 
     // Only the `page + 1` smallest names above `after` are kept, so a huge directory costs one
     // pass and a page of memory.
@@ -252,15 +251,14 @@ pub(crate) fn mkdir(
     if let Some(bits) = mode {
         super::check_mode(bits)?;
     }
-    let mut builder = DirBuilder::new();
-    builder.recursive(parents);
-    #[cfg(unix)]
-    if let Some(bits) = mode {
-        use cap_std::fs::DirBuilderExt;
-        builder.mode(bits & 0o7777);
-    }
-    dir.create_dir_with(&relative, &builder)
-        .map_err(|error| io_error(&error))
+    native::create_dir(
+        &dir,
+        &relative,
+        parents,
+        #[cfg(unix)]
+        mode,
+    )
+    .map_err(|error| io_error(&error))
 }
 
 pub(crate) fn remove(roots: &Roots<'_>, text: &str, recursive: bool) -> Result<(), ErrorBody> {
@@ -270,12 +268,12 @@ pub(crate) fn remove(roots: &Roots<'_>, text: &str, recursive: bool) -> Result<(
         .map_err(|error| io_error(&error))?;
     let removed = if meta.is_dir() {
         if recursive {
-            dir.remove_dir_all(&relative)
+            native::remove_dir_all(&dir, &relative)
         } else {
-            dir.remove_dir(&relative)
+            native::remove_dir(&dir, &relative)
         }
     } else {
-        dir.remove_file_or_symlink(&relative)
+        native::remove_file_or_symlink(&dir, &relative)
     };
     removed.map_err(|error| io_error(&error))
 }
@@ -303,25 +301,19 @@ pub(crate) fn symlink(roots: &Roots<'_>, target: &str, link: &str) -> Result<(),
     }
     #[cfg(windows)]
     {
-        let native = target.replace('/', "\\");
-        let beside = relative
-            .parent()
-            .map_or_else(|| PathBuf::from(&native), |parent| parent.join(&native));
+        let native_text = target.replace('/', "\\");
+        let beside = relative.parent().map_or_else(
+            || PathBuf::from(&native_text),
+            |parent| parent.join(&native_text),
+        );
         let to_directory = dir.metadata(&beside).is_ok_and(|meta| meta.is_dir());
-        if to_directory {
-            dir.symlink_dir(&native, &relative)
-        } else {
-            dir.symlink_file(&native, &relative)
-        }
-        .map_err(|error| io_error(&error))
+        native::symlink(&dir, &relative, native_text.as_ref(), to_directory)
+            .map_err(|error| io_error(&error))
     }
 }
-
 pub(crate) fn readlink(roots: &Roots<'_>, text: &str) -> Result<String, ErrorBody> {
     let (dir, relative) = roots.resolve_entry(text)?;
-    let target = dir
-        .read_link_contents(&relative)
-        .map_err(|error| io_error(&error))?;
+    let target = native::read_link(&dir, &relative).map_err(|error| io_error(&error))?;
     target.into_os_string().into_string().map_err(|_| {
         ErrorBody::new(
             ErrorCode::Io,
@@ -378,13 +370,7 @@ pub(crate) fn set_attributes(
     let Some(readonly) = readonly else {
         return Ok(());
     };
-    let mut permissions = dir
-        .metadata(&relative)
-        .map_err(|error| io_error(&error))?
-        .permissions();
-    permissions.set_readonly(readonly);
-    dir.set_permissions(&relative, permissions)
-        .map_err(|error| io_error(&error))
+    native::set_readonly(&dir, &relative, readonly).map_err(|error| io_error(&error))
 }
 
 #[cfg(not(windows))]

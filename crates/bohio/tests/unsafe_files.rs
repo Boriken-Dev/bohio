@@ -54,17 +54,23 @@ const ALLOWED: &[Allowed] = &[
         miri: "not reachable: every unsafe call is a COM or GDI call on the display adapter, which                Miri does not run; covered by tests/gui_windows.rs, which captures a probe window's                own region through DXGI and through GDI and compares it with the pixels it painted",
     },
     Allowed {
-        file: "crates/bohio/src/platform/rename.rs",
-        reason: "a rename that refuses an existing target in the call itself on Windows \
-                 (MoveFileExW without MOVEFILE_REPLACE_EXISTING, the paths of the parent \
-                 directories read from their handles by GetFinalPathNameByHandleW): the \
-                 check-then-rename gap a peer racing itself could use to replace what it was told \
-                 not to. Ruled out: std::fs::rename always replaces a file on Windows; cap-std has \
-                 no no-replace rename; a hard link plus a delete works only for files, not for \
-                 directories; SetFileInformationByHandle(FileRenameInfo) needs a handle opened \
-                 with DELETE access, which cap-std cannot open for a directory or a link itself",
-        miri: "not reachable: both unsafe calls are Win32 calls, which Miri does not run; covered \
-               by tests/treeops.rs (racing movers, on files and on directories) on Windows",
+        file: "crates/bohio/src/platform/winfs.rs",
+        reason: "Windows filesystem calls on a name inside a directory handle (NtCreateFile with \
+                 RootDirectory and FILE_OPEN_REPARSE_POINT, then SetFileInformationByHandle with \
+                 FileDispositionInfoEx and FileRenameInfoEx, FSCTL_GET_REPARSE_POINT and \
+                 FSCTL_SET_REPARSE_POINT, GetFileInformationByHandleEx to list): make a directory, \
+                 remove (a tree too), rename that refuses an existing target in the call itself, \
+                 read and make a link, set the read-only attribute and list, so a directory swapped \
+                 for a junction between two calls cannot redirect the one running and no path is \
+                 built. Ruled out: cap-std and cap-primitives open each parent by handle but then \
+                 turn it into a path (GetFinalPathNameByHandleW) and call std on the path joined \
+                 with the name, and drop the handle first to remove a tree; std has no call that \
+                 takes a directory handle; cap-primitives' own NtCreateFile wrapper is private; no \
+                 maintained crate wraps the NT calls over handles (ntapi and windows-sys give the \
+                 bindings only), and the bindings are already a dependency",
+        miri: "not reachable: every unsafe call is a Win32 or NT call, which Miri does not run; \
+               covered by tests/fs.rs, tests/treeops.rs and tests/fs_swap_windows.rs (a directory \
+               swapped for a junction while the calls run) on Windows",
     },
     Allowed {
         file: "crates/bohio/src/platform/winproc.rs",

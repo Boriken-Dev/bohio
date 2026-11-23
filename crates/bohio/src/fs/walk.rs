@@ -403,7 +403,7 @@ impl Walker<'_> {
     ) -> WalkEntry {
         let described: Metadata = ops::describe(meta);
         let target = if meta.is_symlink() {
-            dir.read_link_contents(relative)
+            super::native::read_link(dir, relative)
                 .ok()
                 .and_then(|target| target.into_os_string().into_string().ok())
         } else {
@@ -513,7 +513,7 @@ impl Walker<'_> {
                 usize::try_from(max.saturating_sub(self.sent)).unwrap_or(usize::MAX)
             }
         };
-        let read = match dir.read_dir(relative) {
+        let read = match super::native::read_dir(dir, relative) {
             Ok(read) => read,
             Err(error) => {
                 self.item_error(root, shown, &io_error(&error));

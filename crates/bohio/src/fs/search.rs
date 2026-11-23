@@ -366,7 +366,7 @@ impl Searcher<'_> {
         depth: u64,
     ) -> Option<Level> {
         let shown = if text.is_empty() { None } else { Some(text) };
-        let read = match dir.read_dir(relative) {
+        let read = match super::native::read_dir(dir, relative) {
             Ok(read) => read,
             Err(error) => {
                 self.item_error(root, shown, &io_error(&error));

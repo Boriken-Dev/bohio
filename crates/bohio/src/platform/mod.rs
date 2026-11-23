@@ -9,9 +9,9 @@
 mod guard;
 pub(crate) mod gui;
 mod pty;
-#[cfg(windows)]
-pub(crate) mod rename;
 mod tree;
+#[cfg(windows)]
+pub(crate) mod winfs;
 #[cfg(windows)]
 mod winproc;
 

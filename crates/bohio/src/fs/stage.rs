@@ -56,7 +56,7 @@ fn resume_name(tag: &str, token: &str) -> OsString {
 
 /// Removes the kept temporary files of `parent` that nothing continued for `ttl`.
 fn sweep(parent: &Dir, ttl: Duration) {
-    let Ok(entries) = parent.read_dir(".") else {
+    let Ok(entries) = super::native::read_dir(parent, Path::new(".")) else {
         return;
     };
     for entry in entries.flatten() {
@@ -73,7 +73,7 @@ fn sweep(parent: &Dir, ttl: Duration) {
             .and_then(|made| SystemTime::now().duration_since(made.into_std()).ok())
             .is_some_and(|age| age >= ttl);
         if old {
-            let _ = parent.remove_file(&name);
+            let _ = super::native::remove_file_or_symlink(parent, Path::new(&name));
         }
     }
 }
@@ -137,8 +137,14 @@ fn locate(
     }
     let parent_relative = relative.parent().filter(|p| !p.as_os_str().is_empty());
     if parents && let Some(parent_relative) = parent_relative {
-        root.create_dir_all(parent_relative)
-            .map_err(|e| io_error(&e))?;
+        super::native::create_dir(
+            root,
+            parent_relative,
+            true,
+            #[cfg(unix)]
+            None,
+        )
+        .map_err(|e| io_error(&e))?;
     }
     let parent = match parent_relative {
         Some(parent_relative) => root.open_dir(parent_relative),
@@ -427,9 +433,13 @@ impl Staged {
                 .map_err(|e| io_error(&e))?;
         }
         if let Some(temp) = &self.temp {
-            self.parent
-                .rename(Path::new(temp), &self.parent, Path::new(&self.name))
-                .map_err(|e| io_error(&e))?;
+            super::native::rename_replacing(
+                &self.parent,
+                Path::new(temp),
+                &self.parent,
+                Path::new(&self.name),
+            )
+            .map_err(|e| io_error(&e))?;
         }
         self.committed = true;
         Ok(())
@@ -447,9 +457,9 @@ impl Drop for Staged {
             return;
         }
         if let Some(temp) = &self.temp {
-            let _ = self.parent.remove_file(Path::new(temp));
+            let _ = super::native::remove_file_or_symlink(&self.parent, Path::new(temp));
         } else if self.made && matches!(self.mode, WriteMode::Create) {
-            let _ = self.parent.remove_file(Path::new(&self.name));
+            let _ = super::native::remove_file_or_symlink(&self.parent, Path::new(&self.name));
         }
     }
 }
