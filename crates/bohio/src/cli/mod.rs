@@ -431,6 +431,16 @@ pub enum RemoteAction {
     Get(RemoteGetArgs),
     /// List a tree of the host, one line for each entry, in one stream.
     Walk(RemoteWalkArgs),
+    /// List the paths below a root that match a glob, on the host, in one stream (`**/*.rs`).
+    Glob(RemoteGlobArgs),
+    /// Print what the host is running on: name, uptime, processors, load, memory and disks.
+    Stats(RemoteStatsArgs),
+    /// Print where each name is on the host's own `PATH` (`NAME  PATH`, or `NAME  -` when there is none). Exits 1 when a
+    /// name was not found.
+    Which(RemoteWhichArgs),
+    /// Print the lines of the host's files that match a pattern, found on the host: `PATH:LINE:TEXT`. Exits 0 when a line
+    /// matched, 1 when none did, 2 when something could not be read.
+    Search(RemoteSearchArgs),
     /// Make a tree of the host and a local tree the same, moving only what differs: small files in bundles, large ones by delta.
     Sync(RemoteSyncArgs),
     /// Open an interactive shell on the host.
@@ -453,6 +463,81 @@ pub enum RemoteAction {
     Sessions(RemoteSessionsArgs),
     /// End a detached session: its program is sent a signal (`kill`, ending the whole tree, unless `--signal` says otherwise).
     End(RemoteEndArgs),
+}
+
+/// `bohio remote ... stats`.
+#[derive(Debug, Args)]
+pub struct RemoteStatsArgs {
+    /// The output format.
+    #[arg(long, value_enum, default_value = "text")]
+    pub format: Format,
+}
+
+/// `bohio remote ... which`.
+#[derive(Debug, Args)]
+pub struct RemoteWhichArgs {
+    /// The program names to look up on the host's own `PATH`.
+    #[arg(required = true, value_name = "NAME")]
+    pub names: Vec<String>,
+    /// The output format.
+    #[arg(long, value_enum, default_value = "text")]
+    pub format: Format,
+}
+
+/// `bohio remote ... search`.
+#[derive(Debug, Args)]
+pub struct RemoteSearchArgs {
+    /// The pattern: a regular expression (linear-time, so none can run away), or text with `-F`.
+    pub pattern: String,
+    /// The directories (or files) to search, in the host's own path text. The host's first root when absent.
+    #[arg(value_name = "PATH", default_value = ".")]
+    pub paths: Vec<String>,
+    /// Search only files whose path or name matches this glob (repeatable).
+    #[arg(short = 'g', long = "glob", value_name = "GLOB")]
+    pub include: Vec<String>,
+    /// Leave out entries matching this glob, and what is under a directory that does (repeatable).
+    #[arg(short = 'x', long = "exclude", value_name = "GLOB")]
+    pub exclude: Vec<String>,
+    /// Ignore case.
+    #[arg(short = 'i', long)]
+    pub ignore_case: bool,
+    /// Take the pattern as plain text.
+    #[arg(short = 'F', long)]
+    pub fixed_strings: bool,
+    /// Lines of context before and after each match (the host's `[search] max_context` bounds it).
+    #[arg(short = 'C', long, value_name = "N", default_value_t = 0)]
+    pub context: u64,
+    /// Search names that start with a dot too.
+    #[arg(long)]
+    pub hidden: bool,
+    /// How far below a path to go: `0` is the paths themselves. The whole tree when absent.
+    #[arg(long, value_name = "N")]
+    pub depth: Option<u64>,
+    /// The most matches to print (at most the host's `[search] max_matches`).
+    #[arg(long, value_name = "N")]
+    pub max_matches: Option<u64>,
+    /// The most files to read (at most the host's `[search] max_files`).
+    #[arg(long, value_name = "N")]
+    pub max_files: Option<u64>,
+    /// The output format.
+    #[arg(long, value_enum, default_value = "text")]
+    pub format: Format,
+}
+
+/// `bohio remote ... glob`.
+#[derive(Debug, Args)]
+pub struct RemoteGlobArgs {
+    /// The glob: a path below each root, or a name, matched as `**/*.rs` is.
+    pub glob: String,
+    /// The directories to look in, in the host's own path text. The host's first root when absent.
+    #[arg(value_name = "PATH", default_value = ".")]
+    pub paths: Vec<String>,
+    /// How far below a path to go. The whole tree when absent.
+    #[arg(long, value_name = "N")]
+    pub depth: Option<u64>,
+    /// The output format.
+    #[arg(long, value_enum, default_value = "text")]
+    pub format: Format,
 }
 
 /// What `exec` and `shell` take to start a detached session.
@@ -593,6 +678,20 @@ pub struct RemoteReadArgs {
     /// ends); the host clamps it to its own limit.
     #[arg(long, value_name = "LOG2", requires = "compress")]
     pub window_log: Option<u32>,
+    /// Keep the file open and print what is appended, as `tail -f` does, until interrupted. The host's `[filesystem]
+    /// follow_interval` says how often it looks; the file is sent from its start unless `--tail` says otherwise. Not with
+    /// the compression options.
+    #[arg(long, short = 'f', conflicts_with_all = ["compress", "prepare", "window_log"])]
+    pub follow: bool,
+    /// As `--follow`, and when another file takes the path (a log rotation) follow that one from its start.
+    #[arg(short = 'F', conflicts_with_all = ["compress", "prepare", "window_log", "follow"])]
+    pub follow_name: bool,
+    /// With `--follow` or `-F`: start this many bytes before the end of the file (`0` prints only what is appended).
+    #[arg(long, value_name = "BYTES")]
+    pub tail: Option<u64>,
+    /// With `--follow` or `-F`: how often the host looks for more bytes (`500ms`, `2s`).
+    #[arg(long, value_name = "SPAN", value_parser = parse_span)]
+    pub interval: Option<std::time::Duration>,
 }
 
 /// `bohio remote ... write`.

@@ -87,6 +87,17 @@ fn sample_transfer() -> TransferInfo {
             max_streams: 4,
             max_entries: 1_000_000,
         },
+        search: true,
+        search_limits: bohio_proto::info::SearchLimits {
+            max_searches: 4,
+            max_file_bytes: 16_777_216,
+            max_line_bytes: 4096,
+            max_matches: 10_000,
+            max_files: 100_000,
+            max_context: 50,
+            deadline_ms: 60_000,
+        },
+        follow: true,
         bundles: true,
         resume: false,
     }
@@ -483,6 +494,11 @@ fn every_transfer_message_round_trips() {
             base_size: 99,
         }),
         items: true,
+        follow: Some(bohio_proto::fs::ReadFollow {
+            by: Some(bohio_proto::fs::FollowBy::Name),
+            interval_ms: Some(100),
+            tail: Some(4096),
+        }),
     };
     assert_eq!(
         ReadRequest::from_metadata(&read.to_metadata().unwrap()).unwrap(),
@@ -533,11 +549,16 @@ fn every_transfer_message_round_trips() {
             compressed_length: Some(4),
             token: Some("ab".into()),
             delta: true,
+            follow: true,
             index: Some(3),
             modified: Some(bohio_proto::fs::Timestamp { secs: 3, nanos: 4 }),
             mode: Some(0o644),
         }),
         ReadOutput::Copy(DeltaCopy { block: 7, count: 2 }),
+        ReadOutput::Truncated(bohio_proto::fs::Truncated {
+            size: 9,
+            replaced: true,
+        }),
         ReadOutput::Data(vec![0, 1, 255]),
         ReadOutput::Compressed(vec![9, 8]),
         ReadOutput::Progress(Progress { prepared: 3 }),

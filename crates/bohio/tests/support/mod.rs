@@ -11,8 +11,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use bohio::config::{
-    CompressionConfig, DeltaConfig, ExecutionConfig, FilesystemConfig, HashConfig, ShellConfig,
-    WalkConfig,
+    CompressionConfig, DeltaConfig, ExecutionConfig, FilesystemConfig, HashConfig, SearchConfig,
+    ShellConfig, WalkConfig,
 };
 use bohio::exec::{self, Context};
 use bohio::limit::Slots;
@@ -54,10 +54,14 @@ pub struct Link {
     /// The peer id the host sees; a prepared read is bound to it.
     pub peer: String,
     pub transfers: Arc<Slots>,
+    pub follows: Arc<Slots>,
     pub hash_slots: Arc<Slots>,
     /// The `[walk]` settings of the host; a test changes them with [`Link::walking`].
     pub walk: Arc<WalkConfig>,
     pub walk_slots: Arc<Slots>,
+    /// The `[search]` settings of the host; a test changes them with [`Link::searching`].
+    pub search: Arc<SearchConfig>,
+    pub search_slots: Arc<Slots>,
     /// What the peer is granted now, when it differs from `grant`: a hash stream reads it before each item, as the
     /// node does, so a test narrows a grant while a stream is open.
     pub live: Arc<Mutex<Option<Grant>>>,
@@ -126,6 +130,14 @@ impl Link {
         self
     }
 
+    /// This host with the `[search]` settings `search`.
+    #[must_use]
+    pub fn searching(mut self, search: SearchConfig) -> Self {
+        self.search_slots = Arc::new(Slots::new(search.max_searches));
+        self.search = Arc::new(search);
+        self
+    }
+
     /// This host with the `[compression]` settings `compression`.
     #[must_use]
     pub fn compressing(mut self, compression: CompressionConfig) -> Self {
@@ -146,6 +158,7 @@ impl Link {
     ) -> Self {
         let slots = Slots::new(config.max_processes);
         let transfers = Slots::new(files.max_transfers);
+        let follows = Slots::new(files.max_follows);
         let sessions = Slots::new(shells.max_sessions);
         Self {
             grant: Arc::new(grant),
@@ -155,12 +168,15 @@ impl Link {
             hash: Arc::new(HashConfig::default()),
             walk: Arc::new(WalkConfig::default()),
             walk_slots: Arc::new(Slots::new(WalkConfig::default().max_streams)),
+            search: Arc::new(SearchConfig::default()),
+            search_slots: Arc::new(Slots::new(SearchConfig::default().max_searches)),
             delta: Arc::new(DeltaConfig::default()),
             compression: Arc::new(CompressionConfig::default()),
             peer: "test-peer".to_owned(),
             live: Arc::new(Mutex::new(None)),
             files: Arc::new(files),
             transfers: Arc::new(transfers),
+            follows: Arc::new(follows),
             info: Arc::new(Info {
                 protocol: 1,
                 ..Info::default()
@@ -272,6 +288,8 @@ impl Open for Link {
                 Arc::clone(&self.transfers),
                 Arc::clone(&self.info),
             );
+            let follows = Arc::clone(&self.follows);
+            let path = Arc::clone(&self.path);
             let peer = self.peer.clone();
             let (hash, hash_slots, live, compression, delta) = (
                 Arc::clone(&self.hash),
@@ -281,6 +299,7 @@ impl Open for Link {
                 Arc::clone(&self.delta),
             );
             let (walk, walk_slots) = (Arc::clone(&self.walk), Arc::clone(&self.walk_slots));
+            let (search, search_slots) = (Arc::clone(&self.search), Arc::clone(&self.search_slots));
             let handle = std::thread::spawn(move || {
                 let now = || {
                     Ok(live
@@ -297,6 +316,7 @@ impl Open for Link {
                     compression: &compression,
                     peer: &peer,
                     slots: &transfers,
+                    follows: &follows,
                     current: Some(control::Current(&now)),
                 };
                 let result = match name.as_str() {
@@ -307,6 +327,7 @@ impl Open for Link {
                             info: &info,
                             current: None,
                             sessions: None,
+                            path: Some(path.as_os_str()),
                         };
                         control::serve(&host, &context);
                         Ok(())
@@ -324,6 +345,14 @@ impl Open for Link {
                             slots: &walk_slots,
                         };
                         fs::serve_walk(Arc::clone(&host), &metadata, &context).map(|_| ())
+                    }
+                    protocol::SEARCH => {
+                        let context = fs::SearchContext {
+                            files: context,
+                            search: &search,
+                            slots: &search_slots,
+                        };
+                        fs::serve_search(Arc::clone(&host), &metadata, &context).map(|_| ())
                     }
                     protocol::HASH => {
                         let context = fs::HashContext {

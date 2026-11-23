@@ -1,0 +1,150 @@
+{
+  "encoding": "hex is the stream message exactly as it travels: open metadata and control messages are bare CBOR, a frame is one tag byte then its body",
+  "protocol": "bohio-search/1",
+  "vectors": [
+    {
+      "direction": "client_to_host",
+      "hex": "a26477616c6ba165726f6f747381692f7372762f646f6373677061747465726e64544f444f",
+      "kind": "open",
+      "name": "open_literal",
+      "type": "search.Request",
+      "value": {
+        "pattern": "TODO",
+        "walk": {
+          "roots": [
+            "/srv/docs"
+          ]
+        }
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a76477616c6ba465726f6f747382692f7372762f646f6373682f7661722f6c6f676564657074680367696e636c75646581672a2a2f2a2e7273676578636c75646581667461726765746668696464656ef5677061747465726e69666e5c732b6d61696e70636173655f696e73656e736974697665f567636f6e74657874026b6d61785f6d6174636865731864696d61785f66696c6573191388",
+      "kind": "open",
+      "name": "open_filtered",
+      "type": "search.Request",
+      "value": {
+        "case_insensitive": true,
+        "context": 2,
+        "hidden": true,
+        "max_files": 5000,
+        "max_matches": 100,
+        "pattern": "fn\\s+main",
+        "walk": {
+          "depth": 3,
+          "exclude": [
+            "target"
+          ],
+          "include": [
+            "**/*.rs"
+          ],
+          "roots": [
+            "/srv/docs",
+            "/var/log"
+          ]
+        }
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "01a364726f6f740064706174686b7372632f6d61696e2e72736473697a65190800",
+      "kind": "frame",
+      "name": "file",
+      "type": "search.Output",
+      "value": {
+        "message": {
+          "path": "src/main.rs",
+          "root": 0,
+          "size": 2048
+        },
+        "tag": 1
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "02a2646c696e650c64746578746b666e206d61696e2829207b",
+      "kind": "frame",
+      "name": "match",
+      "type": "search.Output",
+      "value": {
+        "message": {
+          "line": 12,
+          "text": "fn main() {"
+        },
+        "tag": 2
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "02a5646c696e65182864746578746a2020202072756e28293b666265666f7265816c20202020736574757028293b65616674657282617d60697472756e6361746564f5",
+      "kind": "frame",
+      "name": "match_context",
+      "type": "search.Output",
+      "value": {
+        "message": {
+          "after": [
+            "}",
+            ""
+          ],
+          "before": [
+            "    setup();"
+          ],
+          "line": 40,
+          "text": "    run();",
+          "truncated": true
+        },
+        "tag": 2
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "03a464726f6f740064706174686e7372632f707269766174652e727364636f64656664656e696564676d6573736167657823746865206f7065726174696e672073797374656d207265667573656420616363657373",
+      "kind": "frame",
+      "name": "item_error",
+      "type": "search.Output",
+      "value": {
+        "message": {
+          "code": "denied",
+          "message": "the operating system refused access",
+          "path": "src/private.rs",
+          "root": 0
+        },
+        "tag": 3
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "04a46566696c65731878676d6174636865730267736b6970706564a36662696e61727903656c61726765016a756e7265616461626c6501697472756e6361746564f4",
+      "kind": "frame",
+      "name": "done",
+      "type": "search.Output",
+      "value": {
+        "message": {
+          "files": 120,
+          "matches": 2,
+          "skipped": {
+            "binary": 3,
+            "large": 1,
+            "unreadable": 1
+          },
+          "truncated": false
+        },
+        "tag": 4
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "05a264636f64656b6261645f72657175657374676d65737361676574746865207061747465726e20697320656d707479",
+      "kind": "frame",
+      "name": "error_bad_request",
+      "type": "search.Output",
+      "value": {
+        "message": {
+          "code": "bad_request",
+          "message": "the pattern is empty"
+        },
+        "tag": 5
+      }
+    }
+  ]
+}

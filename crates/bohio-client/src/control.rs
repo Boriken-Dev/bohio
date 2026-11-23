@@ -122,6 +122,36 @@ impl Control {
         }
     }
 
+    /// What the host is running on: name, uptime, processors, load, memory and disks.
+    ///
+    /// # Errors
+    ///
+    /// As [`Control::call`]; `denied` without the `info` permission.
+    pub fn stats(&self, timeout: Option<Duration>) -> Result<bohio_proto::control::Stats, Error> {
+        match self.call(Call::Stats, timeout)? {
+            Reply::Stats(stats) => Ok(*stats),
+            _ => Err(Error::Protocol(bohio_proto::Error::Decode)),
+        }
+    }
+
+    /// Where each of `names` is on the host's own `PATH`, as an `exec` of a bare name finds it: the absolute path, or
+    /// `None` for a name not found (also a name that holds a directory, which is not looked up).
+    ///
+    /// # Errors
+    ///
+    /// As [`Control::call`]; `denied` without the `info` permission, `bad_request` for no names.
+    pub fn which(
+        &self,
+        names: &[&str],
+        timeout: Option<Duration>,
+    ) -> Result<std::collections::BTreeMap<String, Option<String>>, Error> {
+        let names = names.iter().map(|name| (*name).to_owned()).collect();
+        match self.call(Call::Which { names }, timeout)? {
+            Reply::Which { found } => Ok(found),
+            _ => Err(Error::Protocol(bohio_proto::Error::Decode)),
+        }
+    }
+
     /// The detached sessions this peer holds (an `admin` sees every peer's, each with its `peer`), oldest first.
     ///
     /// # Errors

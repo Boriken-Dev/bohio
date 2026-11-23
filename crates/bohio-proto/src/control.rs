@@ -1,5 +1,7 @@
 //! Control calls on a `bohio/1` stream: request and response with ids, so calls overlap.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ErrorBody, ErrorCode};
@@ -156,6 +158,13 @@ pub enum Call {
         #[serde(default)]
         readonly: Option<bool>,
     },
+    /// What the host is running on: its name, uptime, processors, load, memory and disks. Needs `info`.
+    Stats,
+    /// Where each named program is on the host's own `PATH`, as an `exec` of a bare name finds it. Needs `info`.
+    Which {
+        /// The program names to look up; at least one.
+        names: Vec<String>,
+    },
     /// Lists the caller's detached sessions; an `admin` lists every peer's.
     Sessions,
     /// Ends a detached session with a signal (`kill` when none), and with it the program's tree.
@@ -244,9 +253,71 @@ pub enum Reply {
         /// What the link holds.
         target: String,
     },
+    /// The host's [`Stats`].
+    Stats(Box<Stats>),
+    /// The answers of a `which`: each asked name with the absolute path found, or null.
+    Which {
+        /// One entry for each name asked.
+        found: BTreeMap<String, Option<String>>,
+    },
     /// The sessions of a `sessions` call.
     Sessions {
         /// One entry per session, oldest first.
         sessions: Vec<Listed>,
     },
+}
+
+/// What a host is running on: the answer of a `stats` call. Every field is what the operating system reports now; a
+/// field it cannot report is empty or `null`, never a guess.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Stats {
+    /// The machine's name, when the system has one.
+    pub hostname: Option<String>,
+    /// Seconds since the system started.
+    pub uptime_s: u64,
+    /// Logical processors this host may use.
+    pub cpus: u64,
+    /// The load averages over 1, 5 and 15 minutes; null where the system has none (Windows).
+    pub load: Option<[f64; 3]>,
+    /// Physical memory.
+    pub memory: Memory,
+    /// Swap or page file.
+    pub swap: Swap,
+    /// The mounted disks, as the system lists them.
+    pub disks: Vec<Disk>,
+}
+
+/// Physical memory, in bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Memory {
+    /// All of it.
+    pub total: u64,
+    /// What a program can still take without swapping, caches that can be given back included.
+    pub available: u64,
+}
+
+/// Swap space, in bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Swap {
+    /// All of it.
+    pub total: u64,
+    /// What is unused.
+    pub free: u64,
+}
+
+/// One mounted disk, in bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Disk {
+    /// Where it is mounted: a path, or a drive such as `C:\`.
+    pub mount: String,
+    /// The kind of filesystem (`ext4`, `NTFS`), empty when the system does not say.
+    pub filesystem: String,
+    /// Its size.
+    pub total: u64,
+    /// What an unprivileged program can still write.
+    pub available: u64,
 }

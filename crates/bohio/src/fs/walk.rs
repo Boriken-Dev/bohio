@@ -85,7 +85,7 @@ pub fn serve_walk(
     }
 }
 
-fn globs(patterns: &[String]) -> Result<GlobSet, ErrorBody> {
+pub(super) fn globs(patterns: &[String]) -> Result<GlobSet, ErrorBody> {
     let mut builder = GlobSetBuilder::new();
     for pattern in patterns {
         let glob = Glob::new(pattern).map_err(|_| {

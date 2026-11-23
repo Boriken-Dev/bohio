@@ -29,6 +29,8 @@ pub struct Context<'a> {
     pub gui: Option<GuiProbe<'a>>,
     /// The node's sessions and the peer asking, for `sessions` and `end_session`; they are `unsupported` when absent.
     pub sessions: Option<SessionsView<'a>>,
+    /// The host's own `PATH`, where `which` looks; `which` is `unsupported` when absent.
+    pub path: Option<&'a std::ffi::OsStr>,
 }
 
 /// The node's detached sessions, as the peer on this stream may use them.
@@ -151,6 +153,45 @@ fn answer_with(
                 _ => Ok(Reply::Sessions {
                     sessions: view.registry.list(view.peer, admin),
                 }),
+            }
+        }
+        Call::Stats | Call::Which { .. } => {
+            if !filesystem.grant.allows(Permission::Info) {
+                return Err(ErrorBody::new(
+                    ErrorCode::Denied,
+                    "this peer does not hold info",
+                ));
+            }
+            match call {
+                Call::Which { names } => {
+                    let Some(path) = context.path else {
+                        return Err(ErrorBody::new(
+                            ErrorCode::Unsupported,
+                            "this host does not look programs up",
+                        ));
+                    };
+                    if names.is_empty() {
+                        return Err(ErrorBody::new(
+                            ErrorCode::BadRequest,
+                            "which needs at least one name",
+                        ));
+                    }
+                    let found = names
+                        .iter()
+                        .map(|name| {
+                            // A bare name is searched for, as an exec of one is; a name with a directory in it
+                            // names a path of its own and is not looked up.
+                            let located = (std::path::Path::new(name).components().count() == 1)
+                                .then(|| crate::platform::find_program(name, path))
+                                .flatten()
+                                .and_then(|found| std::path::absolute(found).ok())
+                                .map(|found| found.to_string_lossy().into_owned());
+                            (name.clone(), located)
+                        })
+                        .collect();
+                    Ok(Reply::Which { found })
+                }
+                _ => Ok(Reply::Stats(Box::new(crate::stats::collect()))),
             }
         }
         Call::Hello { version, .. } => {

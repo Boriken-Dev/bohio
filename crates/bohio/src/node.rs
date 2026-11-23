@@ -106,8 +106,10 @@ struct Shared {
     info: Info,
     processes: Arc<Slots>,
     transfers: Slots,
+    follows: Slots,
     hashes: Slots,
     walks: Slots,
+    searches: Slots,
     sessions: Arc<Slots>,
     detached: Arc<session::Sessions>,
     forwards: Slots,
@@ -146,8 +148,10 @@ impl Shared {
             info: capabilities,
             processes: Arc::new(Slots::new(config.execution.max_processes)),
             transfers: Slots::new(config.filesystem.max_transfers),
+            follows: Slots::new(config.filesystem.max_follows),
             hashes: Slots::new(config.hash.max_streams),
             walks: Slots::new(config.walk.max_streams),
+            searches: Slots::new(config.search.max_searches),
             sessions: Arc::new(Slots::new(config.shell.max_sessions)),
             detached: session::Sessions::new(
                 &config.sessions,
@@ -1229,6 +1233,7 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
             compression: &config.compression,
             peer: &peer,
             slots: &shared.transfers,
+            follows: &shared.follows,
             current: Some(control::Current(&now)),
         };
         match accepted.protocol.as_str() {
@@ -1315,6 +1320,17 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
                     Err(error) => tracing::info!(code = ?error.code, "walk refused"),
                 }
             }
+            protocol::SEARCH => {
+                let context = fs::SearchContext {
+                    files,
+                    search: &config.search,
+                    slots: &shared.searches,
+                };
+                match fs::serve_search(channel, metadata, &context) {
+                    Ok(matches) => tracing::debug!(matches, "search ended"),
+                    Err(error) => tracing::info!(code = ?error.code, "search refused"),
+                }
+            }
             protocol::HASH => {
                 let context = fs::HashContext {
                     files,
@@ -1333,6 +1349,7 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
                     info: &shared.info,
                     current: Some(control::Current(&now)),
                     gui: Some(control::GuiProbe(&probe)),
+                    path: Some(shared.path.as_os_str()),
                     sessions: Some(control::SessionsView {
                         registry: &shared.detached,
                         peer: &peer,

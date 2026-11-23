@@ -12,6 +12,7 @@ pub mod gui;
 pub mod hash;
 pub mod info;
 pub mod local;
+pub mod search;
 pub mod session;
 pub mod shell;
 pub mod signal;
@@ -35,6 +36,8 @@ pub mod protocol {
     pub const WRITE: &str = "bohio-write/1";
     /// The entries of a tree, streamed.
     pub const WALK: &str = "bohio-walk/1";
+    /// The lines of many files that match a pattern, found on the host and streamed.
+    pub const SEARCH: &str = "bohio-search/1";
     /// Digests of many files, streamed.
     pub const HASH: &str = "bohio-hash/1";
     /// One connection from the host to a target, then its raw bytes both ways.

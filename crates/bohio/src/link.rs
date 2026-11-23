@@ -27,7 +27,7 @@ use bohio_proto::protocol;
 use crate::policy::{Grant, Permission};
 
 /// The protocols a host serves, each with the permissions of which a peer needs at least one to open it.
-pub const PROTOCOLS: [(&str, &[Permission]); 13] = [
+pub const PROTOCOLS: [(&str, &[Permission]); 14] = [
     (
         protocol::CONTROL,
         &[
@@ -43,6 +43,7 @@ pub const PROTOCOLS: [(&str, &[Permission]); 13] = [
     (protocol::WRITE, &[Permission::FsWrite]),
     (protocol::HASH, &[Permission::FsRead]),
     (protocol::WALK, &[Permission::FsRead]),
+    (protocol::SEARCH, &[Permission::FsRead]),
     (protocol::CONNECT, &[Permission::ForwardConnect]),
     (protocol::TCP, &[Permission::ForwardConnect]),
     (protocol::GUI, &[Permission::GuiView, Permission::GuiInput]),

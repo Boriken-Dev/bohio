@@ -283,6 +283,80 @@
       }
     },
     {
+      "direction": "client_to_host",
+      "hex": "a56470617468702f7661722f6c6f672f6170702e6c6f67666f666673657400666c656e677468f6666861736865738066666f6c6c6f77a3626279646e616d656b696e74657276616c5f6d731901f4647461696c191000",
+      "kind": "open",
+      "name": "open_follow",
+      "type": "fs.ReadRequest",
+      "value": {
+        "follow": {
+          "by": "name",
+          "interval_ms": 500,
+          "tail": 4096
+        },
+        "hashes": [],
+        "length": null,
+        "offset": 0,
+        "path": "/var/log/app.log"
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a56470617468702f7661722f6c6f672f6170702e6c6f67666f666673657400666c656e677468f6666861736865738066666f6c6c6f77a0",
+      "kind": "open",
+      "name": "open_follow_defaults",
+      "type": "fs.ReadRequest",
+      "value": {
+        "follow": {},
+        "hashes": [],
+        "length": null,
+        "offset": 0,
+        "path": "/var/log/app.log"
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "01a36473697a65192328666c656e67746819100066666f6c6c6f77f5",
+      "kind": "frame",
+      "name": "header_follow",
+      "type": "fs.ReadOutput",
+      "value": {
+        "message": {
+          "follow": true,
+          "length": 4096,
+          "size": 9000
+        },
+        "tag": 1
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "0aa16473697a651878",
+      "kind": "frame",
+      "name": "truncated",
+      "type": "fs.ReadOutput",
+      "value": {
+        "message": {
+          "size": 120
+        },
+        "tag": 10
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "0aa26473697a6500687265706c61636564f5",
+      "kind": "frame",
+      "name": "truncated_replaced",
+      "type": "fs.ReadOutput",
+      "value": {
+        "message": {
+          "replaced": true,
+          "size": 0
+        },
+        "tag": 10
+      }
+    },
+    {
       "direction": "host_to_client",
       "hex": "08a16870726570617265641a00100000",
       "kind": "frame",

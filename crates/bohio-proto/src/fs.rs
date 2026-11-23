@@ -227,6 +227,48 @@ pub struct ReadRequest {
     /// `prepare`, `resume` or `delta`.
     #[serde(default, skip_serializing_if = "core::ops::Not::not")]
     pub items: bool,
+    /// Follow the file as it grows (`tail -f`): the host sends what is there from the start, then keeps sending what is
+    /// appended until the client closes the stream. Needs `length` absent, and no hashes, compression, `prepare`,
+    /// `resume`, `delta` or `items`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow: Option<ReadFollow>,
+}
+
+/// How a followed read watches the file.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ReadFollow {
+    /// What the follow keeps looking at. Default [`FollowBy::Handle`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<FollowBy>,
+    /// How often the host looks for more bytes, in milliseconds; at least 1. The host's `[filesystem] follow_interval`
+    /// when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_ms: Option<u64>,
+    /// Start this many bytes before the end of the file (`0`: at the end, so only what is appended comes), instead of at
+    /// `offset`. A file shorter than that is sent from its start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tail: Option<u64>,
+}
+
+/// What a follow keeps looking at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FollowBy {
+    /// The file that was opened, even when it is renamed or removed.
+    Handle,
+    /// The path: when another file takes it (a log rotation) the host opens that one and sends it from its start.
+    Name,
+}
+
+/// The file got shorter, or was replaced: the host's `0x0a` frame of a followed read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Truncated {
+    /// The file's size now. After a shrink the host goes on from this end; after a replacement it sends the new file from
+    /// its start, so the next bytes are the beginning of a file of at least this size.
+    pub size: u64,
+    /// The file was replaced by another (by name), not shortened.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub replaced: bool,
 }
 
 /// One file of a bundle read: the client's `0x10` frame.
@@ -273,6 +315,7 @@ impl ReadRequest {
             resume: None,
             delta: None,
             items: false,
+            follow: None,
         }
     }
 
@@ -324,6 +367,10 @@ pub struct ReadHeader {
     /// The read is a delta: `copy` frames and data frames add up to `length` bytes.
     #[serde(default, skip_serializing_if = "core::ops::Not::not")]
     pub delta: bool,
+    /// The read follows the file: `length` is what is sent up to its end when the read starts, more comes as the file
+    /// grows, and no `done` frame ends it; the client closes the stream.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub follow: bool,
     /// In a bundle, which item this is: its position among the client's items, from `0`. The first
     /// frame of a bundle, which says what the host compresses with, has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -346,6 +393,7 @@ impl ReadHeader {
             compressed_length: None,
             token: None,
             delta: false,
+            follow: false,
             index: None,
             modified: None,
             mode: None,
@@ -566,6 +614,7 @@ const COMPRESSED: u8 = 0x06;
 const END: u8 = 0x07;
 const PROGRESS: u8 = 0x08;
 const COPY: u8 = 0x09;
+const TRUNCATED: u8 = 0x0a;
 const WRITE_DATA: u8 = 0x10;
 const WRITE_END: u8 = 0x11;
 const WRITE_FLUSH: u8 = 0x12;
@@ -608,6 +657,8 @@ pub enum ReadOutput {
     Progress(Progress),
     /// A delta read: these blocks of the client's old copy stand here.
     Copy(DeltaCopy),
+    /// A followed read: the file got shorter or was replaced.
+    Truncated(Truncated),
     /// A bundle's item could not be read; the stream goes on with the next.
     ItemError(ItemError),
     /// Every byte was sent; the last frame (in a bundle, the end of one item).
@@ -631,6 +682,7 @@ impl ReadOutput {
             Self::Compressed(bytes) => tagged(COMPRESSED, bytes),
             Self::Progress(body) => tagged(PROGRESS, &encode(body)?),
             Self::Copy(body) => tagged(COPY, &encode(body)?),
+            Self::Truncated(body) => tagged(TRUNCATED, &encode(body)?),
             Self::ItemError(body) => tagged(ITEM_ERROR, &encode(body)?),
             Self::Done(body) => tagged(DONE, &encode(body)?),
             Self::End(body) => tagged(END, &encode(body)?),
@@ -652,6 +704,7 @@ impl ReadOutput {
             COMPRESSED => Ok(Self::Compressed(body.to_vec())),
             PROGRESS => decode(body).map(Self::Progress),
             COPY => decode(body).map(Self::Copy),
+            TRUNCATED => decode(body).map(Self::Truncated),
             ITEM_ERROR => decode(body).map(Self::ItemError),
             DONE => decode(body).map(Self::Done),
             END => decode(body).map(Self::End),

@@ -2080,3 +2080,152 @@ fn a_host_set_to_term_ends_its_programs_with_sigterm_when_killed() {
     let left = left_running(&helper, &ms, HOST_DEATH_WITHIN);
     assert!(left.is_empty(), "SIGTERM left the tree running: {left:?}");
 }
+
+#[test]
+fn the_command_searches_globs_and_reports_the_host_with_no_exec_granted() {
+    let world = World::new("");
+    let root = world.path("files");
+    std::fs::create_dir_all(&root).unwrap();
+    for dir in 0..10 {
+        for file in 0..100 {
+            let path = root.join(format!("d{dir}/f{file}.txt"));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let marker = if (dir, file) == (7, 42) {
+                "needle"
+            } else {
+                "hay"
+            };
+            std::fs::write(path, format!("first\nline {dir}/{file} {marker}\nlast\n")).unwrap();
+        }
+    }
+    std::fs::write(root.join("d0/f0.bin"), b"needle\0binary").unwrap();
+    let host = world.serve("warn");
+    let root_text = root.to_string_lossy().into_owned();
+    let client = approved(
+        &world,
+        "searcher",
+        &["--allow", "info,fs.read", "--fs-root", &root_text],
+    );
+
+    // 1000 files, one match, on a peer that holds neither exec nor fs.write.
+    let found = remote(&client, &host, &["search", "needle", &root_text]);
+    assert_eq!(found.code, Some(0), "{}", found.stderr);
+    let expected = format!("{root_text}/d7/f42.txt:2:line 7/42 needle");
+    assert_eq!(found.stdout.trim_end(), expected, "{}", found.stdout);
+    let around = remote(&client, &host, &["search", "-C", "1", "needle", &root_text]);
+    assert_eq!(around.code, Some(0), "{}", around.stderr);
+    let lines: Vec<&str> = around.stdout.lines().collect();
+    assert_eq!(lines.len(), 3, "{}", around.stdout);
+    assert!(lines[0].ends_with("-1-first"), "{}", lines[0]);
+    assert!(lines[2].ends_with("-3-last"), "{}", lines[2]);
+    let folded = remote(
+        &client,
+        &host,
+        &["search", "-i", "-F", "NEEDLE", &root_text, "-g", "*.txt"],
+    );
+    assert_eq!(folded.code, Some(0), "{}", folded.stderr);
+    assert_eq!(folded.stdout.lines().count(), 1);
+    // No match is exit 1 and a request the host refuses is an error.
+    let none = remote(&client, &host, &["search", "absent", &root_text]);
+    assert_eq!(none.code, Some(1), "{}", none.stderr);
+    let bad = remote(&client, &host, &["search", "(", &root_text]);
+    assert_eq!(bad.code, Some(1), "{}", bad.stdout);
+    assert!(bad.stderr.contains("refused"), "{}", bad.stderr);
+    let json = remote(
+        &client,
+        &host,
+        &["search", "--format", "json", "needle", &root_text],
+    );
+    assert_eq!(json.code, Some(0), "{}", json.stderr);
+    let parsed: serde_json::Value = serde_json::from_str(json.stdout.trim()).unwrap();
+    assert_eq!(parsed["line"], 2);
+    assert_eq!(parsed["text"], "line 7/42 needle");
+
+    // The same tree by name.
+    let listed = remote(&client, &host, &["glob", "d3/f1*.txt", &root_text]);
+    assert_eq!(listed.code, Some(0), "{}", listed.stderr);
+    assert_eq!(listed.stdout.lines().count(), 11, "{}", listed.stdout);
+    assert!(
+        listed
+            .stdout
+            .lines()
+            .all(|line| line.starts_with(&format!("{root_text}/d3/f1")))
+    );
+
+    // What the host runs on, and where its programs are.
+    let stats = remote(&client, &host, &["stats", "--format", "json"]);
+    assert_eq!(stats.code, Some(0), "{}", stats.stderr);
+    let stats: serde_json::Value = serde_json::from_str(stats.stdout.trim()).unwrap();
+    assert!(stats["memory"]["total"].as_u64().unwrap() > 0, "{stats}");
+    assert!(!stats["disks"].as_array().unwrap().is_empty(), "{stats}");
+    let text = remote(&client, &host, &["stats"]);
+    assert_eq!(text.code, Some(0), "{}", text.stderr);
+    assert!(text.stdout.contains("memory"), "{}", text.stdout);
+    let program = if cfg!(windows) { "cmd" } else { "sh" };
+    let which = remote(&client, &host, &["which", program, "no-such-program-here"]);
+    assert_eq!(which.code, Some(1), "{}", which.stderr);
+    let lines: Vec<&str> = which.stdout.lines().collect();
+    assert_eq!(lines.len(), 2, "{}", which.stdout);
+    assert!(
+        lines[0].starts_with(program) && !lines[0].ends_with("  -"),
+        "{}",
+        lines[0]
+    );
+    assert_eq!(lines[1], "no-such-program-here  -");
+
+    // The host refused these peers nothing it should not: a peer without `info` gets neither.
+    let reader = approved(
+        &world,
+        "readonly",
+        &["--allow", "fs.read", "--fs-root", &root_text],
+    );
+    let denied = remote(&reader, &host, &["stats"]);
+    assert_eq!(denied.code, Some(1), "{}", denied.stdout);
+    assert!(denied.stderr.contains("info"), "{}", denied.stderr);
+}
+
+#[test]
+fn a_revoke_ends_a_running_follow_within_recheck() {
+    let world = World::new("");
+    let root = world.path("files");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("app.log"), "start\n").unwrap();
+    let host = world.serve("warn");
+    let root_text = root.to_string_lossy().into_owned();
+    let client = approved(
+        &world,
+        "tailer",
+        &["--allow", "fs.read", "--fs-root", &root_text],
+    );
+    let link = connect(&client, &host).expect("the link is up");
+    let wait = Some(Duration::from_secs(20));
+    let options = bohio_client::follow::FollowOptions {
+        interval: Some(Duration::from_millis(50)),
+        ..bohio_client::follow::FollowOptions::default()
+    };
+    let mut following = bohio_client::follow::follow(&link, "app.log", &options, wait).unwrap();
+    let first = following.next_within(wait).unwrap();
+    assert_eq!(
+        first,
+        Some(bohio_client::follow::FollowEvent::Data(b"start\n".to_vec()))
+    );
+    let mut log = std::fs::OpenOptions::new()
+        .append(true)
+        .open(root.join("app.log"))
+        .unwrap();
+    log.write_all(b"more\n").unwrap();
+    log.sync_all().unwrap();
+    assert_eq!(
+        following.next_within(wait).unwrap(),
+        Some(bohio_client::follow::FollowEvent::Data(b"more\n".to_vec()))
+    );
+
+    world.revoke(&client);
+    let (took, error) = ends_with_error(
+        || following.next_within(Some(Duration::from_millis(100))),
+        "the follow",
+    );
+    eprintln!("follow ended {took:?} after the revoke (recheck {RECHECK:?})");
+    assert!(is_refusal(&error), "{error:?}");
+    assert!(took <= RECHECK + SLACK, "took {took:?}");
+}

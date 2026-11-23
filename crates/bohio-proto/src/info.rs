@@ -154,6 +154,12 @@ pub struct TransferInfo {
     pub walk: bool,
     /// The bounds `bohio-walk/1` runs under.
     pub walk_limits: WalkLimits,
+    /// Whether the host serves `bohio-search/1`.
+    pub search: bool,
+    /// The bounds `bohio-search/1` runs under.
+    pub search_limits: SearchLimits,
+    /// Whether the host serves a read that follows (`tail -f`).
+    pub follow: bool,
     /// Whether reads and writes take bundles of many files on one stream (`items`).
     pub bundles: bool,
     /// Whether a `replace` write may ask to `resume`: the host keeps an abandoned one for a while.
@@ -212,6 +218,26 @@ pub struct HashLimits {
     pub max_streams: u64,
     /// The most bytes a second one stream hashes; `0` is no limit.
     pub rate: u64,
+}
+
+/// The bounds of `bohio-search/1`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SearchLimits {
+    /// The most search streams running at once on the host; a stream past it is `busy`. `0` when the host serves none.
+    pub max_searches: u64,
+    /// The largest file a search reads, in bytes; a larger one is skipped and counted.
+    pub max_file_bytes: u64,
+    /// The longest line a match carries, in bytes; a longer one is cut and marked.
+    pub max_line_bytes: u64,
+    /// The most matches one search sends.
+    pub max_matches: u64,
+    /// The most files one search reads.
+    pub max_files: u64,
+    /// The most lines of context before and after a match.
+    pub max_context: u64,
+    /// Milliseconds a search runs at most.
+    pub deadline_ms: u64,
 }
 
 /// The bounds of `bohio-walk/1`.

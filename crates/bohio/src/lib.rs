@@ -18,6 +18,7 @@ pub mod peer;
 pub mod policy;
 pub mod session;
 pub mod shell;
+pub mod stats;
 
 #[cfg(feature = "cli")]
 #[cfg_attr(docsrs, doc(cfg(feature = "cli")))]

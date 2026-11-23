@@ -8,8 +8,8 @@ use std::path::Path;
 use bohio_proto::PROTOCOL_VERSION;
 use bohio_proto::forward::ForwardInfo;
 use bohio_proto::info::{
-    DeltaInfo, DetachedInfo, ExecInfo, FilesystemInfo, HashLimits, Info, Limits, Service,
-    SessionInfo, ShellInfo, TransferInfo, WalkLimits,
+    DeltaInfo, DetachedInfo, ExecInfo, FilesystemInfo, HashLimits, Info, Limits, SearchLimits,
+    Service, SessionInfo, ShellInfo, TransferInfo, WalkLimits,
 };
 use bohio_proto::shell::ShellKind;
 
@@ -101,6 +101,22 @@ pub fn collect(config: &NodeConfig, path: &OsStr) -> Info {
             } else {
                 WalkLimits::default()
             },
+            search: config.filesystem.enabled,
+            search_limits: if config.filesystem.enabled {
+                SearchLimits {
+                    max_searches: config.search.max_searches as u64,
+                    max_file_bytes: config.search.max_file_bytes,
+                    max_line_bytes: config.search.max_line_bytes as u64,
+                    max_matches: config.search.max_matches,
+                    max_files: config.search.max_files,
+                    max_context: config.search.max_context,
+                    deadline_ms: u64::try_from(config.search.deadline.0.as_millis())
+                        .unwrap_or(u64::MAX),
+                }
+            } else {
+                SearchLimits::default()
+            },
+            follow: config.filesystem.enabled,
             bundles: config.filesystem.enabled,
             resume: config.filesystem.enabled && !config.filesystem.resume_ttl.0.is_zero(),
             delta: if config.filesystem.enabled {

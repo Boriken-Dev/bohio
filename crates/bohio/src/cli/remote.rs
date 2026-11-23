@@ -32,9 +32,10 @@ use coqui_peer::PeerId;
 use super::commands::{print_info, source};
 use super::{
     Format, KeepArgs, OnFullArg, RemoteAction, RemoteArgs, RemoteAttachArgs, RemoteConnectArgs,
-    RemoteEndArgs, RemoteExecArgs, RemoteForwardArgs, RemoteHashArgs, RemoteListenArgs,
-    RemoteSessionsArgs, RemoteShellArgs, RemoteSyncArgs, RemoteWalkArgs, RemoteWriteArgs,
-    SessionArgs, SyncDirection,
+    RemoteEndArgs, RemoteExecArgs, RemoteForwardArgs, RemoteGlobArgs, RemoteHashArgs,
+    RemoteListenArgs, RemoteReadArgs, RemoteSearchArgs, RemoteSessionsArgs, RemoteShellArgs,
+    RemoteStatsArgs, RemoteSyncArgs, RemoteWalkArgs, RemoteWhichArgs, RemoteWriteArgs, SessionArgs,
+    SyncDirection,
 };
 use crate::config::{DialConfig, Environment, Layers};
 use crate::forward::{BadSpec, LocalSpec, RemoteKeep, RemoteSpec, SocksSpec, keep_remote};
@@ -258,7 +259,13 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
             Ok(ExitCode::SUCCESS)
         }
         RemoteAction::Exec(exec) => exec_command(&*link, exec, &client),
+        RemoteAction::Read(read) if read.follow || read.follow_name => {
+            follow_command(&*link, read, &client)
+        }
         RemoteAction::Read(read) => {
+            if read.tail.is_some() || read.interval.is_some() {
+                return Err("--tail and --interval go with --follow or -F".to_owned());
+            }
             let mut request = bohio_proto::fs::ReadRequest::whole(read.path.clone());
             request.compression = wanted(read.compress.as_deref(), read.window_log)?;
             request.prepare = read.prepare;
@@ -276,6 +283,10 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
         RemoteAction::Write(write) => write_command(&*link, write, &client),
         RemoteAction::Hash(hash) => hash_command(&*link, hash),
         RemoteAction::Walk(walk) => walk_command(&*link, walk, &client),
+        RemoteAction::Glob(glob) => glob_command(&*link, glob, &client),
+        RemoteAction::Stats(stats) => stats_command(&*link, stats, &client),
+        RemoteAction::Which(which) => which_command(&*link, which, &client),
+        RemoteAction::Search(search) => search_command(&*link, search, &client),
         RemoteAction::Sync(sync) => sync_command(&*link, sync, &client),
         RemoteAction::Put(put) => {
             let options = sync_options(&*link, &put.sync, true, &client)?;
@@ -1339,6 +1350,319 @@ fn walk_command(
     } else {
         ExitCode::SUCCESS
     })
+}
+
+/// `bohio remote ... read --follow`: a file of the host printed as it grows, until interrupted or the link ends.
+fn follow_command(
+    link: &dyn Open,
+    read: &RemoteReadArgs,
+    client: &Client,
+) -> Result<ExitCode, String> {
+    let options = bohio_client::follow::FollowOptions {
+        tail: read.tail,
+        offset: 0,
+        by_name: read.follow_name,
+        interval: read.interval,
+    };
+    let following = bohio_client::follow::follow(link, &read.path, &options, Some(client.reply))
+        .map_err(|error| explain(&error))?;
+    let mut out = std::io::stdout().lock();
+    for event in following {
+        match event.map_err(|error| explain(&error))? {
+            bohio_client::follow::FollowEvent::Data(bytes) => {
+                out.write_all(&bytes)
+                    .and_then(|()| out.flush())
+                    .map_err(|error| error.to_string())?;
+            }
+            bohio_client::follow::FollowEvent::Truncated(truncated) => {
+                eprintln!(
+                    "bohio: {} ({} bytes now)",
+                    if truncated.replaced {
+                        "the file was replaced"
+                    } else {
+                        "the file was truncated"
+                    },
+                    truncated.size
+                );
+            }
+        }
+    }
+    // The host or the link ended it: that is not a normal end of a follow.
+    Err("the link ended while the file was followed".to_owned())
+}
+
+/// `bohio remote ... stats`.
+fn stats_command(
+    link: &dyn Open,
+    args: &RemoteStatsArgs,
+    client: &Client,
+) -> Result<ExitCode, String> {
+    let control = Control::open(link).map_err(|error| explain(&error))?;
+    let stats = control
+        .stats(Some(client.reply))
+        .map_err(|error| explain(&error))?;
+    match args.format {
+        Format::Json => println!(
+            "{}",
+            serde_json::to_string(&stats).map_err(|_| "the statistics cannot be written")?
+        ),
+        Format::Text => print_stats(&stats),
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn print_stats(stats: &bohio_proto::control::Stats) {
+    println!("host    {}", stats.hostname.as_deref().unwrap_or("-"));
+    let (days, rest) = (stats.uptime_s / 86_400, stats.uptime_s % 86_400);
+    println!("uptime  {days}d {}h {}m", rest / 3600, (rest % 3600) / 60);
+    println!("cpus    {}", stats.cpus);
+    match stats.load {
+        Some([one, five, fifteen]) => println!("load    {one:.2} {five:.2} {fifteen:.2}"),
+        None => println!("load    -"),
+    }
+    println!(
+        "memory  {} available of {}",
+        size_text(stats.memory.available),
+        size_text(stats.memory.total)
+    );
+    println!(
+        "swap    {} free of {}",
+        size_text(stats.swap.free),
+        size_text(stats.swap.total)
+    );
+    for disk in &stats.disks {
+        println!(
+            "disk    {}  {}  {} free of {}",
+            disk.mount,
+            if disk.filesystem.is_empty() {
+                "-"
+            } else {
+                &disk.filesystem
+            },
+            size_text(disk.available),
+            size_text(disk.total)
+        );
+    }
+}
+
+/// A byte count as a person reads it: `12.5 GiB`.
+fn size_text(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+/// `bohio remote ... which`.
+fn which_command(
+    link: &dyn Open,
+    args: &RemoteWhichArgs,
+    client: &Client,
+) -> Result<ExitCode, String> {
+    let control = Control::open(link).map_err(|error| explain(&error))?;
+    let names: Vec<&str> = args.names.iter().map(String::as_str).collect();
+    let found = control
+        .which(&names, Some(client.reply))
+        .map_err(|error| explain(&error))?;
+    match args.format {
+        Format::Json => println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({ "found": found }))
+                .map_err(|_| "the answer cannot be written")?
+        ),
+        Format::Text => {
+            for name in &args.names {
+                println!(
+                    "{name}  {}",
+                    found.get(name).and_then(Option::as_deref).unwrap_or("-")
+                );
+            }
+        }
+    }
+    Ok(if found.values().all(Option::is_some) {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    })
+}
+
+/// `bohio remote ... glob`: the paths below the roots that match a glob.
+fn glob_command(
+    link: &dyn Open,
+    args: &RemoteGlobArgs,
+    client: &Client,
+) -> Result<ExitCode, String> {
+    let options = bohio_client::walk::WalkOptions {
+        depth: args.depth,
+        include: vec![args.glob.clone()],
+        ..bohio_client::walk::WalkOptions::default()
+    };
+    let roots: Vec<&str> = args.paths.iter().map(String::as_str).collect();
+    let iter = bohio_client::walk::walk_with(link, &roots, &options, Some(client.reply))
+        .map_err(|error| explain(&error))?;
+    let mut out = std::io::stdout().lock();
+    let mut failed = false;
+    for item in iter {
+        match item.map_err(|error| explain(&error))? {
+            bohio_client::walk::WalkItem::Entry { root, entry } => {
+                // The root itself is not a match.
+                if entry.path.is_empty() {
+                    continue;
+                }
+                let base = roots
+                    .get(usize::try_from(root).unwrap_or(usize::MAX))
+                    .copied()
+                    .unwrap_or("");
+                let path = joined(base, &entry.path);
+                match args.format {
+                    Format::Text => writeln!(out, "{path}"),
+                    Format::Json => writeln!(
+                        out,
+                        "{}",
+                        serde_json::json!({
+                            "root": root,
+                            "path": path,
+                            "kind": entry.metadata.kind,
+                            "size": entry.metadata.size,
+                        })
+                    ),
+                }
+                .map_err(|error| error.to_string())?;
+            }
+            bohio_client::walk::WalkItem::Failure(failure) => {
+                failed = true;
+                eprintln!(
+                    "bohio: {}: {}",
+                    failure.path.as_deref().unwrap_or(""),
+                    failure.message
+                );
+            }
+        }
+    }
+    out.flush().map_err(|error| error.to_string())?;
+    Ok(if failed {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+/// `base` and a path below it, joined with `/`.
+fn joined(base: &str, path: &str) -> String {
+    if path.is_empty() {
+        base.to_owned()
+    } else {
+        format!("{}/{path}", base.trim_end_matches('/'))
+    }
+}
+
+/// `bohio remote ... search`: the matching lines of files, found on the host.
+fn search_command(
+    link: &dyn Open,
+    args: &RemoteSearchArgs,
+    client: &Client,
+) -> Result<ExitCode, String> {
+    let options = bohio_client::search::SearchOptions {
+        depth: args.depth,
+        include: args.include.clone(),
+        exclude: args.exclude.clone(),
+        hidden: args.hidden,
+        literal: args.fixed_strings,
+        case_insensitive: args.ignore_case,
+        context: args.context,
+        max_matches: args.max_matches,
+        max_files: args.max_files,
+    };
+    let roots: Vec<&str> = args.paths.iter().map(String::as_str).collect();
+    let mut iter = bohio_client::search::search_with(
+        link,
+        &roots,
+        &args.pattern,
+        &options,
+        Some(client.reply),
+    )
+    .map_err(|error| explain(&error))?;
+    let mut out = std::io::stdout().lock();
+    let mut failed = false;
+    let mut found = 0_u64;
+    for item in iter.by_ref() {
+        match item.map_err(|error| explain(&error))? {
+            bohio_client::search::SearchItem::Match(hit) => {
+                found += 1;
+                let base = roots
+                    .get(usize::try_from(hit.root).unwrap_or(usize::MAX))
+                    .copied()
+                    .unwrap_or("");
+                let path = joined(base, &hit.path);
+                let written = match args.format {
+                    Format::Text => write_hit(&mut out, &path, &hit.hit),
+                    Format::Json => writeln!(
+                        out,
+                        "{}",
+                        serde_json::json!({
+                            "root": hit.root,
+                            "path": path,
+                            "line": hit.hit.line,
+                            "text": hit.hit.text,
+                            "before": hit.hit.before,
+                            "after": hit.hit.after,
+                            "truncated": hit.hit.truncated,
+                        })
+                    ),
+                };
+                written.map_err(|error| error.to_string())?;
+            }
+            bohio_client::search::SearchItem::Failure(failure) => {
+                failed = true;
+                eprintln!(
+                    "bohio: {}: {}",
+                    failure.path.as_deref().unwrap_or(""),
+                    failure.message
+                );
+            }
+        }
+    }
+    out.flush().map_err(|error| error.to_string())?;
+    if let Some(done) = iter.done()
+        && done.truncated
+    {
+        eprintln!(
+            "bohio: the search stopped at a bound of the host after {} files and {} matches",
+            done.files, done.matches
+        );
+    }
+    Ok(if failed {
+        ExitCode::from(2)
+    } else if found == 0 {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+/// One match as `path:line:text`, its context lines as `path-line-text`.
+fn write_hit(
+    out: &mut impl Write,
+    path: &str,
+    hit: &bohio_proto::search::SearchMatch,
+) -> std::io::Result<()> {
+    let first = hit.line.saturating_sub(hit.before.len() as u64);
+    for (offset, line) in hit.before.iter().enumerate() {
+        writeln!(out, "{path}-{}-{line}", first + offset as u64)?;
+    }
+    writeln!(out, "{path}:{}:{}", hit.line, hit.text)?;
+    for (offset, line) in hit.after.iter().enumerate() {
+        writeln!(out, "{path}-{}-{line}", hit.line + 1 + offset as u64)?;
+    }
+    Ok(())
 }
 
 /// `bohio remote ... sync`: a tree and a tree of the host made the same.

@@ -9,17 +9,19 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use bohio_proto::compress::{Codec, Compression, Progress, Resume};
-use bohio_proto::control::{Call, Reply, Request as ControlRequest, Response};
+use bohio_proto::control::{
+    Call, Disk, Memory, Reply, Request as ControlRequest, Response, Stats, Swap,
+};
 use bohio_proto::exec::{self, Env, Stdin};
 use bohio_proto::forward::{
     AcceptRequest, Answer, Arrival, Bind, ConnectRequest, Connected, ForwardInfo, ListenFrame,
     ListenRequest, Listening, Target,
 };
 use bohio_proto::fs::{
-    BundleEnd, DeltaBase, DeltaCopy, Entry, FileKind, Flushed, Listing, Metadata, ReadDelta,
-    ReadDone, ReadHeader, ReadInput, ReadItem, ReadOutput, ReadRequest, Ready as WriteReady,
-    SignatureBatch, Timestamp, WriteDone, WriteInput, WriteItem, WriteMode, WriteOutput,
-    WriteRequest,
+    BundleEnd, DeltaBase, DeltaCopy, Entry, FileKind, Flushed, FollowBy, Listing, Metadata,
+    ReadDelta, ReadDone, ReadFollow, ReadHeader, ReadInput, ReadItem, ReadOutput, ReadRequest,
+    Ready as WriteReady, SignatureBatch, Timestamp, Truncated, WriteDone, WriteInput, WriteItem,
+    WriteMode, WriteOutput, WriteRequest,
 };
 use bohio_proto::gui::{
     Ack, ApproveInput, ApproveOutput, Button, ButtonAction, ClipboardGet, ClipboardSet,
@@ -34,7 +36,12 @@ use bohio_proto::hash::{
 };
 use bohio_proto::info::{
     CompressionInfo, DeltaInfo, DetachedInfo, ExecInfo, FilesystemInfo, HashLimits, Info, Levels,
-    Limits, PROTOCOL_VERSION, Service, SessionInfo, ShellInfo, TransferInfo, WalkLimits,
+    Limits, PROTOCOL_VERSION, SearchLimits, Service, SessionInfo, ShellInfo, TransferInfo,
+    WalkLimits,
+};
+use bohio_proto::search::{
+    SearchDone, SearchFile, SearchItemError, SearchMatch, SearchOutput, SearchRequest, SearchScope,
+    Skipped,
 };
 use bohio_proto::session::{Attach, Attached, Kind, Listed, OnFull, SessionRequest};
 use bohio_proto::shell::{self, ShellKind, Size};
@@ -320,6 +327,17 @@ fn sample_transfer() -> TransferInfo {
             max_streams: 4,
             max_entries: 1_000_000,
         },
+        search: true,
+        search_limits: SearchLimits {
+            max_searches: 4,
+            max_file_bytes: 16_777_216,
+            max_line_bytes: 4096,
+            max_matches: 10_000,
+            max_files: 100_000,
+            max_context: 50,
+            deadline_ms: 60_000,
+        },
+        follow: true,
         bundles: true,
         resume: true,
     }
@@ -543,6 +561,57 @@ fn control() -> Vec<Case> {
             }),
         ),
         response("done_reply", 5, Reply::Done),
+        request("stats", 50, Call::Stats),
+        response(
+            "stats_reply",
+            51,
+            Reply::Stats(Box::new(Stats {
+                hostname: Some("build-host".into()),
+                uptime_s: 86_400,
+                cpus: 8,
+                load: Some([0.5, 0.25, 0.125]),
+                memory: Memory {
+                    total: 17_179_869_184,
+                    available: 8_589_934_592,
+                },
+                swap: Swap {
+                    total: 2_147_483_648,
+                    free: 2_147_483_648,
+                },
+                disks: vec![
+                    Disk {
+                        mount: "/".into(),
+                        filesystem: "ext4".into(),
+                        total: 107_374_182_400,
+                        available: 53_687_091_200,
+                    },
+                    Disk {
+                        mount: "C:\\".into(),
+                        filesystem: "NTFS".into(),
+                        total: 536_870_912_000,
+                        available: 0,
+                    },
+                ],
+            })),
+        ),
+        response("stats_reply_bare", 52, Reply::Stats(Box::default())),
+        request(
+            "which",
+            53,
+            Call::Which {
+                names: vec!["git".into(), "no-such-program".into()],
+            },
+        ),
+        response(
+            "which_reply",
+            54,
+            Reply::Which {
+                found: BTreeMap::from([
+                    ("git".to_owned(), Some("/usr/bin/git".to_owned())),
+                    ("no-such-program".to_owned(), None),
+                ]),
+            },
+        ),
         request("sessions", 40, Call::Sessions),
         request(
             "end_session_interrupt",
@@ -1274,6 +1343,63 @@ fn read_cases() -> Vec<Case> {
             ReadOutput::Compressed(unhex(DEFLATE_PIECE)),
             raw(&unhex(DEFLATE_PIECE)),
         ),
+        message(
+            "open_follow",
+            OPEN,
+            "open",
+            "fs.ReadRequest",
+            &ReadRequest {
+                follow: Some(ReadFollow {
+                    by: Some(FollowBy::Name),
+                    interval_ms: Some(500),
+                    tail: Some(4096),
+                }),
+                ..ReadRequest::whole("/var/log/app.log")
+            },
+        ),
+        message(
+            "open_follow_defaults",
+            OPEN,
+            "open",
+            "fs.ReadRequest",
+            &ReadRequest {
+                follow: Some(ReadFollow::default()),
+                ..ReadRequest::whole("/var/log/app.log")
+            },
+        ),
+        output(
+            "header_follow",
+            ReadOutput::Header(ReadHeader {
+                follow: true,
+                ..ReadHeader::raw(9_000, 4_096)
+            }),
+            to_json(&ReadHeader {
+                follow: true,
+                ..ReadHeader::raw(9_000, 4_096)
+            }),
+        ),
+        output(
+            "truncated",
+            ReadOutput::Truncated(Truncated {
+                size: 120,
+                replaced: false,
+            }),
+            to_json(&Truncated {
+                size: 120,
+                replaced: false,
+            }),
+        ),
+        output(
+            "truncated_replaced",
+            ReadOutput::Truncated(Truncated {
+                size: 0,
+                replaced: true,
+            }),
+            to_json(&Truncated {
+                size: 0,
+                replaced: true,
+            }),
+        ),
         output(
             "progress",
             ReadOutput::Progress(Progress {
@@ -1738,6 +1864,109 @@ fn walk_cases() -> Vec<Case> {
             "error_busy",
             WalkOutput::Error(ErrorBody::new(ErrorCode::Busy, "too many walks")),
             to_json(&ErrorBody::new(ErrorCode::Busy, "too many walks")),
+        ),
+    ]
+}
+
+fn search_cases() -> Vec<Case> {
+    let output = |name: &str, value: SearchOutput, body: Value| {
+        frame(
+            name,
+            TO_CLIENT,
+            "search.Output",
+            value.encode().unwrap(),
+            body,
+        )
+    };
+    let file = SearchFile {
+        root: 0,
+        path: "src/main.rs".into(),
+        size: 2048,
+    };
+    let plain = SearchMatch {
+        line: 12,
+        text: "fn main() {".into(),
+        before: Vec::new(),
+        after: Vec::new(),
+        truncated: false,
+    };
+    let context = SearchMatch {
+        line: 40,
+        text: "    run();".into(),
+        before: vec!["    setup();".into()],
+        after: vec!["}".into(), String::new()],
+        truncated: true,
+    };
+    let error = SearchItemError {
+        root: 0,
+        path: Some("src/private.rs".into()),
+        code: ErrorCode::Denied,
+        message: "the operating system refused access".into(),
+    };
+    let done = SearchDone {
+        files: 120,
+        matches: 2,
+        skipped: Skipped {
+            binary: 3,
+            large: 1,
+            unreadable: 1,
+        },
+        truncated: false,
+    };
+    let refused = ErrorBody::new(ErrorCode::BadRequest, "the pattern is empty");
+    vec![
+        message(
+            "open_literal",
+            OPEN,
+            "open",
+            "search.Request",
+            &SearchRequest {
+                walk: SearchScope {
+                    roots: vec!["/srv/docs".into()],
+                    ..SearchScope::default()
+                },
+                pattern: "TODO".into(),
+                ..SearchRequest::default()
+            },
+        ),
+        message(
+            "open_filtered",
+            OPEN,
+            "open",
+            "search.Request",
+            &SearchRequest {
+                walk: SearchScope {
+                    roots: vec!["/srv/docs".into(), "/var/log".into()],
+                    depth: Some(3),
+                    include: vec!["**/*.rs".into()],
+                    exclude: vec!["target".into()],
+                },
+                hidden: true,
+                pattern: r"fn\s+main".into(),
+                literal: false,
+                case_insensitive: true,
+                context: 2,
+                max_matches: Some(100),
+                max_files: Some(5000),
+            },
+        ),
+        output("file", SearchOutput::File(file.clone()), to_json(&file)),
+        output("match", SearchOutput::Match(plain.clone()), to_json(&plain)),
+        output(
+            "match_context",
+            SearchOutput::Match(context.clone()),
+            to_json(&context),
+        ),
+        output(
+            "item_error",
+            SearchOutput::ItemError(error.clone()),
+            to_json(&error),
+        ),
+        output("done", SearchOutput::Done(done), to_json(&done)),
+        output(
+            "error_bad_request",
+            SearchOutput::Error(refused.clone()),
+            to_json(&refused),
         ),
     ]
 }
@@ -2394,6 +2623,7 @@ fn files() -> Vec<(&'static str, &'static str, Vec<Case>)> {
         ("write.json", "bohio-write/1", write_cases()),
         ("hash.json", "bohio-hash/1", hash_cases()),
         ("walk.json", "bohio-walk/1", walk_cases()),
+        ("search.json", "bohio-search/1", search_cases()),
         ("forward.json", "bohio-connect/1", forward_cases()),
         ("gui.json", "bohio-gui/1", gui_cases()),
         ("listen.json", "bohio-listen/1", listen_cases()),
@@ -2439,6 +2669,8 @@ fn decode_error(ty: &str, bytes: &[u8]) -> Result<(), Error> {
         "walk.Request" => WalkRequest::from_metadata(bytes).map(|_| ()),
         "walk.Output" => WalkOutput::decode(bytes).map(|_| ()),
         "walk.Input" => WalkInput::decode(bytes).map(|_| ()),
+        "search.Request" => SearchRequest::from_metadata(bytes).map(|_| ()),
+        "search.Output" => SearchOutput::decode(bytes).map(|_| ()),
         "session.Attach" => Attach::from_metadata(bytes).map(|_| ()),
         "session.Attached" => Attached::decode(bytes).map(|_| ()),
         "forward.ConnectRequest" => ConnectRequest::from_metadata(bytes).map(|_| ()),
@@ -2514,6 +2746,10 @@ fn check(entry: &Value) {
         "walk.Request" => check_message::<WalkRequest>(entry, &bytes),
         "walk.Output" => check_frame(entry, &bytes, WalkOutput::decode, |v| v.encode().unwrap()),
         "walk.Input" => check_frame(entry, &bytes, WalkInput::decode, |v| v.encode().unwrap()),
+        "search.Request" => check_message::<SearchRequest>(entry, &bytes),
+        "search.Output" => {
+            check_frame(entry, &bytes, SearchOutput::decode, |v| v.encode().unwrap())
+        }
         "session.Attach" => check_message::<Attach>(entry, &bytes),
         "session.Attached" => check_frame(entry, &bytes, Attached::decode, |v| v.encode().unwrap()),
         "forward.ConnectRequest" => check_message::<ConnectRequest>(entry, &bytes),

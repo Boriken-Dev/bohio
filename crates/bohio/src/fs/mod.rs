@@ -40,11 +40,13 @@
 mod bundle;
 pub(crate) mod compress;
 mod delta;
+mod follow;
 mod hash;
 mod ops;
 mod path;
 mod prepare;
 mod read;
+mod search;
 mod stage;
 mod tree;
 mod walk;
@@ -61,6 +63,7 @@ use crate::policy::{Grant, Permission};
 pub use hash::{HashContext, serve_hash};
 pub use prepare::sweep as sweep_prepared;
 pub use read::serve_read;
+pub use search::{SearchContext, serve_search};
 pub use stage::sweep_roots as sweep_resumable;
 pub use walk::{WalkContext, serve_walk};
 pub use write::serve_write;
@@ -84,6 +87,8 @@ pub struct Context<'a> {
     pub peer: &'a str,
     /// The bound on concurrent transfers, shared by every stream.
     pub slots: &'a Slots,
+    /// The bound on concurrent followed reads, shared by every stream.
+    pub follows: &'a Slots,
     /// Where the peer's grant is read before each item of a bundle, so a grant narrowed while the stream is open
     /// applies to the next item; `grant` is used when absent.
     pub current: Option<Current<'a>>,

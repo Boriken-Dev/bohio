@@ -79,6 +79,9 @@ fn run(
 ) -> Result<u64, ErrorBody> {
     let request = ReadRequest::from_metadata(metadata)
         .map_err(|_| ErrorBody::new(ErrorCode::BadRequest, "the request cannot be read"))?;
+    if let Some(follow) = &request.follow {
+        return super::follow::serve(channel, &request, follow, context, poll, idle);
+    }
     if request.items {
         return super::bundle::read(channel, &request, context, poll, idle);
     }

@@ -133,6 +133,8 @@ pub struct Config {
     pub hash: HashConfig,
     /// `[walk]`.
     pub walk: WalkConfig,
+    /// `[search]`.
+    pub search: SearchConfig,
     /// `[delta]`.
     pub delta: DeltaConfig,
     /// `[compression]`.
@@ -735,6 +737,12 @@ pub struct FilesystemConfig {
     /// early, for a later write to continue it. `0` keeps none, and such a request is `unsupported`. A kept
     /// file takes the disk space of what was received. Default `0`.
     pub resume_ttl: Span,
+    /// How often a followed read (`bohio-read/1` with `follow`) looks for bytes appended to its file, when the request names
+    /// no interval. Not zero. Default `250ms`.
+    pub follow_interval: Span,
+    /// The most followed reads running at once, across peers; a follow holds one of these and no transfer slot, and is
+    /// not ended by `idle_timeout` while its client keeps the stream open. One past it is `busy`. At least 1. Default `16`.
+    pub max_follows: usize,
 }
 
 impl Default for FilesystemConfig {
@@ -751,6 +759,8 @@ impl Default for FilesystemConfig {
             max_tree_entries: 1_000_000,
             max_bundle_items: 1_000_000,
             resume_ttl: Span(Duration::ZERO),
+            follow_interval: Span(Duration::from_millis(250)),
+            max_follows: 16,
         }
     }
 }
@@ -776,6 +786,57 @@ impl Default for WalkConfig {
         Self {
             max_streams: 4,
             max_entries: 1_000_000,
+        }
+    }
+}
+
+/// `[search]`: the bounds of `bohio-search/1`, which matches the lines of files on the host.
+///
+/// A search reads every file it may, so a peer that may read can make the host spend its disk and CPU: `max_searches`
+/// bounds how many run, `max_file_bytes` and `max_files` how much each reads, `deadline` how long. The pattern is a
+/// regular expression with linear-time matching, so no pattern runs away; `regex_size_limit` bounds the program it
+/// compiles to. A pattern is never logged: someone may be looking for a secret.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct SearchConfig {
+    /// The most `bohio-search/1` streams running at once, across peers; one past it is `busy`. At least 1. Default `4`.
+    pub max_searches: usize,
+    /// The largest file a search reads, in bytes; a larger one is skipped and counted. The file is read whole, so this
+    /// is also the most memory one search holds. At least 1. Default `16777216`.
+    pub max_file_bytes: u64,
+    /// The longest line a match carries, in bytes; a longer line is cut at a character boundary and marked. At least 1.
+    /// Default `4096`.
+    pub max_line_bytes: usize,
+    /// The most matches one search sends (a request may ask for fewer); past it the search ends marked truncated. At
+    /// least 1. Default `10000`.
+    pub max_matches: u64,
+    /// The most files one search reads (a request may ask for fewer); past it the search ends marked truncated. At least
+    /// 1. Default `100000`.
+    pub max_files: u64,
+    /// The most lines of context before and after a match a request may ask for. Default `50`.
+    pub max_context: u64,
+    /// The most bytes the compiled form of a pattern may take; a larger pattern is `bad_request`. At least 1. Default
+    /// `10485760`.
+    pub regex_size_limit: usize,
+    /// How many bytes at the start of a file are looked at for a NUL, which marks the file as binary and skips it. `0`
+    /// searches every file. Default `8192`.
+    pub binary_probe: usize,
+    /// How long one search runs; past it the search ends marked truncated. Not zero. Default `60s`.
+    pub deadline: Span,
+}
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self {
+            max_searches: 4,
+            max_file_bytes: 16 * 1024 * 1024,
+            max_line_bytes: 4096,
+            max_matches: 10_000,
+            max_files: 100_000,
+            max_context: 50,
+            regex_size_limit: 10 * 1024 * 1024,
+            binary_probe: 8192,
+            deadline: Span(Duration::from_secs(60)),
         }
     }
 }
@@ -1658,6 +1719,8 @@ pub struct NodeConfig {
     pub hash: HashConfig,
     /// `[walk]`.
     pub walk: WalkConfig,
+    /// `[search]`.
+    pub search: SearchConfig,
     /// `[delta]`.
     pub delta: DeltaConfig,
     /// `[compression]`.
@@ -1684,6 +1747,7 @@ impl Default for NodeConfig {
             filesystem: FilesystemConfig::default(),
             hash: HashConfig::default(),
             walk: WalkConfig::default(),
+            search: SearchConfig::default(),
             delta: DeltaConfig::default(),
             compression: CompressionConfig::default(),
             execution: ExecutionConfig::default(),
@@ -1810,11 +1874,32 @@ impl NodeConfig {
         if self.filesystem.poll_interval.0.is_zero() {
             return Err(invalid("filesystem.poll_interval", "must not be zero"));
         }
+        if self.filesystem.follow_interval.0.is_zero() {
+            return Err(invalid("filesystem.follow_interval", "must not be zero"));
+        }
+        if self.filesystem.max_follows == 0 {
+            return Err(invalid("filesystem.max_follows", "must be at least 1"));
+        }
         if self.hash.max_streams == 0 {
             return Err(invalid("hash.max_streams", "must be at least 1"));
         }
         if self.walk.max_streams == 0 {
             return Err(invalid("walk.max_streams", "must be at least 1"));
+        }
+        for (key, bad) in [
+            ("search.max_searches", self.search.max_searches == 0),
+            ("search.max_file_bytes", self.search.max_file_bytes == 0),
+            ("search.max_line_bytes", self.search.max_line_bytes == 0),
+            ("search.max_matches", self.search.max_matches == 0),
+            ("search.max_files", self.search.max_files == 0),
+            ("search.regex_size_limit", self.search.regex_size_limit == 0),
+        ] {
+            if bad {
+                return Err(invalid(key, "must be at least 1"));
+            }
+        }
+        if self.search.deadline.0.is_zero() {
+            return Err(invalid("search.deadline", "must not be zero"));
         }
         if self.hash.read_size == 0 {
             return Err(invalid("hash.read_size", "must be at least 1"));
@@ -1990,6 +2075,7 @@ impl Config {
             filesystem: self.filesystem.clone(),
             hash: self.hash.clone(),
             walk: self.walk.clone(),
+            search: self.search.clone(),
             delta: self.delta.clone(),
             compression: self.compression.clone(),
             execution: self.execution.clone(),
