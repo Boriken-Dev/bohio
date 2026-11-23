@@ -21,6 +21,7 @@ use coqui_transport::{Channel, Failure};
 use crate::dial::{Endpoint, ServerTrust};
 use crate::exec::Exec;
 use crate::forward::{Bytes, ForwardSettings, Target};
+use crate::fs::Fs;
 use crate::link::Settings;
 use crate::relay::{Relay, relay_with};
 use crate::{Error, Open, OpenOptions};
@@ -310,6 +311,8 @@ pub struct Connection {
     host: PeerId,
     /// The link this one runs over when it was made [`through`](Connection::through) a host: kept up as long as this one is.
     carrier: Option<Carrier>,
+    /// The control stream [`Connection::fs`] keeps warm.
+    fs: Mutex<Option<Arc<Fs>>>,
 }
 
 /// The link under a jumped connection.
@@ -405,6 +408,7 @@ impl Connection {
             thread: Mutex::new(Some(thread)),
             host,
             carrier: None,
+            fs: Mutex::new(None),
         })
     }
 
@@ -487,6 +491,24 @@ impl Connection {
         Ok(connection)
     }
 
+    /// The filesystem calls of this connection over one control stream, opened on first use and kept for every later
+    /// call (a new one when the last has ended), so a command that makes many short calls pays for the open once. Calls
+    /// wait without limit; a caller that wants a bound opens its own with [`Fs::connect`]. A long `copy` or `move`
+    /// holds this stream's later calls: run it on [`Fs::spawn_control`].
+    ///
+    /// # Errors
+    ///
+    /// Whatever opening a stream reports.
+    pub fn fs(&self) -> Result<Arc<Fs>, Error> {
+        let mut kept = self.fs.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(fs) = kept.as_ref().filter(|fs| !fs.control().is_closed()) {
+            return Ok(Arc::clone(fs));
+        }
+        let fs = Arc::new(Fs::connect(self)?);
+        *kept = Some(Arc::clone(&fs));
+        Ok(fs)
+    }
+
     /// The host's proven id.
     pub const fn host(&self) -> PeerId {
         self.host
@@ -505,6 +527,14 @@ impl Connection {
 
     /// Ends the connection: every stream is closed, and the link ends.
     pub fn close(&self) {
+        let kept = self
+            .fs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(fs) = kept {
+            fs.control().close();
+        }
         self.opener.close();
         let thread = self
             .thread

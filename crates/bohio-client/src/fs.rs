@@ -88,6 +88,65 @@ impl Fs {
         }
     }
 
+    /// Metadata of every path in `paths`, in order, each its own result: the calls are all on the way before the first
+    /// answer is read, so the batch costs about one round trip. `follow` as for [`Fs::stat`].
+    pub fn stat_many(&self, paths: &[&str], follow: bool) -> Vec<Result<Metadata, Error>> {
+        let calls = paths
+            .iter()
+            .map(|path| Call::Stat {
+                path: (*path).to_owned(),
+                follow,
+            })
+            .collect();
+        self.control
+            .call_many(calls, self.timeout)
+            .into_iter()
+            .map(|answer| match answer? {
+                Reply::Stat(meta) => Ok(*meta),
+                _ => Err(Error::Protocol(bohio_proto::Error::Decode)),
+            })
+            .collect()
+    }
+
+    /// Every entry of each directory in `paths`, in order, each its own result. The first pages of all of them are asked
+    /// at once, then the next pages of those that have more, so the batch costs one round trip per page of the longest
+    /// directory rather than one per page of every one. (One directory's pages cannot be asked ahead: each page's cursor
+    /// is in the one before.)
+    pub fn list_many(&self, paths: &[&str]) -> Vec<Result<Vec<Entry>, Error>> {
+        let mut found: Vec<Result<Vec<Entry>, Error>> =
+            paths.iter().map(|_| Ok(Vec::new())).collect();
+        let mut more: Vec<(usize, Option<String>)> =
+            (0..paths.len()).map(|at| (at, None)).collect();
+        while !more.is_empty() {
+            let calls = more
+                .iter()
+                .map(|(at, after)| Call::List {
+                    path: paths[*at].to_owned(),
+                    after: after.clone(),
+                    limit: None,
+                })
+                .collect();
+            let answers = self.control.call_many(calls, self.timeout);
+            let mut next = Vec::new();
+            for ((at, _), answer) in more.into_iter().zip(answers) {
+                match answer {
+                    Ok(Reply::List(page)) => {
+                        if let Ok(all) = &mut found[at] {
+                            all.extend(page.entries);
+                        }
+                        if let Some(after) = page.next {
+                            next.push((at, Some(after)));
+                        }
+                    }
+                    Ok(_) => found[at] = Err(Error::Protocol(bohio_proto::Error::Decode)),
+                    Err(error) => found[at] = Err(error),
+                }
+            }
+            more = next;
+        }
+        found
+    }
+
     /// One page of the directory `path`, after the name `after`.
     ///
     /// # Errors
