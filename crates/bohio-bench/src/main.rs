@@ -11,6 +11,7 @@ mod host;
 mod raw;
 mod report;
 mod scenario;
+mod wan;
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -116,6 +117,10 @@ struct LocalArgs {
     /// The address the host listens on.
     #[arg(long, default_value = "127.0.0.1")]
     listen_ip: String,
+    /// Put an emulated path between this side and the host, in process: `DELAY_MS` or `DELAY_MS:MBIT` each way (the
+    /// `wan` link of `netem.sh` is `133:20`). The delay and the rate are the proxy's own timing, with no loss.
+    #[arg(long, value_name = "DELAY_MS[:MBIT]")]
+    wan: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -408,11 +413,21 @@ fn local(args: &LocalArgs) -> Result<bool, String> {
             .expect("raw listening ")?
             .parse()
             .map_err(|_| "the raw control's address".to_owned())?;
-        let endpoint = Endpoint::parse(&local.endpoint)?;
+        let mut endpoint_text = local.endpoint.clone();
+        if let Some(text) = &args.wan {
+            let target: SocketAddr = endpoint_text
+                .strip_prefix("tcp://")
+                .and_then(|address| address.parse().ok())
+                .ok_or("--wan needs a tcp endpoint")?;
+            let proxy =
+                wan::start(target, wan::Path::parse(text)?).map_err(|error| error.to_string())?;
+            endpoint_text = format!("tcp://{proxy}");
+        }
+        let endpoint = Endpoint::parse(&endpoint_text)?;
         let proof = proof_of(&local.client_data, &local.client_config, None)?;
         let mut runner = Runner::new(Env {
             endpoint,
-            endpoint_text: local.endpoint.clone(),
+            endpoint_text: endpoint_text.clone(),
             proof,
             settings,
             root: root.to_string_lossy().into_owned(),

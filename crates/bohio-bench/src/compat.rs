@@ -73,22 +73,28 @@ pub fn tree_names(dir: &str, count: u64) -> Vec<String> {
         .collect()
 }
 
-/// `size` bytes that differ from file to file and do not compress.
+/// The bytes of `count` files of `size` bytes that differ from file to file and do not compress: made before a
+/// sample is timed, so the clock does not run while they are generated.
 #[cfg(feature = "walk")]
-fn tree_bytes(index: u64, size: u64) -> Vec<u8> {
-    let mut random = crate::corpus::Xorshift::new(index + 1);
-    let mut bytes = vec![0_u8; usize::try_from(size).unwrap_or(0)];
-    random.fill(&mut bytes);
-    bytes
+pub fn tree_data(count: u64, size: u64) -> Vec<Vec<u8>> {
+    (0..count)
+        .map(|index| {
+            let mut random = crate::corpus::Xorshift::new(index + 1);
+            let mut bytes = vec![0_u8; usize::try_from(size).unwrap_or(0)];
+            random.fill(&mut bytes);
+            bytes
+        })
+        .collect()
 }
 
-/// Writes the `count` files of `size` bytes under `dir`, as one bundle.
+/// Writes the files `data` holds under `dir`, as one bundle.
 #[cfg(feature = "walk")]
-pub fn bundle_write(link: &dyn Open, dir: &str, count: u64, size: u64) -> Result<u64, String> {
+pub fn bundle_write(link: &dyn Open, dir: &str, data: &[Vec<u8>]) -> Result<u64, String> {
     use bohio_client::bundle::{BundleFile, BundleOptions, put_many};
-    let names = tree_names(dir, count);
-    let mut cursors: Vec<std::io::Cursor<Vec<u8>>> = (0..count)
-        .map(|index| std::io::Cursor::new(tree_bytes(index, size)))
+    let names = tree_names(dir, data.len() as u64);
+    let mut cursors: Vec<std::io::Cursor<&[u8]>> = data
+        .iter()
+        .map(|bytes| std::io::Cursor::new(bytes.as_slice()))
         .collect();
     let mut files: Vec<BundleFile<'_>> = names
         .iter()
@@ -124,11 +130,11 @@ pub fn bundle_read(link: &dyn Open, dir: &str, count: u64) -> Result<u64, String
     Ok(bytes)
 }
 
-/// Writes the `count` files of `size` bytes under `dir`, one stream each.
+/// Writes the files `data` holds under `dir`, one stream each.
 #[cfg(feature = "walk")]
-pub fn file_write(link: &dyn Open, dir: &str, count: u64, size: u64) -> Result<(), String> {
-    for (index, name) in tree_names(dir, count).iter().enumerate() {
-        write(link, name, size, &tree_bytes(index as u64, size))?;
+pub fn file_write(link: &dyn Open, dir: &str, data: &[Vec<u8>]) -> Result<(), String> {
+    for (name, bytes) in tree_names(dir, data.len() as u64).iter().zip(data) {
+        write(link, name, bytes.len() as u64, bytes)?;
     }
     Ok(())
 }

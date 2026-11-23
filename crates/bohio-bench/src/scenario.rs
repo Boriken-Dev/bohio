@@ -647,7 +647,8 @@ impl Runner {
                 if present <= count {
                     for start in (0..count).step_by(2000) {
                         let part = (count - start).min(2000);
-                        compat::bundle_write(link, &format!("{dir}/part{start:07}"), part, 16)?;
+                        let data = compat::tree_data(part, 16);
+                        compat::bundle_write(link, &format!("{dir}/part{start:07}"), &data)?;
                     }
                 }
                 let taken = timed(&mut self.env.cpu, samples, || {
@@ -659,16 +660,17 @@ impl Runner {
             Kind::Bundle { read, count, size } => {
                 let bytes = parse_size(&size)?;
                 let dir = self.path(&format!("written/files-{count}x{size}"));
+                let data = compat::tree_data(count, bytes);
                 let link = warm_link(&self.env, &mut self.warm)?;
                 if read {
-                    compat::bundle_write(link, &dir, count, bytes)?;
+                    compat::bundle_write(link, &dir, &data)?;
                     let taken = timed(&mut self.env.cpu, samples, || {
                         compat::bundle_read(link, &dir, count).map(drop)
                     })?;
                     self.record(name, &taken, Some(bytes * count));
                 } else {
                     let taken = timed(&mut self.env.cpu, samples, || {
-                        compat::bundle_write(link, &dir, count, bytes).map(drop)
+                        compat::bundle_write(link, &dir, &data).map(drop)
                     })?;
                     self.record(name, &taken, Some(bytes * count));
                 }
@@ -677,16 +679,17 @@ impl Runner {
             Kind::PerFile { read, count, size } => {
                 let bytes = parse_size(&size)?;
                 let dir = self.path(&format!("written/files-{count}x{size}"));
+                let data = compat::tree_data(count, bytes);
                 let link = warm_link(&self.env, &mut self.warm)?;
                 if read {
-                    compat::bundle_write(link, &dir, count, bytes)?;
+                    compat::bundle_write(link, &dir, &data)?;
                     let taken = timed(&mut self.env.cpu, samples, || {
                         compat::file_read(link, &dir, count).map(drop)
                     })?;
                     self.record(name, &taken, Some(bytes * count));
                 } else {
                     let taken = timed(&mut self.env.cpu, samples, || {
-                        compat::file_write(link, &dir, count, bytes)
+                        compat::file_write(link, &dir, &data)
                     })?;
                     self.record(name, &taken, Some(bytes * count));
                 }

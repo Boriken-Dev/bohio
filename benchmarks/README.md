@@ -19,6 +19,8 @@ of the grants. `--set link.window=4MiB` puts a `[link]` or `[filesystem]` key in
 and, for the link bounds, in this side's `Settings` too: both ends of a link must agree on `window` and
 `max_frame`.
 
+`local --wan DELAY_MS[:MBIT]` (`--wan 133:20` is `netem.sh`'s `wan`) puts an in-process proxy between this side and the host that holds every chunk for a one-way delay and sends it at a fixed rate each way, with no loss: it needs no namespaces or root, so a Windows, WSL or any machine can take a sanity measurement of a change on a long thin path. Its timing is the operating system's own; a result is not evidence (CI on the emulated links is).
+
 `run` runs the scenarios against a host that already exists (another machine, a network namespace): the
 operator starts `bohio serve`, runs `bohio pair` there and `bohio join ENDPOINT --pin PIN --config CLIENT.cfg`
 here, then `bohio peer approve` with `--allow info,exec,fs.read,fs.write --fs-root ROOT --program HELPER`:
