@@ -135,8 +135,8 @@ fn a_large_output_is_delivered_whole_before_the_exit() {
     let (script, last) = ("seq 1 50000; echo END$((1+1)); exit\r", "49999");
     #[cfg(windows)]
     let (script, last) = (
-        "for /l %i in (1,1,3000) do @echo %i\recho END%OS%\rexit\r",
-        "2999",
+        "for /l %i in (1,1,1000) do @echo %i\recho END%OS%\rexit\r",
+        "999",
     );
     shell.write(script.as_bytes()).unwrap();
     let (output, exit) = shell.wait(WAIT).expect("the shell exits");

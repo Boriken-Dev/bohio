@@ -1445,15 +1445,51 @@ fn a_shell_session_runs_a_command_through_the_command_line() {
     let done = process.finish();
     assert_eq!(done.code, Some(0), "{}", done.stderr);
     // The terminal echoes what was typed, which holds `20 + 22`; only a shell that ran it prints 42, alone or after its prompt.
+    // A terminal redraws a line with title and cursor sequences before the text, so they are dropped first.
+    let plain = without_escapes(&done.stdout);
     assert!(
-        done.stdout
-            .lines()
-            .any(|line| line
-                .split('\r')
-                .any(|part| part.trim().trim_start_matches('$').trim() == "42")),
+        plain.lines().any(|line| line.split('\r').any(|part| part
+            .trim()
+            .trim_start_matches('$')
+            .trim()
+            == "42")),
         "{}",
         done.stdout
     );
+}
+
+/// `text` without its terminal escape sequences: `ESC [` ... a final byte, `ESC ]` ... BEL or `ESC \`, and `ESC` with one more byte.
+fn without_escapes(text: &str) -> String {
+    let mut plain = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            plain.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('[') => {
+                for c in chars.by_ref() {
+                    if ('\u{40}'..='\u{7e}').contains(&c) {
+                        // A repaint moves the cursor instead of ending the line, so that is a line end here.
+                        if matches!(c, 'H' | 'f' | 'B' | 'E' | 'F' | 'd') {
+                            plain.push('\n');
+                        }
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                while let Some(c) = chars.next() {
+                    if c == '\u{7}' || (c == '\u{1b}' && chars.next_if_eq(&'\\').is_some()) {
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    plain
 }
 
 /// Every run of the pairing and the session below logs at `trace`; none of it may hold a secret.
