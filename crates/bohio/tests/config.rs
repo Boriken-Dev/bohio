@@ -776,13 +776,14 @@ fn the_window_and_open_limits_have_their_defaults_and_reach_the_link() {
     assert_eq!(limits.max_metadata, 4096);
     assert_eq!(limits.max_pending_opens, 8);
     assert_eq!(limits.max_opens_per_minute, 600);
+    assert_eq!(limits.open_wait, Duration::from_millis(250));
 }
 
 #[test]
 fn every_window_and_open_limit_is_read_and_reaches_the_limits() {
     let config = parse(
         "[link]\nwindow = 65536\nmax_window = 16777216\nbulk_window = 8388608\nauto_window = true\n\
-         max_metadata = 65536\nmax_pending_opens = 32\nmax_opens_per_minute = 6000\n\
+         max_metadata = 65536\nmax_pending_opens = 32\nmax_opens_per_minute = 6000\nopen_wait = \"2s\"\n\
          tcp_send_buffer = 4194304\ntcp_receive_buffer = 2097152\n",
     )
     .unwrap();
@@ -797,6 +798,7 @@ fn every_window_and_open_limit_is_read_and_reaches_the_limits() {
     assert_eq!(limits.max_metadata, 65536);
     assert_eq!(limits.max_pending_opens, 32);
     assert_eq!(limits.max_opens_per_minute, 6000);
+    assert_eq!(limits.open_wait, Duration::from_secs(2));
 }
 
 #[test]

@@ -67,6 +67,10 @@ pub struct Settings {
     /// How long a send waits for credit before it reports no progress, and is tried again. Default
     /// 250 ms.
     pub send_wait: Duration,
+    /// How long an open waits for one of this side's streams to end when it holds as many as `max_streams` allows, before
+    /// it is refused as `NoProgress`: a caller that opens short streams in a row can be ahead of its own closes. Zero
+    /// refuses at once. Default 250 ms.
+    pub open_wait: Duration,
     /// How often a stream's threads look at whether it was closed. Default 50 ms.
     pub poll_interval: Duration,
     /// How often the link asks the peer whether it is there, which also keeps a quiet link from being closed by a
@@ -97,6 +101,7 @@ impl Default for Settings {
             queued_bytes: 1024 * 1024,
             send_limit: Duration::from_secs(10),
             send_wait: Duration::from_millis(250),
+            open_wait: Duration::from_millis(250),
             poll_interval: Duration::from_millis(50),
             heartbeat: Duration::from_secs(25),
             heartbeat_misses: 3,
@@ -120,6 +125,7 @@ impl Settings {
         limits.max_opens_per_minute = self.max_opens_per_minute.max(1);
         limits.max_message = self.max_message.max(1);
         limits.send_wait = self.send_wait;
+        limits.open_wait = self.open_wait;
         limits.heartbeat = (!self.heartbeat.is_zero())
             .then(|| Heartbeat::new(self.heartbeat, self.heartbeat_misses.max(1)));
         limits

@@ -407,6 +407,10 @@ pub struct LinkConfig {
     /// How long a send waits for credit before it reports no progress and is tried again. Not
     /// zero. Default `250ms`.
     pub send_wait: Span,
+    /// How long an open waits for one of the link's own streams to end when it holds `max_streams`, before it fails as
+    /// no progress; a caller that opens short streams in a row can be ahead of its own closes. Same units as `recheck`;
+    /// `0` fails at once. Default `250ms`.
+    pub open_wait: Span,
     /// How often a stream's threads look at whether it was closed. Not zero. Default `50ms`.
     pub poll_interval: Span,
     /// How often the link asks its peer whether it is there, and what keeps a quiet link from a proxy's or a NAT's idle
@@ -444,6 +448,7 @@ impl Default for LinkConfig {
             queued_bytes: link.queued_bytes,
             send_limit: Span(link.send_limit),
             send_wait: Span(link.send_wait),
+            open_wait: Span(link.open_wait),
             poll_interval: Span(link.poll_interval),
             heartbeat: Span(link.heartbeat),
             heartbeat_misses: link.heartbeat_misses,
@@ -475,6 +480,7 @@ impl LinkConfig {
         settings.queued_bytes = self.queued_bytes;
         settings.send_limit = self.send_limit.0;
         settings.send_wait = self.send_wait.0;
+        settings.open_wait = self.open_wait.0;
         settings.poll_interval = self.poll_interval.0;
         settings.heartbeat = self.heartbeat.0;
         settings.heartbeat_misses = self.heartbeat_misses;

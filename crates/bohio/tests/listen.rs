@@ -1106,6 +1106,38 @@ fn info_says_what_the_host_listens_on() {
     );
 }
 
+/// A caller that opens one short stream after another gets every one: past the link's bound on streams an open waits for the
+/// host to free one, it is not refused.
+#[test]
+fn control_streams_opened_and_closed_in_a_row_are_all_opened() {
+    let _deadline = Deadline::start();
+    use bohio_client::control::Control;
+    let node = Running::start();
+    let (link, _) = node.link(Grant::allowing([Permission::Info]));
+    for round in 0..400 {
+        let control = Control::open(&link)
+            .unwrap_or_else(|error| panic!("control stream {round} did not open: {error}"));
+        control.close();
+    }
+}
+
+/// As above, each stream used before it is closed: what the host refuses because it is over a limit reaches the caller.
+#[test]
+fn control_streams_used_and_closed_in_a_row_all_answer() {
+    let _deadline = Deadline::start();
+    use bohio_client::control::Control;
+    let node = Running::start();
+    let (link, _) = node.link(Grant::allowing([Permission::Info]));
+    for round in 0..400 {
+        let control = Control::open(&link)
+            .unwrap_or_else(|error| panic!("control stream {round} did not open: {error}"));
+        control
+            .info(Some(WAIT))
+            .unwrap_or_else(|error| panic!("control stream {round} did not answer: {error}"));
+        control.close();
+    }
+}
+
 #[test]
 fn a_socket_or_pipe_listener_is_for_the_hosts_own_account() {
     let _deadline = Deadline::start();

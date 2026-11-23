@@ -600,7 +600,7 @@ dependencies = [
 [[package]]
 name = "coqui-link"
 version = "0.0.0-alpha.0"
-source = "git+https://github.com/Boriken-Dev/coqui-link?rev=50c768d942579c0612d7567f8815a590a943f887#50c768d942579c0612d7567f8815a590a943f887"
+source = "git+https://github.com/Boriken-Dev/coqui-link?rev=46efc71ee72d73d3f1faafbcff2cddc08cea360e#46efc71ee72d73d3f1faafbcff2cddc08cea360e"
 dependencies = [
  "coqui-builder",
  "coqui-net-acl",
