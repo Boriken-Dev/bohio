@@ -218,7 +218,8 @@ pub(crate) fn covers_read(grant: &Grant, metadata: &[u8]) -> bool {
 pub(crate) fn covers_write(grant: &Grant, metadata: &[u8]) -> bool {
     bohio_proto::fs::WriteRequest::from_metadata(metadata).map_or(true, |request| {
         under_a_root(grant, &request.path)
-            && (!matches!(request.mode, bohio_proto::fs::WriteMode::Delta { .. })
+            && ((!matches!(request.mode, bohio_proto::fs::WriteMode::Delta { .. })
+                && request.base.is_none())
                 || grant.allows(Permission::FsRead))
     })
 }

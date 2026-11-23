@@ -829,3 +829,95 @@ fn a_delta_that_writes_far_more_than_it_was_sent_is_refused_unless_the_bound_is_
         }
     }
 }
+
+#[test]
+fn a_replace_against_a_base_is_held_to_it_before_ready_and_again_before_the_rename() {
+    let fixture = fixture(&RW);
+    let host = fixture.root.join("f");
+    let old = pseudo(1000, 3);
+    std::fs::write(&host, &old).unwrap();
+    let base = DeltaBase {
+        size: 1000,
+        modified: None,
+        hashes: Digests::from([(Algorithm::Sha256, sha256(&old))]),
+    };
+    let against = |base: DeltaBase| WriteRequest {
+        base: Some(base),
+        ..WriteRequest::replace("f")
+    };
+
+    // The target is as the base says: it is replaced.
+    let writer = Writer::start(&fixture.link, &against(base.clone()), WAIT).unwrap();
+    writer.write(b"new").unwrap();
+    writer.finish(WAIT).unwrap();
+    assert_eq!(std::fs::read(&host).unwrap(), b"new");
+
+    // It is not any more: nothing is replaced, and nothing is left behind.
+    assert_eq!(
+        code(Writer::start(&fixture.link, &against(base), WAIT)),
+        ErrorCode::Changed
+    );
+    assert_eq!(std::fs::read(&host).unwrap(), b"new");
+
+    // Someone else writes while the data is sent: the check before the rename sees it.
+    let now = DeltaBase {
+        size: 3,
+        modified: None,
+        hashes: Digests::new(),
+    };
+    let writer = Writer::start(&fixture.link, &against(now.clone()), WAIT).unwrap();
+    writer.write(b"abc").unwrap();
+    std::fs::write(&host, b"written meanwhile").unwrap();
+    assert_eq!(code(writer.finish(WAIT)), ErrorCode::Changed);
+    assert_eq!(std::fs::read(&host).unwrap(), b"written meanwhile");
+    assert!(strays(&fixture.root, &["f"]).is_empty());
+
+    // A target that is not there, and a base that cannot be read, are refused before ready.
+    assert_eq!(
+        code(Writer::start(
+            &fixture.link,
+            &WriteRequest {
+                base: Some(now.clone()),
+                ..WriteRequest::replace("absent")
+            },
+            WAIT
+        )),
+        ErrorCode::NotFound
+    );
+    let bad_digest = DeltaBase {
+        hashes: Digests::from([(Algorithm::Sha256, "XYZ".to_owned())]),
+        ..now.clone()
+    };
+    assert_eq!(
+        code(Writer::start(&fixture.link, &against(bad_digest), WAIT)),
+        ErrorCode::BadRequest
+    );
+    let create = WriteRequest {
+        mode: WriteMode::Create,
+        base: Some(now),
+        ..WriteRequest::replace("f")
+    };
+    assert_eq!(
+        code(Writer::start(&fixture.link, &create, WAIT)),
+        ErrorCode::BadRequest
+    );
+}
+
+#[test]
+fn a_replace_against_a_base_needs_read_as_well_as_write() {
+    let fixture = fixture(&[Permission::FsWrite]);
+    std::fs::write(fixture.root.join("f"), b"secret").unwrap();
+    let request = WriteRequest {
+        base: Some(DeltaBase {
+            size: 6,
+            modified: None,
+            hashes: Digests::new(),
+        }),
+        ..WriteRequest::replace("f")
+    };
+    assert_eq!(
+        code(Writer::start(&fixture.link, &request, WAIT)),
+        ErrorCode::Denied
+    );
+    assert_eq!(std::fs::read(fixture.root.join("f")).unwrap(), b"secret");
+}

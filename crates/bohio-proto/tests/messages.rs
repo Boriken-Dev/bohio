@@ -512,6 +512,11 @@ fn every_transfer_message_round_trips() {
             compression: Some(Compression::new(Codec::Lz4)),
             items: true,
             resume: true,
+            base: Some(DeltaBase {
+                size: 7,
+                modified: None,
+                hashes: Digests::new(),
+            }),
         };
         assert_eq!(
             WriteRequest::from_metadata(&write.to_metadata().unwrap()).unwrap(),

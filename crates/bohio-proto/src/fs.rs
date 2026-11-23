@@ -439,6 +439,11 @@ pub struct WriteRequest {
     /// answer `ready` with a token to continue it by. `unsupported` where the host keeps none.
     #[serde(default, skip_serializing_if = "core::ops::Not::not")]
     pub resume: bool,
+    /// For `replace`: the target as the client saw it. The write is `changed` when the target's size, modification time
+    /// or digests differ, before `ready` and again just before the rename, and replaces nothing. The target must exist
+    /// (`not_found`). Needs `fs.read` as well as `fs.write`, because a digest that matches or not tells what the file holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<DeltaBase>,
 }
 
 /// One file of a bundle write: the client's `0x16` frame. The data follows, then an `end`.
@@ -506,6 +511,7 @@ impl WriteRequest {
             compression: None,
             items: false,
             resume: false,
+            base: None,
         }
     }
 

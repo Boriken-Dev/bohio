@@ -83,7 +83,7 @@ pub struct DeltaBase { size: u64, modified: Option<Timestamp>, hashes: Digests }
 #[non_exhaustive] pub enum ReadOutput { Header(ReadHeader), Data(Vec<u8>), Compressed(Vec<u8>) /* 0x06 */, Progress(Progress) /* 0x08 */, Copy(DeltaCopy) /* 0x09 */, Done(ReadDone), Error(ErrorBody) }
 #[non_exhaustive] pub enum ReadInput { Signature(SignatureBatch) /* 0x12 */, SignatureEnd /* 0x13 */ }   // client to host, a delta read only
 #[non_exhaustive] pub enum WriteMode { Replace /* default */, Create, Append, At { offset: u64 }, Delta { block_size: u64, base: DeltaBase } }   // tagged by "type"; no longer Copy (Delta holds digests); a delta needs fs.read as well
-pub struct WriteRequest { path, mode: WriteMode, parents: bool, file_mode: Option<u32>, expect: Digests, hashes: Option<Vec<Algorithm>>, compression: Option<Compression> }   // WriteRequest::replace(path); hashes None: the host's write_hashes; compression: what the client sends, never Auto
+pub struct WriteRequest { path, mode: WriteMode, parents: bool, file_mode: Option<u32>, expect: Digests, hashes: Option<Vec<Algorithm>>, compression: Option<Compression>, base: Option<DeltaBase> /* a replace only if the target still is this: `changed` otherwise, needs fs.read */ }   // WriteRequest::replace(path); hashes None: the host's write_hashes; compression: what the client sends, never Auto
 pub struct WriteDone { pub written: u64, pub hashes: Digests }
 #[non_exhaustive] pub enum WriteOutput { Ready, Done(WriteDone), Error(ErrorBody) }
 #[non_exhaustive] pub enum WriteInput { Data(Vec<u8>), Compressed(Vec<u8>) /* 0x14 */, Copy(DeltaCopy) /* 0x15 */, End }

@@ -121,6 +121,15 @@ pub(super) fn check_request(request: &WriteRequest) -> Result<(), ErrorBody> {
     {
         return bad("a digest is only checked for replace, create, delta and resume");
     }
+    if let Some(base) = &request.base {
+        if !matches!(request.mode, WriteMode::Replace) {
+            return bad("a base is only for replace: a delta names its own");
+        }
+        if request.resume || request.items {
+            return bad("a replace against a base cannot resume or be a bundle");
+        }
+        check_base_digests(base)?;
+    }
     if request.resume && !matches!(request.mode, WriteMode::Replace) {
         return bad(
             "only a replace asks to resume; a write that continues one names its token as the mode",
@@ -141,16 +150,24 @@ pub(super) fn check_request(request: &WriteRequest) -> Result<(), ErrorBody> {
         if *block_size == 0 || u32::try_from(*block_size).is_err() {
             return bad("a delta's block size is from 1 to 4294967295");
         }
-        if base.hashes.iter().any(|(algorithm, text)| {
-            algorithm
-                .hex_len()
-                .is_none_or(|length| length != text.len())
-                || !text
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        }) {
-            return bad("a base digest is the algorithm's lowercase hexadecimal digits");
-        }
+        check_base_digests(base)?;
+    }
+    Ok(())
+}
+
+fn check_base_digests(base: &DeltaBase) -> Result<(), ErrorBody> {
+    if base.hashes.iter().any(|(algorithm, text)| {
+        algorithm
+            .hex_len()
+            .is_none_or(|length| length != text.len())
+            || !text
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    }) {
+        return Err(ErrorBody::new(
+            ErrorCode::BadRequest,
+            "a base digest is the algorithm's lowercase hexadecimal digits",
+        ));
     }
     Ok(())
 }
@@ -180,6 +197,22 @@ fn open_base(
                 "the block size is from 1 to this host's [delta] max_block",
             )
         })?;
+    let (file, length, modified) = open_checked(roots, context, path, wanted)?;
+    Ok(Base {
+        length,
+        file,
+        modified,
+        block_size,
+    })
+}
+
+/// Opens the target through its root handle and holds it to what the client saw: size, modification time and digests.
+fn open_checked(
+    roots: &Roots<'_>,
+    context: &Context<'_>,
+    path: &str,
+    wanted: &DeltaBase,
+) -> Result<(cap_std::fs::File, u64, Option<Timestamp>), ErrorBody> {
     let (dir, relative) = roots.resolve(path)?;
     let (mut file, meta) = ops::open_regular_in(&dir, &relative)?;
     let modified = meta.modified().ok().map(ops::timestamp);
@@ -203,12 +236,7 @@ fn open_base(
             return Err(moved());
         }
     }
-    Ok(Base {
-        length: meta.len(),
-        file,
-        modified,
-        block_size,
-    })
+    Ok((file, meta.len(), modified))
 }
 
 fn run(
@@ -224,11 +252,12 @@ fn run(
     if request.items {
         return super::bundle::write(channel, &request, context, poll);
     }
-    let needs: &[Permission] = if matches!(request.mode, WriteMode::Delta { .. }) {
-        &[Permission::FsWrite, Permission::FsRead]
-    } else {
-        &[Permission::FsWrite]
-    };
+    let needs: &[Permission] =
+        if matches!(request.mode, WriteMode::Delta { .. }) || request.base.is_some() {
+            &[Permission::FsWrite, Permission::FsRead]
+        } else {
+            &[Permission::FsWrite]
+        };
     authorize(context, needs)?;
     check_request(&request)?;
     let settings = Settings::new(context.compression);
@@ -266,6 +295,12 @@ fn run(
         )?),
         _ => None,
     };
+    // A replace against a base holds the target to it now and again before the rename: what it saw, as a delta's does.
+    let mut watched = base.as_ref().map(|base| (base.length, base.modified));
+    if let (WriteMode::Replace, Some(wanted)) = (&request.mode, &request.base) {
+        let (_, length, modified) = open_checked(&roots, context, &request.path, wanted)?;
+        watched = Some((length, modified));
+    }
     let (dir, relative) = roots.resolve(&request.path)?;
     let ttl = context.config.resume_ttl.0;
     let tag = || resume_tag(context.peer, &request.path);
@@ -452,13 +487,13 @@ fn run(
         }
     }
     // Just before the rename: the target is still what the delta was made against.
-    if let Some(base) = &base {
+    if let Some((length, modified)) = watched {
         let (dir, relative) = roots.resolve(&request.path)?;
         let (_, now) = ops::open_regular_in(&dir, &relative)?;
-        if now.len() != base.length || now.modified().ok().map(ops::timestamp) != base.modified {
+        if now.len() != length || now.modified().ok().map(ops::timestamp) != modified {
             return Err(ErrorBody::new(
                 ErrorCode::Changed,
-                "the target changed while the delta was written",
+                "the target changed while the new file was written",
             ));
         }
     }

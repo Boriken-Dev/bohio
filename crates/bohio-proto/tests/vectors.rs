@@ -1426,6 +1426,23 @@ fn write_cases() -> Vec<Case> {
         ),
         message("open_checked", OPEN, "open", "fs.WriteRequest", &checked),
         message(
+            "open_replace_if_unchanged",
+            OPEN,
+            "open",
+            "fs.WriteRequest",
+            &WriteRequest {
+                base: Some(DeltaBase {
+                    size: 120,
+                    modified: Some(Timestamp {
+                        secs: 1_700_000_000,
+                        nanos: 5,
+                    }),
+                    hashes: Digests::from([(Algorithm::Sha256, sha256.into())]),
+                }),
+                ..WriteRequest::replace("/srv/out.txt")
+            },
+        ),
+        message(
             "open_compressed",
             OPEN,
             "open",
