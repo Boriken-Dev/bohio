@@ -19,6 +19,8 @@ use coqui_peer::PeerId;
 use coqui_transport::{Channel, Failure};
 
 use crate::dial::{Endpoint, ServerTrust};
+use crate::exec::Exec;
+use crate::forward::{Bytes, ForwardSettings, Target};
 use crate::link::Settings;
 use crate::relay::{Relay, relay_with};
 use crate::{Error, Open, OpenOptions};
@@ -306,6 +308,19 @@ pub struct Connection {
     opener: Opener,
     thread: Mutex<Option<JoinHandle<()>>>,
     host: PeerId,
+    /// The link this one runs over when it was made [`through`](Connection::through) a host: kept up as long as this one is.
+    carrier: Option<Carrier>,
+}
+
+/// The link under a jumped connection.
+struct Carrier {
+    _under: Arc<dyn Open>,
+}
+
+impl core::fmt::Debug for Carrier {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Carrier")
+    }
 }
 
 impl Connection {
@@ -389,7 +404,87 @@ impl Connection {
             opener,
             thread: Mutex::new(Some(thread)),
             host,
+            carrier: None,
         })
+    }
+
+    /// Connects to `endpoint` *through* the host `link` reaches, as `ssh -J` does: the host carries a stream to the endpoint
+    /// (a TCP address, a Unix socket or pipe on that host's machine, or the standard streams of a program it runs for this
+    /// peer) and this side proves itself, and the host at the far end, over it with `proof`. The jump host sees the link's
+    /// sealed bytes and nothing else, so whichever host answers must be the one `proof` trusts: a jump cannot stand in.
+    ///
+    /// What the previous host must grant this peer: `forward.connect` and a rule that covers the endpoint's target for a
+    /// `tcp://` or `pipe://` endpoint, or `exec` of the program (with its standard input open) for a `stdio://` one. The
+    /// connection keeps `link` alive and is closed before it. A `pipe://` endpoint names a socket or pipe in the text the
+    /// local system parses it with; a Windows pipe is `pipe://\.\pipe\NAME` from a Windows client.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Remote`] or [`Error::Transport`] with `Permission` when the previous host refuses the stream (the
+    /// grant does not cover the target, or the program is not allowed); [`Error::Link`] for an endpoint kind a jump does not
+    /// carry (`ws://`, `wss://`, `webtransport://`, `serial://`) or when the proof fails; otherwise as [`Connection::connect`].
+    pub fn through(
+        link: Arc<dyn Open>,
+        endpoint: &Endpoint,
+        proof: &Proof,
+        settings: &Settings,
+        forward: &ForwardSettings,
+    ) -> Result<Self, Error> {
+        let bytes = match endpoint {
+            Endpoint::Tcp(address) => Bytes::tunnel(
+                crate::forward::connect(
+                    &*link,
+                    &Target::Tcp {
+                        host: address.ip().to_string(),
+                        port: address.port(),
+                    },
+                    forward,
+                )?,
+                forward,
+            ),
+            Endpoint::Pipe(name) => {
+                let path = name.path().to_string_lossy().into_owned();
+                let target = match path.strip_prefix(r"\.\pipe\") {
+                    Some(pipe) => Target::Pipe {
+                        name: pipe.to_owned(),
+                    },
+                    None => Target::Unix { path },
+                };
+                Bytes::tunnel(crate::forward::connect(&*link, &target, forward)?, forward)
+            }
+            Endpoint::Command(argv) => {
+                let mut request = bohio_proto::exec::Request::argv(argv.iter().cloned());
+                request.stdin = bohio_proto::exec::Stdin::Open;
+                let exec = Exec::start(&*link, &request)?;
+                // The host's refusal (no grant, a program that is not allowed or not there) is the answer, not a link that
+                // never proves: wait for the program to start.
+                loop {
+                    match exec.next(Some(forward.answer_timeout))? {
+                        Some(crate::exec::Event::Started { .. }) => break,
+                        Some(crate::exec::Event::Exit(exit)) => {
+                            return Err(Error::Link(format!(
+                                "the program ended before the link began (status {:?})",
+                                exit.code
+                            )));
+                        }
+                        Some(_) => {}
+                        None => return Err(Error::Closed),
+                    }
+                }
+                Bytes::program(exec, forward)
+            }
+            other => {
+                return Err(Error::Link(format!(
+                    "a jump cannot carry {other}: only tcp://, pipe:// and stdio:// endpoints go through a host"
+                )));
+            }
+        };
+        let channel = crate::link::stream(bytes, settings).map_err(|error| {
+            Error::Link(format!("the stream cannot be framed: {:?}", error.kind()))
+        })?;
+        let mut connection = Self::over(channel, proof, settings)?;
+        connection.carrier = Some(Carrier { _under: link });
+        Ok(connection)
     }
 
     /// The host's proven id.

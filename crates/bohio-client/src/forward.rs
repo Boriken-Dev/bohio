@@ -5,8 +5,11 @@
 //! the pumps ([`Tunnel::pump_tcp`], [`Tunnel::pump_ipc`]) or bridged to standard streams ([`Tunnel::bridge`]), and
 //! [`listen_tcp`] and [`listen_ipc`] make one per connection a local listener accepts (`ssh -L`).
 
+mod bytes;
 pub mod ipc;
 mod remote;
+
+pub use bytes::{Bytes, BytesReader, BytesWriter};
 
 pub use remote::{
     Arrival, Bind, ListenRequest, LocalConnection, RemoteForward, RemoteListener, connect_local,
@@ -49,12 +52,12 @@ pub struct ForwardSettings {
     /// How long a connect waits for a link to be up, and for the host's answer on a link that ended before it came, when the
     /// link is kept ([`keep::Relink`](crate::keep::Relink)). Default 30 seconds.
     pub wait_for_link: Duration,
-}
-
-impl Default for ForwardSettings {
     /// How long a SOCKS5 client ([`socks::serve`](crate::socks::serve)) has to finish its handshake: its greeting and its request.
     /// A client that is slower is closed. Not zero. Default 10 seconds.
     pub socks_timeout: Duration,
+}
+
+impl Default for ForwardSettings {
     fn default() -> Self {
         Self {
             options: Options::default(),
@@ -63,10 +66,10 @@ impl Default for ForwardSettings {
             open_retry: Duration::from_secs(10),
             open_retry_interval: Duration::from_millis(100),
             wait_for_link: Duration::from_secs(30),
+            socks_timeout: Duration::from_secs(10),
         }
     }
 }
-            socks_timeout: Duration::from_secs(10),
 
 /// A connected forward: the host's connection to the target, as a stream of raw bytes in both directions. Dropping it closes
 /// the stream, which resets the host's connection unless both directions ended in order.

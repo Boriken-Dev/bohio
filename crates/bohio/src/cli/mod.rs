@@ -362,6 +362,16 @@ pub struct RemoteArgs {
     /// The host's id to trust instead of the keys `bohio join` stored.
     #[arg(long, value_name = "ID")]
     pub server: Option<String>,
+    /// Reach the host through another one, as `ssh -J` does (repeat for several hops, in order): `tcp://`, `pipe://` or `stdio://`
+    /// endpoints, the first dialed from here and each next one carried by the one before it. This side proves itself to every
+    /// hop and each hop's host to this side end to end, so a jump sees only sealed bytes and may be any host that holds a
+    /// `forward.connect` rule for the next hop (or `exec` of the program, for `stdio://`). Not with `--via`.
+    #[arg(long, value_name = "ENDPOINT", conflicts_with = "via")]
+    pub jump: Vec<String>,
+    /// The id each `--jump` host must prove, in the same order (repeat). A hop with no id here trusts the keys `bohio join` stored,
+    /// as the host does without `--server`.
+    #[arg(long, value_name = "ID", requires = "jump")]
+    pub jump_server: Vec<String>,
     /// For `wss://` and `webtransport://`: trust the certificates in this PEM file instead of the system's roots, for a host
     /// whose certificate no public authority issued. May be repeated. The link's proof, not TLS, says
     /// who the host is.
@@ -750,16 +760,6 @@ pub struct RemoteForwardArgs {
         required_unless_present_any = ["local", "dynamic"]
     )]
     pub remote: Vec<String>,
-    /// Whether and how the link is made again when it is lost.
-    #[command(flatten)]
-    pub persist: KeepArgs,
-}
-
-/// `bohio remote ... listen`.
-#[derive(Debug, Args)]
-pub struct RemoteListenArgs {
-    /// What the host binds: `BIND:PORT` (an IPv6 address in brackets; port 0 lets the host choose), `unix:PATH` or
-    /// `pipe:NAME`. The peer's grant must hold `forward.listen` and a rule that covers it.
     /// Serve SOCKS5 here and have the host connect to whatever each client asks for (`ssh -D`): `[BIND:]PORT`. BIND is an address
     /// and defaults to `127.0.0.1`; port 0 picks a free one. Clients use CONNECT with IPv4, IPv6 or a domain name, which the host
     /// resolves, with no authentication, and the peer's grant decides every target: whoever can reach the port has what the
@@ -777,6 +777,16 @@ pub struct RemoteListenArgs {
     /// `[forward] socks_timeout`.
     #[arg(long, value_name = "TIME", value_parser = parse_span)]
     pub socks_timeout: Option<std::time::Duration>,
+    /// Whether and how the link is made again when it is lost.
+    #[command(flatten)]
+    pub persist: KeepArgs,
+}
+
+/// `bohio remote ... listen`.
+#[derive(Debug, Args)]
+pub struct RemoteListenArgs {
+    /// What the host binds: `BIND:PORT` (an IPv6 address in brackets; port 0 lets the host choose), `unix:PATH` or
+    /// `pipe:NAME`. The peer's grant must hold `forward.listen` and a rule that covers it.
     pub bind: String,
     /// Take the next arrival after each connection ends, until interrupted or the link ends. Without it, the first
     /// connection ends the command: status 0 when both directions ended in order.

@@ -103,29 +103,71 @@ fn direct_plan(args: &RemoteArgs, environment: &Environment) -> Result<Plan, Str
     };
     let endpoint = args.mtu.apply(endpoint)?;
     let identity = data.identity().map_err(|error| error.to_string())?;
-    let trust = match &args.server {
-        Some(id) => Trust::pinned([id
-            .parse::<PeerId>()
-            .map_err(|_| "that is not a peer id".to_owned())?]),
-        // The keys `bohio join` or `bohio peer approve` wrote into the layers: a host this node trusts.
-        None => Trust::pinned(
-            Layers::peers(&found.watch)
-                .map_err(|error| error.to_string())?
-                .ids()
-                .filter_map(|name| name.parse::<PeerId>().ok()),
-        ),
+    let proof_for = |server: Option<&str>| -> Result<Arc<Proof>, String> {
+        let trust = match server {
+            Some(id) => Trust::pinned([id
+                .parse::<PeerId>()
+                .map_err(|_| "that is not a peer id".to_owned())?]),
+            // The keys `bohio join` or `bohio peer approve` wrote into the layers: a host this node trusts.
+            None => Trust::pinned(
+                Layers::peers(&found.watch)
+                    .map_err(|error| error.to_string())?
+                    .ids()
+                    .filter_map(|name| name.parse::<PeerId>().ok()),
+            ),
+        };
+        Proof::builder(identity.clone())
+            .responders(trust)
+            .build()
+            .map(Arc::new)
+            .map_err(|error| error.to_string())
     };
-    let proof = Proof::builder(identity)
-        .responders(trust)
-        .build()
-        .map_err(|error| error.to_string())?;
+    let proof = proof_for(args.server.as_deref())?;
+    if args.jump_server.len() > args.jump.len() {
+        return Err("--jump-server names more hosts than --jump does".to_owned());
+    }
+    let mut jumps = Vec::new();
+    for (index, text) in args.jump.iter().enumerate() {
+        let hop = Endpoint::parse(text).map_err(|error| format!("--jump `{text}`: {error}"))?;
+        // The first hop is dialed from here, as any endpoint is; each next one is carried by the one before it.
+        if index > 0
+            && !matches!(
+                hop,
+                Endpoint::Tcp(_) | Endpoint::Pipe(_) | Endpoint::Command(_)
+            )
+        {
+            return Err(format!(
+                "--jump `{text}`: only tcp://, pipe:// and stdio:// hops are carried through another host"
+            ));
+        }
+        let proof = proof_for(args.jump_server.get(index).map(String::as_str))
+            .map_err(|error| format!("--jump-server for `{text}`: {error}"))?;
+        jumps.push(Jump {
+            endpoint: hop,
+            proof,
+        });
+    }
+    if !jumps.is_empty()
+        && !matches!(
+            endpoint,
+            Endpoint::Tcp(_) | Endpoint::Pipe(_) | Endpoint::Command(_)
+        )
+    {
+        return Err(format!(
+            "the host {endpoint} is reached through jump hosts: only tcp://, pipe:// and stdio:// endpoints are carried through another host"
+        ));
+    }
     let settings = config.link.settings();
-    let trust = tls_trust(&endpoint, &args.ca, &args.cert_hash, args.clock_skew)?;
+    // TLS trust is for the endpoint this side dials itself: the first hop.
+    let dialed = jumps.first().map_or(&endpoint, |jump| &jump.endpoint);
+    let trust = tls_trust(dialed, &args.ca, &args.cert_hash, args.clock_skew)?;
     Ok(Plan::Direct {
         endpoint,
-        proof: Arc::new(proof),
+        proof,
         settings,
         trust,
+        jumps,
+        forward: Box::new(config.forward.client()),
     })
 }
 
@@ -291,6 +333,10 @@ enum Plan {
         proof: Arc<Proof>,
         settings: Settings,
         trust: ServerTrust,
+        /// The hosts to go through, in order: the first is dialed from here, each next one is carried by the one before.
+        jumps: Vec<Jump>,
+        /// What the streams that carry a jump wait for.
+        forward: Box<ForwardSettings>,
     },
     /// The node's link to a peer, through the node's local control endpoint.
     Via {
@@ -303,6 +349,92 @@ enum Plan {
     },
 }
 
+/// One host a link goes through: where it is and whom it must prove to be.
+struct Jump {
+    endpoint: Endpoint,
+    proof: Arc<Proof>,
+}
+
+/// What a person is told when the link to a host this side dials itself ends or fails before it is proven.
+fn dial_failure(endpoint: &Endpoint, error: Error, trust: &ServerTrust) -> String {
+    match error {
+        Error::Transport(coqui_transport::Failure::Certificate) => {
+            certificate_refused(endpoint, trust)
+        }
+        Error::Transport(_) | Error::Closed => format!(
+            "the link to {endpoint} ended before it was proven: the host may not be listening, \
+             may not trust this key yet (it waits for `bohio peer approve`), or this side does \
+             not trust the host (`bohio join`, or --server ID)"
+        ),
+        other => other.to_string(),
+    }
+}
+
+/// The link to `endpoint` through `jumps`: the first is dialed, each next one is carried by the one before, and every hop
+/// proves its own host. An error names the hop that failed.
+fn dial_through(
+    jumps: &[Jump],
+    endpoint: &Endpoint,
+    proof: &Arc<Proof>,
+    settings: &Settings,
+    trust: &ServerTrust,
+    forward: &ForwardSettings,
+) -> Result<Arc<dyn Open>, String> {
+    let first = &jumps[0];
+    let mut link: Arc<dyn Open> = Arc::new(
+        Connection::connect_with(
+            &first.endpoint,
+            settings.proof_timeout,
+            &first.proof,
+            settings,
+            trust,
+        )
+        .map_err(|error| {
+            format!(
+                "jump 1 ({}): {}",
+                first.endpoint,
+                dial_failure(&first.endpoint, error, trust)
+            )
+        })?,
+    );
+    let wanted = jumps[1..]
+        .iter()
+        .map(|jump| (&jump.endpoint, &jump.proof))
+        .chain(core::iter::once((endpoint, proof)));
+    for (index, (next, next_proof)) in wanted.enumerate() {
+        let through = index + 1;
+        let through_name = format!("jump {through} ({})", jumps[index].endpoint);
+        let name = if through < jumps.len() {
+            format!("jump {} ({next})", through + 1)
+        } else {
+            format!("the host ({next})")
+        };
+        let connection = Connection::through(link, next, next_proof, settings, forward).map_err(
+            |error| match error {
+                Error::Remote(_) | Error::Transport(coqui_transport::Failure::Permission) => {
+                    let why = if matches!(next, Endpoint::Command(_)) {
+                        explain(&error)
+                    } else {
+                        explain_forward(&error)
+                    };
+                    format!("{through_name} would not carry the link to {name}: {why}")
+                }
+                Error::Link(reason) => format!(
+                    "{through_name}, the link to {name}: {reason}: whatever answers there is not the host this side trusts \
+                     (--server ID, or --jump-server ID for a jump), or it does not trust this key yet"
+                ),
+                _ => format!(
+                    "the link to {name} through {through_name} ended before it was proven: whatever answers there is \
+                     not the host this side trusts (--server ID, or --jump-server ID for a jump), or it does not \
+                     trust this key yet"
+                ),
+            },
+        )?;
+        link = Arc::new(connection);
+    }
+    Ok(link)
+}
+
 impl Plan {
     fn dial(&self) -> Result<Arc<dyn Open>, String> {
         match self {
@@ -311,19 +443,20 @@ impl Plan {
                 proof,
                 settings,
                 trust,
+                jumps,
+                forward,
+            } if !jumps.is_empty() => {
+                dial_through(jumps, endpoint, proof, settings, trust, forward)
+            }
+            Self::Direct {
+                endpoint,
+                proof,
+                settings,
+                trust,
+                ..
             } => Connection::connect_with(endpoint, settings.proof_timeout, proof, settings, trust)
                 .map(|connection| Arc::new(connection) as Arc<dyn Open>)
-                .map_err(|error| match error {
-                    Error::Transport(coqui_transport::Failure::Certificate) => {
-                        certificate_refused(endpoint, trust)
-                    }
-                    Error::Transport(_) | Error::Closed => format!(
-                        "the link to {endpoint} ended before it was proven: the host may not be listening, \
-                         may not trust this key yet (it waits for `bohio peer approve`), or this side does \
-                         not trust the host (`bohio join`, or --server ID)"
-                    ),
-                    other => other.to_string(),
-                }),
+                .map_err(|error| dial_failure(endpoint, error, trust)),
             Self::Via {
                 endpoint,
                 settings,
@@ -333,9 +466,7 @@ impl Plan {
             } => {
                 let via = Via::connect_to(endpoint, peer, settings, *server)
                     .map_err(|error| unreachable(&error))?;
-                let listed = via
-                    .links(*wait)
-                    .map_err(|error| explain(&error))?;
+                let listed = via.links(*wait).map_err(|error| explain(&error))?;
                 if !listed
                     .links
                     .iter()
@@ -494,6 +625,14 @@ fn forward_command(
     args: &RemoteForwardArgs,
     settings: &ForwardSettings,
 ) -> Result<ExitCode, String> {
+    let mut adjusted = *settings;
+    if let Some(wait) = args.socks_timeout {
+        if wait.is_zero() {
+            return Err("--socks-timeout is not zero".to_owned());
+        }
+        adjusted.socks_timeout = wait;
+    }
+    let settings = &adjusted;
     let mut bound = Vec::new();
     for text in &args.local {
         let spec: LocalSpec = text
@@ -507,6 +646,19 @@ fn forward_command(
         }
         bound.push((spec, listener, shown));
     }
+    let mut socks = Vec::new();
+    for text in &args.dynamic {
+        let spec: SocksSpec = text
+            .parse()
+            .map_err(|error: BadSpec| format!("-D `{text}`: {error}"))?;
+        let (listener, shown) = spec
+            .bind()
+            .map_err(|error| format!("-D `{text}`: {error}"))?;
+        if let Some(address) = spec.non_default() {
+            println!("non-default: bind {address}");
+        }
+        socks.push((listener, shown));
+    }
     let mut remote = Vec::new();
     for text in &args.remote {
         let spec: RemoteSpec = text
@@ -519,6 +671,9 @@ fn forward_command(
     }
     for (spec, _, shown) in &bound {
         println!("local {shown} -> {}", spec.target());
+    }
+    for (_, shown) in &socks {
+        println!("socks5 {shown}");
     }
     let _ = std::io::stdout().flush();
     let stop = std::sync::atomic::AtomicBool::new(false);
@@ -625,14 +780,6 @@ fn forward_command(
                             stop.store(true, std::sync::atomic::Ordering::SeqCst);
                             break;
                         }
-    let mut adjusted = *settings;
-    if let Some(wait) = args.socks_timeout {
-        if wait.is_zero() {
-            return Err("--socks-timeout is not zero".to_owned());
-        }
-        adjusted.socks_timeout = wait;
-    }
-    let settings = &adjusted;
                         thread::sleep(settings.options.listen_poll);
                     }
                     failure
@@ -646,25 +793,20 @@ fn forward_command(
                 let (stop, report) = (&stop, &report);
                 scope.spawn(move || {
                     let ended = listener.serve(open, spec.target(), settings, stop, report);
-    let mut socks = Vec::new();
-    for text in &args.dynamic {
-        let spec: SocksSpec = text
-            .parse()
-            .map_err(|error: BadSpec| format!("-D `{text}`: {error}"))?;
-        let (listener, shown) = spec
-            .bind()
-            .map_err(|error| format!("-D `{text}`: {error}"))?;
-        if let Some(address) = spec.non_default() {
-            println!("non-default: bind {address}");
-        }
-        socks.push((listener, shown));
-    }
                     // One listener ending ends them all: the link is gone, or this one could not go on.
                     stop.store(true, std::sync::atomic::Ordering::SeqCst);
                     ended
                 })
             })
             .collect();
+        for (listener, _) in &socks {
+            let (stop, report) = (&stop, &report);
+            handles.push(scope.spawn(move || {
+                let ended = bohio_client::socks::serve(open, listener, settings, stop, report);
+                stop.store(true, std::sync::atomic::Ordering::SeqCst);
+                ended
+            }));
+        }
         let mut failure = None;
         for handle in handles {
             match handle.join() {
@@ -672,9 +814,6 @@ fn forward_command(
                 Ok(Ok(_)) => failure = Some("the link to the host ended".to_owned()),
                 Ok(Err(error)) => failure = Some(format!("a listener failed: {error}")),
                 Err(_) => failure = Some("a listener failed".to_owned()),
-    for (_, shown) in &socks {
-        println!("socks5 {shown}");
-    }
             }
         }
         for handle in asking {
@@ -799,14 +938,6 @@ fn write_command(
     } else if args.create {
         request.mode = WriteMode::Create;
     }
-        for (listener, _) in &socks {
-            let (stop, report) = (&stop, &report);
-            handles.push(scope.spawn(move || {
-                let ended = bohio_client::socks::serve(open, listener, settings, stop, report);
-                stop.store(true, std::sync::atomic::Ordering::SeqCst);
-                ended
-            }));
-        }
     let compression = match wanted(args.compress.as_deref(), args.window_log)? {
         Some(compression) if compression.algorithm == Codec::None => None,
         Some(compression) => Some(named(link, compression, client)?),
