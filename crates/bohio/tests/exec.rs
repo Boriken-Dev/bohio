@@ -433,11 +433,25 @@ fn a_killed_process_reports_the_signal_on_unix_and_no_code() {
     }
 }
 
-/// A copy of the helper named `git` in a new directory: what a program list's `git` can resolve to.
+/// A new directory beside the helper, so [`git_in`] can link to the helper instead of copying it.
+fn scratch() -> tempfile::TempDir {
+    let helper = helper();
+    let beside = std::path::Path::new(&helper)
+        .parent()
+        .expect("the helper's directory");
+    tempfile::tempdir_in(beside).expect("a directory")
+}
+
+/// The helper named `git` in a new directory: what a program list's `git` can resolve to.
+///
+/// It is a hard link when the directory allows one: a file just written is busy to `exec` (`ETXTBSY`) while
+/// another thread of this process has forked and not yet executed, with the copy's write handle still open in it.
 fn git_in(dir: &std::path::Path) -> std::path::PathBuf {
     std::fs::create_dir_all(dir).expect("a directory");
     let target = dir.join(format!("git{}", std::env::consts::EXE_SUFFIX));
-    std::fs::copy(helper(), &target).expect("a copy of the helper");
+    if std::fs::hard_link(helper(), &target).is_err() {
+        std::fs::copy(helper(), &target).expect("a copy of the helper");
+    }
     target
 }
 
@@ -470,7 +484,7 @@ fn whoami(link: &Link, env: Env, cwd: Option<&std::path::Path>) -> Result<String
 /// the variables the grant names.
 #[test]
 fn under_a_program_list_a_peer_changes_only_the_variables_its_grant_names() {
-    let scratch = tempfile::tempdir().expect("a directory");
+    let scratch = scratch();
     let good = scratch.path().join("good");
     git_in(&good);
     let link = git_only(&good);
@@ -544,7 +558,7 @@ fn setting_path(dir: &std::path::Path) -> Env {
 
 #[test]
 fn a_peer_allowed_git_cannot_run_another_program_by_pointing_path_at_its_own_directory() {
-    let scratch = tempfile::tempdir().expect("a directory");
+    let scratch = scratch();
     let (good, evil) = (scratch.path().join("good"), scratch.path().join("evil"));
     let real = git_in(&good);
     let planted = git_in(&evil);
@@ -594,7 +608,7 @@ fn a_peer_allowed_git_cannot_run_another_program_by_pointing_path_at_its_own_dir
 fn without_a_program_list_a_peer_may_point_path_anywhere_since_it_may_run_anything() {
     // The control for the refusal above: the attack works when no list limits it, so the refusal
     // above is what stops it and not an accident of the test's setup.
-    let scratch = tempfile::tempdir().expect("a directory");
+    let scratch = scratch();
     let (good, evil) = (scratch.path().join("good"), scratch.path().join("evil"));
     git_in(&good);
     let planted = git_in(&evil);
@@ -613,7 +627,7 @@ fn without_a_program_list_a_peer_may_point_path_anywhere_since_it_may_run_anythi
 #[test]
 fn a_listed_name_that_the_host_cannot_find_is_not_found_and_a_relative_directory_is_never_searched()
 {
-    let scratch = tempfile::tempdir().expect("a directory");
+    let scratch = scratch();
     let good = scratch.path().join("good");
     git_in(&good);
     let link = Link::new(
