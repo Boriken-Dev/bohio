@@ -57,6 +57,10 @@ pub struct NameArgs {
     /// The service's name.
     #[arg(long, value_name = "NAME", default_value = DEFAULT_NAME)]
     pub name: String,
+    /// How long to wait for a running service to stop before it is removed: a number of seconds or text with a unit.
+    /// Default `[service] stop_wait` (10s).
+    #[arg(long, value_name = "TIME", value_parser = super::parse_span)]
+    pub wait: Option<std::time::Duration>,
 }
 
 /// `bohio service run`.
@@ -136,7 +140,12 @@ pub(super) fn run(args: &ServiceArgs, environment: &Environment) -> Result<(), S
         }
         ServiceAction::Uninstall(uninstall) => {
             check_name(&uninstall.name)?;
-            platform::uninstall(&uninstall.name)
+            platform::uninstall(
+                &uninstall.name,
+                uninstall
+                    .wait
+                    .unwrap_or_else(|| crate::config::ServiceConfig::default().stop_wait.0),
+            )
         }
         ServiceAction::Run(run) => {
             check_name(&run.name)?;
@@ -156,7 +165,7 @@ mod platform {
         Err(ONLY_WINDOWS.to_owned())
     }
 
-    pub(super) fn uninstall(_: &str) -> Result<(), String> {
+    pub(super) fn uninstall(_: &str, _: std::time::Duration) -> Result<(), String> {
         Err(ONLY_WINDOWS.to_owned())
     }
 
@@ -184,9 +193,6 @@ mod platform {
 
     const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
     const DESCRIPTION: &str = "Bohio: serves files, processes and shells to peers it has proven";
-    /// How long the manager is told a stop may take.
-    const STOP_HINT: Duration = Duration::from_secs(10);
-
     /// ERROR_ACCESS_DENIED: the caller is not elevated.
     const ACCESS_DENIED: i32 = 5;
     /// ERROR_SERVICE_DOES_NOT_EXIST.
@@ -235,7 +241,7 @@ mod platform {
         Ok(())
     }
 
-    pub(super) fn uninstall(name: &str) -> Result<(), String> {
+    pub(super) fn uninstall(name: &str, wait: Duration) -> Result<(), String> {
         let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
             .map_err(|error| describe(&error))?;
         let access = ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::DELETE;
@@ -249,7 +255,10 @@ mod platform {
             != ServiceState::Stopped
         {
             service.stop().map_err(|error| describe(&error))?;
-            for _ in 0..50 {
+            // Fifty looks across `wait`.
+            let pause = (wait / 50).max(Duration::from_millis(1));
+            let until = std::time::Instant::now() + wait;
+            while std::time::Instant::now() < until {
                 let state = service
                     .query_status()
                     .map_err(|error| describe(&error))?
@@ -257,7 +266,7 @@ mod platform {
                 if state == ServiceState::Stopped {
                     break;
                 }
-                std::thread::sleep(Duration::from_millis(200));
+                std::thread::sleep(pause);
             }
         }
         service.delete().map_err(|error| describe(&error))?;
@@ -337,7 +346,8 @@ mod platform {
                 process_id: None,
             });
         };
-        report(ServiceState::StartPending, 0, STOP_HINT);
+        let first_hint = crate::config::ServiceConfig::default().stop_wait.0;
+        report(ServiceState::StartPending, 0, first_hint);
         let started = (|| {
             let named: Vec<PathBuf> = launch.config.iter().cloned().collect();
             let found = commands::found(&named)?;
@@ -354,15 +364,17 @@ mod platform {
         // The host runs on its own thread: a connection that is mid-transfer must not hold the stop
         // back, and the process ending closes the job objects that end every process it started.
         let host_stop = Arc::clone(&stop);
+        let stop_hint = found.config().service.stop_wait.0;
+        let poll = found.config().link.poll_interval.0;
         let host = std::thread::spawn({
             let environment = launch.environment.clone();
             move || host::serve_endpoints(&found, &environment, &entries, &host_stop)
         });
         report(ServiceState::Running, 0, Duration::ZERO);
         while !stop.load(Ordering::SeqCst) && !host.is_finished() {
-            std::thread::sleep(Duration::from_millis(200));
+            std::thread::sleep(poll);
         }
-        report(ServiceState::StopPending, 0, STOP_HINT);
+        report(ServiceState::StopPending, 0, stop_hint);
         stop.store(true, Ordering::SeqCst);
         let failure = if host.is_finished() {
             host.join().ok().and_then(Result::err)
@@ -435,6 +447,7 @@ mod tests {
             ServiceAction::Install(install("bohio", None)),
             ServiceAction::Uninstall(NameArgs {
                 name: "bohio".to_owned(),
+                wait: None,
             }),
             ServiceAction::Run(RunArgs {
                 config: None,

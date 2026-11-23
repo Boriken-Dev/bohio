@@ -38,6 +38,43 @@ use crate::link::KeptState;
 use crate::local::{ANOTHER_ACCOUNT, Server, Via};
 use crate::node::Endpoint;
 
+/// The waits and sizes of one `bohio remote` run: `[client]`, with the flags laid over it, and `[link] poll_interval`.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Client {
+    /// The wait for a question's first answer.
+    pub(super) reply: Duration,
+    /// The wait for one step of a transfer; `None` is no limit.
+    pub(super) transfer: Option<Duration>,
+    /// The wait for a `gui` action.
+    pub(super) gui: Duration,
+    /// Bytes of standard input read at a time.
+    pub(super) input_chunk: usize,
+    /// Bytes of a local file read at a time.
+    pub(super) read_size: usize,
+    /// Chunks of standard input held ahead of a connection.
+    pub(super) input_queue: usize,
+    /// How often a loop that waits for input or a stream looks again.
+    pub(super) poll: Duration,
+}
+
+impl Client {
+    pub(super) fn new(config: &crate::config::Config, args: &RemoteArgs) -> Self {
+        let client = &config.client;
+        Self {
+            reply: args.reply_timeout.unwrap_or(client.reply_timeout.0),
+            transfer: args.transfer_timeout.map_or_else(
+                || client.transfer(),
+                |wait| (!wait.is_zero()).then_some(wait),
+            ),
+            gui: client.gui_timeout.0,
+            input_chunk: client.input_chunk,
+            read_size: client.read_size,
+            input_queue: client.input_queue,
+            poll: config.link.poll_interval.0.max(Duration::from_millis(1)),
+        }
+    }
+}
+
 /// What a person is told when the host will not do what was asked.
 pub(super) fn explain(error: &Error) -> String {
     match error {
@@ -141,11 +178,9 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
         RemoteAction::Listen(listen) => Some(&listen.persist),
         _ => None,
     };
-    let settings = source(&args.config, environment)?
-        .0
-        .config()
-        .forward
-        .client();
+    let found = source(&args.config, environment)?.0;
+    let settings = found.config().forward.client();
+    let client = Client::new(found.config(), args);
     let kept = match persist {
         Some(persist) => keeping(
             plan,
@@ -160,7 +195,7 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
         RemoteAction::Info(info) => {
             let control = Control::open(&*link).map_err(|error| explain(&error))?;
             let found = control
-                .info(Some(Duration::from_secs(30)))
+                .info(Some(client.reply))
                 .map_err(|error| explain(&error))?;
             match info.format {
                 Format::Text => print_info(&found),
@@ -172,19 +207,15 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
             }
             Ok(ExitCode::SUCCESS)
         }
-        RemoteAction::Exec(exec) => exec_command(&*link, exec),
+        RemoteAction::Exec(exec) => exec_command(&*link, exec, &client),
         RemoteAction::Read(read) => {
             let mut request = bohio_proto::fs::ReadRequest::whole(read.path.clone());
             request.compression = wanted(read.compress.as_deref(), read.window_log)?;
             request.prepare = read.prepare;
             // A prepared read is silent while the host compresses: the host's progress frames keep the wait alive.
-            let reader = Reader::start_with(
-                &*link,
-                &request,
-                Some(Duration::from_secs(30)),
-                ReadOptions::default(),
-            )
-            .map_err(|error| explain(&error))?;
+            let reader =
+                Reader::start_with(&*link, &request, Some(client.reply), ReadOptions::default())
+                    .map_err(|error| explain(&error))?;
             let mut out = std::io::stdout().lock();
             reader
                 .copy_to(&mut out, None)
@@ -192,26 +223,26 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
             out.flush().map_err(|error| error.to_string())?;
             Ok(ExitCode::SUCCESS)
         }
-        RemoteAction::Write(write) => write_command(&*link, write),
+        RemoteAction::Write(write) => write_command(&*link, write, &client),
         RemoteAction::Hash(hash) => hash_command(&*link, hash),
         RemoteAction::Put(put) => {
-            let options = sync_options(&*link, &put.sync, true)?;
+            let options = sync_options(&*link, &put.sync, true, &client)?;
             let moved = bohio_client::sync::put(&*link, &put.local, &put.remote, &options)
                 .map_err(|error| explain(&error))?;
             report_moved(&moved)
         }
         RemoteAction::Get(get) => {
-            let options = sync_options(&*link, &get.sync, false)?;
+            let options = sync_options(&*link, &get.sync, false, &client)?;
             let moved = bohio_client::sync::get(&*link, &get.remote, &get.local, &options)
                 .map_err(|error| explain(&error))?;
             report_moved(&moved)
         }
-        RemoteAction::Shell(shell) => shell_command(&*link, shell),
+        RemoteAction::Shell(shell) => shell_command(&*link, shell, &client),
         RemoteAction::Connect(connect) => {
             let open = relinked(&link, kept.as_ref(), &settings);
             connect_command(&*open, connect, &settings)
         }
-        RemoteAction::Gui(gui) => super::gui::run(&*link, gui),
+        RemoteAction::Gui(gui) => super::gui::run(&*link, gui, &client),
         RemoteAction::Forward(forward) => forward_command(
             &link,
             kept.as_ref(),
@@ -225,6 +256,7 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
             &backoff(args, &listen.persist, environment)?,
             listen,
             &settings,
+            &client,
         ),
     }
 }
@@ -260,6 +292,8 @@ enum Plan {
         settings: Settings,
         server: Server,
         peer: PeerId,
+        /// How long the node is given to list its links (`[client] links_wait`).
+        wait: Duration,
     },
 }
 
@@ -289,11 +323,12 @@ impl Plan {
                 settings,
                 server,
                 peer,
+                wait,
             } => {
                 let via = Via::connect_to(endpoint, peer, settings, *server)
                     .map_err(|error| unreachable(&error))?;
                 let listed = via
-                    .links(Duration::from_millis(50))
+                    .links(*wait)
                     .map_err(|error| explain(&error))?;
                 if !listed
                     .links
@@ -654,13 +689,17 @@ fn wanted(flag: Option<&str>, window_log: Option<u32>) -> Result<Option<Compress
 }
 
 /// The algorithm a client names for what it sends: `auto` is the host's default, read from its `info`.
-fn named(link: &dyn Open, compression: Compression) -> Result<Compression, String> {
+fn named(
+    link: &dyn Open,
+    compression: Compression,
+    client: &Client,
+) -> Result<Compression, String> {
     if compression.algorithm != Codec::Auto {
         return Ok(compression);
     }
     let control = Control::open(link).map_err(|error| explain(&error))?;
     let info = control
-        .info(Some(Duration::from_secs(30)))
+        .info(Some(client.reply))
         .map_err(|error| explain(&error))?;
     resolve_auto(&info, &compression).ok_or_else(|| {
         "the host reports no default compression: name an algorithm, such as --compress zstd:3"
@@ -674,10 +713,11 @@ fn sync_options(
     link: &dyn Open,
     args: &super::SyncArgs,
     sends: bool,
+    client: &Client,
 ) -> Result<SyncOptions, String> {
     let compression = match wanted(args.compress.as_deref(), args.window_log)? {
         Some(compression) if compression.algorithm == Codec::None => None,
-        Some(compression) if sends => Some(named(link, compression)?),
+        Some(compression) if sends => Some(named(link, compression, client)?),
         other => other,
     };
     Ok(SyncOptions {
@@ -693,6 +733,8 @@ fn sync_options(
         }),
         compression,
         block_size: args.block_size,
+        timeout: client.transfer,
+        read_size: client.read_size,
         ..SyncOptions::default()
     })
 }
@@ -715,7 +757,11 @@ fn report_moved(moved: &Moved) -> Result<ExitCode, String> {
 }
 
 /// `bohio remote ... write`: standard input to a file of the host.
-fn write_command(link: &dyn Open, args: &RemoteWriteArgs) -> Result<ExitCode, String> {
+fn write_command(
+    link: &dyn Open,
+    args: &RemoteWriteArgs,
+    client: &Client,
+) -> Result<ExitCode, String> {
     let mut request = WriteRequest::replace(args.path.clone());
     request.parents = args.parents;
     if args.append {
@@ -725,7 +771,7 @@ fn write_command(link: &dyn Open, args: &RemoteWriteArgs) -> Result<ExitCode, St
     }
     let compression = match wanted(args.compress.as_deref(), args.window_log)? {
         Some(compression) if compression.algorithm == Codec::None => None,
-        Some(compression) => Some(named(link, compression)?),
+        Some(compression) => Some(named(link, compression, client)?),
         None => None,
     };
     let options = PutOptions {
@@ -738,7 +784,7 @@ fn write_command(link: &dyn Open, args: &RemoteWriteArgs) -> Result<ExitCode, St
         &request,
         &mut std::io::stdin().lock(),
         &options,
-        Some(Duration::from_secs(300)),
+        client.transfer,
     )
     .map_err(|error| explain(&error))?;
     eprintln!("bohio: wrote {} bytes", done.written);
@@ -749,6 +795,7 @@ fn write_command(link: &dyn Open, args: &RemoteWriteArgs) -> Result<ExitCode, St
 /// so a connection that ended does not leave a reader behind that takes the next one input.
 struct SharedInput {
     state: Arc<std::sync::Mutex<InputState>>,
+    poll: Duration,
 }
 
 /// The channel the reading thread feeds, and what a connection that ended gave back unread.
@@ -759,11 +806,12 @@ struct InputState {
 }
 
 impl SharedInput {
-    fn start() -> Self {
-        let (sender, chunks) = std::sync::mpsc::sync_channel(4);
+    fn start(client: &Client) -> Self {
+        let chunk = client.input_chunk;
+        let (sender, chunks) = std::sync::mpsc::sync_channel(client.input_queue);
         thread::spawn(move || {
             let mut input = std::io::stdin().lock();
-            let mut buffer = vec![0_u8; 16 * 1024];
+            let mut buffer = vec![0_u8; chunk.max(1)];
             loop {
                 let chunk = match input.read(&mut buffer) {
                     Ok(0) | Err(_) => None,
@@ -781,6 +829,7 @@ impl SharedInput {
                 given_back: std::collections::VecDeque::new(),
                 ended: false,
             })),
+            poll: client.poll,
         }
     }
 
@@ -790,6 +839,7 @@ impl SharedInput {
             state: Arc::clone(&self.state),
             retired: Arc::clone(retired),
             rest: Vec::new(),
+            poll: self.poll,
         }
     }
 }
@@ -798,6 +848,7 @@ struct ConnectionInput {
     state: Arc<std::sync::Mutex<InputState>>,
     retired: Arc<std::sync::atomic::AtomicBool>,
     rest: Vec<u8>,
+    poll: Duration,
 }
 
 impl Read for ConnectionInput {
@@ -828,7 +879,7 @@ impl Read for ConnectionInput {
             if state.ended {
                 return Ok(0);
             }
-            match state.chunks.recv_timeout(Duration::from_millis(100)) {
+            match state.chunks.recv_timeout(self.poll) {
                 Ok(Some(chunk)) if self.retired.load(SeqCst) => {
                     state.given_back.push_back(chunk);
                     return Ok(0);
@@ -875,13 +926,14 @@ fn listen_command(
     backoff: &Backoff,
     args: &RemoteListenArgs,
     settings: &ForwardSettings,
+    client: &Client,
 ) -> Result<ExitCode, String> {
     let mut bind: Bind = args
         .bind
         .parse()
         .map_err(|error: bohio_proto::forward::BadTarget| error.to_string())?;
     let poll = settings.options.listen_poll;
-    let shared = args.keep.then(SharedInput::start);
+    let shared = args.keep.then(|| SharedInput::start(client));
     let mut current = Arc::clone(link);
     let mut first = true;
     let mut failures = 0_u32;
@@ -1029,7 +1081,11 @@ fn status_of(exit: &bohio_proto::exec::Exit) -> ExitCode {
     ExitCode::from(u8::try_from(code).unwrap_or(1))
 }
 
-fn exec_command(link: &dyn Open, args: &RemoteExecArgs) -> Result<ExitCode, String> {
+fn exec_command(
+    link: &dyn Open,
+    args: &RemoteExecArgs,
+    client: &Client,
+) -> Result<ExitCode, String> {
     let mut request = Request::argv(args.argv.iter().cloned());
     request.cwd.clone_from(&args.cwd);
     request.timeout_ms = args.timeout_ms;
@@ -1047,15 +1103,16 @@ fn exec_command(link: &dyn Open, args: &RemoteExecArgs) -> Result<ExitCode, Stri
     {
         request.output_compression = Some(compression.clone());
         if args.stdin {
-            request.stdin_compression = Some(named(link, compression)?);
+            request.stdin_compression = Some(named(link, compression, client)?);
         }
     }
     let exec = Arc::new(Exec::start(link, &request).map_err(|error| explain(&error))?);
     if args.stdin {
         // Detached: it may be blocked reading this process's input when the program ends.
         let exec = Arc::clone(&exec);
+        let chunk = client.input_chunk.max(1);
         thread::spawn(move || {
-            let mut buffer = vec![0_u8; 16 * 1024];
+            let mut buffer = vec![0_u8; chunk];
             let mut input = std::io::stdin().lock();
             while let Ok(count) = input.read(&mut buffer) {
                 if count == 0 || exec.write_stdin(&buffer[..count]).is_err() {
@@ -1090,7 +1147,11 @@ fn local_size() -> (u16, u16) {
     crossterm::terminal::size().unwrap_or((80, 24))
 }
 
-fn shell_command(link: &dyn Open, args: &RemoteShellArgs) -> Result<ExitCode, String> {
+fn shell_command(
+    link: &dyn Open,
+    args: &RemoteShellArgs,
+    client: &Client,
+) -> Result<ExitCode, String> {
     let default = if cfg!(windows) {
         ShellKind::Cmd
     } else {
@@ -1110,16 +1171,16 @@ fn shell_command(link: &dyn Open, args: &RemoteShellArgs) -> Result<ExitCode, St
     request.cols = size.0;
     request.rows = size.1;
     let shell = Arc::new(
-        Shell::start(link, &request, Some(Duration::from_secs(30)))
-            .map_err(|error| explain(&error))?,
+        Shell::start(link, &request, Some(client.reply)).map_err(|error| explain(&error))?,
     );
     // Typed keys go to the host as they are, so the local terminal must not echo or edit them.
     let raw = interactive && crossterm::terminal::enable_raw_mode().is_ok();
     {
         // Detached: it is blocked reading this process's input when the shell ends.
         let shell = Arc::clone(&shell);
+        let chunk = client.input_chunk.max(1);
         thread::spawn(move || {
-            let mut buffer = vec![0_u8; 4096];
+            let mut buffer = vec![0_u8; chunk];
             let mut input = std::io::stdin().lock();
             while let Ok(count) = input.read(&mut buffer) {
                 if count == 0 || shell.write(&buffer[..count]).is_err() {
@@ -1129,7 +1190,7 @@ fn shell_command(link: &dyn Open, args: &RemoteShellArgs) -> Result<ExitCode, St
         });
     }
     let result = loop {
-        match shell.next(Some(Duration::from_millis(200))) {
+        match shell.next(Some(client.poll)) {
             Ok(Some(ShellEvent::Data(bytes))) => {
                 let mut out = std::io::stdout().lock();
                 let _ = out.write_all(&bytes);
@@ -1196,19 +1257,38 @@ fn via_plan(id: &str, args: &RemoteArgs, environment: &Environment) -> Result<Pl
         .parse::<PeerId>()
         .map_err(|_| "that is not a peer id".to_owned())?;
     let (endpoint, settings, server) = control_endpoint(&args.config, environment)?;
+    let wait = source(&args.config, environment)?
+        .0
+        .config()
+        .client
+        .links_wait
+        .0;
     Ok(Plan::Via {
         endpoint,
         settings,
         server,
         peer,
+        wait,
     })
 }
 
 /// `bohio links`.
 pub(super) fn links(args: &super::LinksArgs, environment: &Environment) -> Result<(), String> {
-    let wait = crate::config::Span::parse(&args.wait)
-        .ok_or_else(|| "--wait is a time such as `5s` or `500ms`".to_owned())?
-        .0;
+    let wait = match &args.wait {
+        Some(text) => {
+            crate::config::Span::parse(text)
+                .ok_or_else(|| "--wait is a time such as `5s` or `500ms`".to_owned())?
+                .0
+        }
+        None => {
+            source(&args.config, environment)?
+                .0
+                .config()
+                .client
+                .links_wait
+                .0
+        }
+    };
     let (endpoint, settings, server) = control_endpoint(&args.config, environment)?;
     let local = crate::local::LocalLink::connect_to(&endpoint, &settings, server)
         .map_err(|error| unreachable(&error))?;

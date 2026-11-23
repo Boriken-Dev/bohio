@@ -146,6 +146,13 @@ pub(crate) fn stat(roots: &Roots<'_>, text: &str, follow: bool) -> Result<Metada
     Ok(describe(&meta))
 }
 
+/// Bytes of a listing reply that are not entries: what a page's estimate leaves room for.
+const LIST_ENVELOPE: usize = 1024;
+
+/// Bytes of an entry's encoding besides its name: an estimate that keeps a page inside the stream's message bound, which a
+/// short page costs a request for the rest and a long one costs a refused reply.
+const ENTRY_OVERHEAD: usize = 256;
+
 pub(crate) fn list(
     roots: &Roots<'_>,
     context: &Context<'_>,
@@ -187,12 +194,12 @@ pub(crate) fn list(
     }
 
     // A reply must fit the stream: stop adding entries when the estimate says it would not.
-    let room = budget.saturating_sub(1024);
+    let room = budget.saturating_sub(LIST_ENVELOPE);
     let mut used = 0_usize;
     let mut entries = Vec::new();
     for (name, entry) in kept {
         let Ok(meta) = entry.metadata() else { continue };
-        used = used.saturating_add(name.len() + 256);
+        used = used.saturating_add(name.len() + ENTRY_OVERHEAD);
         if !entries.is_empty() && used > room {
             more = true;
             break;

@@ -311,6 +311,15 @@ mod windows {
         Ok(())
     }
 
+    /// How long the PowerShell that reads an access list is waited for once its output has ended: the process is closing
+    /// its pipes, so this is a guard against a stuck one, not a wait anyone shortens or lengthens.
+    #[cfg(windows)]
+    const EXIT_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+    /// How often that wait looks at the process.
+    #[cfg(windows)]
+    const EXIT_POLL: std::time::Duration = std::time::Duration::from_millis(10);
+
     /// The owner and the allow entries of `path`, and this process's account, as security ids.
     #[cfg(windows)]
     pub(super) fn list(path: &std::path::Path) -> Result<Listed, String> {
@@ -377,12 +386,12 @@ foreach ($rule in $acl.GetAccessRules($true, $true, $sid)) {
             err.join().unwrap_or_default(),
         );
         // Both streams ended, so the process has or is about to; the tree ends with the handle either way.
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let until = std::time::Instant::now() + EXIT_WAIT;
         let exit = loop {
             match control.try_wait() {
                 Ok(Some(exit)) => break Some(exit),
                 Ok(None) if std::time::Instant::now() < until => {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    std::thread::sleep(EXIT_POLL);
                 }
                 _ => break None,
             }

@@ -399,6 +399,7 @@ fn approve(channel: &dyn Channel, context: &Context<'_>, wants: &[Want]) -> Resu
         want: wants,
         since: SystemTime::now(),
         timeout: config.approval_timeout.0,
+        poll: config.poll_interval.0,
         cancelled: &cancelled,
     };
     let finished = AtomicBool::new(false);

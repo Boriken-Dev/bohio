@@ -40,9 +40,6 @@ use crate::link::Grants;
 use crate::node::{Node, NodeError, Registry, Side as LinkSide};
 use crate::pair::{PairEnd, PairState};
 
-/// How long the accept loop waits for a connection before it looks at whether it was stopped.
-const ACCEPT_WAIT: Duration = Duration::from_millis(200);
-
 /// The bound local endpoint of a node.
 #[derive(Debug)]
 pub struct Local {
@@ -162,7 +159,7 @@ impl Node {
         let (_, _, settings) = self.local_parts();
         thread::scope(|scope| {
             while !stop.load(Ordering::SeqCst) {
-                let Some(channel) = local.accept(ACCEPT_WAIT, &settings)? else {
+                let Some(channel) = local.accept(settings.accept_wait, &settings)? else {
                     continue;
                 };
                 scope.spawn(move || {

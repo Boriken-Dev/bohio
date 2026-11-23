@@ -259,13 +259,17 @@ fn answer_connected(stream: &dyn LinkStream, address: Option<String>) -> bool {
     }
 }
 
+/// How long a send that failed at once waits before it is tried again: not a bound on anything, only what keeps a retry
+/// that fails without waiting from spinning a core.
+const RETRY_PAUSE: Duration = Duration::from_millis(1);
+
 /// Sends one small frame, waiting while the link has no credit for it; `false` when the stream ended first.
 fn send_waiting(stream: &dyn LinkStream, frame: &[u8]) -> bool {
     loop {
         match stream.send(frame) {
             Ok(()) => return true,
             Err(Failure::NoProgress | Failure::Timeout) if stream.life() == StreamLife::Open => {
-                std::thread::sleep(Duration::from_millis(1));
+                std::thread::sleep(RETRY_PAUSE);
             }
             Err(_) => return false,
         }

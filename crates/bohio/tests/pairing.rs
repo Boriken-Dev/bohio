@@ -545,3 +545,33 @@ fn the_local_endpoint_of_a_node_with_no_store_says_so() {
         let _ = serving.join();
     });
 }
+
+#[test]
+fn a_joiner_that_goes_silent_after_the_marker_frees_its_place_at_the_exchange_timeout() {
+    let settings = PairingConfig {
+        exchange_timeout: Span(Duration::from_millis(400)),
+        ..PairingConfig::default()
+    };
+    let host = Host::start_with(true, settings);
+    let _armed = host.node.arm_pairing(None).expect("a PIN is armed");
+    let listener = &host.listeners[0];
+    let channel = listener
+        .endpoint
+        .dial_with(LIMIT, &host.settings, &listener.trust)
+        .expect("the listener is reached");
+    coqui_transport::Channel::send(&channel, pairing::MARKER).expect("the marker is sent");
+    let began = std::time::Instant::now();
+    // The host gives up on the silent joiner and closes: what it reads then is the end of the stream, not a timeout.
+    let ended = coqui_transport::Channel::receive(&channel, Some(Duration::from_secs(5)));
+    assert!(
+        !matches!(ended, Ok(Some(_)) | Err(coqui_transport::Failure::Timeout)),
+        "the host never closed on the silent joiner: {ended:?}"
+    );
+    // The proof timeout is 10 s: a close within 4 s is the exchange timeout's doing.
+    assert!(
+        began.elapsed() < Duration::from_secs(4),
+        "{:?}",
+        began.elapsed()
+    );
+    coqui_transport::Channel::close(&channel);
+}

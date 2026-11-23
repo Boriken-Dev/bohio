@@ -144,6 +144,27 @@ fn values_out_of_range_name_their_key() {
         ("[link]\nproof_timeout = 0\n", "link.proof_timeout"),
         ("[pairing]\ntimeout = 0\n", "pairing.timeout"),
         ("[pairing]\npin_length = 0\n", "pairing.pin_length"),
+        ("[pairing]\npending = 0\n", "pairing.pending"),
+        (
+            "[pairing]\npending_per_source = 0\n",
+            "pairing.pending_per_source",
+        ),
+        ("[pairing]\nipv6_prefix = 0\n", "pairing.ipv6_prefix"),
+        ("[pairing]\nipv6_prefix = 129\n", "pairing.ipv6_prefix"),
+        (
+            "[pairing]\nexchange_timeout = 0\n",
+            "pairing.exchange_timeout",
+        ),
+        ("[link]\naccept_wait = 0\n", "link.accept_wait"),
+        ("[link]\naccept_poll = 0\n", "link.accept_poll"),
+        ("[service]\nstop_wait = 0\n", "service.stop_wait"),
+        ("[client]\nreply_timeout = 0\n", "client.reply_timeout"),
+        ("[client]\ngui_timeout = 0\n", "client.gui_timeout"),
+        ("[client]\ninput_chunk = 0\n", "client.input_chunk"),
+        ("[client]\nread_size = 0\n", "client.read_size"),
+        ("[client]\ninput_queue = 0\n", "client.input_queue"),
+        ("[client]\nprobe_timeout = 0\n", "client.probe_timeout"),
+        ("[client]\nlinks_wait = 0\n", "client.links_wait"),
         (
             "[pairing]\nattempt_delay = \"5s\"\nattempt_delay_max = \"1s\"\n",
             "pairing.attempt_delay_max",
@@ -638,6 +659,47 @@ fn a_format_line_is_a_comment_and_a_missing_layer_is_an_error() {
         Config::default(),
         "no layer is the defaults"
     );
+}
+
+#[test]
+fn the_waits_that_were_literals_are_settings_with_their_old_values() {
+    let config = parse("").unwrap();
+    let settings = config.link.settings();
+    assert_eq!(settings.accept_wait, Duration::from_millis(200));
+    assert_eq!(settings.accept_poll, Duration::from_millis(20));
+    assert_eq!(settings.serial_reopen, Duration::from_millis(250));
+    assert_eq!(config.service.stop_wait, Span(Duration::from_secs(10)));
+    let pairing = &config.pairing;
+    assert_eq!((pairing.pending, pairing.pending_per_source), (32, 4));
+    assert_eq!(pairing.ipv6_prefix, 64);
+    assert_eq!(pairing.exchange_timeout, Span(Duration::from_secs(5)));
+    let client = &config.client;
+    assert_eq!(client.reply_timeout, Span(Duration::from_secs(30)));
+    assert_eq!(client.transfer(), Some(Duration::from_secs(300)));
+    assert_eq!(client.gui_timeout, Span(Duration::from_secs(120)));
+    assert_eq!((client.input_chunk, client.read_size), (16 * 1024, 1 << 20));
+    assert_eq!(client.input_queue, 4);
+    assert_eq!(client.probe_timeout, Span(Duration::from_secs(1)));
+    assert_eq!(client.links_wait, Span(Duration::from_secs(5)));
+}
+
+#[test]
+fn a_weaker_choice_of_each_new_setting_is_accepted_and_reaches_its_user() {
+    let config = parse(
+        "[link]\naccept_wait = \"1s\"\naccept_poll = \"1ms\"\nserial_reopen = 0\n\
+         [pairing]\npending = 1000\npending_per_source = 500\nipv6_prefix = 128\nexchange_timeout = \"1h\"\n\
+         [client]\ntransfer_timeout = 0\ninput_chunk = 1\nread_size = 1\n",
+    )
+    .unwrap();
+    let settings = config.link.settings();
+    assert_eq!(settings.accept_wait, Duration::from_secs(1));
+    assert!(settings.serial_reopen.is_zero());
+    assert_eq!(config.pairing.pending, 1000);
+    assert_eq!(
+        config.pairing.exchange_timeout,
+        Span(Duration::from_secs(3600))
+    );
+    assert_eq!(config.client.transfer(), None);
 }
 
 #[test]

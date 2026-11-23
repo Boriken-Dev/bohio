@@ -79,9 +79,23 @@ impl Gui {
     /// [`Error::Remote`] when the host refused (`denied`, `unsupported`, `busy`, `unavailable`...), [`Error::Closed`] and
     /// [`Error::Transport`] otherwise (a grant the host does not give is a `Permission` failure of the transport).
     pub fn open(link: &dyn Open, request: &GuiRequest) -> Result<Self, Error> {
+        Self::open_within(link, request, Some(OPEN_WAIT))
+    }
+
+    /// As [`Gui::open`], waiting up to `wait` for each frame of the host's answer (`None` without limit): a host that
+    /// asks its owner to approve needs as long as the owner takes.
+    ///
+    /// # Errors
+    ///
+    /// As [`Gui::open`]; [`Error::Timeout`] when the host says nothing within `wait`.
+    pub fn open_within(
+        link: &dyn Open,
+        request: &GuiRequest,
+        wait: Option<Duration>,
+    ) -> Result<Self, Error> {
         let channel = link.open(protocol::GUI, &request.to_metadata()?)?;
         loop {
-            let Some(frame) = channel.receive(Some(OPEN_WAIT))? else {
+            let Some(frame) = channel.receive(wait)? else {
                 return Err(Error::Closed);
             };
             match GuiOutput::decode(&frame) {

@@ -39,6 +39,8 @@ pub struct ApprovalRequest<'a> {
     pub since: SystemTime,
     /// How long it may wait: past it the answer is [`Approval::Deny`].
     pub timeout: Duration,
+    /// How often the wait looks at `cancelled` (`[gui] poll_interval`): a peer that gave up is noticed within this.
+    pub poll: Duration,
     /// Set when the peer gave up (its stream closed): [`Presence::approve`] returns [`Approval::Deny`] soon after.
     pub cancelled: &'a AtomicBool,
 }
@@ -273,7 +275,7 @@ impl Approvals {
             }
             waiting = self
                 .changed
-                .wait_timeout(waiting, left.min(Duration::from_millis(50)))
+                .wait_timeout(waiting, left.min(request.poll))
                 .unwrap_or_else(PoisonError::into_inner)
                 .0;
         };

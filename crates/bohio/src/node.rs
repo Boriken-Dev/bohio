@@ -33,7 +33,6 @@ use coqui_link::auth::{Identity, Proof, Sealed, Session, Trust, prove_out};
 use coqui_link::link::{Accepted as Open, Host, Options, Services, serve_with};
 pub use coqui_link::mux::Side;
 use coqui_link::mux::{CloseReason, LinkStream};
-use coqui_link::pairing::{Answered, answer};
 use coqui_peer::{Established, Handshake, KeyMaterial, Method as ProofMethod, PeerId};
 use coqui_transport::Channel;
 
@@ -48,15 +47,10 @@ pub use crate::link::{
 };
 use crate::listen::Listening;
 use crate::pair::PairState;
+use crate::pair::{Answered, answer};
 pub use crate::pair::{Armed, PairEnd};
 use crate::policy::Grant;
 use crate::{control, exec, forward, fs, info, shell};
-
-/// How long a listener waits for a connection before it looks at whether it was stopped.
-const ACCEPT_WAIT: Duration = Duration::from_millis(200);
-
-/// How long a serial host leaves the port closed between links.
-const SERIAL_REOPEN: Duration = Duration::from_millis(250);
 
 /// Why a node could not start.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -583,7 +577,7 @@ impl Node {
         let limit = self.shared.config.link.max_connections;
         thread::scope(|scope| {
             while !stop.load(Ordering::SeqCst) {
-                let Some(arrival) = listening.accept(ACCEPT_WAIT, settings)? else {
+                let Some(arrival) = listening.accept(settings.accept_wait, settings)? else {
                     continue;
                 };
                 let proving = match arrival.source() {
@@ -631,7 +625,7 @@ impl Node {
                 }
                 Err(error) => tracing::info!("the serial port {path} cannot be opened: {error}"),
             }
-            thread::sleep(SERIAL_REOPEN);
+            thread::sleep(settings.serial_reopen);
         }
     }
 
@@ -649,10 +643,32 @@ impl Node {
         Ok(())
     }
 
-    /// Proves the peer on `channel` and serves its link until it ends, at most `[link]
-    /// max_links_per_peer` links per peer at once. The caller closes `channel`.
+    /// Proves the peer on `channel` and serves its link until it ends: at most `[link] max_connections` links at once
+    /// across peers, at most `[link] max_unproven_per_source` still proving themselves from one `source` (known only
+    /// when the caller passes it), and at most `[link] max_links_per_peer` per peer. A channel past a bound is
+    /// refused: this returns at once and logs it. The caller closes `channel`.
     pub fn serve_channel<C: Channel>(&self, channel: &C, source: Option<SocketAddr>) {
-        self.serve_proving(channel, source, None);
+        let proving = match source {
+            Some(source) => match self.unproven.take(source_key(source)) {
+                Some(hold) => Some(hold),
+                None => {
+                    tracing::info!(
+                        "a connection was refused: its source has max_unproven_per_source connections proving themselves"
+                    );
+                    return;
+                }
+            },
+            None => None,
+        };
+        if self.connections.fetch_add(1, Ordering::SeqCst)
+            >= self.shared.config.link.max_connections
+        {
+            self.connections.fetch_sub(1, Ordering::SeqCst);
+            tracing::info!("a connection was refused: max_connections are open");
+            return;
+        }
+        self.serve_proving(channel, source, proving);
+        self.connections.fetch_sub(1, Ordering::SeqCst);
     }
 
     /// As [`Node::serve_channel`], giving `proving` back once the proof has ended either way.
@@ -679,6 +695,7 @@ impl Node {
                 host,
                 source,
                 settings.proof_timeout,
+                self.shared.config.pairing.exchange_timeout.0,
             );
             if let Some(slot) = slot {
                 slot.attempted(matches!(answered, Ok(Answered::Paired(_))));

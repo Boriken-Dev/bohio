@@ -422,7 +422,7 @@ impl Listening {
                     Ok(Some(Arrival::Ready(Box::new(channel), Some(source))))
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    thread::sleep(wait.min(Duration::from_millis(20)));
+                    thread::sleep(wait.min(settings.accept_poll));
                     Ok(None)
                 }
                 Err(error) => Err(error),
@@ -441,7 +441,7 @@ impl Listening {
                 Err(failure) => {
                     // A refused source or a broken request is one connection's failure, not the listener's.
                     tracing::debug!("a WebSocket connection was not taken: {failure}");
-                    thread::sleep(wait.min(Duration::from_millis(20)));
+                    thread::sleep(wait.min(settings.accept_poll));
                     Ok(None)
                 }
             },
@@ -451,7 +451,7 @@ impl Listening {
                 Err(failure) => {
                     // A refused source or a broken request is one connection's failure, not the listener's.
                     tracing::debug!("a WebTransport connection was not taken: {failure}");
-                    thread::sleep(wait.min(Duration::from_millis(20)));
+                    thread::sleep(wait.min(settings.accept_poll));
                     Ok(None)
                 }
             },

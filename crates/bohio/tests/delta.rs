@@ -618,12 +618,26 @@ fn compare_goes_from_size_and_time_to_a_digest_to_blocks() {
     let data = pseudo(500_000, 21);
     let (host, mine) = (fixture.root.join("f"), fixture.local.join("f"));
     assert_eq!(
-        compare_file(&fixture.link, &mine, "f", Compare::Meta).unwrap(),
+        compare_file(
+            &fixture.link,
+            &mine,
+            "f",
+            Compare::Meta,
+            &SyncOptions::default()
+        )
+        .unwrap(),
         Verdict::LocalMissing
     );
     std::fs::write(&mine, &data).unwrap();
     assert_eq!(
-        compare_file(&fixture.link, &mine, "f", Compare::Meta).unwrap(),
+        compare_file(
+            &fixture.link,
+            &mine,
+            "f",
+            Compare::Meta,
+            &SyncOptions::default()
+        )
+        .unwrap(),
         Verdict::RemoteMissing
     );
     std::fs::write(&host, &data).unwrap();
@@ -633,12 +647,26 @@ fn compare_goes_from_size_and_time_to_a_digest_to_blocks() {
     touched.set_modified(std::time::SystemTime::now()).unwrap();
     drop(touched);
     assert_eq!(
-        compare_file(&fixture.link, &mine, "f", Compare::Meta).unwrap(),
+        compare_file(
+            &fixture.link,
+            &mine,
+            "f",
+            Compare::Meta,
+            &SyncOptions::default()
+        )
+        .unwrap(),
         Verdict::Differs
     );
     for how in [Compare::Hash(Algorithm::Blake3), Compare::Blocks] {
         assert_eq!(
-            compare_file(&fixture.link, &mine, "f", how.clone()).unwrap(),
+            compare_file(
+                &fixture.link,
+                &mine,
+                "f",
+                how.clone(),
+                &SyncOptions::default()
+            )
+            .unwrap(),
             Verdict::Same,
             "{how:?}"
         );
@@ -649,7 +677,14 @@ fn compare_goes_from_size_and_time_to_a_digest_to_blocks() {
     again.set_modified(stamp).unwrap();
     drop(again);
     assert_eq!(
-        compare_file(&fixture.link, &mine, "f", Compare::Meta).unwrap(),
+        compare_file(
+            &fixture.link,
+            &mine,
+            "f",
+            Compare::Meta,
+            &SyncOptions::default()
+        )
+        .unwrap(),
         Verdict::Same
     );
     // One byte differs, the size and the time do not.
@@ -660,12 +695,26 @@ fn compare_goes_from_size_and_time_to_a_digest_to_blocks() {
     again.set_modified(stamp).unwrap();
     drop(again);
     assert_eq!(
-        compare_file(&fixture.link, &mine, "f", Compare::Meta).unwrap(),
+        compare_file(
+            &fixture.link,
+            &mine,
+            "f",
+            Compare::Meta,
+            &SyncOptions::default()
+        )
+        .unwrap(),
         Verdict::Same
     );
     for how in [Compare::Hash(Algorithm::Sha256), Compare::Blocks] {
         assert_eq!(
-            compare_file(&fixture.link, &mine, "f", how.clone()).unwrap(),
+            compare_file(
+                &fixture.link,
+                &mine,
+                "f",
+                how.clone(),
+                &SyncOptions::default()
+            )
+            .unwrap(),
             Verdict::Differs,
             "{how:?}"
         );
@@ -673,7 +722,14 @@ fn compare_goes_from_size_and_time_to_a_digest_to_blocks() {
     // A different size is different at every depth, and an unoffered algorithm is the host's refusal.
     std::fs::write(&mine, &data[..1000]).unwrap();
     assert_eq!(
-        compare_file(&fixture.link, &mine, "f", Compare::Meta).unwrap(),
+        compare_file(
+            &fixture.link,
+            &mine,
+            "f",
+            Compare::Meta,
+            &SyncOptions::default()
+        )
+        .unwrap(),
         Verdict::Differs
     );
     std::fs::write(&mine, &data).unwrap();
@@ -682,7 +738,8 @@ fn compare_goes_from_size_and_time_to_a_digest_to_blocks() {
             &fixture.link,
             &mine,
             "f",
-            Compare::Hash(Algorithm::Other("nope".into()))
+            Compare::Hash(Algorithm::Other("nope".into())),
+            &SyncOptions::default()
         )),
         ErrorCode::Unsupported
     );

@@ -3,7 +3,6 @@
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::Duration;
 
 use bohio_client::Open;
 use bohio_client::gui::{Gui, SnapshotOptions};
@@ -12,11 +11,9 @@ use bohio_proto::gui::{
 };
 use clap::{Args, Subcommand};
 
-use super::remote::{control_endpoint, explain, unreachable};
+use super::remote::{Client, control_endpoint, explain, unreachable};
 use super::{ConfigOption, Format};
 use crate::config::Environment;
-
-const WAIT: Duration = Duration::from_secs(120);
 
 /// `bohio remote ... gui`.
 #[derive(Debug, Args)]
@@ -180,15 +177,21 @@ fn id(text: &Option<String>) -> Option<DisplayId> {
 }
 
 /// Runs one `gui` action on `link`.
-pub(super) fn run(link: &dyn Open, args: &RemoteGuiArgs) -> Result<ExitCode, String> {
+pub(super) fn run(
+    link: &dyn Open,
+    args: &RemoteGuiArgs,
+    client: &Client,
+) -> Result<ExitCode, String> {
+    let wait = client.gui;
     let want = |wants: &[Want]| {
-        Gui::open(link, &GuiRequest::new(wants.iter().copied())).map_err(|error| explain(&error))
+        Gui::open_within(link, &GuiRequest::new(wants.iter().copied()), Some(wait))
+            .map_err(|error| explain(&error))
     };
     let fail = |error| explain(&error);
     match &args.action {
         GuiAction::Info(info) => {
             let control = bohio_client::control::Control::open(link).map_err(fail)?;
-            let found = control.info(Some(Duration::from_secs(30))).map_err(fail)?;
+            let found = control.info(Some(client.reply)).map_err(fail)?;
             match info.format {
                 Format::Json => println!(
                     "{}",
@@ -242,7 +245,7 @@ pub(super) fn run(link: &dyn Open, args: &RemoteGuiArgs) -> Result<ExitCode, Str
                 cursor: false,
                 settle: snapshot.settle.then(SettleOptions::default),
             };
-            let image = gui.snapshot(&options, Some(WAIT)).map_err(fail)?;
+            let image = gui.snapshot(&options, Some(wait)).map_err(fail)?;
             if snapshot.out.as_os_str() == "-" {
                 let mut out = std::io::stdout().lock();
                 out.write_all(&image.bytes)
@@ -270,7 +273,7 @@ pub(super) fn run(link: &dyn Open, args: &RemoteGuiArgs) -> Result<ExitCode, Str
                 x: Some(click.x),
                 y: Some(click.y),
             };
-            gui.input(&[event], Some(WAIT)).map_err(fail)?;
+            gui.input(&[event], Some(wait)).map_err(fail)?;
         }
         GuiAction::Move(go) => {
             let gui = want(&[Want::Input])?;
@@ -279,7 +282,7 @@ pub(super) fn run(link: &dyn Open, args: &RemoteGuiArgs) -> Result<ExitCode, Str
                 x: go.x,
                 y: go.y,
             };
-            gui.input(&[event], Some(WAIT)).map_err(fail)?;
+            gui.input(&[event], Some(wait)).map_err(fail)?;
         }
         GuiAction::Scroll(scroll) => {
             let gui = want(&[Want::Input])?;
@@ -295,7 +298,7 @@ pub(super) fn run(link: &dyn Open, args: &RemoteGuiArgs) -> Result<ExitCode, Str
                 dx: scroll.dx,
                 dy: scroll.dy,
             };
-            gui.input(&[event], Some(WAIT)).map_err(fail)?;
+            gui.input(&[event], Some(wait)).map_err(fail)?;
         }
         GuiAction::Type(text) => {
             let gui = want(&[Want::Input])?;
@@ -304,7 +307,7 @@ pub(super) fn run(link: &dyn Open, args: &RemoteGuiArgs) -> Result<ExitCode, Str
             } else {
                 text.text.clone()
             };
-            gui.input(&[InputEvent::Text { text }], Some(WAIT))
+            gui.input(&[InputEvent::Text { text }], Some(wait))
                 .map_err(fail)?;
         }
         GuiAction::Key(keys) => {
@@ -313,7 +316,7 @@ pub(super) fn run(link: &dyn Open, args: &RemoteGuiArgs) -> Result<ExitCode, Str
             for combo in &keys.combos {
                 events.extend(InputEvent::combo(combo).map_err(|error| error.to_string())?);
             }
-            gui.input(&events, Some(WAIT)).map_err(fail)?;
+            gui.input(&events, Some(wait)).map_err(fail)?;
         }
         GuiAction::Clipboard(clipboard) => match &clipboard.set {
             Some(text) => {
@@ -323,11 +326,11 @@ pub(super) fn run(link: &dyn Open, args: &RemoteGuiArgs) -> Result<ExitCode, Str
                 } else {
                     text.clone()
                 };
-                gui.set_clipboard(&text, Some(WAIT)).map_err(fail)?;
+                gui.set_clipboard(&text, Some(wait)).map_err(fail)?;
             }
             None => {
                 let gui = want(&[Want::Clipboard])?;
-                let text = gui.clipboard(Some(WAIT)).map_err(fail)?;
+                let text = gui.clipboard(Some(wait)).map_err(fail)?;
                 let mut out = std::io::stdout().lock();
                 out.write_all(text.as_bytes())
                     .map_err(|error| error.to_string())?;

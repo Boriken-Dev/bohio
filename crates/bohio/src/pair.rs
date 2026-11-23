@@ -14,13 +14,16 @@
 #![forbid(unsafe_code)]
 
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
-use coqui_link::pairing::{self, PairingHost};
-use coqui_peer::pair::{CodeAlphabet, DeskLimits, PairingDesk, PairingOptions};
-use coqui_peer::{PeerId, TrustStore};
+use coqui_link::auth::prove;
+use coqui_link::link::Prefilled;
+use coqui_link::pairing::{self, PairingHost, respond, starts_pairing};
+use coqui_peer::pair::{CodeAlphabet, DeskLimits, Paired, PairingDesk, PairingOptions};
+use coqui_peer::{Established, Handshake, PeerId, TrustStore};
+use coqui_transport::{Channel, Failure};
 
 use crate::config::PairingConfig;
 use crate::node::NodeError;
@@ -216,6 +219,78 @@ impl core::fmt::Debug for Armed {
     }
 }
 
+/// What a listener's connection turned out to be.
+pub(crate) enum Answered<T> {
+    /// A pairing, complete: the joiner's key is accepted in the store.
+    Paired(Paired),
+    /// A proof, complete.
+    Proven(Established<T>),
+}
+
+/// Why [`answer`] ended without an answer, and whether the connection was a pairing.
+pub(crate) struct Unanswered {
+    /// `true` when the joiner sent the pairing marker: a refused pairing, never a failed proof.
+    pub(crate) pairing: bool,
+    /// What went wrong.
+    pub(crate) error: coqui_link::Error,
+}
+
+/// The responder of a listener that takes proofs and pairings: reads the first message and runs a pairing when it is the
+/// marker, a proof otherwise (the message is not lost). `limit` bounds the whole run; a pairing is also held to
+/// `pairing_limit` counted from the first message, so a joiner that goes silent after the marker frees its desk place
+/// sooner than a proof would. With `pairing` `None` a joiner is sent away at once.
+pub(crate) fn answer<M: coqui_peer::Method, C: Channel>(
+    channel: &C,
+    method: &M,
+    max_message: usize,
+    pairing: Option<PairingHost<'_>>,
+    source: Option<SocketAddr>,
+    limit: Duration,
+    pairing_limit: Duration,
+) -> Result<Answered<<M::Handshake as Handshake>::Output>, Unanswered> {
+    let deadline = Instant::now() + limit;
+    let proof = |error| Unanswered {
+        pairing: false,
+        error,
+    };
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        return Err(proof(coqui_link::Error::Channel(Failure::Timeout)));
+    }
+    let first = match channel.receive(Some(left)) {
+        Ok(Some(message)) => message,
+        Ok(None) => return Err(proof(coqui_link::Error::Channel(Failure::PathLost))),
+        Err(failure) => return Err(proof(failure.into())),
+    };
+    let left = deadline.saturating_duration_since(Instant::now());
+    if starts_pairing(&first) {
+        let refused = |error| Unanswered {
+            pairing: true,
+            error,
+        };
+        let Some(pairing) = pairing else {
+            return Err(refused(coqui_link::Error::Proof(
+                "pairing is not offered on this listener".to_owned(),
+            )));
+        };
+        respond(
+            channel,
+            pairing.identity,
+            pairing.store,
+            pairing.desk,
+            source,
+            left.min(pairing_limit),
+        )
+        .map(Answered::Paired)
+        .map_err(refused)
+    } else {
+        let channel = Prefilled::new(channel, first);
+        prove(method, &channel, left, max_message)
+            .map(Answered::Proven)
+            .map_err(proof)
+    }
+}
+
 struct Setup {
     store: TrustStore,
     /// A desk that never shows a PIN, so a joiner meets a refusal that says so.
@@ -269,6 +344,9 @@ impl PairState {
         };
         options.pin_alphabet = CodeAlphabet::new("0123456789", self.config.pin_length);
         let mut limits = DeskLimits::default();
+        limits.pending = self.config.pending;
+        limits.pending_per_source = self.config.pending_per_source;
+        limits.ipv6_prefix = self.config.ipv6_prefix;
         // The wait after a wrong guess is this node's own, per source; the desk's runs per window would end a PIN early.
         limits.pin_runs_per_source = usize::MAX;
         let desk = pairing::desk_with(options, limits)

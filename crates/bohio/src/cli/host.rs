@@ -299,7 +299,7 @@ pub(super) fn status(args: &StatusArgs, environment: &Environment) -> Result<(),
     say!("waiting: {}", listing.waiting.len());
     for listen in &found.config().listen {
         let state = match Endpoint::parse(&listen.endpoint) {
-            Ok(endpoint) => answers(&endpoint),
+            Ok(endpoint) => answers(&endpoint, found.config().client.probe_timeout.0),
             Err(_) => "not served by this build",
         };
         say!("listen: {} {state}", listen.endpoint);
@@ -320,10 +320,9 @@ pub(super) fn status(args: &StatusArgs, environment: &Environment) -> Result<(),
 
 /// Whether something answers at `endpoint`, by connecting where that is safe to do and, for a
 /// serial line, whether the device is there.
-fn answers(endpoint: &Endpoint) -> &'static str {
-    let connects = |address: &std::net::SocketAddr| {
-        TcpStream::connect_timeout(address, Duration::from_secs(1)).is_ok()
-    };
+fn answers(endpoint: &Endpoint, wait: Duration) -> &'static str {
+    let connects =
+        |address: &std::net::SocketAddr| TcpStream::connect_timeout(address, wait).is_ok();
     let reachable = |yes: bool| if yes { "reachable" } else { "not reachable" };
     match endpoint {
         Endpoint::Tcp(address) => reachable(connects(address)),
@@ -334,7 +333,7 @@ fn answers(endpoint: &Endpoint) -> &'static str {
         Endpoint::Pipe(name) => reachable(
             coqui_transport_pipe::Stream::builder()
                 .name(name)
-                .timeout(Duration::from_secs(1))
+                .timeout(wait)
                 .build()
                 .is_ok(),
         ),
@@ -639,7 +638,7 @@ fn pair_alone(found: &Found, environment: &Environment, args: &PairArgs) -> Resu
             });
         }
         let end = loop {
-            if let Some(end) = armed.wait(Duration::from_millis(200)) {
+            if let Some(end) = armed.wait(settings.poll_interval) {
                 break end;
             }
         };

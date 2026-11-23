@@ -145,6 +145,8 @@ pub struct Config {
     pub gui: GuiConfig,
     /// `[pairing]`: the PIN a node arms.
     pub pairing: PairingConfig,
+    /// `[client]`: the waits and sizes of the `bohio` command's own client side.
+    pub client: ClientConfig,
     /// `[control]`: the node's local endpoint.
     pub control: ControlConfig,
     /// `[peer.<id>]`: each accepted peer and what it may do. A key is accepted while any layer holds
@@ -169,6 +171,10 @@ pub struct ServiceConfig {
     /// Whether the user's file is read over the system's when neither `--config` nor `BOHIO_CONFIG`
     /// names the files. Set in the lowest layer only. Default `true`.
     pub user_layer: bool,
+    /// Windows: how long the service manager is told a start or a stop may take, and how long `bohio service
+    /// uninstall` waits for a running service to stop before it removes it. A host with many links to end may need
+    /// longer; the manager's own limit still applies. Not zero. Default `10s`.
+    pub stop_wait: Span,
 }
 
 impl Default for ServiceConfig {
@@ -178,6 +184,7 @@ impl Default for ServiceConfig {
             data_dir: None,
             check_access: true,
             user_layer: true,
+            stop_wait: Span(Duration::from_secs(10)),
         }
     }
 }
@@ -419,6 +426,16 @@ pub struct LinkConfig {
     /// Heartbeat intervals with nothing heard after which the link is lost: a peer that went away without closing
     /// is noticed in about `heartbeat` times this. At least 1. Default `3`.
     pub heartbeat_misses: u32,
+    /// How long a listener waits for a connection before it looks at whether it was stopped, so a stop is noticed within
+    /// this; a longer wait is fewer wakeups and a slower stop. Not zero. Default `200ms`.
+    pub accept_wait: Span,
+    /// How long a listener that cannot block sleeps between looks for a connection, and after one it could not take: a
+    /// connection waits up to this before it is taken, so a longer sleep is fewer wakeups and a slower connect. Not zero.
+    /// Default `20ms`.
+    pub accept_poll: Span,
+    /// How long a serial host leaves the port closed between links; a peer that reconnects at once meets the port as it
+    /// opens, and a shorter wait can lose that peer's first message. Default `250ms`.
+    pub serial_reopen: Span,
 }
 
 impl Default for LinkConfig {
@@ -452,6 +469,9 @@ impl Default for LinkConfig {
             poll_interval: Span(link.poll_interval),
             heartbeat: Span(link.heartbeat),
             heartbeat_misses: link.heartbeat_misses,
+            accept_wait: Span(link.accept_wait),
+            accept_poll: Span(link.accept_poll),
+            serial_reopen: Span(link.serial_reopen),
         }
     }
 }
@@ -484,6 +504,9 @@ impl LinkConfig {
         settings.poll_interval = self.poll_interval.0;
         settings.heartbeat = self.heartbeat.0;
         settings.heartbeat_misses = self.heartbeat_misses;
+        settings.accept_wait = self.accept_wait.0;
+        settings.accept_poll = self.accept_poll.0;
+        settings.serial_reopen = self.serial_reopen.0;
         settings
     }
 }
@@ -1198,16 +1221,36 @@ pub struct PairingConfig {
     pub attempt_delay_max: Span,
     /// How many digits a PIN has. At least 1. Default `6`.
     pub pin_length: usize,
+    /// Pairing exchanges in progress at once while a PIN is armed. A joiner that sends the marker and then nothing holds a
+    /// place until `exchange_timeout`, so this many silent joiners keep the operator's own out: raise it to tolerate
+    /// more of them, at a thread and a few kilobytes for each place. At least 1. Default `32`.
+    pub pending: usize,
+    /// Pairing exchanges in progress at once from one source (an IPv4 address, or an IPv6 prefix of `ipv6_prefix` bits),
+    /// so one source cannot hold every place; it also bounds the guesses one source runs at once. Behind a proxy every
+    /// joiner shares its source. At least 1. Default `4`.
+    pub pending_per_source: usize,
+    /// The IPv6 prefix length sources are grouped by, from 1 to 128: a smaller prefix groups more addresses as one
+    /// source, so one holder with a whole /48 is held to one source's share. Default `64`.
+    pub ipv6_prefix: u8,
+    /// How long a joiner has to finish a pairing once it began one (sent the marker); a joiner that goes silent frees its
+    /// place after this, where a proof has `[link] proof_timeout`. A longer time tolerates a slower path (the exchange is
+    /// a few round trips and the host's own work) and lets silent joiners hold their places longer. Not zero. Default `5s`.
+    pub exchange_timeout: Span,
 }
 
 impl Default for PairingConfig {
     fn default() -> Self {
+        let limits = coqui_peer::pair::DeskLimits::default();
         Self {
             timeout: Span(Duration::from_secs(300)),
             max_attempts: 10,
             attempt_delay: Span(Duration::from_secs(1)),
             attempt_delay_max: Span(Duration::from_secs(30)),
             pin_length: 6,
+            pending: limits.pending,
+            pending_per_source: limits.pending_per_source,
+            ipv6_prefix: limits.ipv6_prefix,
+            exchange_timeout: Span(Duration::from_secs(5)),
         }
     }
 }
@@ -1226,7 +1269,98 @@ impl PairingConfig {
         if self.pin_length == 0 {
             return Err(("pairing.pin_length", "must be at least 1"));
         }
+        if self.pending == 0 {
+            return Err(("pairing.pending", "must be at least 1"));
+        }
+        if self.pending_per_source == 0 {
+            return Err(("pairing.pending_per_source", "must be at least 1"));
+        }
+        if !(1..=128).contains(&self.ipv6_prefix) {
+            return Err(("pairing.ipv6_prefix", "must be from 1 to 128"));
+        }
+        if self.exchange_timeout.0.is_zero() {
+            return Err(("pairing.exchange_timeout", "must not be zero"));
+        }
         Ok(())
+    }
+}
+
+/// `[client]`: the waits and sizes of the `bohio` command when it acts as a client (`bohio remote`, `bohio links`,
+/// `bohio status`), each with a flag of the command that overrides it. How often the command looks at its input and
+/// at a running stream is `[link] poll_interval`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ClientConfig {
+    /// How long the command waits for the host's first answer to a request that is only a question (`info`, the start of a
+    /// read, a shell or a desktop session). A longer wait tolerates a loaded host or a slow path, and a refusal that never
+    /// comes takes that long to report. Not zero. Default `30s`.
+    pub reply_timeout: Span,
+    /// How long one step of a transfer may wait for the host (`put`, `get`, `write`), idle: a host that is busy hashing or
+    /// compressing a large file answers late. `0` waits without limit, so a host that stops answering holds the command
+    /// for good. Default `5m`.
+    pub transfer_timeout: Span,
+    /// How long a `gui` action waits for the host, which may be waiting for the person at the desktop to approve it. Not
+    /// zero. Default `2m`.
+    pub gui_timeout: Span,
+    /// The bytes of standard input the command reads at a time and sends on (`exec --stdin`, `shell`, `write`, `listen`):
+    /// a larger size is fewer, larger frames and more held in memory. At least 1. Default `16384`.
+    pub input_chunk: usize,
+    /// The bytes read from a local file at a time by `put`, `get` and a comparison. At least 1. Default `1048576`.
+    pub read_size: usize,
+    /// The chunks of standard input `listen --keep` holds ahead of the connection that takes them, so input typed while
+    /// no connection is up is not lost, at `input_chunk` bytes each; a full queue stops reading input. At least 1.
+    /// Default `4`.
+    pub input_queue: usize,
+    /// How long `bohio status` waits for an endpoint to answer before it reports it unreachable. A slow path reads as
+    /// unreachable under a short wait. Not zero. Default `1s`.
+    pub probe_timeout: Span,
+    /// How long `bohio links` and `bohio remote --via` wait for each peer to say what it offers; a peer that answers later
+    /// is listed as unknown. Not zero. Default `5s`.
+    pub links_wait: Span,
+}
+
+impl Default for ClientConfig {
+    fn default() -> Self {
+        Self {
+            reply_timeout: Span(Duration::from_secs(30)),
+            transfer_timeout: Span(Duration::from_secs(300)),
+            gui_timeout: Span(Duration::from_secs(120)),
+            input_chunk: 16 * 1024,
+            read_size: 1024 * 1024,
+            input_queue: 4,
+            probe_timeout: Span(Duration::from_secs(1)),
+            links_wait: Span(Duration::from_secs(5)),
+        }
+    }
+}
+
+impl ClientConfig {
+    fn validate(&self) -> Result<(), (&'static str, &'static str)> {
+        for (key, zero) in [
+            ("client.reply_timeout", self.reply_timeout.0.is_zero()),
+            ("client.gui_timeout", self.gui_timeout.0.is_zero()),
+            ("client.probe_timeout", self.probe_timeout.0.is_zero()),
+            ("client.links_wait", self.links_wait.0.is_zero()),
+        ] {
+            if zero {
+                return Err((key, "must not be zero"));
+            }
+        }
+        if self.input_chunk == 0 {
+            return Err(("client.input_chunk", "must be at least 1"));
+        }
+        if self.read_size == 0 {
+            return Err(("client.read_size", "must be at least 1"));
+        }
+        if self.input_queue == 0 {
+            return Err(("client.input_queue", "must be at least 1"));
+        }
+        Ok(())
+    }
+
+    /// The wait for one step of a transfer: `None` when `transfer_timeout` is `0`.
+    pub fn transfer(&self) -> Option<Duration> {
+        (!self.transfer_timeout.0.is_zero()).then_some(self.transfer_timeout.0)
     }
 }
 
@@ -1435,6 +1569,8 @@ impl NodeConfig {
             ("link.send_limit", link.send_limit.0.is_zero()),
             ("link.send_wait", link.send_wait.0.is_zero()),
             ("link.poll_interval", link.poll_interval.0.is_zero()),
+            ("link.accept_wait", link.accept_wait.0.is_zero()),
+            ("link.accept_poll", link.accept_poll.0.is_zero()),
         ] {
             if zero {
                 return Err(invalid(key, "must not be zero"));
@@ -1655,6 +1791,12 @@ impl Config {
             message: message.to_owned(),
         };
         self.node().validate(path)?;
+        if let Err((key, message)) = self.client.validate() {
+            return Err(invalid(key, message));
+        }
+        if self.service.stop_wait.0.is_zero() {
+            return Err(invalid("service.stop_wait", "must not be zero"));
+        }
         for id in self.peer.ids() {
             for rule in self.peer.grant_for(id).forward().connect() {
                 if let Err(error) = rule.parse::<crate::forward::ConnectRule>() {

@@ -78,6 +78,15 @@ pub struct Settings {
     pub heartbeat: Duration,
     /// Heartbeat intervals with nothing heard from the peer after which the link is lost. At least 1. Default 3.
     pub heartbeat_misses: u32,
+    /// How long a listener waits for a connection before it looks at whether it was stopped: a stop is noticed within
+    /// this. Not zero. Default 200 ms.
+    pub accept_wait: Duration,
+    /// How long a listener that cannot block sleeps between looks for a connection, and after a connection it could not
+    /// take: the delay a connection can add, and what an idle one costs in wakeups. Not zero. Default 20 ms.
+    pub accept_poll: Duration,
+    /// How long a serial host leaves the port closed between links, so a peer that reconnects at once meets an open port
+    /// with nothing stale in it. Default 250 ms.
+    pub serial_reopen: Duration,
 }
 
 impl Default for Settings {
@@ -105,6 +114,9 @@ impl Default for Settings {
             poll_interval: Duration::from_millis(50),
             heartbeat: Duration::from_secs(25),
             heartbeat_misses: 3,
+            accept_wait: Duration::from_millis(200),
+            accept_poll: Duration::from_millis(20),
+            serial_reopen: Duration::from_millis(250),
         }
     }
 }

@@ -110,6 +110,11 @@ mod unix {
 
     /// The processes descended from one, found through `/proc` by their parents.
     mod descendants {
+        /// How many times the tree is looked at again for descendants a stopped parent had just started: each round
+        /// finds the children of the last round's, so this is the depth of a chain of forks caught in one stop. Not a
+        /// limit on the tree's size; a deeper chain is ended by the process group's own kill.
+        const ROUNDS: usize = 16;
+
         use rustix::process::Pid;
 
         /// Every process descended from `root`, each stopped so it starts no more, found again
@@ -120,7 +125,7 @@ mod unix {
 
             use rustix::process::{Signal, kill_process};
             let mut found = BTreeSet::new();
-            for _ in 0..16 {
+            for _ in 0..ROUNDS {
                 let parents = parents();
                 let mut grown = false;
                 let mut queue = Vec::from([root.as_raw_nonzero().get()]);

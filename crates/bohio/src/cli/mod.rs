@@ -381,6 +381,14 @@ pub struct RemoteArgs {
     /// The QUIC sizes of a `webtransport://` host.
     #[command(flatten)]
     pub mtu: MtuArgs,
+    /// How long to wait for the host's first answer to a question (`info`, the start of a read, a shell or a desktop
+    /// session): a number of seconds or text with a unit. Default `[client] reply_timeout` (30s).
+    #[arg(long, value_name = "TIME", value_parser = parse_span)]
+    pub reply_timeout: Option<std::time::Duration>,
+    /// How long one step of a transfer (`put`, `get`, `write`) may wait for the host; `0` waits without limit. Default
+    /// `[client] transfer_timeout` (5m).
+    #[arg(long, value_name = "TIME", value_parser = parse_span)]
+    pub transfer_timeout: Option<std::time::Duration>,
     /// What to ask of it.
     #[command(subcommand)]
     pub action: RemoteAction,
@@ -736,7 +744,7 @@ pub struct LinksArgs {
     /// How the links are written.
     #[arg(long, value_enum, default_value = "text")]
     pub format: Format,
-    /// How long to wait for each peer to say what it offers.
-    #[arg(long, value_name = "TIME", default_value = "5s")]
-    pub wait: String,
+    /// How long to wait for each peer to say what it offers. Default `[client] links_wait` (5s).
+    #[arg(long, value_name = "TIME")]
+    pub wait: Option<String>,
 }

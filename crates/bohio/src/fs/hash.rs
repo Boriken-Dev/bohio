@@ -132,7 +132,7 @@ fn run(
     })?;
     let ended = || ErrorBody::new(ErrorCode::Io, "the stream ended before the items were done");
 
-    let mut pace = Pace::new(files.hash.rate);
+    let mut pace = Pace::new(files.hash.rate, files.config.poll_interval.0);
     let mut index = 0_u64;
     let mut last_progress = Instant::now();
     loop {
@@ -453,43 +453,45 @@ fn item_result(
 }
 
 /// Holds a stream to `[hash] rate` bytes a second: each read is followed by a wait until its share of
-/// time has passed. A wait that overshoots is made up by the next ones, up to a twentieth of a second, and
-/// time a stream spent idle earns no more credit than that.
+/// time has passed. A wait that overshoots is made up by the next ones, up to one `slice` (`[filesystem]
+/// poll_interval`), and time a stream spent idle earns no more credit than that.
 struct Pace {
     rate: u64,
     due: Instant,
+    /// The granularity of the limit: a read is at most this much of the rate, and this much lag is caught up.
+    slice: Duration,
 }
 
-/// The granularity of the limit: a read is at most this much of the rate, and this much lag is caught up.
-const SLICE: Duration = Duration::from_millis(50);
-
 impl Pace {
-    fn new(rate: u64) -> Self {
+    fn new(rate: u64, slice: Duration) -> Self {
         Self {
             rate,
             due: Instant::now(),
+            slice: slice.max(Duration::from_millis(1)),
         }
     }
 
-    /// The buffer size: `read_size`, or a twentieth of a second of `rate` when that is less.
+    /// The buffer size: `read_size`, or one `slice` of `rate` when that is less.
     fn piece(&self, read_size: usize) -> usize {
         if self.rate == 0 {
             return read_size;
         }
-        usize::try_from(self.rate / 20)
-            .map_or(read_size, |slice| read_size.min(slice))
-            .max(1)
+        let share = self.rate as f64 * self.slice.as_secs_f64();
+        // Truncation is intended: a share of a few bytes is rounded down, then raised to one.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let share = share as usize;
+        read_size.min(share).max(1)
     }
 
     /// Accounts for `count` bytes just read and waits until the rate allows the next read. The wait is at most a
-    /// `SLICE`, so a stream that closes meanwhile is noticed at the next read.
+    /// `slice`, so a stream that closes meanwhile is noticed at the next read.
     fn spent(&mut self, channel: &dyn Channel, count: u64) {
         if self.rate == 0 {
             return;
         }
         let now = Instant::now();
         let cost = Duration::from_secs_f64(count as f64 / self.rate as f64);
-        let floor = now.checked_sub(SLICE).unwrap_or(now);
+        let floor = now.checked_sub(self.slice).unwrap_or(now);
         self.due = self.due.max(floor) + cost;
         if let Some(left) = self.due.checked_duration_since(Instant::now())
             && !channel.is_closed()

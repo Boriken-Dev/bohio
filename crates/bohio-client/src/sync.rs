@@ -94,6 +94,9 @@ pub struct SyncOptions {
     pub chunk: usize,
     /// How long a step may wait for the host; `None` waits without limit. Default five minutes.
     pub timeout: Option<Duration>,
+    /// The bytes read from a local file at a time, and the buffer a downloaded file is written through: more is fewer
+    /// system calls and that much more memory. At least 1. Default 1 MiB.
+    pub read_size: usize,
     /// What the host offers (`info.transfer`, or the `hello` reply's), when the caller has it already: saves a call.
     pub transfer: Option<TransferInfo>,
     /// The largest zstd window a read accepts, as a power of two; 27 when absent.
@@ -116,6 +119,7 @@ impl Default for SyncOptions {
             verify: None,
             chunk: Writer::DEFAULT_CHUNK,
             timeout: Some(Duration::from_secs(300)),
+            read_size: 1 << 20,
             transfer: None,
             window_log_max: None,
         }
@@ -239,11 +243,17 @@ fn wants_delta(transfer: &TransferInfo, options: &SyncOptions, base_size: u64) -
 fn strong_len_of(options: &SyncOptions) -> Result<usize, Error> {
     options
         .strong_len
-        .or_else(|| SignatureSpec::digest_len(&options.strong).map(|digest| digest.min(16)))
+        .or_else(|| {
+            SignatureSpec::digest_len(&options.strong).map(|digest| digest.min(DEFAULT_STRONG_LEN))
+        })
         .ok_or_else(|| {
             Error::Compression("the strong hash is not an algorithm this build knows".to_owned())
         })
 }
+
+/// The bytes of a strong hash a signature keeps when `strong_len` is not set: a block's collision odds stay far below the
+/// whole-file check's.
+const DEFAULT_STRONG_LEN: usize = 16;
 
 /// Compares a local file with a file of the host without downloading either, as far as `how` goes.
 ///
@@ -259,11 +269,12 @@ pub fn compare_file(
     local: &Path,
     remote: &str,
     how: Compare,
+    options: &SyncOptions,
 ) -> Result<Verdict, Error> {
     let Some(here) = local_file(local)? else {
         return Ok(Verdict::LocalMissing);
     };
-    let fs = Fs::connect(link)?.with_timeout(Some(Duration::from_secs(300)));
+    let fs = Fs::connect(link)?.with_timeout(options.timeout);
     let there = remote_file(&fs, remote);
     fs.control().close();
     let Some(there) = there? else {
@@ -282,13 +293,16 @@ pub fn compare_file(
             let remote_digests = hash_file(link, remote, std::slice::from_ref(&algorithm))?;
             let mut file = File::open(local)
                 .map_err(|error| Error::local("opening the local file", &error))?;
-            let (digests, _) = digest_reader(&mut file, std::slice::from_ref(&algorithm), 1 << 20)
-                .map_err(|error| Error::local("reading the local file", &error))?;
+            let (digests, _) = digest_reader(
+                &mut file,
+                std::slice::from_ref(&algorithm),
+                options.read_size.max(1),
+            )
+            .map_err(|error| Error::local("reading the local file", &error))?;
             digests.contains_key(&algorithm)
                 && digests.get(&algorithm) == remote_digests.get(&algorithm)
         }
         Compare::Blocks => {
-            let options = SyncOptions::default();
             let blocks = hash_blocks(
                 link,
                 HashItem::whole(remote),
@@ -306,7 +320,7 @@ pub fn compare_file(
                 .map_err(|_| bad("the host chose a signature this build cannot make"))?;
             let mut file = File::open(local)
                 .map_err(|error| Error::local("opening the local file", &error))?;
-            let mut buffer = vec![0_u8; 1 << 20];
+            let mut buffer = vec![0_u8; options.read_size.max(1)];
             loop {
                 let count = match file.read(&mut buffer) {
                     Ok(0) => break,
@@ -342,7 +356,7 @@ fn skip_if_same(
     let Some(how) = options.compare.clone() else {
         return Ok(None);
     };
-    if compare_file(link, local, remote, how)? != Verdict::Same {
+    if compare_file(link, local, remote, how, options)? != Verdict::Same {
         return Ok(None);
     }
     let size = fs::metadata(local).map_or(0, |meta| meta.len());
@@ -463,8 +477,12 @@ fn push_delta(
     if let Some(algorithm) = &verify {
         let mut file =
             File::open(local).map_err(|error| Error::local("opening the local file", &error))?;
-        let (digests, _) = digest_reader(&mut file, std::slice::from_ref(algorithm), 1 << 20)
-            .map_err(|error| Error::local("reading the local file", &error))?;
+        let (digests, _) = digest_reader(
+            &mut file,
+            std::slice::from_ref(algorithm),
+            options.read_size.max(1),
+        )
+        .map_err(|error| Error::local("reading the local file", &error))?;
         expect = digests;
     }
     let request = WriteRequest {
@@ -537,7 +555,7 @@ struct Part {
 }
 
 impl Part {
-    fn create(destination: &Path) -> Result<Self, Error> {
+    fn create(destination: &Path, buffer: usize) -> Result<Self, Error> {
         let name = destination.file_name().map_or_else(
             || "file".to_owned(),
             |name| name.to_string_lossy().into_owned(),
@@ -554,7 +572,7 @@ impl Part {
             .map_err(|error| Error::local("creating the temporary file", &error))?;
         Ok(Self {
             path,
-            out: Some(BufWriter::with_capacity(1 << 20, file)),
+            out: Some(BufWriter::with_capacity(buffer, file)),
             kept: false,
         })
     }
@@ -679,7 +697,7 @@ fn pull_whole(
             ..ReadOptions::default()
         },
     )?;
-    let mut part = Part::create(local)?;
+    let mut part = Part::create(local, options.read_size.max(1))?;
     let mut hasher = Hasher::new(&verify.iter().cloned().collect::<Vec<_>>())
         .map_err(|error| Error::Compression(error.to_string()))?;
     let mut total = 0_u64;
@@ -812,7 +830,7 @@ fn rebuild(
                 first += count;
                 send_or_why(channel, &ReadInput::Signature(batch).encode()?, &mut sent)
             };
-        let mut buffer = vec![0_u8; 1 << 20];
+        let mut buffer = vec![0_u8; options.read_size.max(1)];
         loop {
             let count = match base.read(&mut buffer) {
                 Ok(0) => break,
@@ -867,7 +885,7 @@ fn rebuild(
         ),
         None => None,
     };
-    let mut part = Part::create(local)?;
+    let mut part = Part::create(local, options.read_size.max(1))?;
     let mut hasher = Hasher::new(&verify.iter().cloned().collect::<Vec<_>>())
         .map_err(|error| Error::Compression(error.to_string()))?;
     let mut total = 0_u64;

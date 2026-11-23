@@ -368,3 +368,42 @@ fn a_dialer_stops_dialing_a_peer_its_keys_no_longer_accept() {
         );
     });
 }
+
+#[test]
+fn serve_channel_refuses_a_channel_past_max_connections_at_once() {
+    let config = NodeConfig {
+        link: LinkConfig {
+            max_connections: 1,
+            proof_timeout: Span(Duration::from_secs(20)),
+            ..LinkConfig::default()
+        },
+        ..NodeConfig::default()
+    };
+    let node = Node::new(
+        config,
+        Identity::generate(Method::DEFAULT).expect("an identity"),
+        Arc::new(MemoryKeys::new()),
+        Arc::new(MemoryGrants::new()),
+    )
+    .expect("the node is built");
+    let settings = Settings::default();
+    let (first_near, first_far) = coqui_transport::memory::pipe(1 << 20);
+    let (second_near, second_far) = coqui_transport::memory::pipe(1 << 20);
+    let first = bohio_client::link::stream(first_near, &settings).expect("a channel");
+    let second = bohio_client::link::stream(second_near, &settings).expect("a channel");
+    thread::scope(|scope| {
+        let holding = scope.spawn(|| node.serve_channel(&first, None));
+        // The first channel's peer says nothing, so it holds the node's one place until its proof times out.
+        thread::sleep(Duration::from_millis(500));
+        assert!(!holding.is_finished(), "the first channel is being served");
+        let began = Instant::now();
+        node.serve_channel(&second, None);
+        assert!(
+            began.elapsed() < Duration::from_secs(5),
+            "the second channel was refused at once, not proved: {:?}",
+            began.elapsed()
+        );
+        coqui_transport::Channel::close(&first);
+    });
+    drop((first_far, second_far));
+}
