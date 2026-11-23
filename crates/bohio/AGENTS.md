@@ -328,7 +328,7 @@ as stored. The target is judged by its words, so on Unix a chain of links can st
 | --- | --- | --- |
 | Linux | every lookup: one `openat2` with `RESOLVE_BENEATH` (kernel 5.6+), else `openat` + `O_NOFOLLOW` per component; changes and removals are `*at` calls on the parent's handle | the configured root itself is opened by its path once per call |
 | macOS and other Unix | the same `openat` + `O_NOFOLLOW` walk, `*at` calls on the parent's handle | the root's own path |
-| Windows | `stat`, hashes, reads and the opens of writes: relative to the root's handle, reparse points not followed | `list`, `readlink`, `mkdir`, `remove`, `rename`, `symlink` and `set_mode` or `set_attributes`: the parent's handle becomes its current path and the name is joined to it, so a user who can rename a directory inside the root during the call can redirect it; also the root's own path |
+| Windows | every lookup and open relative to the root's handle, reparse points not followed; `list`, `readlink`, `mkdir`, `remove` (a tree too), `rename`, `symlink` and `set_attributes` act on the last name through the handle of the directory holding it (`NtCreateFile` with `RootDirectory`, then `SetFileInformationByHandle`; `platform/winfs.rs`), so no path is built and a directory swapped for a junction cannot redirect the call | the configured root itself is opened by its path once per call |
 
 On every OS the root's owner is trusted: a hard link another local user makes to a file outside a root exposes that file, and a
 bind mount or junction an administrator places inside a root is part of the root. Windows has no POSIX modes (`set_mode` and a
