@@ -21,7 +21,7 @@ its own**: it takes the bytes a caller feeds it, or a `Read` a caller passes. Do
 cargo add bohio-transfer --git https://github.com/Boriken-Dev/bohio
 ```
 
-Features: `zstd` (default) compiles the zstd C library with `cc`; `zstdmt` adds its worker threads. Without `zstd`, `lz4` and `deflate` remain.
+Features: `zstd` (default) compiles the zstd C library with `cc`; `zstdmt` adds its worker threads. Without `zstd`, `lz4` and `deflate` remain. `screen` adds the `screen` module: the tiles of a changed frame, a rectangle in each of the encodings of a screen stream (RGB with zstd, raw, JPEG, PNG) and the client frame that updates build, with PNG and JPEG from `image`.
 
 ## Quick start
 

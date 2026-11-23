@@ -4,8 +4,8 @@ Header-file-style reference for the `bohio-transfer` crate: the byte-level work 
 `Read` a caller passes). It ships inside the package and is self-contained. Development documentation lives with the source at
 <https://github.com/Boriken-Dev/bohio>.
 
-MSRV Rust 1.89. Depends on `bohio-proto` (the `Algorithm` and `Codec` names), `sha2`, `sha1`, `md-5` (RustCrypto), `blake3`, `xxhash-rust`, `crc32c`, `lz4_flex`, `flate2` and, with the default Cargo feature `zstd`, `zstd` (the C library). Features: `zstd` (default), `zstdmt`.
-Version `0.0.0-alpha.0`, not published. `unsafe` is forbidden in this crate; the digest crates' own code is theirs. Public modules: `hash`, `compress`, `rolling`, `signature`, `delta`, `apply`.
+MSRV Rust 1.89. Depends on `bohio-proto` (the `Algorithm` and `Codec` names), `sha2`, `sha1`, `md-5` (RustCrypto), `blake3`, `xxhash-rust`, `crc32c`, `lz4_flex`, `flate2` and, with the default Cargo feature `zstd`, `zstd` (the C library). Features: `zstd` (default), `zstdmt`, `screen` (the `screen` module, with `image` for PNG and JPEG).
+Version `0.0.0-alpha.0`, not published. `unsafe` is forbidden in this crate; the digest crates' own code is theirs. Public modules: `hash`, `compress`, `rolling`, `signature`, `delta`, `apply`, `screen` (feature).
 
 ## Hash (`bohio_transfer::hash`)
 
@@ -27,6 +27,31 @@ Hex is in the byte order the reference tools print (`md5sum`, `sha256sum`, `b3su
 the published vectors of each: the empty input, `abc` and, for `crc32c`, `123456789` (`e3069283`). `md5` and `sha1` are not collision resistant.
 
 `blake3` compiles C or assembly through `cc` for its SIMD code unless built with its `pure` feature, which this crate does not set.
+
+## Screen (`screen`, feature `screen`)
+
+A screen's updates, with no I/O (the wire is `bohio_proto::gui`, `docs/protocol.md` "Desktop"): which tiles changed, a rectangle in each encoding, and the client frame.
+
+```rust
+pub struct Pixels<'a>;                                      // Copy: RGB, 3 bytes a pixel, rows from the top; Pixels::new(width, height, rgb) checks the length; width(), height(), rgb()
+pub struct TileGrid;                                        // Debug, Clone: xxh3 of each `tile` by `tile` pixel tile of the last frame it saw
+impl TileGrid {
+    pub fn new(width: u32, height: u32, tile: u32) -> Self;            // tile is at least 1; the first frame reports every tile
+    pub fn update(&mut self, frame: &Pixels) -> Vec<usize>;            // the changed tile indices, ascending (row by row); a size change reports all
+    pub fn diff(&mut self, frame: &Pixels) -> Vec<Rect>;               // update + rects
+    pub fn rects(&self, tiles: &[usize]) -> Vec<Rect>;                 // covers exactly those tiles: touching tiles of a row are a run, equal runs in consecutive rows are one rectangle
+    pub fn tiles_in(&self, rect: Rect) -> Vec<usize>;   pub fn tile_rect(&self, index: usize) -> Rect;   pub fn reset(&mut self);   pub fn tile(&self) -> u32;   pub fn len(&self) -> usize;
+}
+pub struct EncodeParams { pub quality: u8 /* JPEG, 80 */, pub zstd_level: i32 /* 3 */ }   // Default
+pub fn encode_rect(frame: &Pixels, rect: Rect, encoding: RectEncoding, params: &EncodeParams) -> Result<Vec<u8>, ScreenError>;   // zstd_rgb (one zstd frame of the RGB rows; Unsupported without feature zstd), raw_rgb, jpeg, png
+pub fn decode_rect(bytes: &[u8], rect: Rect, encoding: RectEncoding) -> Result<Vec<u8>, ScreenError>;   // exactly width*height*3 bytes or an error; zstd output is bounded to that size, an image's own size is read first
+pub const ZSTD: bool;   pub const fn lossless() -> RectEncoding;                // ZstdRgb, or RawRgb without zstd
+pub struct Limits { pub max_rect_bytes: u64 /* 32 MiB: a rectangle, and an update's rectangles together */, pub max_frame_pixels: u64 /* 32 Mi */ }   // Default
+pub struct Compositor;                                      // Compositor::new(Limits), set_limits(Limits), frame() -> Option<Pixels>, apply(&UpdateHeader, bytes) -> Result<(), ScreenError>
+pub enum ScreenError { BadPixels, OutsideFrame, TooLarge, Corrupt(&'static str), Inconsistent(&'static str), Unsupported(RectEncoding), Encode }   // Error, non_exhaustive
+```
+
+`apply` checks the whole header before it touches a pixel: the frame within `max_frame_pixels`, a size change only on a key frame, each rectangle inside the frame and within `max_rect_bytes`, the lengths adding up to the bytes, a key frame covering the frame.
 
 ## Deltas (`rolling`, `signature`, `delta`, `apply`)
 

@@ -6,4 +6,6 @@ pub mod compress;
 pub mod delta;
 pub mod hash;
 pub mod rolling;
+#[cfg(feature = "screen")]
+pub mod screen;
 pub mod signature;

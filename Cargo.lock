@@ -334,6 +334,7 @@ dependencies = [
  "bohio-proto",
  "crc32c",
  "flate2",
+ "image",
  "lz4_flex",
  "md-5",
  "sha1",

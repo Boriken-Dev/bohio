@@ -23,6 +23,8 @@ default = ["zstd"]
 zstd = ["dep:zstd"]
 # zstd worker threads (`Caps::workers` above 0).
 zstdmt = ["zstd", "zstd/zstdmt"]
+# Screen updates (`screen`): tiles, rectangle encodings and the client's compositor. PNG and JPEG come from `image`.
+screen = ["dep:image"]
 
 [dependencies]
 bohio-proto.workspace = true
@@ -36,10 +38,15 @@ thiserror.workspace = true
 zstd = { workspace = true, optional = true }
 lz4_flex.workspace = true
 flate2.workspace = true
+image = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Tests: the reference LZ4 frame encoder and decoder, to hold our frames to the standard.
 lz4_flex = { workspace = true, features = ["frame"] }
+
+[[test]]
+name = "screen"
+required-features = ["screen"]
 
 [lints]
 workspace = true
