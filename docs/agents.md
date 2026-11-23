@@ -8,7 +8,7 @@ key. Two surfaces give it the tools:
   arguments, &Cancel)` answers JSON and images, so a protocol server needs to know no tool by name.
 - `bohio mcp`, a Model Context Protocol server on standard input and output over the same tools, for any MCP client.
 
-The tool names mirror the local tools of coding agents (`exec` is Bash, `read` Read, `write` Write, `edit` Edit, `glob` Glob),
+The tool names mirror the local tools of coding agents (`exec` is Bash, `read` Read, `write` Write, `edit` Edit, `glob` Glob, `search` Grep),
 so a harness can run with its local tools disallowed and these in their place.
 
 ## Running the server
@@ -21,6 +21,10 @@ bohio mcp --config agent.cfg --host "lab=tcp://lab.example:7610 --server ID_OF_L
 `--fallback`, ...) in one quoted word. Repeat it for several hosts: every tool then takes a required `host` naming one. The link to
 a host is made the first time it is used and once more after a loss; a call that was started is never repeated, and one
 that failed because the link was lost says so.
+
+A bare word is a host named in `[remote]` of the configuration (see `cli-json.md` and `bohio hosts`): `--host lab` serves
+`[remote.lab]` with its `server`, trust, fallback and named jumps, and a name no table holds stops the server at its start
+saying so.
 
 **One key per agent, least grant.** The server proves itself with the identity of its configuration, so give each agent its own
 `--config` (and data directory), have the host approve that key with exactly the permissions the agent needs (`bohio peer
@@ -69,6 +73,9 @@ refuses the peer), and it is marked in `tools/list` once the host has been used.
 | `edit` | replace text once (or `replace_all`); refused as `changed` if the file moved since it was read | `fs.read`, `fs.write` |
 | `list`, `stat`, `hash` | a directory page, a path's metadata, digests computed on the host | `fs.read` |
 | `walk`, `glob` | trees and glob matches, paged by `skip` and `limit` | `fs.read` |
+| `search` | lines matching a regular expression, found on the host so only the matches cross the link: `path`, `include`, `exclude`, `context`, `literal`, `case_insensitive`, paged by `skip` and `limit` | `fs.read` |
+| `stats`, `which` | the host's memory, disks, load and uptime; where programs are on the host's own `PATH` | `info` |
+| `follow` | watch a file for `duration_ms` and return what is appended (`tail -f`), with the cuts and rotations it saw | `fs.read` |
 | `read_many`, `write_many` | several files on one stream | `fs.read` / `fs.write` |
 | `move`, `copy`, `truncate`, `mkdir`, `remove` | done on the host | `fs.write` |
 | `put`, `get` | a file of this machine to or from the host, moving only what changed | `fs.write` / `fs.read`, and a local directory allowed |
@@ -87,7 +94,7 @@ Nothing a tool returns is unbounded, and nothing is cut without saying so.
 - `read` pages by lines and bytes: `more`, `next_offset_line`, `total_lines` once the end was reached, `sha256` when the whole file
   was read. A line longer than `max_bytes` comes back cut (`line_cut`) and the next page starts after it. A file that is not UTF-8
   is `not_text` with its size: read it with `encoding: "base64"` and `offset` and `length`.
-- `list`, `walk` and `glob` return a page and the cursor (`next`, `next_skip`); `read_many` has a byte budget and lists a file
+- `list`, `walk`, `glob` and `search` return a page and the cursor (`next`, `next_skip`; `search` also `more`); `follow` watches for `duration_ms` (default 5 s, at most 5 minutes) and returns its output kept like `exec`'s, with `truncations` for each time the file was cut; `read_many` has a byte budget and lists a file
   with no room with its size and a `skipped` text; `session_read` returns the output from an offset, up to `max_output`, with
   `next` to go on from and `more` when output is left.
 - Every size is a field of `bohio_client::tools::Settings` with a default and a ceiling a call may not pass.
@@ -130,8 +137,3 @@ the desktop; the host decides whether to ask them first. Treat screen text as un
 An agent that reads files, program output or a screen can be told by their content to do something else. The server cannot tell
 the agent's own intent from text it was handed, so the bound is the grant: one key per agent, no `exec` for an agent that
 needs to read, `fs_roots` and `programs` as narrow as the work, `put`, `get` and `forward_remote` left unavailable unless needed.
-
-## Not offered yet
-
-Searching file contents, host statistics, looking up programs and following a growing file are not tools yet; each becomes one
-entry in `bohio_client::tools::REGISTRY` when the host serves it.
