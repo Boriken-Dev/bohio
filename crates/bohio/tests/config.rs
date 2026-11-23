@@ -158,6 +158,10 @@ fn values_out_of_range_name_their_key() {
         ("[link]\naccept_wait = 0\n", "link.accept_wait"),
         ("[link]\naccept_poll = 0\n", "link.accept_poll"),
         ("[service]\nstop_wait = 0\n", "service.stop_wait"),
+        ("[waiting]\nper_source = 0\n", "waiting.per_source"),
+        ("[waiting]\ntotal = 0\n", "waiting.total"),
+        ("[waiting]\nipv6_prefix = 0\n", "waiting.ipv6_prefix"),
+        ("[waiting]\nipv6_prefix = 129\n", "waiting.ipv6_prefix"),
         ("[client]\nreply_timeout = 0\n", "client.reply_timeout"),
         ("[client]\ngui_timeout = 0\n", "client.gui_timeout"),
         ("[client]\ninput_chunk = 0\n", "client.input_chunk"),
@@ -681,6 +685,32 @@ fn the_waits_that_were_literals_are_settings_with_their_old_values() {
     assert_eq!(client.input_queue, 4);
     assert_eq!(client.probe_timeout, Span(Duration::from_secs(1)));
     assert_eq!(client.links_wait, Span(Duration::from_secs(5)));
+    let waiting = config.waiting.settings();
+    assert_eq!(waiting, coqui_peer::WaitingSettings::default());
+    assert_eq!(waiting.limits.per_source, 16);
+    assert_eq!(waiting.limits.total, 1000);
+}
+
+#[test]
+fn the_waiting_list_bounds_are_read_and_reach_the_store() {
+    let config = parse(
+        "[waiting]\nper_source = 2\ntotal = 5\nrerecord = \"5s\"\nrecord_interval = 0\nipv6_prefix = 48\nwhen_full = \"replace-oldest\"\n",
+    )
+    .unwrap();
+    let settings = config.waiting.settings();
+    assert_eq!(settings.limits.per_source, 2);
+    assert_eq!(settings.limits.total, 5);
+    assert_eq!(settings.limits.rerecord, Duration::from_secs(5));
+    assert!(settings.record_interval.is_zero());
+    assert_eq!(settings.ipv6_prefix, 48);
+    assert_eq!(settings.when_full, coqui_peer::WhenFull::ReplaceOldest);
+    let dir = tempfile::tempdir().unwrap();
+    let store = bohio::peer::Data::new(dir.path())
+        .with_waiting(&config.waiting)
+        .store()
+        .unwrap();
+    assert_eq!(store.settings().waiting, settings);
+    assert!(parse("[waiting]\nwhen_full = \"sometimes\"\n").is_err());
 }
 
 #[test]

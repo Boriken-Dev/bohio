@@ -53,12 +53,23 @@ impl From<ConfigError> for PeerError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Data {
     dir: PathBuf,
+    waiting: Option<coqui_peer::WaitingSettings>,
 }
 
 impl Data {
     /// The data directory `dir`; nothing is created until it is used.
     pub fn new(dir: impl Into<PathBuf>) -> Self {
-        Self { dir: dir.into() }
+        Self {
+            dir: dir.into(),
+            waiting: None,
+        }
+    }
+
+    /// This directory with the waiting list held to `config` (`[waiting]`) instead of the trust store's defaults.
+    #[must_use]
+    pub fn with_waiting(mut self, config: &crate::config::WaitingConfig) -> Self {
+        self.waiting = Some(config.settings());
+        self
     }
 
     /// The directory itself.
@@ -90,7 +101,12 @@ impl Data {
     /// [`PeerError::Store`] when the directory cannot be used.
     pub fn store(&self) -> Result<TrustStore, PeerError> {
         std::fs::create_dir_all(&self.dir).map_err(|error| PeerError::Store(error.to_string()))?;
-        TrustStore::open(&self.dir).map_err(|error| PeerError::Store(error.to_string()))
+        let store =
+            TrustStore::open(&self.dir).map_err(|error| PeerError::Store(error.to_string()))?;
+        Ok(match self.waiting {
+            Some(settings) => store.waiting_queue(settings),
+            None => store,
+        })
     }
 }
 

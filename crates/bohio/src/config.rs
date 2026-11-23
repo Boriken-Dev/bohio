@@ -145,6 +145,8 @@ pub struct Config {
     pub gui: GuiConfig,
     /// `[pairing]`: the PIN a node arms.
     pub pairing: PairingConfig,
+    /// `[waiting]`: the bounds of the list of proven keys that wait for approval.
+    pub waiting: WaitingConfig,
     /// `[client]`: the waits and sizes of the `bohio` command's own client side.
     pub client: ClientConfig,
     /// `[control]`: the node's local endpoint.
@@ -1285,6 +1287,88 @@ impl PairingConfig {
     }
 }
 
+/// `[waiting]`: the bounds of the list a proven key that is not accepted is recorded in, in the data directory, until an
+/// operator approves or revokes it. Only a key that proved itself is recorded, so every entry costs a stranger a handshake
+/// and costs the host a synced write; the bounds keep one source, or all of them, from filling the disk or the list.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct WaitingConfig {
+    /// Entries one source (an IPv4 address, or an IPv6 prefix of `ipv6_prefix` bits) may hold; past it a newcomer is dealt
+    /// with as `when_full` says. Behind a proxy every peer shares a source. At least 1. Default `16`.
+    pub per_source: usize,
+    /// Entries the whole list may hold; past it nothing is recorded, so a flood from many sources leaves the operator's
+    /// own new peer unlisted until some are cleared. At least 1. Default `1000`.
+    pub total: usize,
+    /// How long the same peer from the same source is not recorded again. A shorter time is more writes for a peer that
+    /// keeps retrying. Default `60s`.
+    pub rerecord: Span,
+    /// The least time between two new records from one source, each being a synced write a stranger can cause. `0` is no
+    /// limit. Default `1s`.
+    pub record_interval: Span,
+    /// The IPv6 prefix length sources are grouped by, 1 to 128: `128` counts each address alone, which lets the holder of
+    /// a subnet fill the list. Default `64`.
+    pub ipv6_prefix: u8,
+    /// What a source at `per_source` does with a newcomer: `refuse` leaves those waiting alone, so a flood can fill a
+    /// source but cannot remove anyone; `replace-oldest` records the newcomer over the source's oldest entry, so peers that
+    /// share a source (everyone behind one proxy) can flush each other from the list. Default `refuse`.
+    pub when_full: WhenFull,
+}
+
+/// What a source that holds `[waiting] per_source` entries does with a newcomer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WhenFull {
+    /// The newcomer is refused.
+    #[default]
+    Refuse,
+    /// The source's oldest entry is replaced.
+    ReplaceOldest,
+}
+
+impl Default for WaitingConfig {
+    fn default() -> Self {
+        let queue = coqui_peer::WaitingSettings::default();
+        Self {
+            per_source: queue.limits.per_source,
+            total: queue.limits.total,
+            rerecord: Span(queue.limits.rerecord),
+            record_interval: Span(queue.record_interval),
+            ipv6_prefix: queue.ipv6_prefix,
+            when_full: WhenFull::Refuse,
+        }
+    }
+}
+
+impl WaitingConfig {
+    fn validate(&self) -> Result<(), (&'static str, &'static str)> {
+        if self.per_source == 0 {
+            return Err(("waiting.per_source", "must be at least 1"));
+        }
+        if self.total == 0 {
+            return Err(("waiting.total", "must be at least 1"));
+        }
+        if !(1..=128).contains(&self.ipv6_prefix) {
+            return Err(("waiting.ipv6_prefix", "must be from 1 to 128"));
+        }
+        Ok(())
+    }
+
+    /// The waiting queue's settings these make.
+    pub fn settings(&self) -> coqui_peer::WaitingSettings {
+        let mut settings = coqui_peer::WaitingSettings::default();
+        settings.limits.per_source = self.per_source;
+        settings.limits.total = self.total;
+        settings.limits.rerecord = self.rerecord.0;
+        settings.record_interval = self.record_interval.0;
+        settings.ipv6_prefix = self.ipv6_prefix;
+        settings.when_full = match self.when_full {
+            WhenFull::Refuse => coqui_peer::WhenFull::Refuse,
+            WhenFull::ReplaceOldest => coqui_peer::WhenFull::ReplaceOldest,
+        };
+        settings
+    }
+}
+
 /// `[client]`: the waits and sizes of the `bohio` command when it acts as a client (`bohio remote`, `bohio links`,
 /// `bohio status`), each with a flag of the command that overrides it. How often the command looks at its input and
 /// at a running stream is `[link] poll_interval`.
@@ -1792,6 +1876,9 @@ impl Config {
         };
         self.node().validate(path)?;
         if let Err((key, message)) = self.client.validate() {
+            return Err(invalid(key, message));
+        }
+        if let Err((key, message)) = self.waiting.validate() {
             return Err(invalid(key, message));
         }
         if self.service.stop_wait.0.is_zero() {

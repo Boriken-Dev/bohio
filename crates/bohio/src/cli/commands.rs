@@ -126,7 +126,8 @@ pub(super) fn source(
     environment: &Environment,
 ) -> Result<(Found, Data), String> {
     let found = found(&option.config)?;
-    let data = Data::new(found.config().data_dir(environment));
+    let data =
+        Data::new(found.config().data_dir(environment)).with_waiting(&found.config().waiting);
     Ok((found, data))
 }
 

@@ -54,7 +54,7 @@ fn node(
     environment: &Environment,
 ) -> Result<(Node, Arc<LayeredPeers>), String> {
     let config = found.config();
-    let data = Data::new(config.data_dir(environment));
+    let data = Data::new(config.data_dir(environment)).with_waiting(&config.waiting);
     let identity = data.identity().map_err(|error| error.to_string())?;
     let create = found.create.clone().filter(|file| watch.contains(file));
     let peers = Arc::new(
@@ -593,7 +593,7 @@ fn pair_alone(found: &Found, environment: &Environment, args: &PairArgs) -> Resu
         }
         (None, false) => {}
     }
-    let data = Data::new(config.data_dir(environment));
+    let data = Data::new(config.data_dir(environment)).with_waiting(&config.waiting);
     let identity = data.identity().map_err(|error| error.to_string())?;
     let watch = watched(found);
     let create = found.create.clone().filter(|file| watch.contains(file));
