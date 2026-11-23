@@ -130,6 +130,13 @@ impl Shared {
         if let Some(dir) = &config.compression.prepare_dir {
             crate::fs::sweep_prepared(dir, config.compression.prepare_ttl.0);
         }
+        let ttl = config.filesystem.resume_ttl.0;
+        if config.filesystem.enabled && !ttl.is_zero() {
+            // What interrupted resumable writes left, in every root a peer may write to: once, off the start's path.
+            let roots = grants.roots();
+            let limit = config.filesystem.max_tree_entries;
+            std::thread::spawn(move || crate::fs::sweep_resumable(&roots, ttl, limit));
+        }
         let mut capabilities = info::collect(config, &path);
         capabilities.host_id = Some(host.to_string());
         Arc::new(Self {

@@ -263,6 +263,12 @@ impl Grants for LayeredPeers {
     fn grant(&self, peer: &PeerId) -> Result<Grant, GrantsError> {
         Ok(self.current()?.grant_for(&peer.to_string()))
     }
+
+    fn roots(&self) -> Vec<std::path::PathBuf> {
+        self.current()
+            .map(|peers| peers.all_roots())
+            .unwrap_or_default()
+    }
 }
 
 /// Where [`approve`] wrote.

@@ -61,6 +61,7 @@ use crate::policy::{Grant, Permission};
 pub use hash::{HashContext, serve_hash};
 pub use prepare::sweep as sweep_prepared;
 pub use read::serve_read;
+pub use stage::sweep_roots as sweep_resumable;
 pub use walk::{WalkContext, serve_walk};
 pub use write::serve_write;
 

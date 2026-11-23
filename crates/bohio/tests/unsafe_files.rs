@@ -44,6 +44,19 @@ const ALLOWED: &[Allowed] = &[
                and shell trees, on Linux and macOS",
     },
     Allowed {
+        file: "crates/bohio/src/platform/rename.rs",
+        reason: "a rename that refuses an existing target in the call itself on Windows \
+                 (MoveFileExW without MOVEFILE_REPLACE_EXISTING, the paths of the parent \
+                 directories read from their handles by GetFinalPathNameByHandleW): the \
+                 check-then-rename gap a peer racing itself could use to replace what it was told \
+                 not to. Ruled out: std::fs::rename always replaces a file on Windows; cap-std has \
+                 no no-replace rename; a hard link plus a delete works only for files, not for \
+                 directories; SetFileInformationByHandle(FileRenameInfo) needs a handle opened \
+                 with DELETE access, which cap-std cannot open for a directory or a link itself",
+        miri: "not reachable: both unsafe calls are Win32 calls, which Miri does not run; covered \
+               by tests/treeops.rs (racing movers, on files and on directories) on Windows",
+    },
+    Allowed {
         file: "crates/bohio/src/platform/winproc.rs",
         reason: "starting a process on Windows with a handle list and a job list (CreateProcessW, \
              STARTUPINFOEX, PROC_THREAD_ATTRIBUTE_HANDLE_LIST and PROC_THREAD_ATTRIBUTE_JOB_LIST), so \

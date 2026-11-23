@@ -12,6 +12,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::{Arc, PoisonError, RwLock};
 use std::time::Duration;
 
@@ -111,6 +112,12 @@ pub trait Grants: Send + Sync {
     ///
     /// [`GrantsError`] when the owner's source cannot be read; the node then refuses.
     fn grant(&self, peer: &PeerId) -> Result<Grant, GrantsError>;
+
+    /// Every filesystem root any peer is granted now, so the node can remove what an interrupted resumable
+    /// write left in them when it starts. The default knows none.
+    fn roots(&self) -> Vec<PathBuf> {
+        Vec::new()
+    }
 }
 
 /// The accepted keys, in memory: [`MemoryKeys::accept`] and [`MemoryKeys::remove`] apply at the next
@@ -213,6 +220,23 @@ impl Grants for MemoryGrants {
             .get(peer)
             .cloned()
             .unwrap_or_default())
+    }
+
+    fn roots(&self) -> Vec<PathBuf> {
+        let mut roots: Vec<PathBuf> = Vec::new();
+        for grant in self
+            .grants
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+        {
+            for root in grant.fs_roots() {
+                if !roots.contains(root) {
+                    roots.push(root.clone());
+                }
+            }
+        }
+        roots
     }
 }
 

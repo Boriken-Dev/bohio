@@ -386,6 +386,19 @@ impl Peers {
         self.0.get(peer).map(PeerTable::grant).unwrap_or_default()
     }
 
+    /// Every filesystem root any peer is granted, without repeats.
+    pub fn all_roots(&self) -> Vec<PathBuf> {
+        let mut roots: Vec<PathBuf> = Vec::new();
+        for table in self.0.values() {
+            for root in table.grant().fs_roots() {
+                if !roots.contains(root) {
+                    roots.push(root.clone());
+                }
+            }
+        }
+        roots
+    }
+
     /// `peer`'s table, when it has one.
     pub fn table(&self, peer: &str) -> Option<&PeerTable> {
         self.0.get(peer)

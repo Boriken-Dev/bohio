@@ -58,7 +58,7 @@ rustix = { version = "1", default-features = false, features = ["std", "process"
 libc = "0.2"
 # A job object that ends every process in it when its handle closes.
 win32job = "2.0.3"
-windows-sys = { version = "0.61", default-features = false, features = ["Win32_Foundation", "Win32_Security", "Win32_System_Console", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", default-features = false, features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Threading"] }
 # Ctrl-C of the local terminal as an event a command can answer, for `bohio remote exec` and `shell` (an interrupt to the program).
 ctrlc = { version = "3.5", default-features = false }
 # Raw mode and the size of the local terminal, for `bohio remote shell`.

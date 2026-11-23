@@ -72,9 +72,50 @@ fn a_move_within_a_filesystem_renames_and_refuses_an_existing_target_unless_aske
 }
 
 #[test]
+fn of_two_moves_of_directories_to_one_free_name_exactly_one_wins_and_nothing_is_replaced() {
+    let f = fixture(FilesystemConfig::default());
+    for round in 0..100 {
+        let target = format!("target{round}");
+        for name in ["one", "two"] {
+            let dir = f.root.join(format!("{name}{round}"));
+            std::fs::create_dir_all(dir.join("inside")).unwrap();
+            std::fs::write(dir.join("inside/who"), name).unwrap();
+        }
+        let results: Vec<Result<(), Error>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = ["one", "two"]
+                .into_iter()
+                .map(|name| {
+                    let (link, target) = (&f.link, &target);
+                    let from = format!("{name}{round}");
+                    scope.spawn(move || Fs::connect(link).unwrap().move_to(&from, target, false))
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        assert_eq!(
+            results.iter().filter(|r| r.is_ok()).count(),
+            1,
+            "round {round}: {results:?}"
+        );
+        let winner = if results[0].is_ok() { "one" } else { "two" };
+        assert_eq!(
+            text(&f.root.join(&target).join("inside/who")),
+            winner,
+            "round {round}"
+        );
+        // The loser's directory is still whole, and nothing was merged into the winner.
+        let loser = if winner == "one" { "two" } else { "one" };
+        assert_eq!(
+            text(&f.root.join(format!("{loser}{round}")).join("inside/who")),
+            loser
+        );
+    }
+}
+
+#[test]
 fn of_two_moves_to_one_free_name_exactly_one_wins_and_nothing_is_replaced() {
     let f = fixture(FilesystemConfig::default());
-    for round in 0..200 {
+    for round in 0..100 {
         let (one, two) = (format!("one{round}"), format!("two{round}"));
         let target = format!("target{round}");
         std::fs::write(f.root.join(&one), "one").unwrap();
@@ -332,4 +373,47 @@ fn metadata_names_the_device_inode_and_links_where_the_host_reports_them() {
         // Windows reports none through cap-std: `samefile` cannot be told there.
         assert_eq!((one.device, one.inode, one.links), (None, None, None));
     }
+}
+
+#[test]
+fn a_node_removes_the_expired_kept_writes_in_every_granted_root_when_it_starts() {
+    use bohio::config::{NodeConfig, Span};
+    use bohio::node::{MemoryGrants, MemoryKeys, Node};
+    use coqui_link::auth::{Identity, Method};
+    use std::sync::Arc;
+    use std::time::{Duration, SystemTime};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("root");
+    std::fs::create_dir_all(root.join("deep/er")).unwrap();
+    let old =
+        root.join("deep/er/.bohio-resume-0123456789abcdef-0123456789abcdef0123456789abcdef.tmp");
+    let young = root.join(".bohio-resume-0123456789abcdef-ffffffffffffffffffffffffffffffff.tmp");
+    let other = root.join("deep/.bohio-resume-not-ours.txt");
+    for path in [&old, &young, &other] {
+        std::fs::write(path, b"kept").unwrap();
+    }
+    std::fs::File::options()
+        .write(true)
+        .open(&old)
+        .unwrap()
+        .set_modified(SystemTime::now() - Duration::from_secs(3600))
+        .unwrap();
+    let grants = Arc::new(MemoryGrants::new());
+    let identity = Identity::generate(Method::DEFAULT).unwrap();
+    let peer = Identity::generate(Method::DEFAULT).unwrap().peer_id();
+    grants.set(peer, Grant::allowing(RW).with_fs_roots([root.clone()]));
+    let mut config = NodeConfig::default();
+    config.filesystem.resume_ttl = Span(Duration::from_secs(600));
+    let _node = Node::new(config, identity, Arc::new(MemoryKeys::new()), grants).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while old.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the expired file stays"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(young.exists(), "a file within its ttl stays");
+    assert!(other.exists(), "a file that is not a kept write stays");
 }

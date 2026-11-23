@@ -78,6 +78,44 @@ fn sweep(parent: &Dir, ttl: Duration) {
     }
 }
 
+/// Removes the expired kept temporaries of a resumable write from every directory under `roots` (links are not
+/// followed), looking at no more than `limit` entries (`0`: all). The host calls it once at start.
+pub fn sweep_roots(roots: &[std::path::PathBuf], ttl: Duration, limit: usize) {
+    let mut looked = 0_usize;
+    let mut stack: Vec<std::path::PathBuf> = roots.to_vec();
+    while let Some(directory) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            looked += 1;
+            if limit != 0 && looked > limit {
+                return;
+            }
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                stack.push(entry.path());
+                continue;
+            }
+            let name = entry.file_name();
+            let Some(text) = name.to_str() else { continue };
+            if kind.is_file() && text.starts_with(RESUME_PREFIX) && text.ends_with(".tmp") {
+                let old = entry
+                    .metadata()
+                    .and_then(|meta| meta.modified())
+                    .ok()
+                    .and_then(|made| SystemTime::now().duration_since(made).ok())
+                    .is_some_and(|age| age >= ttl);
+                if old {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+    }
+}
+
 /// The directory holding `relative`, made when `parents`, and the name in it.
 fn locate(
     root: &Dir,

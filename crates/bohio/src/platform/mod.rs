@@ -8,6 +8,8 @@
 #[cfg(unix)]
 mod guard;
 mod pty;
+#[cfg(windows)]
+pub(crate) mod rename;
 mod tree;
 #[cfg(windows)]
 mod winproc;

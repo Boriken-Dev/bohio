@@ -19,7 +19,12 @@ fn bad(message: &'static str) -> ErrorBody {
 }
 
 /// The directory holding `relative` and its last name, both opened under `dir` without leaving it.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    windows
+))]
 fn parent_of<'a>(dir: &Dir, relative: &'a Path) -> std::io::Result<(Dir, &'a std::ffi::OsStr)> {
     let name = relative
         .file_name()
@@ -36,11 +41,13 @@ fn parent_of<'a>(dir: &Dir, relative: &'a Path) -> std::io::Result<(Dir, &'a std
 
 /// Renames `from` to `to`, replacing what is at `to` only when `overwrite`.
 ///
-/// Without `overwrite` the decision is the operating system's, atomically, where it can make it: Linux
-/// refuses an existing target in the `rename` itself (`renameat2` with `RENAME_NOREPLACE`), and elsewhere a
-/// regular file is given its new name with a hard link, which fails when the name exists, and the old name
-/// is then removed. A directory, or a file on a filesystem without hard links, is checked first and then
-/// renamed, so a name made in between is replaced.
+/// Without `overwrite` the operating system decides, in the rename itself, for files and directories alike:
+/// Linux and macOS with `renameat2` (`RENAME_NOREPLACE`) and `renamex_np` (`RENAME_EXCL`), Windows with
+/// `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING`. Only where there is no such call (FreeBSD and other
+/// Unix) or the filesystem refuses the flag (`EINVAL`) is there a gap: a regular file is then given its new
+/// name with a hard link, which fails when the name exists, and the old name is removed; a directory, or a
+/// file on a filesystem without hard links, is checked first and renamed after, so a name made in between is
+/// replaced.
 pub(crate) fn rename_in(
     from_dir: &Dir,
     from: &Path,
@@ -54,7 +61,7 @@ pub(crate) fn rename_in(
     rename_new(from_dir, from, to_dir, to)
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
 fn rename_new(from_dir: &Dir, from: &Path, to_dir: &Dir, to: &Path) -> std::io::Result<()> {
     use rustix::fs::{RenameFlags, renameat_with};
     use rustix::io::Errno;
@@ -68,16 +75,34 @@ fn rename_new(from_dir: &Dir, from: &Path, to_dir: &Dir, to: &Path) -> std::io::
         RenameFlags::NOREPLACE,
     ) {
         Ok(()) => Ok(()),
-        // The filesystem or the kernel has no such flag: the check below is all there is.
+        // The filesystem or the kernel has no such flag: the fallback is all there is.
         Err(Errno::INVAL | Errno::NOSYS | Errno::OPNOTSUPP) => {
-            check_then_rename(from_dir, from, to_dir, to)
+            link_then_remove(from_dir, from, to_dir, to)
         }
         Err(errno) => Err(errno.into()),
     }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[cfg(windows)]
 fn rename_new(from_dir: &Dir, from: &Path, to_dir: &Dir, to: &Path) -> std::io::Result<()> {
+    let (from_parent, from_name) = parent_of(from_dir, from)?;
+    let (to_parent, to_name) = parent_of(to_dir, to)?;
+    crate::platform::rename::rename_no_replace(&from_parent, from_name, &to_parent, to_name)
+}
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    windows
+)))]
+fn rename_new(from_dir: &Dir, from: &Path, to_dir: &Dir, to: &Path) -> std::io::Result<()> {
+    link_then_remove(from_dir, from, to_dir, to)
+}
+
+/// The fallback: a hard link for a regular file, else check then rename.
+#[cfg(not(windows))]
+fn link_then_remove(from_dir: &Dir, from: &Path, to_dir: &Dir, to: &Path) -> std::io::Result<()> {
     if from_dir.symlink_metadata(from)?.is_file() {
         match from_dir.hard_link(from, to_dir, to) {
             Ok(()) => return from_dir.remove_file(from),
@@ -89,6 +114,7 @@ fn rename_new(from_dir: &Dir, from: &Path, to_dir: &Dir, to: &Path) -> std::io::
     check_then_rename(from_dir, from, to_dir, to)
 }
 
+#[cfg(not(windows))]
 fn check_then_rename(from_dir: &Dir, from: &Path, to_dir: &Dir, to: &Path) -> std::io::Result<()> {
     if to_dir.symlink_metadata(to).is_ok() {
         return Err(std::io::ErrorKind::AlreadyExists.into());
