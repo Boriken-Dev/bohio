@@ -32,12 +32,23 @@ An implementation over plain channels (a test's memory pair) wraps each in `rela
 `Failure::Timeout` converts to `Error::Timeout`; every other `Failure` is `Error::Transport`. `Remote` is the host's structured
 `{code, message}`.
 
+## SOCKS5 (`bohio_client::socks`)
+
+```rust
+pub fn serve(link: &dyn Open, listener: &TcpListener, settings: &ForwardSettings, stop: &AtomicBool, report: &(dyn Fn(&Error) + Sync)) -> io::Result<Ended>;
+pub const fn reply_code(error: &Error) -> u8;   // the RFC 1928 reply for why a CONNECT failed
+pub mod reply { pub const SUCCEEDED: u8 = 0; FAILURE = 1; NOT_ALLOWED = 2; UNREACHABLE = 4; REFUSED = 5; TIMEOUT = 6; COMMAND_NOT_SUPPORTED = 7; ADDRESS_NOT_SUPPORTED = 8; }
+```
+
+`serve` is `listen_tcp` for SOCKS5: method 0 only (a greeting without it is answered `0xFF`), CONNECT with an IPv4, IPv6 or domain address (a domain goes to the host unresolved, lowercased, and only host-name characters are taken: it is never read as `unix:` or `pipe:`), BIND and UDP ASSOCIATE answered `0x07`, another address type `0x08`. A client has `ForwardSettings::socks_timeout` for its whole handshake; one past `max_connections` is closed at once. The reply comes after the host's `connected`: `denied` and a grant that does not cover the target are `0x02`, `unreachable` and `not_found` `0x04`, `refused` `0x05`, `timeout` `0x06`, anything else `0x01`; the bound address in a success is the host's connection's. Whoever reaches the listener has the peer's grant: bind loopback.
+
 ## Forward (`bohio_client::forward`)
 
 ```rust
 pub use bohio_proto::forward::{ConnectRequest, Connected, Target};   pub use coqui_link::forward::Options;   // Options: chunk, stalled, idle_min/idle_max, watch, listen_poll, connect_timeout (the host's); validate() refuses zeros
 #[non_exhaustive] pub struct ForwardSettings { pub options: Options, pub answer_timeout: Duration /*30 s*/, pub max_connections: usize /*64, a local listener's*/,
-    pub open_retry: Duration /*10 s; zero never retries*/, pub open_retry_interval: Duration /*100 ms, moved by up to a quarter of itself*/, pub wait_for_link: Duration /*30 s*/ }   // Default, Copy
+    pub open_retry: Duration /*10 s; zero never retries*/, pub open_retry_interval: Duration /*100 ms, moved by up to a quarter of itself*/, pub wait_for_link: Duration /*30 s*/,
+    pub socks_timeout: Duration /*10 s; a SOCKS5 client's whole handshake; not zero*/ }   // Default, Copy
 // `connect`, `RemoteListener::accept` and `listen` try an open again for `open_retry` when the host refused it as over a limit (`Cause::over_a_limit`, the text `OVER_A_LIMIT`), `connect` and `accept` also when the host answered `busy`; a `Relink` link lost before the host answered is retried for `wait_for_link`; every other refusal or error is final
 pub struct Tunnel;                                                                      // Debug; one connected `bohio-connect/1`; dropping it closes the stream
 pub fn connect(link: &dyn Open, target: &Target, settings: &ForwardSettings) -> Result<Tunnel, Error>;   // waits `answer_timeout` for the host's answer
@@ -52,6 +63,11 @@ impl Tunnel {
 #[non_exhaustive] pub enum Ended { Stopped, LinkLost, Closed }   // Closed: the host ended a remote listener while the link stayed up (a revoke, or a failure it reported)
 pub fn listen_tcp(link: &dyn Open, listener: &TcpListener, target: &Target, settings: &ForwardSettings, stop: &AtomicBool, report: &(dyn Fn(&Error) + Sync)) -> io::Result<Ended>;
 pub fn listen_ipc(link: &dyn Open, listener: &coqui_transport_pipe::Listener, target: &Target, settings: &ForwardSettings, stop: &AtomicBool, report: &(dyn Fn(&Error) + Sync)) -> io::Result<Ended>;   // one connect and pump per accepted connection, until `stop` or the link ends; bind loopback
+pub struct Bytes;   // Debug, `Read`-and-`Write` halves via `coqui_transport::Split` (BytesReader, BytesWriter): a link can run over it (`link::stream(bytes, &settings)`)
+impl Bytes {
+    pub fn tunnel(tunnel: Tunnel, settings: &ForwardSettings) -> Bytes;   // the bytes of a connected `bohio-connect/1`; dropping the writer half finishes it, the last half closes it
+    pub fn program(exec: Exec, settings: &ForwardSettings) -> Bytes;     // a program started with `Stdin::Open`: its standard output is read, its standard input written, its standard error dropped; ended with the stream
+}
 pub mod ipc {   // a Unix socket or Windows pipe on one end
     pub fn connect(name: &PipeName, timeout: Duration, options: &Options) -> Result<Stream, coqui_transport_pipe::Error>;   // reads wake every `watch`, a write may take `stalled`
     pub fn listener(name: &PipeName, options: &Options, mode: Option<u32>) -> Result<Listener, coqui_transport_pipe::Error>;   // this user alone, mode 0o600 unless `mode` (Unix sockets only)
@@ -333,6 +349,7 @@ impl Connection {
     pub fn connect_with(endpoint: &Endpoint, timeout: Duration, proof: &coqui_link::auth::Proof, settings: &Settings, trust: &ServerTrust) -> Result<Self, Error>;   // connect() with a TLS trust
     pub fn connect_tcp(address: SocketAddr, timeout: Duration, proof: &coqui_link::auth::Proof, settings: &Settings) -> Result<Self, Error>;   // connect() for tcp
     pub fn over<C: Channel + 'static>(channel: C, proof: &Proof, settings: &Settings) -> Result<Self, Error>;   // an unproven channel to the host
+    pub fn through(link: Arc<dyn Open>, endpoint: &Endpoint, proof: &Proof, settings: &Settings, forward: &ForwardSettings) -> Result<Self, Error>;   // a link over a stream the host `link` reaches carries (`ssh -J`): `Tcp` and `Pipe` (a Unix socket, or a Windows pipe named `\.\pipe\NAME`) through `forward::connect`, `Command` as a program run by `bohio-exec/1` with its standard input open (waited until it started, so a refusal is the error); any other endpoint is `Error::Link` naming it. `proof` proves the host at the far end, never the jump: a jump that answers is refused. Keeps `link` up as long as it lives, closed before it
     pub const fn host(&self) -> coqui_peer::PeerId;                // the host's proven id
     pub fn is_up(&self) -> bool;                                   // false once the host or the network ended the link
     pub fn close(&self);                                           // closes every stream and joins the link's thread

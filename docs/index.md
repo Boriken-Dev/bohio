@@ -97,6 +97,27 @@ bohio remote tcp://host.example:7620 connect --check db.example:5432   # connect
 
 A target the grant does not cover is refused before the host connects to anything. [The protocol](protocol.md#forwarding-bohio-connect1-and-tcp1) has the wire and the rules, and [Security](security.md#what-a-forward-gives-a-peer) what a forward gives a peer.
 
+## One port for many targets, and hosts behind a gateway
+
+`forward -D` serves SOCKS5 on this machine, so a browser, `curl` or `git` reaches whatever the host's grant covers without a `-L` for each target. A domain name goes to the host unresolved, so it is the host's resolver that answers, as with `ssh -D`:
+
+```bash
+bohio remote tcp://host.example:7620 forward -D 1080                  # prints: socks5 127.0.0.1:1080
+curl --socks5-hostname 127.0.0.1:1080 http://intranet.example:8080/
+```
+
+Each CONNECT is a `forward.connect` check on the host for that target; a target no rule covers answers the client "not allowed by ruleset", one that refused it "connection refused". BIND and UDP ASSOCIATE are not supported.
+
+`--jump` reaches a host that only a gateway reaches, as `ssh -J`. The gateway carries a stream to the next host and sees sealed bytes only: this side proves itself to each host and each host to this side, so a gateway cannot stand in for the host behind it (name the host's id with `--server`, the gateway's with `--jump-server`). The gateway grants this peer `forward.connect` for the next host's address and nothing else, or, for a gateway that runs a container, `exec` of the program:
+
+```bash
+bohio remote tcp://10.1.0.20:7620 --server <inner id> --jump tcp://gw.example:7620 --jump-server <gateway id> exec -- hostname
+bohio remote --command "bohio serve --stdio" --server <inner id> --jump tcp://gw.example:7620 --jump-server <gateway id> info
+bohio remote tcp://10.1.0.20:7620 --server <inner id> --jump tcp://gw.example:7620 --jump-server <gateway id> forward -D 1080
+```
+
+`--jump` repeats for a chain, in order. A refusal names the hop: `jump 1 (tcp://gw.example:7620) would not carry the link to the host (...)`. [Security](security.md#what-a-socks-listener-and-a-jump-give) says what each gives.
+
 ## A host's desktop
 
 A host that runs in, or is attached to, a graphical session can show it and be driven. It is off until the owner enables `[gui]` and grants a peer `gui.view`, `gui.input` or `gui.clipboard`; `bohio peer approve ID --allow gui.view,gui.input` writes the grant. The person at the screen gets a notice while someone views or controls it, and `approval = "local"` makes each peer wait for `bohio gui allow`.

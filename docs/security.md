@@ -135,6 +135,15 @@ A delta moves less over the link and costs the host more work, and a delta write
 - **The bounds are settings.** `max_detached` (16, across peers, the exited ones that are kept included) and `max_per_peer` (8) bound how many sessions exist, and each holds its `[execution] max_processes` or `[shell] max_sessions` slot while its program runs; a program that waits for its output to be taken (`pause`) holds that slot too. A peer past a bound is told `busy`.
 - **Signals add nothing beyond `exec` or `shell`.** A peer that may run a program may signal the one it started; `interrupt`, `terminate`, `hangup`, `quit`, `user1` and `user2` go to the program's process group, and `kill` ends the tree.
 
+## What a SOCKS listener and a jump give
+
+`forward -D` and `--jump` are client compositions of the forwards above: they add no permission on a host, and what a host grants decides every target.
+
+- **A SOCKS listener gives its grant to whoever reaches it.** The listener has no authentication (method 0): every program that can connect to it can ask the host for any target the peer's `connect` rules cover, as the peer. On loopback that is every account of this machine; another bind address is reported as `non-default: bind ADDRESS`. A name rule such as `*` covers every name and address the host can reach, a cloud metadata address included, so grant the narrowest rules a client of `-D` needs. Each client is a connection of `max_local_connections`; one that does not finish its handshake within `[forward] socks_timeout` (10 s) is closed.
+- **A domain name is resolved by the host.** The client sends the name, not an address, so DNS answers from the host's position (the point of `--socks5-hostname`); a client that resolves names itself (`--socks5`) leaks its lookups and sends addresses. The host's name rules trust the host's DNS, as any name rule does.
+- **A jump sees sealed bytes and who connects.** It carries the next hop's link as the payload of a `bohio-connect/1` stream, so it sees the next hop's address, the amount and timing of traffic, and which key dials, not the content or the key it proves. It grants `forward.connect` for the next address (or `exec` of one program for `stdio://`), which is what its operator can see in its own log. A hop is proven against the id the operator names: `--jump-server` for a jump and `--server` for the host, and a hop without one trusts the keys `bohio join` stored. A jump that answers instead of the next host (a wrong address, or a gateway that listens there itself) is refused by the proof.
+- **A `stdio://` hop runs a program on the jump with this peer's authority there**, under the jump's `exec` grant and program list: a peer that may run `bohio serve --stdio` may run what the list names, nothing more.
+
 ## What a kept forward costs
 
 `[peer."<id>".forward] local` and `remote` make a node keep a forward up across link losses, so the exposure they describe is standing, not the length of one command.
