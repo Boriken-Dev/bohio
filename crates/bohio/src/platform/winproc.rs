@@ -7,7 +7,9 @@
 //! (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`) limits what the child inherits to what it names, which
 //! `Command` can only do on a nightly compiler. The process also starts inside its job object
 //! (`PROC_THREAD_ATTRIBUTE_JOB_LIST`), so nothing it starts in its first instructions is outside the
-//! job. This module is one of the files that hold `unsafe`.
+//! job. A host that has a console starts the process in a process group of its own on that console, so
+//! [`Child::interrupt`] can send `CTRL_BREAK_EVENT` to it alone; a host without one starts it with no
+//! console window and cannot interrupt it. This module is one of the files that hold `unsafe`.
 
 #![allow(unsafe_code)]
 
@@ -24,12 +26,15 @@ use std::{mem, ptr};
 use windows_sys::Win32::Foundation::{
     HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
+use windows_sys::Win32::System::Console::{
+    CTRL_BREAK_EVENT, GenerateConsoleCtrlEvent, GetConsoleProcessList,
+};
 use windows_sys::Win32::System::Threading::{
-    CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
-    EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, INFINITE, InitializeProcThreadAttributeList,
-    LPPROC_THREAD_ATTRIBUTE_LIST, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-    PROC_THREAD_ATTRIBUTE_JOB_LIST, PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW,
-    UpdateProcThreadAttribute, WaitForSingleObject,
+    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
+    DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, INFINITE,
+    InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
+    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_JOB_LIST, PROCESS_INFORMATION,
+    STARTF_USESTDHANDLES, STARTUPINFOEXW, UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
 use super::Spec;
@@ -40,6 +45,8 @@ pub(super) struct Child {
     process: OwnedHandle,
     id: u32,
     status: Option<ExitStatus>,
+    /// The process leads a process group on this host's console, so a console event can reach it alone.
+    interruptible: bool,
 }
 
 /// A process and the parent's ends of its standard streams.
@@ -54,6 +61,21 @@ impl Child {
     /// The process id.
     pub(super) fn id(&self) -> u32 {
         self.id
+    }
+
+    /// Sends `CTRL_BREAK_EVENT` to the process's group, which a program that handles Ctrl-C sees as
+    /// `CTRL_BREAK_EVENT` and one that does not ends on.
+    pub(super) fn interrupt(&self) -> io::Result<()> {
+        if !self.interruptible {
+            return Err(io::Error::other(
+                "this host has no console to deliver it through",
+            ));
+        }
+        // SAFETY: the id is the process group the child leads, made at its start.
+        if unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, self.id) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
 
     /// The exit status when the process has ended.
@@ -136,6 +158,9 @@ pub(super) fn start(spec: &Spec, job: &win32job::Job) -> io::Result<Started> {
         make_inheritable(handle)?;
     }
 
+    // A host with a console shares it with the child, in a process group of its own, so a break event
+    // reaches the child alone. A host without one (a service) gives the child none to show.
+    let shared_console = host_has_console();
     let mut jobs: [HANDLE; 1] = [job.handle() as HANDLE];
     let attributes = AttributeList::new(&mut handles, &mut jobs)?;
     // SAFETY: an all-zero STARTUPINFOEXW is the documented starting value (every field a number or a null pointer).
@@ -159,7 +184,13 @@ pub(super) fn start(spec: &Spec, job: &win32job::Job) -> io::Result<Started> {
             ptr::null(),
             ptr::null(),
             1,
-            EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW,
+            EXTENDED_STARTUPINFO_PRESENT
+                | CREATE_UNICODE_ENVIRONMENT
+                | if shared_console {
+                    CREATE_NEW_PROCESS_GROUP
+                } else {
+                    CREATE_NO_WINDOW
+                },
             environment.as_ptr().cast::<c_void>(),
             directory.as_ref().map_or(ptr::null(), |dir| dir.as_ptr()),
             &raw const info.StartupInfo,
@@ -183,11 +214,19 @@ pub(super) fn start(spec: &Spec, job: &win32job::Job) -> io::Result<Started> {
             process,
             id: created.dwProcessId,
             status: None,
+            interruptible: shared_console,
         },
         stdin: parent_in,
         stdout: parent_out,
         stderr: parent_err,
     })
+}
+
+/// Whether this process is attached to a console.
+pub(super) fn host_has_console() -> bool {
+    let mut id = 0_u32;
+    // SAFETY: a one-entry list and its length; the call only reads the console's process list.
+    unsafe { GetConsoleProcessList(&raw mut id, 1) > 0 }
 }
 
 fn make_inheritable(handle: HANDLE) -> io::Result<()> {

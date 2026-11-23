@@ -8,8 +8,8 @@ use std::path::Path;
 use bohio_proto::PROTOCOL_VERSION;
 use bohio_proto::forward::ForwardInfo;
 use bohio_proto::info::{
-    DeltaInfo, ExecInfo, FilesystemInfo, HashLimits, Info, Limits, Service, SessionInfo, ShellInfo,
-    TransferInfo,
+    DeltaInfo, DetachedInfo, ExecInfo, FilesystemInfo, HashLimits, Info, Limits, Service,
+    SessionInfo, ShellInfo, TransferInfo,
 };
 use bohio_proto::shell::ShellKind;
 
@@ -50,9 +50,17 @@ pub fn collect(config: &NodeConfig, path: &OsStr) -> Info {
         },
         exec: ExecInfo {
             enabled: config.execution.enabled,
+            signals: crate::platform::exec_signals(),
         },
         shell: SessionInfo {
             enabled: config.shell.enabled,
+            signals: crate::platform::terminal_signals(),
+        },
+        sessions: DetachedInfo {
+            enabled: config.sessions.enabled,
+            scrollback: config.sessions.scrollback as u64,
+            max_scrollback: config.sessions.max_scrollback as u64,
+            linger_ms: u64::try_from(config.sessions.linger.0.as_millis()).unwrap_or(u64::MAX),
         },
         limits: Limits {
             max_streams: Some(config.link.max_streams as u64),

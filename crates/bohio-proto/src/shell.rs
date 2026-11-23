@@ -8,16 +8,20 @@
 //! | --- | --- | --- | --- |
 //! | host to client | `0x01` | [`Output::Started`] | CBOR [`Started`] |
 //! | host to client | `0x02` | [`Output::Data`] | raw bytes |
+//! | host to client | `0x08` | [`Output::Signalled`] | CBOR [`Signalled`] |
 //! | host to client | `0x04` | [`Output::Exit`] | CBOR [`Exit`] |
 //! | host to client | `0x05` | [`Output::Error`] | CBOR [`ErrorBody`] |
 //! | client to host | `0x10` | [`Input::Data`] | raw bytes |
 //! | client to host | `0x11` | [`Input::Resize`] | CBOR [`Size`] |
 //! | client to host | `0x12` | [`Input::Kill`] | empty |
+//! | client to host | `0x15` | [`Input::Signal`] | CBOR [`SignalRequest`] |
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, ErrorBody};
 use crate::exec::Env;
+use crate::session::SessionRequest;
+pub use crate::signal::{Signal, SignalRequest, Signalled};
 use crate::{decode, encode};
 
 /// A shell a host may offer.
@@ -117,6 +121,14 @@ pub struct Request {
     /// Terminal height in rows, 1 to [`MAX_DIMENSION`]. Default [`DEFAULT_ROWS`].
     #[serde(default = "default_rows")]
     pub rows: u16,
+    /// Milliseconds after which the host ends the program's tree and reports `timed_out`; no deadline when absent.
+    /// With `argv` this is `exec` on a terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    /// Run as a detached session: a stream that closes detaches the program instead of ending it, and
+    /// `bohio-attach/1` picks the terminal up again. Needs the peer's `session` permission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<SessionRequest>,
 }
 
 impl Request {
@@ -143,6 +155,8 @@ impl Request {
             env: Env::default(),
             cols: DEFAULT_COLS,
             rows: DEFAULT_ROWS,
+            timeout_ms: None,
+            session: None,
         }
     }
 
@@ -166,10 +180,20 @@ impl Request {
 }
 
 /// The program is running on its terminal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Started {
     /// The host's process id of the shell.
     pub pid: u32,
+    /// The session's id (128 bits as hex), when the request asked for a session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+}
+
+impl Started {
+    /// A report for a program that is not a session.
+    pub const fn new(pid: u32) -> Self {
+        Self { pid, session: None }
+    }
 }
 
 /// How the session ended.
@@ -180,7 +204,9 @@ pub struct Exit {
     pub code: Option<i32>,
     /// The signal that ended it, on Unix.
     pub signal: Option<i32>,
-    /// The host ended the tree because the client asked or closed the stream.
+    /// The deadline passed and the host ended the tree.
+    pub timed_out: bool,
+    /// The host ended the tree because the client asked, closed the stream or the deadline passed.
     pub killed: bool,
 }
 
@@ -202,6 +228,8 @@ pub enum Output {
     /// Bytes the terminal produced: the program's output as a terminal renders it, escape
     /// sequences included.
     Data(Vec<u8>),
+    /// The host's answer to a signal frame.
+    Signalled(Signalled),
     /// The program ended; the last frame, after every output byte.
     Exit(Exit),
     /// The session could not start or failed; the last frame.
@@ -218,6 +246,8 @@ pub enum Input {
     Resize(Size),
     /// End the program's tree now.
     Kill,
+    /// Deliver a signal to the program; the host answers with a `signalled` frame.
+    Signal(Signal),
 }
 
 const STARTED: u8 = 0x01;
@@ -227,6 +257,8 @@ const ERROR: u8 = 0x05;
 const INPUT: u8 = 0x10;
 const RESIZE: u8 = 0x11;
 const KILL: u8 = 0x12;
+const SIGNALLED: u8 = 0x08;
+const SIGNAL: u8 = 0x15;
 
 fn tagged(tag: u8, body: &[u8]) -> Vec<u8> {
     let mut frame = Vec::with_capacity(body.len() + 1);
@@ -252,6 +284,7 @@ impl Output {
         Ok(match self {
             Self::Started(body) => tagged(STARTED, &encode(body)?),
             Self::Data(bytes) => tagged(DATA, bytes),
+            Self::Signalled(body) => tagged(SIGNALLED, &encode(body)?),
             Self::Exit(body) => tagged(EXIT, &encode(body)?),
             Self::Error(body) => tagged(ERROR, &encode(body)?),
         })
@@ -268,6 +301,7 @@ impl Output {
         match tag {
             STARTED => decode(body).map(Self::Started),
             DATA => Ok(Self::Data(body.to_vec())),
+            SIGNALLED => decode(body).map(Self::Signalled),
             EXIT => decode(body).map(Self::Exit),
             ERROR => decode(body).map(Self::Error),
             other => Err(Error::Tag(other)),
@@ -286,6 +320,7 @@ impl Input {
             Self::Data(bytes) => tagged(INPUT, bytes),
             Self::Resize(size) => tagged(RESIZE, &encode(size)?),
             Self::Kill => tagged(KILL, &[]),
+            Self::Signal(signal) => tagged(SIGNAL, &encode(&SignalRequest { signal: *signal })?),
         })
     }
 
@@ -301,6 +336,7 @@ impl Input {
             INPUT => Ok(Self::Data(body.to_vec())),
             RESIZE => decode(body).map(Self::Resize),
             KILL => Ok(Self::Kill),
+            SIGNAL => decode::<SignalRequest>(body).map(|request| Self::Signal(request.signal)),
             other => Err(Error::Tag(other)),
         }
     }

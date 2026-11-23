@@ -18,7 +18,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use bohio_proto::compress::Compression;
-use bohio_proto::exec::{Exit, Input, Output, Request, Started};
+use bohio_proto::exec::{Exit, Input, Output, Request, Signal, Signalled, Started};
 use bohio_proto::{ErrorBody, ErrorCode};
 use bohio_transfer::compress::{Caps, Decoder, Encoder, Piece};
 use coqui_transport::{Channel, Failure};
@@ -102,6 +102,7 @@ pub fn serve(
         pid: control.id(),
         output_compression: output.clone(),
         stdin_compression: stdin_used,
+        session: None,
     };
     if !shared.send(&encode(&Output::Started(started))) {
         let _ = control.kill();
@@ -496,6 +497,7 @@ fn receive_frames(
                     }
                     let _ = control.kill();
                 }
+                Ok(Input::Signal(signal)) => deliver(shared, control, signal),
                 // A frame this version does not know, or a body that is not what its tag says,
                 // is skipped: the exchange goes on.
                 Ok(_) | Err(_) => {}
@@ -507,6 +509,20 @@ fn receive_frames(
             }
         }
     }
+}
+
+/// Delivers `signal` to the process and tells the client whether it arrived.
+fn deliver(shared: &Shared, control: &Control, signal: Signal) {
+    let running = matches!(control.try_wait(), Ok(None));
+    let delivery = control.signal(signal);
+    if delivery.ended && running {
+        shared.killed.store(true, Ordering::Release);
+    }
+    let _ = shared.send(&encode(&Output::Signalled(Signalled {
+        signal,
+        delivered: delivery.delivered,
+        message: delivery.message.map(str::to_owned),
+    })));
 }
 
 /// Ends the process and tells the client why: its input could not be taken.

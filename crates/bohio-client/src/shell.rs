@@ -3,7 +3,8 @@
 use std::time::{Duration, Instant};
 
 use bohio_proto::protocol;
-use bohio_proto::shell::{Exit, Input, Output, Request, Size};
+use bohio_proto::session::{Attached, Kind};
+use bohio_proto::shell::{Exit, Input, Output, Request, Signal, Signalled, Size};
 use coqui_transport::Channel;
 
 use crate::{Error, Open};
@@ -14,6 +15,8 @@ use crate::{Error, Open};
 pub enum Event {
     /// Bytes the terminal produced: the shell's output as a terminal renders it.
     Data(Vec<u8>),
+    /// The host's answer to a signal: whether it was delivered.
+    Signalled(Signalled),
     /// The shell ended; the last event.
     Exit(Exit),
 }
@@ -23,6 +26,7 @@ pub enum Event {
 pub struct Shell {
     channel: Box<dyn Channel>,
     pid: u32,
+    session: Option<String>,
 }
 
 impl core::fmt::Debug for Shell {
@@ -58,6 +62,7 @@ impl Shell {
                     return Ok(Self {
                         channel,
                         pid: started.pid,
+                        session: started.session,
                     });
                 }
                 Ok(Output::Error(body)) => return Err(Error::Remote(body)),
@@ -67,9 +72,45 @@ impl Shell {
         }
     }
 
-    /// The host's process id of the shell.
+    /// Attaches to the detached session `session` of a shell on `link` (`bohio-attach/1`), reading the terminal's output from
+    /// the offset `from` (`0` for all that is still kept, `None` for only what comes next). The returned [`Attached`] says
+    /// where the output starts and how much of what was asked for the host had already forgotten. Typing, resizing and signals
+    /// go to the shell as they did; [`Shell::pid`] is `0`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Remote`] when the host refused (`not_found` for a session this peer does not hold, `denied`, ...),
+    /// [`Error::Protocol`] when the session is an exec, else whatever `link` reports.
+    pub fn attach(
+        link: &dyn Open,
+        session: &str,
+        from: Option<u64>,
+    ) -> Result<(Self, Attached), Error> {
+        let (channel, attached) = crate::exec::attach_channel(link, session, from)?;
+        if attached.kind != Kind::Shell {
+            channel.close();
+            return Err(Error::Protocol(bohio_proto::Error::Decode));
+        }
+        Ok((Self::attached_to(channel, session), attached))
+    }
+
+    /// A shell on a channel that attached to the session `session`.
+    pub(crate) fn attached_to(channel: Box<dyn Channel>, session: &str) -> Self {
+        Self {
+            channel,
+            pid: 0,
+            session: Some(session.to_owned()),
+        }
+    }
+
+    /// The host's process id of the shell; `0` for a stream that attached to a session.
     pub const fn pid(&self) -> u32 {
         self.pid
+    }
+
+    /// The session's id, when the request asked for a session or this stream attached to one.
+    pub fn session(&self) -> Option<&str> {
+        self.session.as_deref()
     }
 
     /// The next event, waiting up to `timeout` (`None`: without limit). `Ok(None)` once the host
@@ -88,6 +129,7 @@ impl Shell {
             };
             match Output::decode(&frame) {
                 Ok(Output::Data(bytes)) => return Ok(Some(Event::Data(bytes))),
+                Ok(Output::Signalled(answer)) => return Ok(Some(Event::Signalled(answer))),
                 Ok(Output::Exit(exit)) => return Ok(Some(Event::Exit(exit))),
                 Ok(Output::Error(body)) => return Err(Error::Remote(body)),
                 Ok(_) | Err(bohio_proto::Error::Tag(_)) => {}
@@ -133,6 +175,16 @@ impl Shell {
         self.send(&Input::Kill.encode()?)
     }
 
+    /// Asks the host to deliver `signal` to the program on the terminal. The host answers with an [`Event::Signalled`]
+    /// saying whether it did.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Transport`] when the channel failed.
+    pub fn signal(&self, signal: Signal) -> Result<(), Error> {
+        self.send(&Input::Signal(signal).encode()?)
+    }
+
     /// Reads output until `needle` has appeared in it, for at most `timeout` (`None`: without
     /// limit), and returns everything read. Bytes after the match in the same chunk are included.
     ///
@@ -150,6 +202,7 @@ impl Shell {
             let left = deadline.map(|at| at.saturating_duration_since(Instant::now()));
             match self.next(left)? {
                 Some(Event::Data(bytes)) => seen.extend_from_slice(&bytes),
+                Some(Event::Signalled(_)) => {}
                 Some(Event::Exit(_)) | None => return Err(Error::Closed),
             }
         }
@@ -169,6 +222,7 @@ impl Shell {
             let left = deadline.map(|at| at.saturating_duration_since(Instant::now()));
             match self.next(left)? {
                 Some(Event::Data(bytes)) => output.extend_from_slice(&bytes),
+                Some(Event::Signalled(_)) => {}
                 Some(Event::Exit(exit)) => return Ok((output, exit)),
                 None => return Err(Error::Closed),
             }

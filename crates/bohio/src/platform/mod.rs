@@ -50,6 +50,83 @@ pub type Stderr = std::io::PipeReader;
 pub use self::pty::{CURSOR_REPORT, CursorQueries};
 pub use self::pty::{PtySpec, Session, Terminal, spawn as spawn_terminal};
 
+pub use bohio_proto::signal::Signal;
+
+/// What delivering a signal came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Delivery {
+    /// The signal reached the program.
+    pub delivered: bool,
+    /// The host ended the tree to deliver it (`kill`, and `terminate` where there is no signal).
+    pub ended: bool,
+    /// Why it was not delivered, or what delivering it meant here.
+    pub message: Option<&'static str>,
+}
+
+impl Delivery {
+    /// Delivered as asked.
+    pub const fn done() -> Self {
+        Self {
+            delivered: true,
+            ended: false,
+            message: None,
+        }
+    }
+
+    /// Not delivered, for `reason`.
+    pub const fn refused(reason: &'static str) -> Self {
+        Self {
+            delivered: false,
+            ended: false,
+            message: Some(reason),
+        }
+    }
+
+    /// The tree was ended to deliver the signal.
+    pub const fn tree_ended(note: Option<&'static str>) -> Self {
+        Self {
+            delivered: true,
+            ended: true,
+            message: note,
+        }
+    }
+}
+
+/// The signals this host delivers to a program started without a terminal.
+pub fn exec_signals() -> Vec<Signal> {
+    if cfg!(unix) {
+        Signal::ALL.to_vec()
+    } else {
+        // `interrupt` needs a console the host shares; `info` lists it only when this one has one.
+        let mut signals = vec![Signal::Terminate, Signal::Kill];
+        if cfg!(windows) && has_console() {
+            signals.insert(0, Signal::Interrupt);
+        }
+        signals
+    }
+}
+
+/// The signals this host delivers to a program on a terminal.
+pub fn terminal_signals() -> Vec<Signal> {
+    if cfg!(unix) {
+        Signal::ALL.to_vec()
+    } else {
+        vec![Signal::Interrupt, Signal::Terminate, Signal::Kill]
+    }
+}
+
+/// Whether this host has a console its programs can share (Windows; always `false` elsewhere).
+pub fn has_console() -> bool {
+    #[cfg(windows)]
+    {
+        winproc::host_has_console()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
 /// How a process ended, as the operating system reports it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProcessExit {
@@ -223,6 +300,54 @@ impl Control {
                 inner.exit = Some(exit);
                 inner.collected = true;
                 Ok(Some(exit))
+            }
+        }
+    }
+
+    /// Delivers `signal` to the program. `kill` ends the whole tree; on Unix any other signal goes to the
+    /// program's process group; on Windows `terminate` ends the tree (there is no `SIGTERM`), `interrupt`
+    /// is a break event when the host has a console and every other signal is not delivered.
+    pub fn signal(&self, signal: Signal) -> Delivery {
+        if signal == Signal::Kill {
+            return match self.kill() {
+                Ok(_) => Delivery::tree_ended(None),
+                Err(_) => Delivery::refused("the process could not be ended"),
+            };
+        }
+        #[cfg(unix)]
+        {
+            let inner = self.lock();
+            if inner.collected {
+                return Delivery::refused("the process has ended");
+            }
+            if tree::send_group(inner.child.id(), signal) {
+                Delivery::done()
+            } else {
+                Delivery::refused("no process is left to receive it")
+            }
+        }
+        #[cfg(windows)]
+        {
+            match signal {
+                Signal::Terminate => match self.kill() {
+                    Ok(_) => Delivery::tree_ended(Some(
+                        "Windows has no SIGTERM: the process tree was ended",
+                    )),
+                    Err(_) => Delivery::refused("the process could not be ended"),
+                },
+                Signal::Interrupt => {
+                    let inner = self.lock();
+                    if inner.collected {
+                        return Delivery::refused("the process has ended");
+                    }
+                    match inner.child.interrupt() {
+                        Ok(()) => Delivery::done(),
+                        Err(_) => {
+                            Delivery::refused("this host has no console to deliver a break through")
+                        }
+                    }
+                }
+                _ => Delivery::refused("Windows has no such signal"),
             }
         }
     }

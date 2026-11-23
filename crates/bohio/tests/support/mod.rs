@@ -283,6 +283,7 @@ impl Open for Link {
                             filesystem: context,
                             info: &info,
                             current: None,
+                            sessions: None,
                         };
                         control::serve(&host, &context);
                         Ok(())

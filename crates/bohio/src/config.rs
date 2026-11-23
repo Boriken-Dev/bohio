@@ -139,6 +139,8 @@ pub struct Config {
     pub execution: ExecutionConfig,
     /// `[shell]`.
     pub shell: ShellConfig,
+    /// `[sessions]`.
+    pub sessions: SessionsConfig,
     /// `[forward]`.
     pub forward: ForwardConfig,
     /// `[gui]`.
@@ -1075,6 +1077,53 @@ impl Default for ShellConfig {
     }
 }
 
+/// `[sessions]`: programs and shells that keep running when their stream ends, and the output kept for the next attach.
+///
+/// A session is opt-in twice: the peer holds `session` and the request asks for one. Everything kept is in memory,
+/// and a session ends with the host.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct SessionsConfig {
+    /// Whether the host runs sessions. Default `true`; a peer still needs `session`.
+    pub enabled: bool,
+    /// The most sessions at once, across peers, those that have exited and are still kept included. At least 1.
+    /// Default `16`.
+    pub max_detached: usize,
+    /// The most sessions one peer holds at once. At least 1. Default `8`.
+    pub max_per_peer: usize,
+    /// The output bytes kept for a session whose request names no size. At least 1. Default `1048576`.
+    pub scrollback: usize,
+    /// The most output bytes a request may ask to keep; a request for more is `bad_request`. At least `scrollback`.
+    /// Default `16777216`.
+    pub max_scrollback: usize,
+    /// How long a session that is detached and that nobody attaches to is kept before it is ended. Not zero.
+    /// Default `24h`.
+    pub linger: Span,
+    /// How long a session that has exited is kept, for a reattach to read its end. Not zero. Default `1h`.
+    pub keep_exited: Span,
+    /// How often sessions are looked at for linger, kept time and a revoked grant. Not zero. Default `5s`.
+    pub check_every: Span,
+    /// The frames a program's output may have waiting before the session has taken them: past it the program waits,
+    /// as it does for a slow reader. At least 1. Default `16`.
+    pub queue_frames: usize,
+}
+
+impl Default for SessionsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_detached: 16,
+            max_per_peer: 8,
+            scrollback: 1024 * 1024,
+            max_scrollback: 16 * 1024 * 1024,
+            linger: Span(Duration::from_secs(24 * 3600)),
+            keep_exited: Span(Duration::from_secs(3600)),
+            check_every: Span(Duration::from_secs(5)),
+            queue_frames: 16,
+        }
+    }
+}
+
 /// `[forward]`: connections the host makes for a peer (`bohio-connect/1` and `tcp/1`), and the bounds of a forward's pump,
 /// which `bohio remote ... forward` and `connect` read from the client's own file as well.
 ///
@@ -1569,6 +1618,8 @@ pub struct NodeConfig {
     pub execution: ExecutionConfig,
     /// `[shell]`.
     pub shell: ShellConfig,
+    /// `[sessions]`.
+    pub sessions: SessionsConfig,
     /// `[forward]`.
     pub forward: ForwardConfig,
     /// `[gui]`.
@@ -1588,6 +1639,7 @@ impl Default for NodeConfig {
             compression: CompressionConfig::default(),
             execution: ExecutionConfig::default(),
             shell: ShellConfig::default(),
+            sessions: SessionsConfig::default(),
             forward: ForwardConfig::default(),
             gui: GuiConfig::default(),
             pairing: PairingConfig::default(),
@@ -1754,6 +1806,32 @@ impl NodeConfig {
         if self.shell.poll_interval.0.is_zero() {
             return Err(invalid("shell.poll_interval", "must not be zero"));
         }
+        let sessions = &self.sessions;
+        for (key, zero) in [
+            ("sessions.max_detached", sessions.max_detached == 0),
+            ("sessions.max_per_peer", sessions.max_per_peer == 0),
+            ("sessions.scrollback", sessions.scrollback == 0),
+            ("sessions.queue_frames", sessions.queue_frames == 0),
+        ] {
+            if zero {
+                return Err(invalid(key, "must be at least 1"));
+            }
+        }
+        if sessions.max_scrollback < sessions.scrollback {
+            return Err(invalid(
+                "sessions.max_scrollback",
+                "must be at least `scrollback`",
+            ));
+        }
+        for (key, zero) in [
+            ("sessions.linger", sessions.linger.0.is_zero()),
+            ("sessions.keep_exited", sessions.keep_exited.0.is_zero()),
+            ("sessions.check_every", sessions.check_every.0.is_zero()),
+        ] {
+            if zero {
+                return Err(invalid(key, "must not be zero"));
+            }
+        }
         let forward = &self.forward;
         for (key, zero) in [
             ("forward.max_connections", forward.max_connections == 0),
@@ -1862,6 +1940,7 @@ impl Config {
             compression: self.compression.clone(),
             execution: self.execution.clone(),
             shell: self.shell.clone(),
+            sessions: self.sessions.clone(),
             forward: self.forward.clone(),
             gui: self.gui.clone(),
             pairing: self.pairing.clone(),

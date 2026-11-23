@@ -12,7 +12,9 @@ pub mod gui;
 pub mod hash;
 pub mod info;
 pub mod local;
+pub mod session;
 pub mod shell;
+pub mod signal;
 
 pub use codec::{DEFAULT_DEPTH, decode, decode_with_depth, encode};
 pub use error::{Error, ErrorBody, ErrorCode};
@@ -43,4 +45,6 @@ pub mod protocol {
     pub const LISTEN: &str = "bohio-listen/1";
     /// One arrival of a [`LISTEN`] listener, then its raw bytes both ways.
     pub const ACCEPT: &str = "bohio-accept/1";
+    /// A detached session's output and input picked up again, from an offset.
+    pub const ATTACH: &str = "bohio-attach/1";
 }

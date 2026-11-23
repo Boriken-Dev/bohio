@@ -12,10 +12,12 @@
 //! | host to client | `0x05` | [`Output::Error`] | CBOR [`ErrorBody`] |
 //! | host to client | `0x06` | [`Output::StdoutCompressed`] | a piece of the compressed standard output |
 //! | host to client | `0x07` | [`Output::StderrCompressed`] | a piece of the compressed standard error |
+//! | host to client | `0x08` | [`Output::Signalled`] | CBOR [`Signalled`] |
 //! | client to host | `0x10` | [`Input::Stdin`] | raw bytes |
 //! | client to host | `0x11` | [`Input::StdinEnd`] | empty |
 //! | client to host | `0x12` | [`Input::Kill`] | empty |
 //! | client to host | `0x13` | [`Input::StdinCompressed`] | a piece of the compressed standard input |
+//! | client to host | `0x15` | [`Input::Signal`] | CBOR [`SignalRequest`] |
 
 use std::collections::BTreeMap;
 
@@ -23,7 +25,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::compress::Compression;
 use crate::error::{Error, ErrorBody};
+use crate::session::SessionRequest;
 use crate::shell::ShellKind;
+pub use crate::signal::{Signal, SignalRequest, Signalled};
 use crate::{decode, encode};
 
 /// What to run and how: the open's metadata.
@@ -50,6 +54,10 @@ pub struct Request {
     /// How the client sends standard input: a concrete algorithm (never `auto`) the host offers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stdin_compression: Option<Compression>,
+    /// Run as a detached session: a stream that closes detaches the process instead of ending it, and
+    /// `bohio-attach/1` picks its output up again. Needs the peer's `session` permission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<SessionRequest>,
 }
 
 impl Request {
@@ -69,6 +77,7 @@ impl Request {
             timeout_ms: None,
             output_compression: None,
             stdin_compression: None,
+            session: None,
         }
     }
 
@@ -156,6 +165,9 @@ pub struct Started {
     /// What the host accepts for standard input; absent when none was asked for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stdin_compression: Option<Compression>,
+    /// The session's id (128 bits as hex), when the request asked for a session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
 }
 
 impl Started {
@@ -165,6 +177,7 @@ impl Started {
             pid,
             output_compression: None,
             stdin_compression: None,
+            session: None,
         }
     }
 }
@@ -197,6 +210,8 @@ pub enum Output {
     StdoutCompressed(Vec<u8>),
     /// A piece of the compressed standard error. A `stderr` frame ends its compression context.
     StderrCompressed(Vec<u8>),
+    /// The host's answer to a signal frame.
+    Signalled(Signalled),
     /// The process ended; the last frame, after every output byte.
     Exit(Exit),
     /// The request failed before or instead of running; the last frame.
@@ -213,6 +228,8 @@ const STDIN_END: u8 = 0x11;
 const KILL: u8 = 0x12;
 const STDOUT_COMPRESSED: u8 = 0x06;
 const STDERR_COMPRESSED: u8 = 0x07;
+const SIGNALLED: u8 = 0x08;
+const SIGNAL: u8 = 0x15;
 const STDIN_COMPRESSED: u8 = 0x13;
 
 fn tagged(tag: u8, body: &[u8]) -> Vec<u8> {
@@ -242,6 +259,7 @@ impl Output {
             Self::Stderr(bytes) => tagged(STDERR, bytes),
             Self::StdoutCompressed(bytes) => tagged(STDOUT_COMPRESSED, bytes),
             Self::StderrCompressed(bytes) => tagged(STDERR_COMPRESSED, bytes),
+            Self::Signalled(body) => tagged(SIGNALLED, &encode(body)?),
             Self::Exit(body) => tagged(EXIT, &encode(body)?),
             Self::Error(body) => tagged(ERROR, &encode(body)?),
         })
@@ -261,6 +279,7 @@ impl Output {
             STDERR => Ok(Self::Stderr(body.to_vec())),
             STDOUT_COMPRESSED => Ok(Self::StdoutCompressed(body.to_vec())),
             STDERR_COMPRESSED => Ok(Self::StderrCompressed(body.to_vec())),
+            SIGNALLED => decode(body).map(Self::Signalled),
             EXIT => decode(body).map(Self::Exit),
             ERROR => decode(body).map(Self::Error),
             other => Err(Error::Tag(other)),
@@ -280,6 +299,8 @@ pub enum Input {
     StdinEnd,
     /// End the process tree now.
     Kill,
+    /// Deliver a signal to the process; the host answers with a `signalled` frame.
+    Signal(Signal),
 }
 
 impl Input {
@@ -290,6 +311,11 @@ impl Input {
             Self::StdinCompressed(bytes) => tagged(STDIN_COMPRESSED, bytes),
             Self::StdinEnd => tagged(STDIN_END, &[]),
             Self::Kill => tagged(KILL, &[]),
+            // A signal request is one plain field: it always encodes.
+            Self::Signal(signal) => tagged(
+                SIGNAL,
+                &encode(&SignalRequest { signal: *signal }).unwrap_or_default(),
+            ),
         }
     }
 
@@ -297,10 +323,12 @@ impl Input {
     ///
     /// # Errors
     ///
-    /// [`Error::Short`] for an empty message, [`Error::Tag`] for a tag this version does not know.
+    /// [`Error::Short`] for an empty message, [`Error::Tag`] for a tag this version does not know,
+    /// [`Error::Decode`] for a signal body that is not one.
     pub fn decode(frame: &[u8]) -> Result<Self, Error> {
         let (tag, body) = split(frame)?;
         match tag {
+            SIGNAL => decode::<SignalRequest>(body).map(|request| Self::Signal(request.signal)),
             STDIN => Ok(Self::Stdin(body.to_vec())),
             STDIN_COMPRESSED => Ok(Self::StdinCompressed(body.to_vec())),
             STDIN_END => Ok(Self::StdinEnd),

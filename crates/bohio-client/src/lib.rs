@@ -14,6 +14,7 @@ pub mod hash;
 pub mod keep;
 pub mod link;
 pub mod relay;
+pub mod session;
 pub mod shell;
 pub mod sync;
 

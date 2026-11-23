@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::{ErrorBody, ErrorCode};
 use crate::fs::{Listing, Metadata, Timestamp};
 use crate::info::{Info, TransferInfo};
+use crate::session::Listed;
+use crate::signal::Signal;
 
 /// A call from the client.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,6 +129,17 @@ pub enum Call {
         #[serde(default)]
         readonly: Option<bool>,
     },
+    /// Lists the caller's detached sessions; an `admin` lists every peer's.
+    Sessions,
+    /// Ends a detached session with a signal (`kill` when none), and with it the program's tree.
+    EndSession {
+        /// The session's id.
+        id: String,
+        /// The signal to end it with; the program then ends as it does on that signal, and the session
+        /// is ended by the host once it has exited.
+        #[serde(default)]
+        signal: Option<Signal>,
+    },
 }
 
 /// The answer to one request: exactly one of `reply` and `error` is present.
@@ -203,5 +216,10 @@ pub enum Reply {
     Link {
         /// What the link holds.
         target: String,
+    },
+    /// The sessions of a `sessions` call.
+    Sessions {
+        /// One entry per session, oldest first.
+        sessions: Vec<Listed>,
     },
 }

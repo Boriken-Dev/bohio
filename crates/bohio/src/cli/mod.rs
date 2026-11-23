@@ -44,6 +44,10 @@ pub struct Cli {
 
 /// The commands.
 #[derive(Debug, Subcommand)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "parsed once at the start of a process: boxing a variant buys nothing"
+)]
 pub enum Command {
     /// Work with the configuration file.
     Config(ConfigArgs),
@@ -183,7 +187,7 @@ pub struct ApproveArgs {
     pub config: ConfigOption,
     /// The peer's id, as `bohio peer list` prints it.
     pub id: String,
-    /// What the peer may do: info, fs.read, fs.write, exec, shell, admin, forward.connect, forward.listen (repeat or
+    /// What the peer may do: info, fs.read, fs.write, exec, shell, admin, forward.connect, forward.listen, session (repeat or
     /// separate with commas). Setting any of `--allow`, `--fs-root`, `--program`, `--connect` and `--listen` replaces the
     /// peer's whole table;
     /// without them an existing table stays and a new peer holds nothing.
@@ -425,6 +429,89 @@ pub enum RemoteAction {
     /// Have the host listen and bridge one arriving connection to standard input and output (netcat `-l` on the far side);
     /// `--keep` takes the next one after each ends.
     Listen(RemoteListenArgs),
+    /// Pick up a detached session (started with `exec --detach` or `shell --detach`): its kept output from an offset, then
+    /// live, with typing and Ctrl-C going to its program.
+    Attach(RemoteAttachArgs),
+    /// List the detached sessions this peer holds on the host.
+    Sessions(RemoteSessionsArgs),
+    /// End a detached session: its program is sent a signal (`kill`, ending the whole tree, unless `--signal` says otherwise).
+    End(RemoteEndArgs),
+}
+
+/// What `exec` and `shell` take to start a detached session.
+#[derive(Debug, Args)]
+pub struct SessionArgs {
+    /// Start a detached session: the program keeps running when this command ends or the link is lost, its output is kept on
+    /// the host, and the command prints the session's id and exits. Pick it up again with `attach`. Needs `session` in the
+    /// peer's grant; the host's `[sessions]` bound what it keeps.
+    #[arg(long)]
+    pub detach: bool,
+    /// A name for the session in `sessions`.
+    #[arg(long, value_name = "NAME", requires = "detach")]
+    pub name: Option<String>,
+    /// How many bytes of output the host keeps (at most its `max_scrollback`; its `scrollback` when absent).
+    #[arg(long, value_name = "BYTES", requires = "detach")]
+    pub scrollback: Option<u64>,
+    /// What the host does when the kept output is full: `pause` the program until a client has taken it (the default for an
+    /// exec) or forget the oldest (`drop-oldest`, the default for a shell).
+    #[arg(long, value_enum, requires = "detach")]
+    pub on_full: Option<OnFullArg>,
+    /// How long the host keeps the session while nobody is attached before it ends it (`10m`, `2h`; at most its own
+    /// `linger`).
+    #[arg(long, value_name = "SPAN", requires = "detach", value_parser = parse_span)]
+    pub linger: Option<std::time::Duration>,
+}
+
+/// `--on-full`.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum OnFullArg {
+    /// Stop the program until the output is taken.
+    Pause,
+    /// Forget the oldest output.
+    DropOldest,
+}
+
+/// `bohio remote ... attach`.
+#[derive(Debug, Args)]
+pub struct RemoteAttachArgs {
+    /// The session's id, from `exec --detach`, `shell --detach` or `sessions`.
+    pub id: String,
+    /// Read from this output offset: `0` is all the host still keeps, and the host says on standard error how much of
+    /// what was asked for it had already forgotten. Without it only what comes next is shown.
+    #[arg(long, value_name = "OFFSET")]
+    pub from: Option<u64>,
+    /// For an exec session: send this process's standard input to the program.
+    #[arg(long)]
+    pub stdin: bool,
+    /// How soon a second Ctrl-C after the first (`1s`, `500ms`; a bare number is seconds) ends the program's whole tree
+    /// instead of interrupting it again.
+    #[arg(long, value_name = "SPAN", default_value = "2s", value_parser = parse_span)]
+    pub kill_after: std::time::Duration,
+}
+
+/// `bohio remote ... sessions`.
+#[derive(Debug, Args)]
+pub struct RemoteSessionsArgs {
+    /// The output format.
+    #[arg(long, value_enum, default_value = "text")]
+    pub format: Format,
+}
+
+/// `bohio remote ... end`.
+#[derive(Debug, Args)]
+pub struct RemoteEndArgs {
+    /// The session's id.
+    pub id: String,
+    /// The signal to end it with: interrupt, terminate, hangup, quit, user1, user2 or kill. The session then reports its exit
+    /// and is kept for reading, as the host's `keep_exited` says.
+    #[arg(long, value_name = "SIGNAL", value_parser = parse_signal)]
+    pub signal: Option<bohio_proto::signal::Signal>,
+}
+
+fn parse_signal(text: &str) -> Result<bohio_proto::signal::Signal, String> {
+    bohio_proto::signal::Signal::from_name(text).ok_or_else(|| {
+        "a signal is one of interrupt, terminate, hangup, quit, user1, user2, kill".to_owned()
+    })
 }
 
 /// `bohio remote ... info`.
@@ -452,8 +539,21 @@ pub struct RemoteExecArgs {
     pub stdin: bool,
     /// Compress the program's output and the input this sends: `ALG` or `ALG:LEVEL`, where ALG is zstd, lz4,
     /// deflate, none or auto (the host's default). The host clamps the level to its caps.
-    #[arg(long, value_name = "ALG[:LEVEL]")]
+    #[arg(long, value_name = "ALG[:LEVEL]", conflicts_with = "pty")]
     pub compress: Option<String>,
+    /// Run the program on a terminal (the host's `bohio-shell/1`, under the `shell` grant and its program list): its output
+    /// and error are one stream, it takes this terminal's typing and size, and a Ctrl-C typed here reaches it as a typed
+    /// Ctrl-C. Without a terminal here the first Ctrl-C sends an `interrupt`.
+    #[arg(long)]
+    pub pty: bool,
+    /// How soon a second Ctrl-C after the first (`1s`, `500ms`; a bare number is seconds) ends the program's whole tree
+    /// instead of interrupting it again. The first Ctrl-C of this command is an `interrupt` to the program, not the end of
+    /// this command.
+    #[arg(long, value_name = "SPAN", default_value = "2s", value_parser = parse_span)]
+    pub kill_after: std::time::Duration,
+    /// A detached session instead of a run to the end.
+    #[command(flatten)]
+    pub session: SessionArgs,
     /// The program and its arguments, after `--`; run directly, never through a shell.
     #[arg(last = true, required = true, value_name = "ARGV")]
     pub argv: Vec<String>,
@@ -679,6 +779,14 @@ pub struct RemoteShellArgs {
     /// The shell's working directory on the host.
     #[arg(long, value_name = "DIR")]
     pub cwd: Option<String>,
+    /// How soon a second Ctrl-C after the first (`1s`, `500ms`; a bare number is seconds) ends the shell's whole tree
+    /// instead of interrupting it again. Only when this terminal does not deliver Ctrl-C as typing (input is not a
+    /// terminal); on a terminal the typed Ctrl-C goes to the shell as it is.
+    #[arg(long, value_name = "SPAN", default_value = "2s", value_parser = parse_span)]
+    pub kill_after: std::time::Duration,
+    /// A detached session instead of one that ends with this command.
+    #[command(flatten)]
+    pub session: SessionArgs,
 }
 
 /// Parses the process arguments, runs the command and returns its exit status.

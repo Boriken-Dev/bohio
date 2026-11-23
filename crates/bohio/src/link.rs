@@ -26,10 +26,15 @@ use bohio_proto::protocol;
 use crate::policy::{Grant, Permission};
 
 /// The protocols a host serves, each with the permissions of which a peer needs at least one to open it.
-pub const PROTOCOLS: [(&str, &[Permission]); 11] = [
+pub const PROTOCOLS: [(&str, &[Permission]); 12] = [
     (
         protocol::CONTROL,
-        &[Permission::Info, Permission::FsRead, Permission::FsWrite],
+        &[
+            Permission::Info,
+            Permission::FsRead,
+            Permission::FsWrite,
+            Permission::Session,
+        ],
     ),
     (protocol::EXEC, &[Permission::Exec]),
     (protocol::SHELL, &[Permission::Shell]),
@@ -41,6 +46,7 @@ pub const PROTOCOLS: [(&str, &[Permission]); 11] = [
     (protocol::GUI, &[Permission::GuiView, Permission::GuiInput]),
     (protocol::LISTEN, &[Permission::ForwardListen]),
     (protocol::ACCEPT, &[Permission::ForwardListen]),
+    (protocol::ATTACH, &[Permission::Session]),
 ];
 
 /// Which keys a node accepts.
@@ -311,6 +317,15 @@ pub enum NodeEvent {
         /// What it is now.
         state: KeptState,
     },
+    /// A detached session of a peer changed state. Ids only: never output, input or a program's arguments.
+    Session {
+        /// The owner.
+        peer: PeerId,
+        /// The session's id.
+        session: String,
+        /// What happened.
+        change: SessionChange,
+    },
     /// Something happened on a peer's view of the desktop. Counts and ids only: never pixels, typed text, key names or
     /// clipboard content.
     Gui {
@@ -320,6 +335,23 @@ pub enum NodeEvent {
         session: String,
         /// What happened.
         change: GuiChange,
+    },
+}
+
+/// What a [`NodeEvent::Session`] tells of.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SessionChange {
+    /// The session started.
+    Started,
+    /// A stream attached to it.
+    Attached,
+    /// Its stream ended or another took over without the session ending: it runs on.
+    Detached,
+    /// The program ended, or the host ended the session; `reason` is a short sentence with no program text.
+    Ended {
+        /// Why.
+        reason: String,
     },
 }
 
@@ -470,6 +502,11 @@ impl NodeEvents for LogEvents {
                 session,
                 change,
             } => tracing::info!(%peer, %session, ?change, "gui"),
+            NodeEvent::Session {
+                peer,
+                session,
+                change,
+            } => tracing::info!(%peer, %session, ?change, "session"),
         }
     }
 }
@@ -612,6 +649,7 @@ pub fn covers(grant: &Grant, protocol: &str, metadata: &[u8]) -> bool {
         protocol::TCP => crate::forward::covers_tcp(grant, metadata),
         protocol::GUI => crate::gui::covers(grant, metadata),
         protocol::LISTEN => crate::forward::covers_listen(grant, metadata),
+        protocol::ATTACH => crate::session::covers_attach(grant, metadata),
         _ => true,
     }
 }

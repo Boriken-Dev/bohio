@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use bohio_proto::exec::Env;
 use bohio_proto::shell::{
-    Exit, Input, MAX_DIMENSION, Output, Program, Request, ShellKind, Started,
+    Exit, Input, MAX_DIMENSION, Output, Program, Request, ShellKind, Signal, Signalled, Started,
 };
 use bohio_proto::{ErrorBody, ErrorCode};
 use coqui_transport::{Channel, Failure};
@@ -66,7 +66,7 @@ pub fn serve(
     context: &Context<'_>,
 ) -> Result<Exit, ErrorBody> {
     let shared = Arc::new(Shared::new(channel, context.config.poll_interval.0));
-    let (terminal, _permit) = match start(metadata, context) {
+    let (terminal, _permit, timeout) = match start(metadata, context) {
         Ok(started) => started,
         Err(error) => {
             let _ = shared.send(&encode(&Output::Error(error.clone())));
@@ -80,7 +80,7 @@ pub fn serve(
     } = terminal;
     tracing::debug!(pid = session.id(), "shell started");
 
-    if !shared.send(&encode(&Output::Started(Started { pid: session.id() }))) {
+    if !shared.send(&encode(&Output::Started(Started::new(session.id())))) {
         let _ = session.kill();
         session.close_terminal();
         return Ok(Exit {
@@ -107,7 +107,7 @@ pub fn serve(
         let kill_wait = context.config.kill_wait.0;
         thread::Builder::new()
             .name("bohio-shell-monitor".to_owned())
-            .spawn(move || monitor(&shared, &session, drain_quiet, kill_wait))
+            .spawn(move || monitor(&shared, &session, drain_quiet, kill_wait, timeout))
     };
     let Ok(monitor) = monitor else {
         return Err(abandon(&shared, &session));
@@ -231,7 +231,10 @@ fn refuse(code: ErrorCode, message: &'static str) -> ErrorBody {
 }
 
 /// Checks the request and starts the program, returning the slot it holds.
-fn start<'a>(metadata: &[u8], context: &Context<'a>) -> Result<(Terminal, Permit<'a>), ErrorBody> {
+fn start<'a>(
+    metadata: &[u8],
+    context: &Context<'a>,
+) -> Result<(Terminal, Permit<'a>, Option<Duration>), ErrorBody> {
     let request = Request::from_metadata(metadata)
         .map_err(|_| refuse(ErrorCode::BadRequest, "the request cannot be read"))?;
     if !context.config.enabled {
@@ -266,7 +269,7 @@ fn start<'a>(metadata: &[u8], context: &Context<'a>) -> Result<(Terminal, Permit
             "the host is running as many shell sessions as it allows",
         )
     })?;
-    let env: Env = request.env;
+    let env: Env = request.env.clone();
     let terminal = platform::spawn_terminal(PtySpec {
         program,
         args,
@@ -284,7 +287,11 @@ fn start<'a>(metadata: &[u8], context: &Context<'a>) -> Result<(Terminal, Permit
         ),
         _ => refuse(ErrorCode::Io, "the shell could not be started"),
     })?;
-    Ok((terminal, permit))
+    Ok((
+        terminal,
+        permit,
+        request.timeout_ms.map(Duration::from_millis),
+    ))
 }
 
 /// The program and arguments a request names, checked against the grant.
@@ -430,10 +437,23 @@ fn answer_queries(writer: &Arc<Mutex<Box<dyn Write + Send>>>) -> std::sync::mpsc
 }
 
 /// Watches the program until it has ended and its output is sent, then sends the last frame.
-fn monitor(shared: &Shared, session: &Session, drain_quiet: Duration, kill_wait: Duration) -> Exit {
+fn monitor(
+    shared: &Shared,
+    session: &Session,
+    drain_quiet: Duration,
+    kill_wait: Duration,
+    timeout: Option<Duration>,
+) -> Exit {
+    let started = Instant::now();
+    let mut timed_out = false;
     let natural = loop {
         if shared.gone.load(Ordering::Acquire) || shared.channel.is_closed() {
             shared.gone.store(true, Ordering::Release);
+            shared.killed.store(true, Ordering::Release);
+            break false;
+        }
+        if timeout.is_some_and(|limit| started.elapsed() >= limit) {
+            timed_out = true;
             shared.killed.store(true, Ordering::Release);
             break false;
         }
@@ -477,6 +497,7 @@ fn monitor(shared: &Shared, session: &Session, drain_quiet: Duration, kill_wait:
     let exit = Exit {
         code: ended.code,
         signal: ended.signal,
+        timed_out,
         killed: shared.killed.load(Ordering::Acquire),
     };
     shared.send(&encode(&Output::Exit(exit)));
@@ -500,7 +521,28 @@ fn receive_frames(shared: &Shared, session: &Session, writer: &Arc<Mutex<Box<dyn
                         let _ = session.resize(size.cols, size.rows);
                     }
                 }
-                Ok(Input::Kill) => shared.kill_asked.store(true, Ordering::Release),
+                Ok(Input::Kill | Input::Signal(Signal::Kill)) => {
+                    shared.kill_asked.store(true, Ordering::Release);
+                    if let Ok(Input::Signal(signal)) = Input::decode(&frame) {
+                        let _ = shared.send(&encode(&Output::Signalled(Signalled {
+                            signal,
+                            delivered: true,
+                            message: None,
+                        })));
+                    }
+                }
+                Ok(Input::Signal(signal)) => {
+                    let running = matches!(session.try_wait(), Ok(None));
+                    let delivery = session.signal(signal, writer);
+                    if delivery.ended && running {
+                        shared.killed.store(true, Ordering::Release);
+                    }
+                    let _ = shared.send(&encode(&Output::Signalled(Signalled {
+                        signal,
+                        delivered: delivery.delivered,
+                        message: delivery.message.map(str::to_owned),
+                    })));
+                }
                 // A frame this version does not know, or a body that is not what its tag says,
                 // is skipped: the session goes on.
                 Ok(_) | Err(_) => {}
@@ -524,6 +566,7 @@ fn finish(monitor: JoinHandle<Exit>, session: &Session) -> Exit {
         Exit {
             code: ended.code,
             signal: ended.signal,
+            timed_out: false,
             killed: true,
         }
     })

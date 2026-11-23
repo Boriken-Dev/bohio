@@ -122,6 +122,45 @@ impl Control {
         }
     }
 
+    /// The detached sessions this peer holds (an `admin` sees every peer's, each with its `peer`), oldest first.
+    ///
+    /// # Errors
+    ///
+    /// As [`Control::call`]; `denied` without the `session` permission, `unsupported` on a host without sessions.
+    pub fn sessions(
+        &self,
+        timeout: Option<Duration>,
+    ) -> Result<Vec<bohio_proto::session::Listed>, Error> {
+        match self.call(Call::Sessions, timeout)? {
+            Reply::Sessions { sessions } => Ok(sessions),
+            _ => Err(Error::Protocol(bohio_proto::Error::Decode)),
+        }
+    }
+
+    /// Ends the detached session `id` with `signal` (`kill` when `None`); the session then reports its exit and is kept for
+    /// reading until the host's `keep_exited`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Control::call`]; `not_found` for a session this peer does not hold.
+    pub fn end_session(
+        &self,
+        id: &str,
+        signal: Option<bohio_proto::signal::Signal>,
+        timeout: Option<Duration>,
+    ) -> Result<(), Error> {
+        match self.call(
+            Call::EndSession {
+                id: id.to_owned(),
+                signal,
+            },
+            timeout,
+        )? {
+            Reply::Done => Ok(()),
+            _ => Err(Error::Protocol(bohio_proto::Error::Decode)),
+        }
+    }
+
     /// Closes the stream.
     pub fn close(&self) {
         self.channel.close();

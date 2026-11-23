@@ -469,3 +469,122 @@ fn under_a_program_list_a_shell_request_may_not_change_where_programs_are_found(
     request.env.clear = true;
     assert_eq!(refused(&link, &request), ErrorCode::Denied);
 }
+
+/// The helper program started directly on a terminal.
+fn helper_on_terminal(arguments: &[&str]) -> Request {
+    let mut argv = vec![support::helper()];
+    argv.extend(arguments.iter().map(|word| (*word).to_owned()));
+    Request::argv(argv)
+}
+
+/// The grant of a shell test that may run the helper directly (no program list, so any program).
+fn link_for_programs() -> Link {
+    link()
+}
+
+type Ended = (
+    Option<bohio_proto::signal::Signalled>,
+    bohio_proto::shell::Exit,
+    String,
+);
+
+/// The first `signalled` answer, how the program ended and what it printed, reading to the exit.
+fn answer_and_end(shell: &Shell) -> Ended {
+    let (mut answer, mut said) = (None, String::new());
+    loop {
+        match shell.next(WAIT).expect("events arrive") {
+            Some(Event::Signalled(got)) => answer = answer.or(Some(got)),
+            Some(Event::Data(bytes)) => said.push_str(&text(&bytes)),
+            Some(Event::Exit(exit)) => return (answer, exit, said),
+            Some(_) => {}
+            None => panic!("the stream ended before the exit"),
+        }
+    }
+}
+
+#[test]
+fn an_interrupt_on_a_terminal_reaches_the_program_and_its_handler_runs() {
+    use bohio_proto::signal::Signal;
+    let link = link_for_programs();
+    let shell = open(&link, &helper_on_terminal(&["trap"]));
+    shell.read_until(b"ready", WAIT).unwrap();
+    shell.signal(Signal::Interrupt).unwrap();
+    // On Windows the host types Ctrl-C at the pseudo-console, and the console delivers it to a program unless Ctrl-C is
+    // ignored in the process chain that started it: the flag is inherited, and a Git Bash session sets it (measured: the
+    // same test passes from PowerShell and times out from Git Bash). Then the answer is still `delivered` (the host typed
+    // it) and the program runs on.
+    let reached = loop {
+        match shell.next(Some(Duration::from_secs(8))) {
+            Ok(Some(Event::Signalled(answer))) => {
+                assert!(answer.delivered, "{answer:?}");
+                assert_eq!(answer.signal, bohio_proto::signal::Signal::Interrupt);
+            }
+            Ok(Some(Event::Exit(exit))) => break Some(exit),
+            Ok(Some(_)) => {}
+            Err(Error::Timeout) if cfg!(windows) => break None,
+            other => panic!("{other:?}"),
+        }
+    };
+    if let Some(exit) = reached {
+        assert_eq!(exit.code, Some(3), "{exit:?}");
+        assert!(!exit.killed && !exit.timed_out);
+    } else {
+        eprintln!(
+            "the interrupt typed at the pseudo-console did not reach the program: Ctrl-C is ignored in this process chain"
+        );
+        shell.kill().unwrap();
+    }
+    drop(shell);
+    assert!(link.finished_shell().iter().all(Result::is_ok));
+}
+
+#[test]
+fn a_terminate_ends_a_program_on_a_terminal_with_signal_15_on_unix() {
+    use bohio_proto::signal::Signal;
+    let link = link_for_programs();
+    let shell = open(&link, &helper_on_terminal(&["sleep", "60000"]));
+    shell.signal(Signal::Terminate).unwrap();
+    let (answer, exit, _) = answer_and_end(&shell);
+    assert!(answer.expect("answered").delivered);
+    if cfg!(unix) {
+        assert_eq!(exit.signal, Some(15), "{exit:?}");
+    } else {
+        assert!(exit.killed, "{exit:?}");
+    }
+    drop(shell);
+    assert!(link.finished_shell().iter().all(Result::is_ok));
+}
+
+#[test]
+fn a_signal_a_system_lacks_is_answered_not_delivered_and_the_program_runs_on() {
+    use bohio_proto::signal::Signal;
+    if cfg!(unix) {
+        return;
+    }
+    let link = link_for_programs();
+    let shell = open(&link, &helper_on_terminal(&["sleep", "60000"]));
+    shell.signal(Signal::User1).unwrap();
+    let answer = loop {
+        if let Some(Event::Signalled(answer)) = shell.next(WAIT).unwrap() {
+            break answer;
+        }
+    };
+    assert!(!answer.delivered && answer.message.is_some(), "{answer:?}");
+    assert!(alive(shell.pid()));
+    drop(shell);
+    assert!(link.finished_shell().iter().all(Result::is_ok));
+}
+
+#[test]
+fn a_deadline_ends_a_program_on_a_terminal_and_reports_timed_out() {
+    let link = link_for_programs();
+    let mut request = helper_on_terminal(&["sleep", "60000"]);
+    request.timeout_ms = Some(400);
+    let shell = open(&link, &request);
+    let pid = shell.pid();
+    let (_, exit, _) = answer_and_end(&shell);
+    assert!(exit.timed_out && exit.killed, "{exit:?}");
+    assert!(gone_within(pid, Duration::from_secs(10)));
+    drop(shell);
+    assert!(link.finished_shell().iter().all(Result::is_ok));
+}

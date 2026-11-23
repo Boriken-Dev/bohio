@@ -197,6 +197,19 @@ const fn enabled(on: bool) -> &'static str {
     if on { "enabled" } else { "disabled" }
 }
 
+/// The signals as a comma-separated list, or `none`.
+fn signal_names(signals: &[bohio_proto::signal::Signal]) -> String {
+    if signals.is_empty() {
+        "none".to_owned()
+    } else {
+        signals
+            .iter()
+            .map(|signal| signal.name())
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
 pub(super) fn print_info(info: &Info) {
     println!("service: {} {}", info.service.name, info.service.version);
     println!("protocol: {}", info.protocol);
@@ -214,8 +227,23 @@ pub(super) fn print_info(info: &Info) {
         fs.case_sensitive,
         fs.separator
     );
-    println!("exec: {}", enabled(info.exec.enabled));
-    println!("shell sessions: {}", enabled(info.shell.enabled));
+    println!(
+        "exec: {} signals={}",
+        enabled(info.exec.enabled),
+        signal_names(&info.exec.signals)
+    );
+    println!(
+        "shell sessions: {} signals={}",
+        enabled(info.shell.enabled),
+        signal_names(&info.shell.signals)
+    );
+    println!(
+        "detached sessions: {} (keeps {} bytes, up to {}; linger {}s)",
+        enabled(info.sessions.enabled),
+        info.sessions.scrollback,
+        info.sessions.max_scrollback,
+        info.sessions.linger_ms / 1000
+    );
     let limits = &info.limits;
     println!(
         "limits: max_streams={} max_processes={} max_sessions={}",

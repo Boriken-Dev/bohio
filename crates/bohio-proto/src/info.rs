@@ -10,6 +10,7 @@ use crate::forward::ForwardInfo;
 use crate::gui::GuiInfo;
 use crate::hash::Algorithm;
 use crate::shell::ShellKind;
+use crate::signal::Signal;
 
 /// The protocol version this crate speaks.
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -36,6 +37,8 @@ pub struct Info {
     pub exec: ExecInfo,
     /// Interactive shells.
     pub shell: SessionInfo,
+    /// Detached sessions.
+    pub sessions: DetachedInfo,
     /// Bounds the host applies.
     pub limits: Limits,
     /// What the host does to move and compare bytes.
@@ -89,6 +92,8 @@ pub struct FilesystemInfo {
 pub struct ExecInfo {
     /// Whether the host runs processes.
     pub enabled: bool,
+    /// The signals the host delivers to a running program (`signal` frames); the others are answered `delivered: false`.
+    pub signals: Vec<Signal>,
 }
 
 /// Interactive shell sessions.
@@ -97,6 +102,22 @@ pub struct ExecInfo {
 pub struct SessionInfo {
     /// Whether the host opens shell sessions.
     pub enabled: bool,
+    /// The signals the host delivers to a program on a terminal.
+    pub signals: Vec<Signal>,
+}
+
+/// Detached sessions: programs that outlive their stream.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DetachedInfo {
+    /// Whether the host runs sessions (a peer still needs `session`).
+    pub enabled: bool,
+    /// The output bytes kept for a session that asks for no size.
+    pub scrollback: u64,
+    /// The most output bytes a session may ask to keep.
+    pub max_scrollback: u64,
+    /// Milliseconds a detached session nobody attaches to is kept.
+    pub linger_ms: u64,
 }
 
 /// Bounds the host applies; a missing one means the host reports none.

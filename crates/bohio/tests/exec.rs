@@ -700,3 +700,188 @@ fn a_child_a_program_starts_at_once_is_ended_with_the_program_every_time() {
         );
     }
 }
+
+/// What the host in this test delivers to a process without a terminal: what `info` lists.
+fn delivered_by_host() -> Vec<bohio_proto::signal::Signal> {
+    bohio::info::collect(
+        &bohio::config::NodeConfig::default(),
+        &std::ffi::OsString::new(),
+    )
+    .exec
+    .signals
+}
+
+/// Reads events until the process says `needle` on standard output.
+fn read_until_said(exec: &Exec, needle: &str) -> String {
+    let mut said = String::new();
+    while !said.contains(needle) {
+        match exec.next(WAIT).expect("events arrive") {
+            Some(Event::Stdout(bytes)) => said.push_str(&String::from_utf8_lossy(&bytes)),
+            Some(Event::Exit(exit)) => {
+                panic!("ended before saying `{needle}`: {exit:?}, said {said:?}")
+            }
+            Some(_) => {}
+            None => panic!("the stream ended before `{needle}`"),
+        }
+    }
+    said
+}
+
+type Ended = (
+    bohio_proto::signal::Signalled,
+    bohio_proto::exec::Exit,
+    String,
+);
+
+/// The first `signalled` answer and, after it, how the process ended and what it said.
+fn answer_and_end(exec: &Exec) -> Ended {
+    let (mut answer, mut said) = (None, String::new());
+    loop {
+        match exec.next(WAIT).expect("events arrive") {
+            Some(Event::Signalled(got)) => answer = answer.or(Some(got)),
+            Some(Event::Stdout(bytes)) => said.push_str(&String::from_utf8_lossy(&bytes)),
+            Some(Event::Exit(exit)) => {
+                return (answer.expect("the host answered the signal"), exit, said);
+            }
+            Some(_) => {}
+            None => panic!("the stream ended before the exit"),
+        }
+    }
+}
+
+#[test]
+fn an_interrupt_runs_the_handler_where_the_host_delivers_it_and_is_refused_where_it_cannot() {
+    use bohio_proto::signal::Signal;
+    let link = runner();
+    let exec = Exec::start(&link, &Request::argv([helper().as_str(), "trap"])).unwrap();
+    read_until_said(&exec, "ready");
+    exec.signal(Signal::Interrupt).unwrap();
+    let delivers = delivered_by_host().contains(&Signal::Interrupt);
+    eprintln!("this host delivers an interrupt to a process without a terminal: {delivers}");
+    if delivers {
+        let (answer, exit, said) = answer_and_end(&exec);
+        assert!(answer.delivered, "{answer:?}");
+        assert_eq!(answer.signal, Signal::Interrupt);
+        assert!(said.contains("got-int"), "{said:?}");
+        assert_eq!(exit.code, Some(3), "{exit:?}");
+        assert!(!exit.killed);
+    } else {
+        // A Windows host with no console to share (a service) cannot send the break: it says so and the program runs on.
+        let answer = loop {
+            if let Some(Event::Signalled(answer)) = exec.next(WAIT).unwrap() {
+                break answer;
+            }
+        };
+        assert!(!answer.delivered && answer.message.is_some(), "{answer:?}");
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            matches!(
+                exec.next(Some(Duration::from_millis(50))),
+                Err(Error::Timeout)
+            ),
+            "the program was not interrupted, so it has not exited"
+        );
+        exec.kill().unwrap();
+    }
+    drop(exec);
+    assert!(link.finished().iter().all(Result::is_ok));
+}
+
+#[cfg(unix)]
+#[test]
+fn an_interrupt_of_a_script_runs_its_trap_and_exits_with_the_traps_code() {
+    use bohio_proto::signal::Signal;
+    let link = runner();
+    let script = "trap 'echo got-int; exit 3' INT; echo ready; sleep 60 & wait";
+    let exec = Exec::start(&link, &Request::shell(ShellKind::Sh, script)).unwrap();
+    read_until_said(&exec, "ready");
+    exec.signal(Signal::Interrupt).unwrap();
+    let (answer, exit, said) = answer_and_end(&exec);
+    assert!(answer.delivered);
+    assert!(said.contains("got-int"), "{said:?}");
+    assert_eq!(exit.code, Some(3));
+    assert!(!exit.killed && !exit.timed_out);
+    drop(exec);
+    assert!(link.finished().iter().all(Result::is_ok));
+}
+
+#[test]
+fn a_terminate_ends_the_tree_with_signal_15_on_unix_and_by_the_job_on_windows() {
+    use bohio_proto::signal::Signal;
+    let link = runner();
+    let exec = Exec::start(&link, &Request::argv([helper().as_str(), "tree", "60000"])).unwrap();
+    let pid = match exec.next(WAIT).unwrap() {
+        Some(Event::Started { pid }) => pid,
+        other => panic!("{other:?}"),
+    };
+    let grandchild: u32 = read_until_said(&exec, "\n")
+        .trim()
+        .parse()
+        .expect("a process id");
+    exec.signal(Signal::Terminate).unwrap();
+    let (answer, exit, _) = answer_and_end(&exec);
+    assert!(answer.delivered, "{answer:?}");
+    if cfg!(unix) {
+        assert_eq!(exit.signal, Some(15), "{exit:?}");
+        assert!(answer.message.is_none());
+    } else {
+        assert!(exit.killed, "{exit:?}");
+        assert!(
+            answer.message.is_some(),
+            "Windows says what terminate meant: {answer:?}"
+        );
+    }
+    assert!(gone_within(pid, Duration::from_secs(10)));
+    assert!(
+        gone_within(grandchild, Duration::from_secs(10)),
+        "the tree ended with it"
+    );
+    drop(exec);
+    assert!(link.finished().iter().all(Result::is_ok));
+}
+
+#[test]
+fn a_kill_signal_ends_the_tree_and_a_signal_this_system_lacks_is_refused() {
+    use bohio_proto::signal::Signal;
+    let link = runner();
+    let exec = Exec::start(&link, &Request::argv([helper().as_str(), "sleep", "60000"])).unwrap();
+    assert!(matches!(
+        exec.next(WAIT).unwrap(),
+        Some(Event::Started { .. })
+    ));
+    exec.signal(Signal::User1).unwrap();
+    exec.signal(Signal::Kill).unwrap();
+    let (mut answers, mut exit) = (Vec::new(), None);
+    while exit.is_none() {
+        match exec.next(WAIT).unwrap() {
+            Some(Event::Signalled(answer)) => answers.push(answer),
+            Some(Event::Exit(done)) => exit = Some(done),
+            Some(_) => {}
+            None => panic!("ended without an exit"),
+        }
+    }
+    let exit = exit.unwrap();
+    if cfg!(windows) {
+        let first = &answers[0];
+        assert_eq!(first.signal, Signal::User1);
+        assert!(!first.delivered && first.message.is_some(), "{first:?}");
+        assert!(exit.killed, "{exit:?}");
+    } else {
+        // SIGUSR1 ends a program that does not handle it, before the kill reaches it.
+        assert!(exit.signal.is_some(), "{exit:?}");
+    }
+    drop(exec);
+    assert!(link.finished().iter().all(Result::is_ok));
+}
+
+#[test]
+fn the_signals_a_host_delivers_are_in_its_info() {
+    use bohio_proto::signal::Signal;
+    let signals = delivered_by_host();
+    assert!(signals.contains(&Signal::Terminate) && signals.contains(&Signal::Kill));
+    if cfg!(unix) {
+        assert_eq!(signals.len(), Signal::ALL.len());
+    } else {
+        assert!(!signals.contains(&Signal::Hangup));
+    }
+}

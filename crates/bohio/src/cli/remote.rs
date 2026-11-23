@@ -23,14 +23,17 @@ use bohio_proto::exec::{Request, Stdin};
 use bohio_proto::forward::{Bind, Target};
 use bohio_proto::fs::{WriteMode, WriteRequest};
 use bohio_proto::hash::{Algorithm, HashItem};
+use bohio_proto::session::{OnFull, SessionRequest};
 use bohio_proto::shell::{Request as ShellRequest, ShellKind};
+use bohio_proto::signal::Signal;
 use coqui_link::auth::{Proof, Trust};
 use coqui_peer::PeerId;
 
 use super::commands::{print_info, source};
 use super::{
-    Format, KeepArgs, RemoteAction, RemoteArgs, RemoteConnectArgs, RemoteExecArgs,
-    RemoteForwardArgs, RemoteHashArgs, RemoteListenArgs, RemoteShellArgs, RemoteWriteArgs,
+    Format, KeepArgs, OnFullArg, RemoteAction, RemoteArgs, RemoteAttachArgs, RemoteConnectArgs,
+    RemoteEndArgs, RemoteExecArgs, RemoteForwardArgs, RemoteHashArgs, RemoteListenArgs,
+    RemoteSessionsArgs, RemoteShellArgs, RemoteWriteArgs, SessionArgs,
 };
 use crate::config::{DialConfig, Environment, Layers};
 use crate::forward::{BadSpec, LocalSpec, RemoteKeep, RemoteSpec, keep_remote};
@@ -238,6 +241,9 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
             report_moved(&moved)
         }
         RemoteAction::Shell(shell) => shell_command(&*link, shell, &client),
+        RemoteAction::Attach(attach) => attach_command(&*link, attach, &client),
+        RemoteAction::Sessions(sessions) => sessions_command(&*link, sessions, &client),
+        RemoteAction::End(end) => end_command(&*link, end, &client),
         RemoteAction::Connect(connect) => {
             let open = relinked(&link, kept.as_ref(), &settings);
             connect_command(&*open, connect, &settings)
@@ -1081,12 +1087,56 @@ fn status_of(exit: &bohio_proto::exec::Exit) -> ExitCode {
     ExitCode::from(u8::try_from(code).unwrap_or(1))
 }
 
+/// Turns each Ctrl-C of this process into `send(interrupt)`, and one within `kill_after` of the one before into
+/// `send(kill)`. Only the first handler of a process is installed; a later call changes nothing.
+fn on_ctrl_c(send: impl Fn(Signal) + Send + 'static, kill_after: Duration) {
+    let last = std::sync::Mutex::new(None::<std::time::Instant>);
+    let _ = ctrlc::set_handler(move || {
+        let now = std::time::Instant::now();
+        let mut last = last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let second = last.is_some_and(|before| now.duration_since(before) <= kill_after);
+        *last = Some(now);
+        send(if second {
+            Signal::Kill
+        } else {
+            Signal::Interrupt
+        });
+    });
+}
+
+/// Says on standard error that the host could not deliver a signal this command sent for the person's Ctrl-C.
+fn report_undelivered(answer: &bohio_proto::signal::Signalled) {
+    if !answer.delivered {
+        eprintln!(
+            "bohio: the host did not deliver {}: {}",
+            answer.signal,
+            answer.message.as_deref().unwrap_or("it cannot here")
+        );
+    }
+}
+
 fn exec_command(
     link: &dyn Open,
     args: &RemoteExecArgs,
     client: &Client,
 ) -> Result<ExitCode, String> {
+    if args.pty {
+        let mut request = ShellRequest::argv(args.argv.iter().cloned());
+        request.cwd.clone_from(&args.cwd);
+        request.timeout_ms = args.timeout_ms;
+        for pair in &args.env {
+            let (name, value) = pair
+                .split_once('=')
+                .ok_or_else(|| "--env is NAME=VALUE".to_owned())?;
+            request.env.set.insert(name.to_owned(), value.to_owned());
+        }
+        request.session = wanted_session(&args.session);
+        return terminal_command(link, request, args.kill_after, client);
+    }
     let mut request = Request::argv(args.argv.iter().cloned());
+    request.session = wanted_session(&args.session);
     request.cwd.clone_from(&args.cwd);
     request.timeout_ms = args.timeout_ms;
     for pair in &args.env {
@@ -1107,7 +1157,63 @@ fn exec_command(
         }
     }
     let exec = Arc::new(Exec::start(link, &request).map_err(|error| explain(&error))?);
-    if args.stdin {
+    if args.session.detach {
+        return detached_exec(&exec, client);
+    }
+    drive_exec(exec, args.stdin, args.kill_after, client)
+}
+
+/// The session a command line asks for, when it asks for one.
+fn wanted_session(args: &SessionArgs) -> Option<SessionRequest> {
+    args.detach.then(|| SessionRequest {
+        name: args.name.clone(),
+        scrollback: args.scrollback,
+        on_full: args.on_full.map(|policy| match policy {
+            OnFullArg::Pause => OnFull::Pause,
+            OnFullArg::DropOldest => OnFull::DropOldest,
+        }),
+        linger_ms: args
+            .linger
+            .map(|linger| u64::try_from(linger.as_millis()).unwrap_or(u64::MAX)),
+        detach: true,
+    })
+}
+
+/// Waits for the host to say the session started, prints its id and lets the stream go: the program keeps running.
+fn detached_exec(exec: &Exec, client: &Client) -> Result<ExitCode, String> {
+    loop {
+        match exec.next(Some(client.reply)) {
+            Ok(Some(Event::Started { .. })) => break,
+            Ok(Some(_)) => {}
+            Ok(None) => return Err("the stream ended before the session started".to_owned()),
+            Err(error) => return Err(explain(&error)),
+        }
+    }
+    let id = exec
+        .session()
+        .ok_or_else(|| "the host started the program but made no session".to_owned())?;
+    println!("{id}");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Shows an exec's output as it comes, sends standard input when asked, and exits with the program's status.
+fn drive_exec(
+    exec: Arc<Exec>,
+    stdin: bool,
+    kill_after: Duration,
+    client: &Client,
+) -> Result<ExitCode, String> {
+    {
+        // Ctrl-C here is an interrupt to the program, and a second one soon after ends its tree.
+        let exec = Arc::clone(&exec);
+        on_ctrl_c(
+            move |signal| {
+                let _ = exec.signal(signal);
+            },
+            kill_after,
+        );
+    }
+    if stdin {
         // Detached: it may be blocked reading this process's input when the program ends.
         let exec = Arc::clone(&exec);
         let chunk = client.input_chunk.max(1);
@@ -1135,6 +1241,7 @@ fn exec_command(
                 let _ = err.flush();
             }
             Ok(Some(Event::Exit(exit))) => return Ok(status_of(&exit)),
+            Ok(Some(Event::Signalled(answer))) => report_undelivered(&answer),
             Ok(Some(_)) => {}
             Ok(None) => return Err("the stream ended before the program's exit".to_owned()),
             Err(error) => return Err(explain(&error)),
@@ -1166,18 +1273,60 @@ fn shell_command(
     };
     let mut request = ShellRequest::kind(kind);
     request.cwd.clone_from(&args.cwd);
+    terminal_command(link, request, args.kill_after, client)
+}
+
+/// Runs `request` on a terminal of the host and bridges it to this one, exiting with the program's status.
+fn terminal_command(
+    link: &dyn Open,
+    request: ShellRequest,
+    kill_after: Duration,
+    client: &Client,
+) -> Result<ExitCode, String> {
+    let mut request = request;
     let interactive = std::io::stdin().is_terminal();
-    let mut size = if interactive { local_size() } else { (80, 24) };
+    let size = if interactive { local_size() } else { (80, 24) };
     request.cols = size.0;
     request.rows = size.1;
+    let detach = request.session.is_some();
     let shell = Arc::new(
         Shell::start(link, &request, Some(client.reply)).map_err(|error| explain(&error))?,
     );
-    // Typed keys go to the host as they are, so the local terminal must not echo or edit them.
+    if detach {
+        let id = shell
+            .session()
+            .ok_or_else(|| "the host started the shell but made no session".to_owned())?;
+        println!("{id}");
+        return Ok(ExitCode::SUCCESS);
+    }
+    drive_terminal(&shell, interactive, size, kill_after, client)
+}
+
+/// Bridges a terminal session of the host to this one until the program ends, and returns its status.
+fn drive_terminal(
+    shell: &Arc<Shell>,
+    interactive: bool,
+    size: (u16, u16),
+    kill_after: Duration,
+    client: &Client,
+) -> Result<ExitCode, String> {
+    let mut size = size;
+    // Typed keys go to the host as they are, so the local terminal must not echo or edit them, and a typed Ctrl-C is the
+    // byte the host's terminal turns into an interrupt. Without a terminal here, Ctrl-C is a signal of this process, which
+    // goes to the program as an interrupt.
     let raw = interactive && crossterm::terminal::enable_raw_mode().is_ok();
+    if !raw {
+        let shell = Arc::clone(shell);
+        on_ctrl_c(
+            move |signal| {
+                let _ = shell.signal(signal);
+            },
+            kill_after,
+        );
+    }
     {
         // Detached: it is blocked reading this process's input when the shell ends.
-        let shell = Arc::clone(&shell);
+        let shell = Arc::clone(shell);
         let chunk = client.input_chunk.max(1);
         thread::spawn(move || {
             let mut buffer = vec![0_u8; chunk];
@@ -1197,6 +1346,7 @@ fn shell_command(
                 let _ = out.flush();
             }
             Ok(Some(ShellEvent::Exit(exit))) => break Ok(exit),
+            Ok(Some(ShellEvent::Signalled(answer))) => report_undelivered(&answer),
             Ok(Some(_)) => {}
             Ok(None) => break Err("the stream ended before the shell's exit".to_owned()),
             Err(Error::Timeout) => {
@@ -1215,11 +1365,108 @@ fn shell_command(
         let _ = crossterm::terminal::disable_raw_mode();
     }
     let exit = result?;
-    Ok(ExitCode::from(
-        exit.code
-            .and_then(|code| u8::try_from(code & 0xff).ok())
-            .unwrap_or(0),
-    ))
+    // A deadline is 124 as it is for `exec`; a program that ended on a signal is 128 and the signal; else its code.
+    let code = if exit.timed_out {
+        124
+    } else if let Some(code) = exit.code {
+        code & 0xff
+    } else {
+        exit.signal.map_or(0, |signal| 128 + signal)
+    };
+    Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)))
+}
+
+/// `bohio remote ... attach`: the session's kept output from the offset asked for, then live.
+fn attach_command(
+    link: &dyn Open,
+    args: &RemoteAttachArgs,
+    client: &Client,
+) -> Result<ExitCode, String> {
+    let (attachment, attached) = bohio_client::session::attach(link, &args.id, args.from)
+        .map_err(|error| explain(&error))?;
+    if attached.lost > 0 {
+        eprintln!(
+            "bohio: the host had forgotten {} bytes before offset {}: the output starts there",
+            attached.lost, attached.from
+        );
+    }
+    match attachment {
+        bohio_client::session::Attachment::Exec(exec) => {
+            drive_exec(Arc::from(exec), args.stdin, args.kill_after, client)
+        }
+        bohio_client::session::Attachment::Shell(shell) => {
+            let interactive = std::io::stdin().is_terminal();
+            let size = if interactive { local_size() } else { (80, 24) };
+            if interactive {
+                // The terminal of a shell that was started elsewhere takes this one's size.
+                let _ = shell.resize(size.0, size.1);
+            }
+            drive_terminal(&Arc::new(shell), interactive, size, args.kill_after, client)
+        }
+        _ => Err("this version does not know that kind of session".to_owned()),
+    }
+}
+
+/// `bohio remote ... sessions`.
+fn sessions_command(
+    link: &dyn Open,
+    args: &RemoteSessionsArgs,
+    client: &Client,
+) -> Result<ExitCode, String> {
+    let control = Control::open(link).map_err(|error| explain(&error))?;
+    let sessions = control
+        .sessions(Some(client.reply))
+        .map_err(|error| explain(&error))?;
+    match args.format {
+        Format::Json => {
+            println!(
+                "{}",
+                serde_json::to_string(&sessions)
+                    .map_err(|_| "the sessions cannot be written".to_owned())?
+            );
+        }
+        Format::Text => {
+            for session in &sessions {
+                let state = match (&session.exit, session.attached) {
+                    (Some(exit), _) => format!(
+                        "exited {}",
+                        exit.code.map_or_else(
+                            || exit
+                                .signal
+                                .map_or("?".to_owned(), |signal| format!("signal {signal}")),
+                            |code| code.to_string()
+                        )
+                    ),
+                    (None, true) => "attached".to_owned(),
+                    (None, false) => "detached".to_owned(),
+                };
+                println!(
+                    "{}\t{:?}\t{}\tnext {}\tkept {}\t{}\t{}{}",
+                    session.id,
+                    session.kind,
+                    state,
+                    session.next,
+                    session.buffered,
+                    session.name.as_deref().unwrap_or("-"),
+                    session.program,
+                    session
+                        .peer
+                        .as_deref()
+                        .map_or(String::new(), |peer| format!("\t{peer}")),
+                );
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `bohio remote ... end`.
+fn end_command(link: &dyn Open, args: &RemoteEndArgs, client: &Client) -> Result<ExitCode, String> {
+    let control = Control::open(link).map_err(|error| explain(&error))?;
+    control
+        .end_session(&args.id, args.signal, Some(client.reply))
+        .map_err(|error| explain(&error))?;
+    Ok(ExitCode::SUCCESS)
 }
 
 /// The node's local control endpoint for the configuration `config` names: the one set, else the default of

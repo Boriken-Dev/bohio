@@ -27,6 +27,23 @@ pub struct Context<'a> {
     pub current: Option<Current<'a>>,
     /// What `info` says of the desktop to a peer with a given grant, asked at every `info`; `info.gui` is used when absent.
     pub gui: Option<GuiProbe<'a>>,
+    /// The node's sessions and the peer asking, for `sessions` and `end_session`; they are `unsupported` when absent.
+    pub sessions: Option<SessionsView<'a>>,
+}
+
+/// The node's detached sessions, as the peer on this stream may use them.
+#[derive(Clone, Copy)]
+pub struct SessionsView<'a> {
+    /// The sessions.
+    pub registry: &'a crate::session::Sessions,
+    /// The peer's id as text: a peer lists and ends the sessions it owns.
+    pub peer: &'a str,
+}
+
+impl core::fmt::Debug for SessionsView<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("SessionsView")
+    }
 }
 
 /// The desktop part of `info` for a grant, as it is now.
@@ -94,24 +111,48 @@ pub fn serve(channel: &Arc<dyn Channel>, context: &Context<'_>) -> u64 {
 
 fn answer(context: &Context<'_>, call: &Call, limit: usize) -> Result<Reply, ErrorBody> {
     let Some(current) = context.current else {
-        return answer_with(context.filesystem, context.info, context.gui, call, limit);
+        return answer_with(context, context.filesystem, call, limit);
     };
     let grant = (current.0)()?;
     let filesystem = fs::Context {
         grant: &grant,
         ..context.filesystem
     };
-    answer_with(filesystem, context.info, context.gui, call, limit)
+    answer_with(context, filesystem, call, limit)
 }
 
 fn answer_with(
+    context: &Context<'_>,
     filesystem: fs::Context<'_>,
-    info: &Info,
-    gui: Option<GuiProbe<'_>>,
     call: &Call,
     limit: usize,
 ) -> Result<Reply, ErrorBody> {
+    let (info, gui) = (context.info, context.gui);
     match call {
+        Call::Sessions | Call::EndSession { .. } => {
+            let Some(view) = context.sessions else {
+                return Err(ErrorBody::new(
+                    ErrorCode::Unsupported,
+                    "this host does not run sessions",
+                ));
+            };
+            if !filesystem.grant.allows(Permission::Session) {
+                return Err(ErrorBody::new(
+                    ErrorCode::Denied,
+                    "this peer does not hold session",
+                ));
+            }
+            let admin = filesystem.grant.allows(Permission::Admin);
+            match call {
+                Call::EndSession { id, signal } => view
+                    .registry
+                    .end(view.peer, admin, id, *signal)
+                    .map(|()| Reply::Done),
+                _ => Ok(Reply::Sessions {
+                    sessions: view.registry.list(view.peer, admin),
+                }),
+            }
+        }
         Call::Hello { version, .. } => {
             if *version == 0 {
                 return Err(ErrorBody::new(

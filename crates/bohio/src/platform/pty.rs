@@ -16,10 +16,10 @@ use crate::config::HostDeath;
 use bohio_proto::exec::Env;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
-use super::ProcessExit;
 #[cfg(unix)]
 use super::guard;
 use super::tree::{self, Tree};
+use super::{Delivery, ProcessExit, Signal};
 
 /// `TERM` for a program whose environment does not set it.
 pub const DEFAULT_TERM: &str = "xterm-256color";
@@ -300,6 +300,53 @@ impl Session {
         state
             .exit
             .ok_or_else(|| io::Error::other("the program has no exit status"))
+    }
+
+    /// Delivers `signal` to the program on its terminal. `kill` ends the tree. On Unix any other signal goes
+    /// to the program's process group. On Windows `terminate` ends the tree, `interrupt` types Ctrl-C (`0x03`)
+    /// at the terminal, through `typed`, and every other signal is not delivered.
+    pub fn signal(&self, signal: Signal, typed: &Mutex<Box<dyn Write + Send>>) -> Delivery {
+        #[cfg(unix)]
+        let _ = typed;
+        if signal == Signal::Kill {
+            return match self.kill() {
+                Ok(_) => Delivery::tree_ended(None),
+                Err(_) => Delivery::refused("the program could not be ended"),
+            };
+        }
+        #[cfg(unix)]
+        {
+            if lock(&self.state).collected {
+                return Delivery::refused("the program has ended");
+            }
+            if tree::send_group(self.pid, signal) {
+                Delivery::done()
+            } else {
+                Delivery::refused("no process is left to receive it")
+            }
+        }
+        #[cfg(windows)]
+        {
+            match signal {
+                Signal::Terminate => match self.kill() {
+                    Ok(_) => Delivery::tree_ended(Some(
+                        "Windows has no SIGTERM: the program's tree was ended",
+                    )),
+                    Err(_) => Delivery::refused("the program could not be ended"),
+                },
+                Signal::Interrupt => {
+                    if lock(&self.state).collected {
+                        return Delivery::refused("the program has ended");
+                    }
+                    let mut writer = lock(typed);
+                    match writer.write_all(&[0x03]).and_then(|()| writer.flush()) {
+                        Ok(()) => Delivery::done(),
+                        Err(_) => Delivery::refused("the terminal is closed"),
+                    }
+                }
+                _ => Delivery::refused("Windows has no such signal"),
+            }
+        }
     }
 
     /// Tells the terminal its size changed.

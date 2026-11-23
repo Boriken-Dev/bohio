@@ -16,6 +16,7 @@ pub mod node;
 pub mod pair;
 pub mod peer;
 pub mod policy;
+pub mod session;
 pub mod shell;
 
 #[cfg(feature = "cli")]

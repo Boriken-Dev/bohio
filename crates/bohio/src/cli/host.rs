@@ -432,7 +432,7 @@ fn peer_approve(args: &ApproveArgs, environment: &Environment) -> Result<(), Str
         }
         permissions.push(Permission::from_name(name).ok_or_else(|| {
             format!(
-                "`{name}` is not a permission: info, fs.read, fs.write, exec, shell, admin, forward.connect, gui.view, gui.input, gui.clipboard, forward.listen"
+                "`{name}` is not a permission: info, fs.read, fs.write, exec, shell, admin, forward.connect, gui.view, gui.input, gui.clipboard, forward.listen, session"
             )
         })?);
     }

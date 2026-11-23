@@ -54,7 +54,10 @@ const ALLOWED: &[Allowed] = &[
              (raw_attribute) and no job list; portable-pty starts its child without inheriting \
              handles but cannot start a pipe-only process and offers no job; assigning the job after \
              the start leaves the window the job list closes; no maintained crate wraps a handle \
-             list or a job list over pipes",
+             list or a job list over pipes. It also asks whether the host has a console \
+             (GetConsoleProcessList) and sends CTRL_BREAK_EVENT to a child's group \
+             (GenerateConsoleCtrlEvent): neither std nor a maintained crate wraps console events",
+
         miri: "not reachable: every unsafe call is a Win32 call (CreateProcessW, handle and attribute \
            list functions), which Miri does not run; covered by tests/exec.rs and \
            platform/inherit_tests.rs on Windows",

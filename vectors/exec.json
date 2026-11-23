@@ -57,6 +57,37 @@
     },
     {
       "direction": "client_to_host",
+      "hex": "a667636f6d6d616e64a264747970656461726776646172677682646d616b6563616c6c63637764f663656e76a365636c656172f463736574a06672656d6f76658065737464696e66636c6f7365646a74696d656f75745f6d73f66773657373696f6ea5646e616d65656275696c646a7363726f6c6c6261636b1a00010000676f6e5f66756c6c6b64726f705f6f6c64657374696c696e6765725f6d7319ea6066646574616368f5",
+      "kind": "open",
+      "name": "open_session",
+      "type": "exec.Request",
+      "value": {
+        "command": {
+          "argv": [
+            "make",
+            "all"
+          ],
+          "type": "argv"
+        },
+        "cwd": null,
+        "env": {
+          "clear": false,
+          "remove": [],
+          "set": {}
+        },
+        "session": {
+          "detach": true,
+          "linger_ms": 60000,
+          "name": "build",
+          "on_full": "drop_oldest",
+          "scrollback": 65536
+        },
+        "stdin": "closed",
+        "timeout_ms": null
+      }
+    },
+    {
+      "direction": "client_to_host",
       "hex": "a567636f6d6d616e64a36474797065657368656c6c646b696e64627368667363726970746a6563686f2024484f4d4563637764f663656e76a365636c656172f463736574a06672656d6f76658065737464696e66636c6f7365646a74696d656f75745f6d73f6",
       "kind": "open",
       "name": "open_shell_script",
@@ -168,6 +199,49 @@
           }
         },
         "tag": 1
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "01a2637069641910926773657373696f6e78203030313132323333343435353636373738383939616162626363646465656666",
+      "kind": "frame",
+      "name": "started_session",
+      "type": "exec.Output",
+      "value": {
+        "message": {
+          "pid": 4242,
+          "session": "00112233445566778899aabbccddeeff"
+        },
+        "tag": 1
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "08a2667369676e616c69696e746572727570746964656c697665726564f5",
+      "kind": "frame",
+      "name": "signalled_delivered",
+      "type": "exec.Output",
+      "value": {
+        "message": {
+          "delivered": true,
+          "signal": "interrupt"
+        },
+        "tag": 8
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "08a3667369676e616c6575736572316964656c697665726564f4676d657373616765781a57696e646f777320686173206e6f2073756368207369676e616c",
+      "kind": "frame",
+      "name": "signalled_refused",
+      "type": "exec.Output",
+      "value": {
+        "message": {
+          "delivered": false,
+          "message": "Windows has no such signal",
+          "signal": "user1"
+        },
+        "tag": 8
       }
     },
     {
@@ -300,6 +374,32 @@
       "type": "exec.Input",
       "value": {
         "tag": 18
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "15a1667369676e616c69696e74657272757074",
+      "kind": "frame",
+      "name": "signal_interrupt",
+      "type": "exec.Input",
+      "value": {
+        "message": {
+          "signal": "interrupt"
+        },
+        "tag": 21
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "15a1667369676e616c657573657232",
+      "kind": "frame",
+      "name": "signal_user2",
+      "type": "exec.Input",
+      "value": {
+        "message": {
+          "signal": "user2"
+        },
+        "tag": 21
       }
     },
     {

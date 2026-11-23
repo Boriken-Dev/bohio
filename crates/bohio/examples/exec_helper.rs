@@ -2,7 +2,10 @@
 //!
 //! `echo TEXT...`, `exit CODE`, `both` (writes both streams, exits 3), `cat`, `sleep MS`,
 //! `tree MS` (starts a sleeping child and prints its id), `orphan MS` (starts a sleeping child
-//! that keeps standard output open, then exits at once), `env NAME`, `cwd`, `whoami` (prints its own path), `flood BYTES`.
+//! that keeps standard output open, then exits at once), `env NAME`, `cwd`, `whoami` (prints its own path), `flood BYTES`,
+//! `count N MS` (prints 1 to N, a line every MS milliseconds), `trap` (prints `ready`, then waits; on an interrupt it
+//! prints `got-int` and exits 3, and on a break or any other end it does not get to) and `read-line` (prints `ready`, then
+//! prints `got:` and the first line of standard input).
 
 #![forbid(unsafe_code)]
 #![expect(
@@ -41,6 +44,37 @@ fn main() {
             }
         }
         ["sleep", ms] => std::thread::sleep(Duration::from_millis(ms.parse().unwrap_or(0))),
+        ["count", n, ms] => {
+            let pause = Duration::from_millis(ms.parse().unwrap_or(0));
+            for line in 1..=n.parse::<u64>().unwrap_or(0) {
+                if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
+                    break;
+                }
+                std::thread::sleep(pause);
+            }
+        }
+        ["trap"] => {
+            let (tx, rx) = std::sync::mpsc::channel::<()>();
+            ctrlc::set_handler(move || {
+                let _ = tx.send(());
+            })
+            .expect("the handler is installed");
+            let _ = writeln!(out, "ready");
+            let _ = out.flush();
+            if rx.recv_timeout(Duration::from_secs(60)).is_ok() {
+                let _ = writeln!(out, "got-int");
+                let _ = out.flush();
+                std::process::exit(3);
+            }
+        }
+        ["read-line"] => {
+            let _ = writeln!(out, "ready");
+            let _ = out.flush();
+            let mut line = String::new();
+            let _ = std::io::stdin().read_line(&mut line);
+            let _ = write!(out, "got:{line}");
+            let _ = out.flush();
+        }
         ["tree", ms] => {
             let me = std::env::current_exe().expect("own path");
             let child = Command::new(me)

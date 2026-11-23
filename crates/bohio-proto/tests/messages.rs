@@ -47,8 +47,15 @@ fn sample_info() -> Info {
             case_sensitive: true,
             separator: "/".into(),
         },
-        exec: ExecInfo { enabled: true },
-        shell: SessionInfo { enabled: false },
+        exec: ExecInfo {
+            enabled: true,
+            signals: vec![bohio_proto::signal::Signal::Terminate],
+        },
+        shell: SessionInfo {
+            enabled: false,
+            signals: Vec::new(),
+        },
+        sessions: bohio_proto::info::DetachedInfo::default(),
         limits: Limits {
             max_streams: Some(64),
             max_processes: Some(16),
@@ -135,6 +142,12 @@ fn every_exec_message_round_trips() {
             pid: 42,
             output_compression: Some(Compression::new(Codec::Zstd).level(3)),
             stdin_compression: Some(Compression::new(Codec::Lz4)),
+            session: Some("00112233445566778899aabbccddeeff".into()),
+        }),
+        Output::Signalled(bohio_proto::signal::Signalled {
+            signal: bohio_proto::signal::Signal::Interrupt,
+            delivered: false,
+            message: Some("no console".into()),
         }),
         Output::StdoutCompressed(vec![1, 2, 3]),
         Output::StderrCompressed(vec![4]),
@@ -586,11 +599,17 @@ fn every_shell_message_round_trips() {
         );
     }
     let outputs = [
-        Output::Started(Started { pid: 4242 }),
+        Output::Started(Started::new(4242)),
+        Output::Signalled(bohio_proto::signal::Signalled {
+            signal: bohio_proto::signal::Signal::Terminate,
+            delivered: true,
+            message: None,
+        }),
         Output::Data(vec![0x1b, b'[', b'6', b'n', 0, 255]),
         Output::Exit(Exit {
             code: Some(-1),
             signal: Some(9),
+            timed_out: true,
             killed: true,
         }),
         Output::Error(ErrorBody::new(ErrorCode::Busy, "full")),
@@ -605,6 +624,7 @@ fn every_shell_message_round_trips() {
             rows: 32_767,
         }),
         Input::Kill,
+        Input::Signal(bohio_proto::signal::Signal::Hangup),
     ];
     for input in inputs {
         assert_eq!(Input::decode(&input.encode().unwrap()).unwrap(), input);

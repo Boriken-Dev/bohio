@@ -1,0 +1,72 @@
+{
+  "encoding": "hex is the stream message exactly as it travels: open metadata and control messages are bare CBOR, a frame is one tag byte then its body",
+  "protocol": "bohio-attach/1",
+  "vectors": [
+    {
+      "direction": "client_to_host",
+      "hex": "a26773657373696f6e782030303131323233333434353536363737383839396161626263636464656566666466726f6d00",
+      "kind": "open",
+      "name": "open_from_start",
+      "type": "session.Attach",
+      "value": {
+        "from": 0,
+        "session": "00112233445566778899aabbccddeeff"
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a26773657373696f6e782030303131323233333434353536363737383839396161626263636464656566666466726f6df6",
+      "kind": "open",
+      "name": "open_only_what_comes_next",
+      "type": "session.Attach",
+      "value": {
+        "from": null,
+        "session": "00112233445566778899aabbccddeeff"
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "09a3646b696e6464657865636466726f6d00646c6f737400",
+      "kind": "frame",
+      "name": "attached_exec",
+      "type": "session.Attached",
+      "value": {
+        "message": {
+          "from": 0,
+          "kind": "exec",
+          "lost": 0
+        },
+        "tag": 9
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "09a3646b696e64657368656c6c6466726f6d191000646c6f7374191000",
+      "kind": "frame",
+      "name": "attached_shell_with_loss",
+      "type": "session.Attached",
+      "value": {
+        "message": {
+          "from": 4096,
+          "kind": "shell",
+          "lost": 4096
+        },
+        "tag": 9
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "05a264636f6465696e6f745f666f756e64676d65737361676578187468657265206973206e6f20737563682073657373696f6e",
+      "kind": "frame",
+      "name": "error_not_found",
+      "type": "exec.Output",
+      "value": {
+        "message": {
+          "code": "not_found",
+          "message": "there is no such session"
+        },
+        "tag": 5
+      }
+    }
+  ]
+}

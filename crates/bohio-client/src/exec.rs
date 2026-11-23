@@ -4,8 +4,9 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use bohio_proto::compress::{Codec, Compression};
-use bohio_proto::exec::{Exit, Input, Output, Request};
+use bohio_proto::exec::{Exit, Input, Output, Request, Signal, Signalled};
 use bohio_proto::protocol;
+use bohio_proto::session::{Attach, Attached, Kind};
 use bohio_transfer::compress::{Bounds, Caps, Decoder, Encoder, Piece};
 use coqui_transport::Channel;
 
@@ -24,6 +25,8 @@ pub enum Event {
     Stdout(Vec<u8>),
     /// Bytes written to standard error.
     Stderr(Vec<u8>),
+    /// The host's answer to a signal: whether it was delivered.
+    Signalled(Signalled),
     /// The process ended; the last event.
     Exit(Exit),
 }
@@ -52,6 +55,8 @@ pub struct Exec {
     /// The encoder of standard input, when the request declared it compressed.
     encoder: Mutex<Option<Encoder>>,
     window_log_max: u32,
+    /// The session's id, once `started` said the request made one (or the stream attached to one).
+    session: Mutex<Option<String>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -112,7 +117,47 @@ impl Exec {
             decoders: Mutex::new((None, None)),
             encoder: Mutex::new(encoder),
             window_log_max: caps.window_log_max,
+            session: Mutex::new(None),
         })
+    }
+
+    /// Attaches to the detached session `session` of an exec on `link` (`bohio-attach/1`), reading its output from the
+    /// offset `from` (`0` for all that is still kept, `None` for only what comes next). The stream then gives the same
+    /// events as the one that started it, from there on; no `Started` event comes, and standard input and signals go to the
+    /// process as they did. A session's streams are not compressed.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Remote`] when the host refused (`not_found` for a session this peer does not hold, `denied`, ...),
+    /// [`Error::Protocol`] when the session is a shell, else whatever `link` reports.
+    pub fn attach(
+        link: &dyn Open,
+        session: &str,
+        from: Option<u64>,
+    ) -> Result<(Self, Attached), Error> {
+        let (channel, attached) = attach_channel(link, session, from)?;
+        if attached.kind != Kind::Exec {
+            channel.close();
+            return Err(Error::Protocol(bohio_proto::Error::Decode));
+        }
+        Ok((Self::attached_to(channel, session), attached))
+    }
+
+    /// An exec on a channel that attached to the session `session`.
+    pub(crate) fn attached_to(channel: Box<dyn Channel>, session: &str) -> Self {
+        Self {
+            channel,
+            used: Mutex::new((None, None)),
+            decoders: Mutex::new((None, None)),
+            encoder: Mutex::new(None),
+            window_log_max: 27,
+            session: Mutex::new(Some(session.to_owned())),
+        }
+    }
+
+    /// The session's id, when the request asked for a session and `started` has arrived, or this stream attached to one.
+    pub fn session(&self) -> Option<String> {
+        lock(&self.session).clone()
     }
 
     /// What the host reported it uses for output and accepts for standard input (the level it clamped
@@ -196,6 +241,9 @@ impl Exec {
                         self.start_decoders(used)?;
                     }
                     *lock(&self.used) = (started.output_compression, started.stdin_compression);
+                    if started.session.is_some() {
+                        *lock(&self.session) = started.session;
+                    }
                     return Ok(Some(Event::Started { pid: started.pid }));
                 }
                 Ok(Output::Stdout(bytes)) => {
@@ -216,6 +264,7 @@ impl Exec {
                         return Ok(Some(Event::Stderr(bytes)));
                     }
                 }
+                Ok(Output::Signalled(answer)) => return Ok(Some(Event::Signalled(answer))),
                 Ok(Output::Exit(exit)) => return Ok(Some(Event::Exit(exit))),
                 Ok(Output::Error(body)) => return Err(Error::Remote(body)),
                 Ok(_) | Err(bohio_proto::Error::Tag(_)) => {}
@@ -273,6 +322,16 @@ impl Exec {
         self.send(&Input::Kill.encode())
     }
 
+    /// Asks the host to deliver `signal` to the process (its process group on Unix). The host answers with an
+    /// [`Event::Signalled`] saying whether it did.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Transport`] when the channel failed.
+    pub fn signal(&self, signal: Signal) -> Result<(), Error> {
+        self.send(&Input::Signal(signal).encode())
+    }
+
     /// Reads events until the process ends, collecting its output, for at most `timeout`
     /// (`None`: without limit). The process keeps running if the wait times out.
     ///
@@ -294,6 +353,7 @@ impl Exec {
                 Some(Event::Started { pid }) => done.pid = Some(pid),
                 Some(Event::Stdout(bytes)) => done.stdout.extend_from_slice(&bytes),
                 Some(Event::Stderr(bytes)) => done.stderr.extend_from_slice(&bytes),
+                Some(Event::Signalled(_)) => {}
                 Some(Event::Exit(exit)) => {
                     done.exit = exit;
                     return Ok(done);
@@ -311,6 +371,33 @@ impl Exec {
     fn send(&self, message: &[u8]) -> Result<(), Error> {
         self.channel.send_timeout(message, None)?;
         Ok(())
+    }
+}
+
+/// Opens `bohio-attach/1` and reads its first frame, `attached`.
+pub(crate) fn attach_channel(
+    link: &dyn Open,
+    session: &str,
+    from: Option<u64>,
+) -> Result<(Box<dyn Channel>, Attached), Error> {
+    let request = Attach {
+        session: session.to_owned(),
+        from,
+    };
+    let channel = link.open(protocol::ATTACH, &request.to_metadata()?)?;
+    loop {
+        let Some(frame) = channel.receive(None)? else {
+            return Err(Error::Closed);
+        };
+        match Attached::decode(&frame) {
+            Ok(attached) => return Ok((channel, attached)),
+            Err(bohio_proto::Error::Tag(_)) => {
+                if let Ok(Output::Error(body)) = Output::decode(&frame) {
+                    return Err(Error::Remote(body));
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
     }
 }
 

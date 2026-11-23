@@ -31,10 +31,12 @@ use bohio_proto::hash::{
     HashRequest, HashResult, ItemError,
 };
 use bohio_proto::info::{
-    CompressionInfo, DeltaInfo, ExecInfo, FilesystemInfo, HashLimits, Info, Levels, Limits,
-    PROTOCOL_VERSION, Service, SessionInfo, ShellInfo, TransferInfo,
+    CompressionInfo, DeltaInfo, DetachedInfo, ExecInfo, FilesystemInfo, HashLimits, Info, Levels,
+    Limits, PROTOCOL_VERSION, Service, SessionInfo, ShellInfo, TransferInfo,
 };
+use bohio_proto::session::{Attach, Attached, Kind, Listed, OnFull, SessionRequest};
 use bohio_proto::shell::{self, ShellKind, Size};
+use bohio_proto::signal::Signal;
 use bohio_proto::{Error, ErrorBody, ErrorCode, decode, encode};
 use ciborium::Value as Cbor;
 use serde::Serialize;
@@ -197,8 +199,20 @@ fn sample_info() -> Info {
             case_sensitive: true,
             separator: "/".into(),
         },
-        exec: ExecInfo { enabled: true },
-        shell: SessionInfo { enabled: true },
+        exec: ExecInfo {
+            enabled: true,
+            signals: Signal::ALL.to_vec(),
+        },
+        shell: SessionInfo {
+            enabled: true,
+            signals: vec![Signal::Interrupt, Signal::Terminate, Signal::Kill],
+        },
+        sessions: DetachedInfo {
+            enabled: true,
+            scrollback: 1_048_576,
+            max_scrollback: 16_777_216,
+            linger_ms: 86_400_000,
+        },
         limits: Limits {
             max_streams: Some(64),
             max_processes: Some(16),
@@ -483,6 +497,61 @@ fn control() -> Vec<Case> {
             }),
         ),
         response("done_reply", 5, Reply::Done),
+        request("sessions", 40, Call::Sessions),
+        request(
+            "end_session_interrupt",
+            41,
+            Call::EndSession {
+                id: "00112233445566778899aabbccddeeff".into(),
+                signal: Some(Signal::Interrupt),
+            },
+        ),
+        request(
+            "end_session_default",
+            42,
+            Call::EndSession {
+                id: "00112233445566778899aabbccddeeff".into(),
+                signal: None,
+            },
+        ),
+        response(
+            "sessions_reply",
+            43,
+            Reply::Sessions {
+                sessions: vec![
+                    Listed {
+                        id: "00112233445566778899aabbccddeeff".into(),
+                        name: Some("build".into()),
+                        kind: Kind::Exec,
+                        program: "make".into(),
+                        started: Timestamp {
+                            secs: 1_700_000_000,
+                            nanos: 5,
+                        },
+                        attached: false,
+                        exit: None,
+                        next: 1024,
+                        buffered: 1024,
+                        peer: None,
+                    },
+                    Listed {
+                        id: "ffeeddccbbaa99887766554433221100".into(),
+                        name: None,
+                        kind: Kind::Shell,
+                        program: "bash".into(),
+                        started: Timestamp::default(),
+                        attached: true,
+                        exit: Some(exec::Exit {
+                            code: Some(0),
+                            ..exec::Exit::default()
+                        }),
+                        next: 7,
+                        buffered: 7,
+                        peer: Some("sha256:ab".into()),
+                    },
+                ],
+            },
+        ),
         response("link_reply", 10, Reply::Link { target: "a".into() }),
     ];
     for (name, code) in [
@@ -567,6 +636,19 @@ fn exec_cases() -> Vec<Case> {
     };
     full.stdin = Stdin::Open;
     full.timeout_ms = Some(1500);
+    let mut detached = exec::Request::argv(["make", "all"]);
+    detached.session = Some(SessionRequest {
+        name: Some("build".into()),
+        scrollback: Some(65536),
+        on_full: Some(OnFull::DropOldest),
+        linger_ms: Some(60_000),
+        detach: true,
+    });
+    let signalled_reply = |signal, delivered, message: Option<&str>| exec::Signalled {
+        signal,
+        delivered,
+        message: message.map(str::to_owned),
+    };
     let exit = exec::Exit {
         code: Some(3),
         signal: None,
@@ -600,6 +682,7 @@ fn exec_cases() -> Vec<Case> {
             &exec::Request::argv(["echo", "hello"]),
         ),
         message("open_full", OPEN, "open", "exec.Request", &full),
+        message("open_session", OPEN, "open", "exec.Request", &detached),
         message(
             "open_shell_script",
             OPEN,
@@ -641,12 +724,43 @@ fn exec_cases() -> Vec<Case> {
                 pid: 4242,
                 output_compression: Some(Compression::new(Codec::Zstd).level(3)),
                 stdin_compression: Some(Compression::new(Codec::Lz4)),
+                session: None,
             }),
             to_json(&exec::Started {
                 pid: 4242,
                 output_compression: Some(Compression::new(Codec::Zstd).level(3)),
                 stdin_compression: Some(Compression::new(Codec::Lz4)),
+                session: None,
             }),
+        ),
+        output(
+            "started_session",
+            exec::Output::Started(exec::Started {
+                session: Some("00112233445566778899aabbccddeeff".into()),
+                ..exec::Started::new(4242)
+            }),
+            to_json(&exec::Started {
+                session: Some("00112233445566778899aabbccddeeff".into()),
+                ..exec::Started::new(4242)
+            }),
+        ),
+        output(
+            "signalled_delivered",
+            exec::Output::Signalled(signalled_reply(Signal::Interrupt, true, None)),
+            to_json(&signalled_reply(Signal::Interrupt, true, None)),
+        ),
+        output(
+            "signalled_refused",
+            exec::Output::Signalled(signalled_reply(
+                Signal::User1,
+                false,
+                Some("Windows has no such signal"),
+            )),
+            to_json(&signalled_reply(
+                Signal::User1,
+                false,
+                Some("Windows has no such signal"),
+            )),
         ),
         output(
             "stdout_compressed",
@@ -687,6 +801,20 @@ fn exec_cases() -> Vec<Case> {
         ),
         input("stdin_end", exec::Input::StdinEnd, Value::Null),
         input("kill", exec::Input::Kill, Value::Null),
+        input(
+            "signal_interrupt",
+            exec::Input::Signal(Signal::Interrupt),
+            to_json(&bohio_proto::signal::SignalRequest {
+                signal: Signal::Interrupt,
+            }),
+        ),
+        input(
+            "signal_user2",
+            exec::Input::Signal(Signal::User2),
+            to_json(&bohio_proto::signal::SignalRequest {
+                signal: Signal::User2,
+            }),
+        ),
         Case {
             name: "unknown_tag_from_the_host".into(),
             direction: TO_CLIENT,
@@ -715,10 +843,32 @@ fn shell_cases() -> Vec<Case> {
     by_argv.cwd = Some("/srv".into());
     by_argv.cols = 132;
     by_argv.rows = 43;
+    let mut with_deadline = shell::Request::argv(["/usr/bin/top"]);
+    with_deadline.timeout_ms = Some(30_000);
+    let mut detached = shell::Request::kind(ShellKind::Bash);
+    detached.session = Some(SessionRequest {
+        name: None,
+        scrollback: Some(8192),
+        on_full: None,
+        linger_ms: None,
+        detach: false,
+    });
     let exit = shell::Exit {
         code: Some(0),
         signal: None,
+        timed_out: false,
         killed: false,
+    };
+    let deadline_exit = shell::Exit {
+        code: None,
+        signal: Some(9),
+        timed_out: true,
+        killed: true,
+    };
+    let answer = shell::Signalled {
+        signal: Signal::Terminate,
+        delivered: true,
+        message: None,
     };
     let output = |name: &str, value: shell::Output, body: Value| {
         frame(
@@ -741,10 +891,39 @@ fn shell_cases() -> Vec<Case> {
             &shell::Request::kind(ShellKind::Bash),
         ),
         message("open_argv_sized", OPEN, "open", "shell.Request", &by_argv),
+        message(
+            "open_argv_with_deadline",
+            OPEN,
+            "open",
+            "shell.Request",
+            &with_deadline,
+        ),
+        message("open_session", OPEN, "open", "shell.Request", &detached),
         output(
             "started",
-            shell::Output::Started(shell::Started { pid: 77 }),
-            to_json(&shell::Started { pid: 77 }),
+            shell::Output::Started(shell::Started::new(77)),
+            to_json(&shell::Started::new(77)),
+        ),
+        output(
+            "started_session",
+            shell::Output::Started(shell::Started {
+                pid: 77,
+                session: Some("ffeeddccbbaa99887766554433221100".into()),
+            }),
+            to_json(&shell::Started {
+                pid: 77,
+                session: Some("ffeeddccbbaa99887766554433221100".into()),
+            }),
+        ),
+        output(
+            "signalled",
+            shell::Output::Signalled(answer.clone()),
+            to_json(&answer),
+        ),
+        output(
+            "exit_at_the_deadline",
+            shell::Output::Exit(deadline_exit),
+            to_json(&deadline_exit),
         ),
         output(
             "data",
@@ -770,6 +949,78 @@ fn shell_cases() -> Vec<Case> {
             }),
         ),
         input("kill", shell::Input::Kill, Value::Null),
+        input(
+            "signal_interrupt",
+            shell::Input::Signal(Signal::Interrupt),
+            to_json(&bohio_proto::signal::SignalRequest {
+                signal: Signal::Interrupt,
+            }),
+        ),
+    ]
+}
+
+fn attach_cases() -> Vec<Case> {
+    let attached = |name: &str, value: Attached| {
+        frame(
+            name,
+            TO_CLIENT,
+            "session.Attached",
+            value.encode().unwrap(),
+            to_json(&value),
+        )
+    };
+    vec![
+        message(
+            "open_from_start",
+            OPEN,
+            "open",
+            "session.Attach",
+            &Attach {
+                session: "00112233445566778899aabbccddeeff".into(),
+                from: Some(0),
+            },
+        ),
+        message(
+            "open_only_what_comes_next",
+            OPEN,
+            "open",
+            "session.Attach",
+            &Attach {
+                session: "00112233445566778899aabbccddeeff".into(),
+                from: None,
+            },
+        ),
+        attached(
+            "attached_exec",
+            Attached {
+                kind: Kind::Exec,
+                from: 0,
+                lost: 0,
+            },
+        ),
+        attached(
+            "attached_shell_with_loss",
+            Attached {
+                kind: Kind::Shell,
+                from: 4096,
+                lost: 4096,
+            },
+        ),
+        frame(
+            "error_not_found",
+            TO_CLIENT,
+            "exec.Output",
+            exec::Output::Error(ErrorBody::new(
+                ErrorCode::NotFound,
+                "there is no such session",
+            ))
+            .encode()
+            .unwrap(),
+            to_json(&ErrorBody::new(
+                ErrorCode::NotFound,
+                "there is no such session",
+            )),
+        ),
     ]
 }
 
@@ -1694,6 +1945,7 @@ fn files() -> Vec<(&'static str, &'static str, Vec<Case>)> {
         ("gui.json", "bohio-gui/1", gui_cases()),
         ("listen.json", "bohio-listen/1", listen_cases()),
         ("accept.json", "bohio-accept/1", accept_cases()),
+        ("attach.json", "bohio-attach/1", attach_cases()),
     ]
 }
 
@@ -1731,6 +1983,8 @@ fn decode_error(ty: &str, bytes: &[u8]) -> Result<(), Error> {
         "hash.Request" => HashRequest::from_metadata(bytes).map(|_| ()),
         "hash.Output" => HashOutput::decode(bytes).map(|_| ()),
         "hash.Input" => HashInput::decode(bytes).map(|_| ()),
+        "session.Attach" => Attach::from_metadata(bytes).map(|_| ()),
+        "session.Attached" => Attached::decode(bytes).map(|_| ()),
         "forward.ConnectRequest" => ConnectRequest::from_metadata(bytes).map(|_| ()),
         "forward.Answer" => Answer::decode(bytes).map(|_| ()),
         "forward.ListenRequest" => ListenRequest::from_metadata(bytes).map(|_| ()),
@@ -1801,6 +2055,8 @@ fn check(entry: &Value) {
         "fs.WriteInput" => check_frame(entry, &bytes, WriteInput::decode, WriteInput::encode),
         "hash.Output" => check_frame(entry, &bytes, HashOutput::decode, |v| v.encode().unwrap()),
         "hash.Input" => check_frame(entry, &bytes, HashInput::decode, |v| v.encode().unwrap()),
+        "session.Attach" => check_message::<Attach>(entry, &bytes),
+        "session.Attached" => check_frame(entry, &bytes, Attached::decode, |v| v.encode().unwrap()),
         "forward.ConnectRequest" => check_message::<ConnectRequest>(entry, &bytes),
         "forward.Answer" => check_frame(entry, &bytes, Answer::decode, |v| v.encode().unwrap()),
         "forward.ListenRequest" => check_message::<ListenRequest>(entry, &bytes),

@@ -69,11 +69,16 @@ pub enum Permission {
     /// pipe) and hand each connection it takes to the peer.
     #[serde(rename = "forward.listen")]
     ForwardListen,
+    /// Start exec programs and shells that keep running when their stream ends, and attach to, list and end the ones this
+    /// peer started (with `exec` or `shell` for what runs). A session outlives the peer's link until its linger, so
+    /// the permission is a standing right to run a program on this host.
+    #[serde(rename = "session")]
+    Session,
 }
 
 impl Permission {
     /// Every permission, in order.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Info,
         Self::FsRead,
         Self::FsWrite,
@@ -85,6 +90,7 @@ impl Permission {
         Self::GuiInput,
         Self::GuiClipboard,
         Self::ForwardListen,
+        Self::Session,
     ];
 
     /// The permission named `name` as `bohio.cfg` writes it.
@@ -108,6 +114,7 @@ impl Permission {
             Self::GuiInput => "gui.input",
             Self::GuiClipboard => "gui.clipboard",
             Self::ForwardListen => "forward.listen",
+            Self::Session => "session",
         }
     }
 }

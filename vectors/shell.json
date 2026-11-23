@@ -48,6 +48,54 @@
       }
     },
     {
+      "direction": "client_to_host",
+      "hex": "a66770726f6772616da2647479706564617267766461726776816c2f7573722f62696e2f746f7063637764f663656e76a365636c656172f463736574a06672656d6f76658064636f6c73185064726f777318186a74696d656f75745f6d73197530",
+      "kind": "open",
+      "name": "open_argv_with_deadline",
+      "type": "shell.Request",
+      "value": {
+        "cols": 80,
+        "cwd": null,
+        "env": {
+          "clear": false,
+          "remove": [],
+          "set": {}
+        },
+        "program": {
+          "argv": [
+            "/usr/bin/top"
+          ],
+          "type": "argv"
+        },
+        "rows": 24,
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a66770726f6772616da26474797065646b696e64646b696e64646261736863637764f663656e76a365636c656172f463736574a06672656d6f76658064636f6c73185064726f777318186773657373696f6ea16a7363726f6c6c6261636b192000",
+      "kind": "open",
+      "name": "open_session",
+      "type": "shell.Request",
+      "value": {
+        "cols": 80,
+        "cwd": null,
+        "env": {
+          "clear": false,
+          "remove": [],
+          "set": {}
+        },
+        "program": {
+          "kind": "bash",
+          "type": "kind"
+        },
+        "rows": 24,
+        "session": {
+          "scrollback": 8192
+        }
+      }
+    },
+    {
       "direction": "host_to_client",
       "hex": "01a163706964184d",
       "kind": "frame",
@@ -58,6 +106,50 @@
           "pid": 77
         },
         "tag": 1
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "01a263706964184d6773657373696f6e78206666656564646363626261613939383837373636353534343333323231313030",
+      "kind": "frame",
+      "name": "started_session",
+      "type": "shell.Output",
+      "value": {
+        "message": {
+          "pid": 77,
+          "session": "ffeeddccbbaa99887766554433221100"
+        },
+        "tag": 1
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "08a2667369676e616c697465726d696e6174656964656c697665726564f5",
+      "kind": "frame",
+      "name": "signalled",
+      "type": "shell.Output",
+      "value": {
+        "message": {
+          "delivered": true,
+          "signal": "terminate"
+        },
+        "tag": 8
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "04a464636f6465f6667369676e616c096974696d65645f6f7574f5666b696c6c6564f5",
+      "kind": "frame",
+      "name": "exit_at_the_deadline",
+      "type": "shell.Output",
+      "value": {
+        "message": {
+          "code": null,
+          "killed": true,
+          "signal": 9,
+          "timed_out": true
+        },
+        "tag": 4
       }
     },
     {
@@ -73,7 +165,7 @@
     },
     {
       "direction": "host_to_client",
-      "hex": "04a364636f646500667369676e616cf6666b696c6c6564f4",
+      "hex": "04a464636f646500667369676e616cf66974696d65645f6f7574f4666b696c6c6564f4",
       "kind": "frame",
       "name": "exit",
       "type": "shell.Output",
@@ -81,7 +173,8 @@
         "message": {
           "code": 0,
           "killed": false,
-          "signal": null
+          "signal": null,
+          "timed_out": false
         },
         "tag": 4
       }
@@ -133,6 +226,19 @@
       "type": "shell.Input",
       "value": {
         "tag": 18
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "15a1667369676e616c69696e74657272757074",
+      "kind": "frame",
+      "name": "signal_interrupt",
+      "type": "shell.Input",
+      "value": {
+        "message": {
+          "signal": "interrupt"
+        },
+        "tag": 21
       }
     }
   ]

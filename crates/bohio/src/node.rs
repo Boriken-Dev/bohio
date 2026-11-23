@@ -50,7 +50,7 @@ use crate::pair::PairState;
 use crate::pair::{Answered, answer};
 pub use crate::pair::{Armed, PairEnd};
 use crate::policy::Grant;
-use crate::{control, exec, forward, fs, info, shell};
+use crate::{control, exec, forward, fs, info, session, shell};
 
 /// Why a node could not start.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -104,10 +104,11 @@ struct Shared {
     grants: Arc<dyn Grants>,
     path: OsString,
     info: Info,
-    processes: Slots,
+    processes: Arc<Slots>,
     transfers: Slots,
     hashes: Slots,
-    sessions: Slots,
+    sessions: Arc<Slots>,
+    detached: Arc<session::Sessions>,
     forwards: Slots,
     forwards_per_peer: Counted<String>,
     listeners: forward::Listeners,
@@ -123,6 +124,7 @@ impl Shared {
         path: OsString,
         events: &Arc<EventCell>,
         gui: &Arc<GuiState>,
+        keys: &Arc<dyn Keys>,
     ) -> Arc<Self> {
         if let Some(dir) = &config.compression.prepare_dir {
             crate::fs::sweep_prepared(dir, config.compression.prepare_ttl.0);
@@ -134,10 +136,16 @@ impl Shared {
             grants: Arc::clone(grants),
             path,
             info: capabilities,
-            processes: Slots::new(config.execution.max_processes),
+            processes: Arc::new(Slots::new(config.execution.max_processes)),
             transfers: Slots::new(config.filesystem.max_transfers),
             hashes: Slots::new(config.hash.max_streams),
-            sessions: Slots::new(config.shell.max_sessions),
+            sessions: Arc::new(Slots::new(config.shell.max_sessions)),
+            detached: session::Sessions::new(
+                &config.sessions,
+                Arc::clone(grants),
+                Arc::clone(keys),
+                Arc::clone(events) as Arc<dyn NodeEvents>,
+            ),
             forwards: Slots::new(config.forward.max_connections),
             forwards_per_peer: Counted::new(config.forward.max_connections_per_peer),
             listeners: forward::Listeners::new(&config.forward),
@@ -452,7 +460,15 @@ impl Node {
         Ok(Self {
             identity,
             registry: Arc::default(),
-            shared: Shared::new(&config, &grants, host, OsString::new(), &events, &gui),
+            shared: Shared::new(
+                &config,
+                &grants,
+                host,
+                OsString::new(),
+                &events,
+                &gui,
+                &keys,
+            ),
             gui,
             peers: NodePeers::new(Arc::clone(&keys), Arc::clone(&grants)),
             grants,
@@ -488,6 +504,7 @@ impl Node {
             path,
             &self.events,
             &self.gui,
+            &self.keys,
         );
         self
     }
@@ -1198,6 +1215,43 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
             slots: &shared.transfers,
         };
         match accepted.protocol.as_str() {
+            protocol::EXEC if session::wants_exec(metadata) => {
+                let host = session::ExecHost {
+                    grant: &grant,
+                    config: &config.execution,
+                    compression: &config.compression,
+                    slots: &shared.processes,
+                    path: &shared.path,
+                };
+                match shared.detached.serve_exec(&channel, metadata, &peer, &host) {
+                    Ok(ended) => finish_attached(&relay, ended),
+                    Err(error) => tracing::info!(code = ?error.code, "session refused"),
+                }
+            }
+            protocol::SHELL if session::wants_shell(metadata) => {
+                let host = session::ShellHost {
+                    grant: &grant,
+                    config: &config.shell,
+                    slots: &shared.sessions,
+                    path: &shared.path,
+                };
+                match shared
+                    .detached
+                    .serve_shell(&channel, metadata, &peer, &host)
+                {
+                    Ok(ended) => finish_attached(&relay, ended),
+                    Err(error) => tracing::info!(code = ?error.code, "session refused"),
+                }
+            }
+            protocol::ATTACH => {
+                match shared
+                    .detached
+                    .serve_attach(&channel, metadata, &peer, &grant)
+                {
+                    Ok(ended) => finish_attached(&relay, ended),
+                    Err(error) => tracing::info!(code = ?error.code, "attach refused"),
+                }
+            }
             protocol::EXEC => {
                 let context = exec::Context {
                     grant: &grant,
@@ -1263,6 +1317,10 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
                     info: &shared.info,
                     current: Some(control::Current(&now)),
                     gui: Some(control::GuiProbe(&probe)),
+                    sessions: Some(control::SessionsView {
+                        registry: &shared.detached,
+                        peer: &peer,
+                    }),
                 };
                 let answered = control::serve(&channel, &context);
                 tracing::debug!(answered, "control ended");
@@ -1271,6 +1329,16 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
         }
         relay.close();
     });
+}
+
+/// Closes an attached stream as the way it ended says: another attach took its place, or it is done.
+fn finish_attached(relay: &bohio_client::relay::Relay, ended: session::Ended) {
+    if ended == session::Ended::Superseded {
+        relay.close_with(
+            CloseReason::Superseded,
+            "another stream attached to the session",
+        );
+    }
 }
 
 impl Node {

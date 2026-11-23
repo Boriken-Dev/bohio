@@ -73,14 +73,18 @@ impl Running {
 
     /// As [`Running::with`], with `link` as the link's settings (its re-check interval is the tests').
     pub fn with_link(forward: ForwardConfig, link: LinkConfig) -> Self {
-        let config = NodeConfig {
+        Self::with_node(NodeConfig {
             link: LinkConfig {
                 recheck: Span(RECHECK),
                 ..link
             },
             forward,
             ..NodeConfig::default()
-        };
+        })
+    }
+
+    /// A node with exactly `config`.
+    pub fn with_node(config: NodeConfig) -> Self {
         let identity = Identity::generate(Method::DEFAULT).expect("an identity");
         let id = identity.peer_id();
         let keys = Arc::new(MemoryKeys::new());
@@ -126,24 +130,107 @@ impl Running {
         let peer = identity.peer_id();
         self.keys.accept(peer);
         self.grants.set(peer, grant);
-        let proof = Proof::builder(identity)
+        (self.link_as(&identity, self.address), peer)
+    }
+
+    /// A link to the node as `identity` (accepted and granted by the caller), dialing `address`: the node's own, or a
+    /// [`Proxy`]'s in front of it.
+    pub fn link_as(&self, identity: &Identity, address: SocketAddr) -> Connection {
+        let proof = Proof::builder(identity.clone())
             .responders(Trust::pinned([self.id]))
             .build()
             .expect("a proof");
-        let link = Connection::connect_tcp(
-            self.address,
+        Connection::connect_tcp(
+            address,
             Duration::from_secs(10),
             &proof,
             &Settings::default(),
         )
-        .expect("the link is up");
-        (link, peer)
+        .expect("the link is up")
+    }
+
+    /// A new identity the node accepts, holding `grant`.
+    pub fn peer(&self, grant: Grant) -> Identity {
+        let identity = Identity::generate(Method::DEFAULT).expect("an identity");
+        self.keys.accept(identity.peer_id());
+        self.grants.set(identity.peer_id(), grant);
+        identity
     }
 }
 
 impl Drop for Running {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// A TCP relay in front of a node that can be cut the way a lost network cuts a link: both of its connections close at
+/// once and nothing says goodbye to the link's own streams.
+pub struct Proxy {
+    pub address: SocketAddr,
+    connections: Arc<Mutex<Vec<TcpStream>>>,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Proxy {
+    pub fn to(target: SocketAddr) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
+        listener.set_nonblocking(true).expect("non-blocking");
+        let address = listener.local_addr().expect("an address");
+        let connections: Arc<Mutex<Vec<TcpStream>>> = Arc::default();
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = thread::spawn({
+            let (connections, stop) = (Arc::clone(&connections), Arc::clone(&stop));
+            move || {
+                while !stop.load(Ordering::SeqCst) {
+                    let Ok((from, _)) = listener.accept() else {
+                        thread::sleep(Duration::from_millis(5));
+                        continue;
+                    };
+                    let _ = from.set_nonblocking(false);
+                    let Ok(to) = TcpStream::connect(target) else {
+                        continue;
+                    };
+                    let _ = (from.set_nodelay(true), to.set_nodelay(true));
+                    let mut held = connections.lock().unwrap();
+                    for (mut source, mut sink) in [
+                        (from.try_clone().unwrap(), to.try_clone().unwrap()),
+                        (to.try_clone().unwrap(), from.try_clone().unwrap()),
+                    ] {
+                        thread::spawn(move || {
+                            let _ = std::io::copy(&mut source, &mut sink);
+                            let _ = sink.shutdown(std::net::Shutdown::Both);
+                        });
+                    }
+                    held.push(from);
+                    held.push(to);
+                }
+            }
+        });
+        Self {
+            address,
+            connections,
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    /// Cuts every connection through the proxy, at the sockets and without a word to the streams on them.
+    pub fn sever(&self) {
+        for connection in self.connections.lock().unwrap().drain(..) {
+            let _ = connection.shutdown(std::net::Shutdown::Both);
+        }
+    }
+}
+
+impl Drop for Proxy {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        self.sever();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }

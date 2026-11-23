@@ -32,7 +32,7 @@ pub(super) fn exit_of(status: std::process::ExitStatus) -> super::ProcessExit {
 }
 
 #[cfg(unix)]
-pub(super) use self::unix::{Tree, contain, end, end_group, poll, poll_id, prepare};
+pub(super) use self::unix::{Tree, contain, end, end_group, poll, poll_id, prepare, send_group};
 #[cfg(windows)]
 pub(super) use self::windows::{Tree, contain_handle, end, end_tree, job, poll};
 
@@ -65,6 +65,33 @@ mod unix {
     /// process.
     pub(in crate::platform) fn end(_tree: &Tree, child: &Child) {
         end_group(child.id());
+    }
+
+    /// Sends `signal` to the process group `leader` leads, which must not have been collected yet. `false` when
+    /// no process is left in it or the signal is refused.
+    pub(in crate::platform) fn send_group(
+        leader: u32,
+        signal: bohio_proto::signal::Signal,
+    ) -> bool {
+        use bohio_proto::signal::Signal;
+        use rustix::process::{Pid, Signal as Sys, kill_process_group};
+        let Some(group) = i32::try_from(leader)
+            .ok()
+            .filter(|pid| *pid > 1)
+            .and_then(Pid::from_raw)
+        else {
+            return false;
+        };
+        let sys = match signal {
+            Signal::Interrupt => Sys::INT,
+            Signal::Terminate => Sys::TERM,
+            Signal::Hangup => Sys::HUP,
+            Signal::Quit => Sys::QUIT,
+            Signal::User1 => Sys::USR1,
+            Signal::User2 => Sys::USR2,
+            _ => Sys::KILL,
+        };
+        kill_process_group(group, sys).is_ok()
     }
 
     /// As [`end`], for a process this module did not start (it only needs the id of the leader
