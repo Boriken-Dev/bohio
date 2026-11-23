@@ -33,6 +33,23 @@ pub(crate) fn fitted(
     (round(width), round(height))
 }
 
+/// `frame` scaled to `size` (a copy of it when that is its own size).
+#[cfg(feature = "gui")]
+pub(crate) fn resized(frame: &Frame, size: (u32, u32)) -> Result<Frame, GuiError> {
+    use image::RgbImage;
+    use image::imageops::{self, FilterType};
+
+    let internal = |message| GuiError::new(bohio_proto::ErrorCode::Internal, message);
+    let image = RgbImage::from_raw(frame.width(), frame.height(), frame.rgb().to_vec())
+        .ok_or_else(|| internal("the picture does not match its size"))?;
+    let scaled = if size == (frame.width(), frame.height()) {
+        image
+    } else {
+        imageops::resize(&image, size.0, size.1, FilterType::Triangle)
+    };
+    Frame::new(size.0, size.1, scaled.into_raw())
+}
+
 #[cfg(feature = "gui")]
 pub(crate) fn encode(
     frame: &Frame,

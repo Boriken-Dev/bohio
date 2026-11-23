@@ -10,7 +10,7 @@
 mod gui;
 mod layers;
 
-pub use gui::{ApprovalMode, BACKENDS, GuiConfig, Indicator};
+pub use gui::{ApprovalMode, BACKENDS, GuiConfig, Indicator, LadderStep};
 pub use layers::{Layered, Layers};
 
 use std::ffi::OsString;

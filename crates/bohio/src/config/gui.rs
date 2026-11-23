@@ -30,7 +30,7 @@ pub enum ApprovalMode {
 
 /// `[gui]`: the desktop, as a host offers it. Every permission is off by default: a peer needs `gui.view`, `gui.input` or
 /// `gui.clipboard` in its own table, and the host needs `enabled = true`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct GuiConfig {
     /// Whether the host serves its desktop at all. Default `false`.
@@ -83,6 +83,51 @@ pub struct GuiConfig {
     pub state_interval: Span,
     /// How long a stream may go without a request before the host ends it and frees its slot. Not zero. Default `30m`.
     pub idle_timeout: Span,
+    /// Updates a second a watch sends when it names no rate. At least 1. Default `5`.
+    pub default_fps: u32,
+    /// The most updates a second a watch may ask for; a request for more gets this. At least 1. Default `15`.
+    pub max_fps: u32,
+    /// The fewest updates a second the adaptive stream falls to. At least 1. Default `1`.
+    pub min_fps: u32,
+    /// The side of the tiles a frame is compared in, in pixels; a changed tile is resent. At least 1. Default `64`.
+    pub tile: u32,
+    /// The most updates a watch sends before the client acknowledges one; nothing queues past it. At least 1. Default `2`.
+    pub frames_in_flight: u32,
+    /// What a rectangle may cost, in bytes a pixel after zstd, to be sent lossless when a watch leaves the choice to the
+    /// host (`auto`); one that costs more goes as JPEG. Above 0. Default `0.75`.
+    pub lossless_max_bpp: f64,
+    /// How long a rectangle sent as JPEG stays unchanged before it is resent lossless. Not zero. Default `1s`.
+    pub refine_after: Span,
+    /// The zstd level of `zstd_rgb` rectangles; the host's compression limits apply. Default `3`.
+    pub zstd_level: i32,
+    /// The JPEG quality a watch starts at when it names none, 1 to 100. Default `90`.
+    pub watch_quality: u8,
+    /// Whether the host lowers a watch's quality, size and rate when the client acknowledges updates late, and raises
+    /// them when it acknowledges them early. Without it a watch keeps what it asked for and the link sets the pace.
+    /// Default `true`.
+    pub adapt: bool,
+    /// The steps below full quality, each `QUALITY` or `QUALITY@SCALE` (a JPEG quality, 1 to 100, and a scale above 0 and
+    /// at most 1); the rate halves, down to `min_fps`, past the last. Default `85`, `70`, `50`, `50@0.75`, `40@0.5`.
+    pub adapt_ladder: Vec<String>,
+    /// How many of the latest acknowledgements the least delay is taken from: a delay is judged by what it exceeds that
+    /// least by, so the link round trip is not lateness. At least 1. Default `32`.
+    pub adapt_window: usize,
+    /// Consecutive late acknowledgements that step down. At least 1. Default `3`.
+    pub adapt_down_after: u32,
+    /// Consecutive early acknowledgements that step up. At least 1. Default `5`.
+    pub adapt_up_after: u32,
+    /// An acknowledgement that exceeds the window least delay by more than this many requested frame intervals is late.
+    /// Above 0. Default `1.5`.
+    pub adapt_late: f64,
+    /// An acknowledgement that exceeds it by no more than this many requested frame intervals is early. Above 0. Default
+    /// `0.5`.
+    pub adapt_early: f64,
+    /// The most bytes a watch's updates add up to in a second, whatever the link allows; a client may ask for less.
+    /// Unset is no cap beyond the adaptive stream. Not zero.
+    pub max_rate: Option<u64>,
+    /// The most bytes of one rectangle, and of one update's rectangles in all, that a client holds. At least 1. Default
+    /// `33554432`.
+    pub max_rect_bytes: u64,
     /// Whether the person at the screen gets a notice. Default `notify`.
     pub indicator: Indicator,
     /// How long a peer's engagement lasts after its last stream closes, so an agent that opens many short streams makes one
@@ -121,12 +166,54 @@ impl Default for GuiConfig {
             poll_interval: Span(Duration::from_millis(50)),
             state_interval: Span(Duration::from_millis(500)),
             idle_timeout: Span(Duration::from_secs(30 * 60)),
+            default_fps: 5,
+            max_fps: 15,
+            min_fps: 1,
+            tile: 64,
+            frames_in_flight: 2,
+            lossless_max_bpp: 0.75,
+            refine_after: Span(Duration::from_secs(1)),
+            zstd_level: 3,
+            watch_quality: 90,
+            adapt: true,
+            adapt_ladder: ["85", "70", "50", "50@0.75", "40@0.5"]
+                .map(str::to_owned)
+                .to_vec(),
+            adapt_window: 32,
+            adapt_down_after: 3,
+            adapt_up_after: 5,
+            adapt_late: 1.5,
+            adapt_early: 0.5,
+            max_rate: None,
+            max_rect_bytes: 32 * 1024 * 1024,
             indicator: Indicator::Notify,
             indicator_linger: Span(Duration::from_secs(30)),
             approval: ApprovalMode::None,
             approval_timeout: Span(Duration::from_secs(60)),
             approval_ttl: Span(Duration::from_secs(15 * 60)),
         }
+    }
+}
+
+/// One step of the adaptive ladder: a JPEG quality and the scale of the frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LadderStep {
+    /// JPEG quality, 1 to 100.
+    pub quality: u8,
+    /// Frame pixels per display pixel, above 0 and at most 1.
+    pub scale: f64,
+}
+
+impl LadderStep {
+    /// Reads `QUALITY` or `QUALITY@SCALE`.
+    pub fn parse(text: &str) -> Option<Self> {
+        let (quality, scale) = match text.split_once('@') {
+            Some((quality, scale)) => (quality, scale.trim().parse::<f64>().ok()?),
+            None => (text, 1.0),
+        };
+        let quality: u8 = quality.trim().parse().ok()?;
+        ((1..=100).contains(&quality) && scale > 0.0 && scale <= 1.0)
+            .then_some(Self { quality, scale })
     }
 }
 
@@ -152,6 +239,16 @@ impl GuiConfig {
             ("gui.max_text", self.max_text == 0),
             ("gui.clipboard_max_bytes", self.clipboard_max_bytes == 0),
             ("gui.chunk_size", self.chunk_size == 0),
+            ("gui.default_fps", self.default_fps == 0),
+            ("gui.max_fps", self.max_fps == 0),
+            ("gui.min_fps", self.min_fps == 0),
+            ("gui.tile", self.tile == 0),
+            ("gui.frames_in_flight", self.frames_in_flight == 0),
+            ("gui.adapt_window", self.adapt_window == 0),
+            ("gui.adapt_down_after", self.adapt_down_after == 0),
+            ("gui.adapt_up_after", self.adapt_up_after == 0),
+            ("gui.max_rect_bytes", self.max_rect_bytes == 0),
+            ("gui.max_rate", self.max_rate == Some(0)),
         ] {
             if zero {
                 return Err((key, "must be at least 1"));
@@ -166,6 +263,7 @@ impl GuiConfig {
             ("gui.state_interval", self.state_interval.0.is_zero()),
             ("gui.idle_timeout", self.idle_timeout.0.is_zero()),
             ("gui.approval_timeout", self.approval_timeout.0.is_zero()),
+            ("gui.refine_after", self.refine_after.0.is_zero()),
         ] {
             if zero {
                 return Err((key, "must not be zero"));
@@ -176,6 +274,34 @@ impl GuiConfig {
         }
         if !(1..=100).contains(&self.jpeg_quality) {
             return Err(("gui.jpeg_quality", "must be from 1 to 100"));
+        }
+        if !(1..=100).contains(&self.watch_quality) {
+            return Err(("gui.watch_quality", "must be from 1 to 100"));
+        }
+        if self.default_fps > self.max_fps {
+            return Err(("gui.default_fps", "must not be more than gui.max_fps"));
+        }
+        if self.min_fps > self.max_fps {
+            return Err(("gui.min_fps", "must not be more than gui.max_fps"));
+        }
+        for (key, value) in [
+            ("gui.lossless_max_bpp", self.lossless_max_bpp),
+            ("gui.adapt_late", self.adapt_late),
+            ("gui.adapt_early", self.adapt_early),
+        ] {
+            if value.is_nan() || value <= 0.0 {
+                return Err((key, "must be above 0"));
+            }
+        }
+        if self
+            .adapt_ladder
+            .iter()
+            .any(|step| LadderStep::parse(step).is_none())
+        {
+            return Err((
+                "gui.adapt_ladder",
+                "each step is QUALITY or QUALITY@SCALE: a quality from 1 to 100 and a scale above 0 and at most 1",
+            ));
         }
         Ok(())
     }

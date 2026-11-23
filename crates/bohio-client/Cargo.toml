@@ -20,6 +20,8 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 # Decode zstd (the C library). Without it a reader that gets zstd compressed data reports it as unsupported.
 zstd = ["bohio-transfer/zstd"]
+# The screen of a `bohio-gui/1` watch: the compositor that builds the frame from updates (PNG and JPEG rectangles come from `image`).
+screen = ["bohio-transfer/screen"]
 
 [dependencies]
 bohio-transfer.workspace = true

@@ -94,6 +94,18 @@ impl Painted {
         paint(&mut self.lock().screens[display], rect, color);
     }
 
+    /// Fills a rectangle of a display with `color(x, y)` for each of its pixels.
+    pub fn paint_with(&self, display: usize, rect: Rect, color: impl Fn(u32, u32) -> [u8; 3]) {
+        let mut inner = self.lock();
+        let screen = &mut inner.screens[display];
+        for y in rect.y..(rect.y + rect.height).min(screen.height) {
+            for x in rect.x..(rect.x + rect.width).min(screen.width) {
+                let at = ((y * screen.width + x) * 3) as usize;
+                screen.rgb[at..at + 3].copy_from_slice(&color(x, y));
+            }
+        }
+    }
+
     /// Every input event the desktop took, as text: `press:leftx1@0:5,6`, `key:enter:click`, `text:abc`.
     pub fn log(&self) -> Vec<String> {
         self.lock().log.clone()

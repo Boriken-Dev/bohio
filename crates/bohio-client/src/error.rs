@@ -33,6 +33,10 @@ pub enum Error {
     /// never a path.
     #[error("a local file could not be used: {0}")]
     Local(String),
+    /// An update of a screen the host sent cannot be used: a rectangle outside the frame, bytes that do not decode, a size
+    /// past what this side holds. The text says which; it never carries pixels.
+    #[error("a screen update cannot be used: {0}")]
+    Screen(String),
     /// A file rebuilt from a delta does not have the digest the host reported for it: nothing was put in place.
     #[error("the rebuilt file does not match the digest the host reported")]
     Mismatch,

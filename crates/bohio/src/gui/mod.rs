@@ -9,6 +9,8 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "gui")]
+mod adapt;
 mod desktop;
 mod encode;
 mod limits;
@@ -16,6 +18,40 @@ mod limits;
 mod notify;
 pub mod presence;
 mod settle;
+#[cfg(feature = "gui")]
+mod stream;
+/// Without the `gui` feature a watch is `unsupported`: there are no encoders for its rectangles.
+#[cfg(not(feature = "gui"))]
+mod stream {
+    use super::{Duration, ErrorBody, ErrorCode, Reply, Stream};
+
+    pub(super) struct Watching;
+
+    impl Stream<'_> {
+        pub(super) fn watch(&mut self, _: &bohio_proto::gui::Watch) -> Reply {
+            Err(ErrorBody::new(
+                ErrorCode::Unsupported,
+                "this build of the host has no image encoders",
+            ))
+        }
+
+        pub(super) fn unwatch(&mut self) -> Reply {
+            Ok(())
+        }
+
+        pub(super) fn ack(&mut self, _: &bohio_proto::gui::Ack) -> Reply {
+            Ok(())
+        }
+
+        pub(super) fn wake_in(&self, poll: Duration) -> Duration {
+            poll
+        }
+
+        pub(super) fn tick(&mut self) -> bool {
+            true
+        }
+    }
+}
 
 pub use desktop::{Capabilities, Desktop, DesktopState, Frame, GuiError};
 #[cfg(feature = "notify")]
@@ -348,6 +384,7 @@ fn open(
         rate: InputRate::new(config.max_input_rate),
         last_state: state.wire(),
         chunk: chunk_size(channel.as_ref(), config.chunk_size),
+        watch: None,
     };
     let ready = GuiOutput::Ready(Ready {
         session: SESSION.to_owned(),
@@ -436,6 +473,12 @@ struct Stream<'a> {
     rate: InputRate,
     last_state: State,
     chunk: usize,
+    /// The screen being watched, when a `watch` is running.
+    #[cfg_attr(
+        not(feature = "gui"),
+        allow(dead_code, reason = "a build without images never starts a watch")
+    )]
+    watch: Option<stream::Watching>,
 }
 
 type Reply = Result<(), ErrorBody>;
@@ -474,7 +517,7 @@ impl Stream<'_> {
         let mut last_request = Instant::now();
         let mut next_state = Instant::now() + interval;
         loop {
-            match self.channel.receive(Some(poll)) {
+            match self.channel.receive(Some(self.wake_in(poll))) {
                 Ok(Some(frame)) => {
                     last_request = Instant::now();
                     if !self.handle(&frame) {
@@ -487,6 +530,9 @@ impl Stream<'_> {
                     }
                 }
                 Ok(None) | Err(_) => return,
+            }
+            if !self.tick() {
+                return;
             }
             if Instant::now() >= next_state {
                 next_state = Instant::now() + interval;
@@ -527,6 +573,9 @@ impl Stream<'_> {
             GuiInput::Snapshot(request) => (request.seq, self.snapshot(&request)),
             GuiInput::Input(request) => (request.seq, self.input(&request)),
             GuiInput::Settle(request) => (request.seq, self.settle(&request)),
+            GuiInput::Watch(request) => (request.seq, self.watch(&request)),
+            GuiInput::Unwatch(request) => (request.seq, self.unwatch()),
+            GuiInput::Ack(request) => (0, self.ack(&request)),
             GuiInput::ClipboardGet(request) => (request.seq, self.clipboard_get(&request)),
             GuiInput::ClipboardSet(request) => (request.seq, self.clipboard_set(&request)),
             _ => return true,

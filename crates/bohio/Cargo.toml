@@ -32,8 +32,8 @@ zstd = ["bohio-transfer/zstd", "bohio-client/zstd"]
 zstdmt = ["zstd", "bohio-transfer/zstdmt"]
 # The `bohio` command: arguments, output and the diagnostics subscriber. An embedding host takes the library alone.
 cli = ["dep:clap", "dep:tracing-subscriber", "dep:serde_json", "dep:crossterm", "dep:ctrlc", "dep:windows-service", "notify"]
-# Desktop access (`bohio-gui/1`): snapshot encoding (PNG, JPEG, lossless WebP) and resizing. Without it a host has the engine and no image format, so a snapshot is `unsupported`.
-gui = ["dep:image", "dep:image-webp"]
+# Desktop access (`bohio-gui/1`): snapshot encoding (PNG, JPEG, lossless WebP), resizing, and the tiles and rectangle encodings of a watch. Without it a host has the engine and no image format, so a snapshot is `unsupported`.
+gui = ["dep:image", "dep:image-webp", "bohio-transfer/screen", "bohio-client/screen"]
 # The desktop notification of the GUI's presence notice (`DesktopNotifier`); without it a node logs the notice.
 notify = ["dep:notify-rust"]
 
@@ -94,6 +94,10 @@ required-features = ["gui"]
 
 [[test]]
 name = "gui_presence"
+required-features = ["gui"]
+
+[[test]]
+name = "gui_stream"
 required-features = ["gui"]
 
 [[test]]

@@ -58,6 +58,9 @@ pub(super) struct Client {
     pub(super) input_queue: usize,
     /// How often a loop that waits for input or a stream looks again.
     pub(super) poll: Duration,
+    /// The most bytes of a screen rectangle, and the most pixels of a frame, this run holds (`[gui] max_rect_bytes` and
+    /// `max_snapshot_pixels`).
+    pub(super) screen: (u64, u64),
 }
 
 impl Client {
@@ -74,6 +77,7 @@ impl Client {
             read_size: client.read_size,
             input_queue: client.input_queue,
             poll: config.link.poll_interval.0.max(Duration::from_millis(1)),
+            screen: (config.gui.max_rect_bytes, config.gui.max_snapshot_pixels),
         }
     }
 }
