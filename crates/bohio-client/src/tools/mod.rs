@@ -755,7 +755,7 @@ mod tests {
     #[test]
     fn a_capture_keeps_the_head_and_the_tail_and_counts_what_lies_between() {
         let mut capture = Capture::new(10);
-        for chunk in (0..100_u8).collect::<Vec<_>>().chunks(7) {
+        for chunk in (128..228_u8).collect::<Vec<_>>().chunks(7) {
             capture.push(chunk);
         }
         let value = capture.finish();
@@ -764,8 +764,8 @@ mod tests {
         assert_eq!(value["encoding"], "base64");
         let head = base64_decode(value["data"].as_str().unwrap()).unwrap();
         let tail = base64_decode(value["tail"].as_str().unwrap()).unwrap();
-        assert_eq!(head, (0..5).collect::<Vec<u8>>());
-        assert_eq!(tail, (95..100).collect::<Vec<u8>>());
+        assert_eq!(head, (128..133).collect::<Vec<u8>>());
+        assert_eq!(tail, (223..228).collect::<Vec<u8>>());
         assert_eq!(value["omitted_bytes"], 90);
     }
 
