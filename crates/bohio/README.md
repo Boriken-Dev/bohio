@@ -86,7 +86,7 @@ Run from the repository root:
 ```text
 bohio config check --config examples/bohio.cfg
 bohio info --config examples/bohio.cfg
-bohio info --config examples/bohio.cfg --format json
+bohio info --config examples/bohio.cfg --json
 ```
 
 `bohio config check` reads the configuration and prints `ok` with a summary, or one line naming

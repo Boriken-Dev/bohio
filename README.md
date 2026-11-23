@@ -96,7 +96,7 @@ approved by its id over any transport (`bohio peer approve`), and pairing by PIN
 
 ```text
 bohio config check --config examples/bohio.cfg
-bohio info --config examples/bohio.cfg --format json
+bohio info --config examples/bohio.cfg --json
 bohio serve | status | id | pair | join <endpoint>
 bohio peer list | approve <id> [--allow ...] | revoke <id>
 bohio remote <endpoint> info | exec -- <argv> | read <path> | shell
