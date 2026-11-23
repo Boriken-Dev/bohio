@@ -7,14 +7,14 @@ with the source at <https://github.com/Boriken-Dev/bohio>.
 No Cargo features. MSRV Rust 1.89. Depends on `serde`, `ciborium` and `thiserror`. Version `0.0.0-alpha.0`, not published.
 
 Imports: the root holds `decode`, `decode_with_depth`, `encode`, `DEFAULT_DEPTH`, `Error`, `ErrorBody`, `ErrorCode` and
-`PROTOCOL_VERSION`. Public modules: `codec`, `control`, `error`, `exec`, `forward`, `fs`, `gui`, `hash`, `info`, `local`, `protocol`, `shell`, `walk`. No `unsafe` code
+`PROTOCOL_VERSION`. Public modules: `codec`, `control`, `error`, `exec`, `forward`, `fs`, `gui`, `hash`, `info`, `local`, `protocol`, `search`, `shell`, `walk`. No `unsafe` code
 (`#![forbid(unsafe_code)]`); no I/O; no process-wide state.
 
 ## Protocols (`bohio_proto::protocol`)
 
 ```rust
 pub const CONTROL: &str = "bohio/1";   pub const EXEC: &str = "bohio-exec/1";   pub const SHELL: &str = "bohio-shell/1";
-pub const READ: &str = "bohio-read/1"; pub const WRITE: &str = "bohio-write/1"; pub const HASH: &str = "bohio-hash/1"; pub const WALK: &str = "bohio-walk/1";
+pub const READ: &str = "bohio-read/1"; pub const WRITE: &str = "bohio-write/1"; pub const HASH: &str = "bohio-hash/1"; pub const WALK: &str = "bohio-walk/1"; pub const SEARCH: &str = "bohio-search/1";
 pub const ATTACH: &str = "bohio-attach/1";   // a detached session's output from an offset, then live
 pub const CONNECT: &str = "bohio-connect/1"; pub const TCP: &str = "tcp/1"; pub const LISTEN: &str = "bohio-listen/1"; pub const ACCEPT: &str = "bohio-accept/1";   // `tcp/1` is coqui-link's: metadata is the text HOST:PORT, raw bytes at once, no answer
 ```
@@ -307,3 +307,26 @@ pub struct Progress { pub prepared: u64 }                     // `0x08` frame: b
 Compressed bytes travel in a tag of their own beside the raw one (read host to client `0x06`, write client to host `0x14`, exec `0x06` stdout and `0x07`
 stderr from the host, `0x13` stdin from the client). The new fields of requests and headers are left out of the CBOR when absent, so a peer that never asks
 sends the bytes it always did. **A raw frame ends the compression context**; the rules and bounds are in `docs/protocol.md` ("Compression").
+
+## Search, follow, stats and which (`bohio_proto::search`, `fs`, `control`)
+
+```rust
+// search: `bohio-search/1` (needs fs.read). Open metadata SearchRequest; the client sends nothing after it; host frames 0x01 File, 0x02 Match, 0x03 ItemError, 0x04 Done, 0x05 Error
+pub const protocol::SEARCH: &str = "bohio-search/1";
+#[derive(Default)] pub struct SearchScope { roots: Vec<String> /* at least one */, depth: Option<u64>, include: Vec<String>, exclude: Vec<String> }   // the options of bohio-walk/1 that apply
+#[derive(Default)] pub struct SearchRequest { walk: SearchScope, hidden: bool, pattern: String /* not empty */, literal: bool, case_insensitive: bool, context: u64, max_matches: Option<u64>, max_files: Option<u64> }   // to_metadata()/from_metadata()
+pub struct SearchFile { root: u64, path: String /* below the root; empty when the root is the file */, size: u64 }
+pub struct SearchMatch { line: u64 /* from 1 */, text: String, before: Vec<String>, after: Vec<String>, truncated: bool }
+pub struct SearchItemError { root: u64, path: Option<String>, code: ErrorCode, message: String }   // body()
+pub struct Skipped { binary: u64, large: u64, unreadable: u64 }   pub struct SearchDone { files: u64, matches: u64, skipped: Skipped, truncated: bool }
+#[non_exhaustive] pub enum SearchOutput { File(SearchFile), Match(SearchMatch), ItemError(SearchItemError), Done(SearchDone), Error(ErrorBody) }   // encode()/decode(&[u8])
+
+// follow: ReadRequest gains `follow: Option<ReadFollow>` (None in `ReadRequest::whole`), ReadHeader gains `follow: bool`, ReadOutput gains `Truncated(Truncated)` (host frame 0x0a)
+#[derive(Default)] pub struct ReadFollow { by: Option<FollowBy> /* None: Handle */, interval_ms: Option<u64> /* at least 1; None: the host's [filesystem] follow_interval */, tail: Option<u64> /* bytes before the end; 0: only what is appended */ }
+pub enum FollowBy { Handle, Name }   pub struct Truncated { size: u64, replaced: bool }
+
+// control: Call::Stats and Call::Which { names: Vec<String> } (both need `info`); Reply::Stats(Box<Stats>) and Reply::Which { found: BTreeMap<String, Option<String>> }
+#[derive(Default)] pub struct Stats { hostname: Option<String>, uptime_s: u64, cpus: u64, load: Option<[f64; 3]> /* None on Windows */, memory: Memory { total, available }, swap: Swap { total, free }, disks: Vec<Disk { mount, filesystem: String, total, available: u64 }> }
+
+// info: TransferInfo gains `search: bool`, `search_limits: SearchLimits { max_searches, max_file_bytes, max_line_bytes, max_matches, max_files, max_context, deadline_ms: u64 }` and `follow: bool`
+```

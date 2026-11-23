@@ -140,7 +140,7 @@ With that order a peer that holds `exec` runs commands over Bohío and, where th
 
 ## What a host reports
 
-`Host.info()` returns `HostInfo(os_family, architecture, ...)` from `info.os` and `info.arch`. `os_name`, `os_version` and `hostname` are `None`: Bohío reports the host id (the key's peer id), not a name, and a caller that wants a name runs a command for it.
+`Host.info()` returns `HostInfo(os_family, architecture, ...)` from `info.os` and `info.arch`. `os_name` and `os_version` are `None`: `info` reports the host id (the key's peer id), not a name. `hostname` is the `stats` call's (`stats.hostname`, a peer holding `info`), which also reports uptime, processors, load, memory and disks; `which` answers where a program is on the host's `PATH` without running anything, for a probe such as `shutil.which`. A file that grows is read with `bohio-read/1` and `follow`, and `bohio-search/1` finds text in files without `exec`; hostctl has no operation for either, so they are Bohío's own.
 
 ## Timeouts
 

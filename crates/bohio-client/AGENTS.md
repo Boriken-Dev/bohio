@@ -476,3 +476,29 @@ Bounds: `exec` keeps the first and last halves of each output stream within `max
 - One thread that writes a large input before reading can deadlock against a process that echoes it; write on one thread and
   read on another (every method takes `&self`).
 - A refused request surfaces from `next` or `wait` as `Error::Remote`, not from `start`: the host answers on the stream.
+
+
+## Search, follow, stats and which (`bohio_client::search`, `follow`, `Control`)
+
+Each call is a plain function or method over `&dyn Open`, so a tool layer can wrap it and hold the link itself.
+
+```rust
+// search: the lines of files on the host that match a pattern, found there (`bohio-search/1`; needs fs.read, no exec). Links are never followed.
+pub fn search::search(link: &dyn Open, roots: &[&str], pattern: &str, options: &SearchOptions) -> Result<SearchIter, Error>;   // search_with(.., timeout: Option<Duration>) too (default 300 s per frame)
+#[derive(Default)] pub struct SearchOptions { pub depth: Option<u64>, pub include: Vec<String>, pub exclude: Vec<String>, pub hidden: bool, pub literal: bool, pub case_insensitive: bool, pub context: u64, pub max_matches: Option<u64>, pub max_files: Option<u64> }   // the host's [search] bounds win
+pub enum SearchItem { Match(Box<Found>), Failure(SearchItemError) }   pub struct Found { pub root: u64, pub path: String /* below the root; empty when the root is the file */, pub size: u64, pub hit: SearchMatch }
+pub struct SearchIter;   // Iterator<Item = Result<SearchItem, Error>>; done() -> Option<SearchDone>; finish(self) -> Result<SearchResults { matches, failures, done }, Error>; dropping it closes the stream, which stops the host
+// A host's refusal (denied, busy, bad_request for an empty pattern, one that does not compile or is too large, a bad glob, a context over max_context) is the first item, Error::Remote. A root outside the peer's roots is a Failure (outside_root).
+
+// follow: a file of the host followed as it grows (`bohio-read/1` with `follow`; needs fs.read)
+pub fn follow::follow(link: &dyn Open, path: &str, options: &FollowOptions, timeout: Option<Duration>) -> Result<Follow, Error>;   // timeout: the wait for the host to accept it
+#[derive(Default)] pub struct FollowOptions { pub tail: Option<u64>, pub offset: u64, pub by_name: bool, pub interval: Option<Duration> /* at least 1 ms; None: the host's follow_interval */ }
+pub enum FollowEvent { Data(Vec<u8>), Truncated(Truncated) }
+pub struct Follow;   // size(), initial_length(); next_within(Option<Duration>) -> Result<Option<FollowEvent>, Error> (Ok(None): nothing in that time, the follow goes on); collect_for(Duration) -> Result<Vec<FollowEvent>, Error>; Iterator<Item = Result<FollowEvent, Error>> waits without limit; dropping it closes the stream
+
+// control: what the host runs on, and where its programs are (both need `info`)
+pub fn Control::stats(&self, timeout: Option<Duration>) -> Result<bohio_proto::control::Stats, Error>;
+pub fn Control::which(&self, names: &[&str], timeout: Option<Duration>) -> Result<BTreeMap<String, Option<String>>, Error>;   // the absolute path or None; a name with a directory is not looked up
+```
+
+`bohio remote HOST search|glob|stats|which|read --follow` are these calls (`search` exits 0 on a match, 1 on none, 2 when something could not be read). A follow ends with `Error::Remote` (`denied`) when the grant is revoked.

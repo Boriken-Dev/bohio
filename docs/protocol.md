@@ -51,6 +51,7 @@ A stream's `open` carries a protocol token and metadata. A client ignores a toke
 | `bohio-write/1` | one file written, streamed | CBOR [`write-request`](#writing-a-file) | `fs.write`, and `fs.read` as well for a [delta](#deltas) write or a replace against a base |
 | `bohio-hash/1` | digests of many files, computed on the host | CBOR [`hash-request`](#hashing-bohio-hash1) | `fs.read` |
 | `bohio-walk/1` | the entries of whole trees, on one stream | CBOR [`walk-request`](#trees-bohio-walk1) | `fs.read` |
+| `bohio-search/1` | the lines of many files that match a pattern, found on the host | CBOR [`search-request`](#search-bohio-search1) | `fs.read` |
 | `bohio-connect/1` | one connection from the host to a target, then its bytes | CBOR [`connect-request`](#forwarding-bohio-connect1-and-tcp1) | `forward.connect` and a rule that matches the target |
 | `tcp/1` | the same, as [coqui-link](https://github.com/Boriken-Dev/coqui-link) defines it | the text `HOST:PORT` | `forward.connect` and a rule that matches the target |
 | `bohio-gui/1` | a view of the host's desktop: snapshots, keyboard and mouse, the clipboard's text | CBOR [`gui-request`](#desktop-bohio-gui1) | one of `gui.view`, `gui.input`, and each thing the request wants |
@@ -113,7 +114,7 @@ request  = { id: uint, call: call }
 response = { id: uint, ? reply: opt<reply>, ? error: opt<error-body> }   ; exactly one of reply, error is not null
 
 call = hello / info / stat / list / mkdir / remove / rename / move / copy / truncate / symlink
-     / readlink / set-times / set-mode / set-attributes / sessions / end-session
+     / readlink / set-times / set-mode / set-attributes / sessions / end-session / stats / which
 
 hello          = { type: "hello", ? version: uint, ? client: text }       ; version at least 1
 info           = { type: "info" }
@@ -133,6 +134,8 @@ set-mode       = { type: "set_mode", path: text, mode: uint }
 set-attributes = { type: "set_attributes", path: text, ? readonly: opt<bool> }
 sessions       = { type: "sessions" }                                    ; the caller's detached sessions
 end-session    = { type: "end_session", id: text, ? signal: opt<signal-name> }   ; `kill` when no signal
+stats          = { type: "stats" }                                       ; what the host runs on
+which          = { type: "which", names: [+ text] }                      ; where each program is on the host's PATH
 
 reply = { type: "hello", version: uint, ? transfer: transfer-info }   ; transfer-info as in info
 
@@ -142,6 +145,10 @@ reply = { type: "hello", version: uint, ? transfer: transfer-info }   ; transfer
       / { type: "done" }                        ; every call that returns nothing
       / { type: "link", target: text }
       / { type: "sessions", sessions: [* session-entry] }   ; see "Detached sessions"
+      / { type: "stats", ? hostname: opt<text>, ? uptime_s: uint, ? cpus: uint, ? load: opt<[3*float]>,
+          ? memory: { ? total: uint, ? available: uint }, ? swap: { ? total: uint, ? free: uint },
+          ? disks: [* { ? mount: text, ? filesystem: text, ? total: uint, ? available: uint }] }
+      / { type: "which", found: { * text => opt<text> } }   ; one entry for each name asked, the absolute path or null
 
 timestamp = { secs: int, ? nanos: uint }        ; seconds since 1970-01-01T00:00:00Z, nanos below 10^9
 file-kind = "file" / "directory" / "symlink" / "other"
@@ -153,7 +160,7 @@ listing   = { ? entries: [* entry], ? next: opt<text>, ? skipped: uint }
 entry     = { name: text, metadata: metadata }                  ; a link is described, not followed
 ```
 
-What each call needs: `sessions` and `end_session` need `session`; `info` needs `info`; `hello` needs nothing; `stat`, `list` and `readlink` need `fs.read`; `mkdir`, `remove`, `rename`, `move`, `truncate`, `symlink`, `set_times`, `set_mode` and `set_attributes` need `fs.write`; `copy` needs both. Each needs the peer to hold a filesystem root, and resolves every path against the roots.
+What each call needs: `sessions` and `end_session` need `session`; `info`, `stats` and `which` need `info`; `hello` needs nothing; `stat`, `list` and `readlink` need `fs.read`; `mkdir`, `remove`, `rename`, `move`, `truncate`, `symlink`, `set_times`, `set_mode` and `set_attributes` need `fs.write`; `copy` needs both. Each needs the peer to hold a filesystem root, and resolves every path against the roots.
 
 - `hello`: the host answers with `min(version, its own)`. Both sides then speak that version. A `version` of 0 is `bad_request`.
 - `list`: entries are in ascending order by name. A reply holds as many entries as fit the stream's message size; `next` is then the name to send as `after`, and `skipped` counts names that are not valid text and so are left out. `limit` caps the count.
@@ -162,6 +169,8 @@ What each call needs: `sessions` and `end_session` need `session`; `info` needs 
 - `move` is a rename where the host can, and where the two names lie on different filesystems (a rename then fails), a copy that keeps the permission bits and the modification time followed by the removal of the original, all on the host. A copy that fails leaves the original where it was and removes what it made at a name that was free; `exists` for an existing target without `overwrite`; a tree past `[filesystem] max_tree_entries` is `busy`. Neither `rename` nor `move` without `overwrite` looks and then renames: the operating system refuses an existing target in the rename itself, for a file and for a directory, on Linux (`renameat2` with `RENAME_NOREPLACE`), macOS (`RENAME_EXCL`) and Windows (`MoveFileExW` without `MOVEFILE_REPLACE_EXISTING`). Only on a system with no such call (FreeBSD and other Unix) or a Linux or macOS filesystem that refuses the flag (`EINVAL`) is there a gap: a regular file is given its new name with a hard link, which fails when the name exists, and the old name is removed; a directory, or a file on a filesystem without hard links, is checked first and renamed after, so a name made in between is replaced.
 - `copy` is made on the host, never through the client. A regular file by default; with `recursive` a directory and everything in it, links copied as links (a link whose text would leave the roots is `outside_root`), anything else (a device, a socket) is `bad_request`; an existing directory is merged into with `overwrite` and is `exists` without it. `preserve` gives the copy the original's permission bits (without the set-user-ID and set-group-ID bits) and modification time. A copy that fails partway leaves what it made, as `cp -r` does.
 - `truncate` sets a regular file's length: a shorter length cuts it, a longer one extends it with zeros (a directory is `bad_request`).
+- `stats` answers what the host runs on as the operating system reports it now: `hostname`, `uptime_s`, `cpus` (logical processors the host may use), `load` (the 1, 5 and 15 minute averages; null on Windows, which has none), `memory` (`total` and `available`, the bytes a program can take without swapping), `swap` (`total` and `free`) and `disks` (each mount with its `filesystem` name, `total` bytes and the bytes `available` to an unprivileged program). A value the system does not report is empty or null. It reads the hostname and mounts, so it needs `info`.
+- `which` looks each name up in the directories of the host's own `PATH`, as an `exec` of a bare name finds a program (`.exe` is tried on Windows), and answers `found` with one entry for each name asked: the absolute path of the first file found, or null. A name with a directory in it is not looked up (null), because a path is not a name and a relative one would resolve against a directory the peer could choose. No names is `bad_request`; how many names a request holds is bounded by the stream's message size. It needs `info`.
 - A `copy` or a `move` of a tree holds the control stream until it ends, and the host answers calls in order: a client opens a second control stream for a long one.
 - `device`, `inode` and `links` are what `samefile` compares: two paths name one file when both have the same `device` and `inode`. A host that cannot report them (Windows, through the library this host is built on) leaves them out.
 - Calls a platform lacks answer `unsupported`: `set_mode` and `mode` on Windows, `set_attributes` anywhere else.
@@ -188,6 +197,10 @@ transfer-info = { ? hashes: [* text],                        ; the algorithms th
                   ? prepared: bool,                                        ; whether a read may say `prepare`
                   ? delta: delta-info,                                     ; what the host offers for deltas
                   ? walk: bool, ? walk_limits: { ? max_streams: uint, ? max_entries: uint },   ; bohio-walk/1, and its bounds (0 entries: no limit)
+                  ? search: bool, ? search_limits: { ? max_searches: uint, ? max_file_bytes: uint, ? max_line_bytes: uint,
+                                                     ? max_matches: uint, ? max_files: uint, ? max_context: uint,
+                                                     ? deadline_ms: uint },    ; bohio-search/1, and its bounds
+                  ? follow: bool,                                          ; a read may say `follow`
                   ? bundles: bool,                                         ; reads and writes take `items`
                   ? resume: bool }                                         ; a replace write may ask to resume
 delta-info = { ? weak: [* text],                                           ; the weak checksums it computes: "rsync"; empty when it serves no deltas
@@ -209,12 +222,14 @@ read-request = { path: text, ? offset: uint, ? length: opt<uint>, ? hashes: [* t
                  ? prepare: bool,                                                      ; compress the whole range first, then send it
                  ? resume: { token: text, offset: uint },                              ; continue a prepared read at a compressed offset
                  ? delta: read-delta,                                                  ; send only what differs from the client's old copy (see Deltas)
-                 ? items: bool }                                                       ; a bundle: the files come as `0x10` items (see Bundles); `path` is then empty
+                 ? items: bool,                                                        ; a bundle: the files come as `0x10` items (see Bundles); `path` is then empty
+                 ? follow: read-follow }                                               ; keep sending what is appended (see Following a file)
 read-header  = { size: uint, length: uint,                                             ; the file's size; the bytes that follow, decompressed
                  ? index: uint, ? modified: opt<timestamp>, ? mode: opt<uint>,         ; a bundle's item: which, and what the host knows of the file
                  ? compression: compression,                                           ; what the host used, never "auto"; absent: raw
                  ? compressed_length: uint, ? token: text,                             ; prepared reads: the compressed size, the name to resume by
-                 ? delta: bool }                                                       ; a delta read: copy frames and data add up to `length`
+                 ? delta: bool,                                                        ; a delta read: copy frames and data add up to `length`
+                 ? follow: bool }                                                      ; a followed read: no `0x04` ends it
 read-done    = { ? hashes: { * text => text }, ? index: uint }                         ; the digests asked for, of the bytes sent; a bundle's item
 progress     = { prepared: uint }                                                      ; the bytes of the file compressed so far
 ```
@@ -230,12 +245,28 @@ progress     = { prepared: uint }                                               
 | host to client | `0x07` | CBOR `bundle-end`: every item of a bundle was answered |
 | host to client | `0x08` | CBOR `progress`: a prepared read is still being compressed |
 | host to client | `0x09` | CBOR `delta-copy`: a delta read, these blocks of the client's old copy stand here |
+| host to client | `0x0a` | CBOR `truncated`: a followed read, the file got shorter or was replaced |
 | client to host | `0x10` | CBOR `read-item`: a bundle, the next file |
 | client to host | `0x11` | empty: a bundle, no more files |
 | client to host | `0x12` | CBOR `signature-batch`: a delta read, the next blocks of the client's signature |
 | client to host | `0x13` | empty: a delta read, the signature is complete |
 
 The host sends the header first, then data frames whose bytes add up to `header.length` (after decompression), then `0x04`. A stream that ends with no `0x04` and no `0x05` is a read cut short. A refused request is one `0x05` frame. A client closing the stream stops the read.
+
+### Following a file
+
+A `read-request` with `follow` is `tail -f`: the host sends the file from where the read starts, then keeps sending what is appended, until the client closes the stream.
+
+```text
+read-follow = { ? by: "handle" / "name",             ; what is watched: the file opened (default), or the path, so a file that takes the name is followed
+                ? interval_ms: opt<uint>,            ; how often the host looks for more bytes, at least 1; the host's [filesystem] follow_interval when absent
+                ? tail: opt<uint> }                  ; start this many bytes before the end (0: at the end) instead of at `offset`; a shorter file is sent from its start
+truncated    = { size: uint, ? replaced: bool }      ; the host's 0x0a frame
+```
+
+A followed read has no `length`, `hashes`, `compression`, `prepare`, `resume`, `delta` or `items` (`bad_request`). The header says `follow: true`; its `length` is what is sent up to the end of the file as it was when the read started, and no `0x04` frame ever ends the stream: the client closes it. Each time it looks, the host sends the bytes between its position and the end of the file as `0x02` frames. A file that got shorter than the host's position (a copy-truncate rotation) is a `0x0a` `truncated` frame with the new `size`, and the host goes on from that end. With `by: "name"` the host also looks the path up again through the peer's root handle; a different file there (another device and inode on Unix, volume and file index on Windows) is read to the end of the old one first, then announced by `truncated` with `replaced: true` and sent from its start. A name that is free for a moment between a rotation's rename and the new file is waited out, not an error.
+
+A follow holds one of `[filesystem] max_follows` slots (default 16; one past it is `busy`) and no transfer slot, and `idle_timeout` does not end it while its client reads what is sent. A revoke ends it within `[link] recheck` as it ends any stream; a follow by name looks at the grant again when another file takes the name, so a root taken away ends it with `denied`.
 
 ## Writing a file
 
@@ -316,7 +347,45 @@ Order. Each root's first entry is the root itself, with an empty `path`; then ea
 
 Filters and depth. `include` limits the entries listed to those whose path or name matches one of its globs (every directory is still entered, and the root is always listed); `exclude` removes entries that match, and a directory's whole subtree with them. A glob that does not parse is `bad_request`. A name that is not valid text is counted in `skipped` and left out. With `follow` a link to a directory is entered under the link's own path, and one already entered (by `device` and `inode`, which covers a loop) is not entered twice; a link that leaves the root is an item error (`outside_root`), and so on a host that cannot report `device` and `inode` is a link to a directory (`unsupported`: it cannot tell a loop).
 
-Errors and bounds. A directory that cannot be read, a root that does not exist or a link that leaves the root is a `0x03` frame and the walk goes on. Each root is decided against the peer's grant as it is when the root is reached, so a grant narrowed while the stream is open refuses the next root (`denied`, `outside_root`). A request an algorithm of `hashes` the host does not offer, or a compression it does not allow, is `unsupported` before any root; past `[walk] max_streams` (default 4) the stream is `busy`; past `[walk] max_entries` (default 1,000,000, `0` is no limit) the walk sends a `busy` `0x03` and `0x04` with what it sent. Digests read every file and are paced by `[hash] rate`. A stream that gets no root for `[filesystem] idle_timeout` ends with `io`. `search` of the forwarding plan takes this request as its `walk` field.
+Errors and bounds. A directory that cannot be read, a root that does not exist or a link that leaves the root is a `0x03` frame and the walk goes on. Each root is decided against the peer's grant as it is when the root is reached, so a grant narrowed while the stream is open refuses the next root (`denied`, `outside_root`). A request an algorithm of `hashes` the host does not offer, or a compression it does not allow, is `unsupported` before any root; past `[walk] max_streams` (default 4) the stream is `busy`; past `[walk] max_entries` (default 1,000,000, `0` is no limit) the walk sends a `busy` `0x03` and `0x04` with what it sent. Digests read every file and are paced by `[hash] rate`. A stream that gets no root for `[filesystem] idle_timeout` ends with `io`. A glob over a tree is this request with `include` set: `bohio remote ... glob` does it, and [`bohio-search/1`](#search-bohio-search1) takes the same `roots`, `depth`, `include` and `exclude`.
+
+## Search: `bohio-search/1`
+
+The lines of many files that match a pattern, found on the host, so the matches and not the tree cross the link. The open's metadata is a CBOR `search-request`; the client sends nothing more, and closing the stream stops the host. It needs `fs.read` and a root, and no `exec`.
+
+```text
+search-request = { walk: { roots: [+ text],               ; directories or files, as paths inside the peer's roots
+                           ? depth: opt<uint>,            ; 0: a root alone, 1: and its names, null: the whole tree
+                           ? include: [* text],           ; globs: only files whose path (below the root, with `/`) or name matches are read
+                           ? exclude: [* text] },         ; globs: entries that match are left out, a directory with its subtree
+                   ? hidden: bool,                        ; names that start with a dot too (default false)
+                   pattern: text,                         ; a regular expression, or with `literal` the text itself; not empty
+                   ? literal: bool, ? case_insensitive: bool,
+                   ? context: uint,                       ; lines before and after each match, at most [search] max_context
+                   ? max_matches: opt<uint>,              ; at most [search] max_matches; at least 1
+                   ? max_files: opt<uint> }               ; at most [search] max_files; at least 1
+search-file    = { root: uint, path: text, size: uint }   ; path below the root, empty when the root is the file
+search-match   = { line: uint, text: text,                ; the line's number from 1, and the line without its ending
+                   ? before: [* text], ? after: [* text], ? truncated: bool }   ; context; the line was cut at [search] max_line_bytes
+search-error   = { root: uint, ? path: text, code: error-code, ? message: text }  ; something that could not be read; the search goes on
+search-done    = { files: uint, matches: uint,
+                   ? skipped: { ? binary: uint, ? large: uint, ? unreadable: uint },
+                   ? truncated: bool }                    ; the search stopped at a bound before it was done
+```
+
+| Direction | Tag | Body |
+| --- | --- | --- |
+| host to client | `0x01` | CBOR `search-file`: before a file's first match |
+| host to client | `0x02` | CBOR `search-match`: a matching line of the file last announced |
+| host to client | `0x03` | CBOR `search-error` |
+| host to client | `0x04` | CBOR `search-done`: the last frame |
+| host to client | `0x05` | CBOR `error-body`: the request failed, the last frame |
+
+The host walks each root as `bohio-walk/1` does, depth first with each directory's names sorted by the bytes of their text, and reads the files it may. It never follows a link: a link (to a file or a directory, inside the root or out of it) is neither read nor entered, and a root that is a link is a `0x03` frame (`unsupported`), so nothing outside the roots can match. A root outside the peer's roots is `outside_root` and each root is decided against the grant as it is when the root is reached. The pattern is the `regex` crate's syntax, whose matching time is linear in the text whatever the pattern (no backtracking), so a peer's pattern cannot run away; `[search] regex_size_limit` bounds the memory of its compiled form, and a pattern past it, one that does not compile, an empty one, a glob that does not parse, a `context` over `max_context` or a bound of 0 is `bad_request` (the message never repeats the pattern, and the host never logs it). A pattern is matched against each line without its line ending (`\n` or `\r\n`); a pattern cannot match across lines.
+
+A file over `[search] max_file_bytes` is skipped and counted as `large` (it is read whole, so this is the memory one search holds); a file with a NUL in its first `binary_probe` bytes is skipped and counted as `binary` (`0` probes none); a file that cannot be opened or read is counted as `unreadable` and sent as a `0x03` frame. A line over `max_line_bytes` is cut at a character boundary and marked `truncated`; text that is not valid UTF-8 is sent with the invalid bytes replaced. The search ends with `done` and `truncated: true` at `max_matches`, `max_files` or the `[search] deadline`; the lines of context after the last match are still sent. Past `[search] max_searches` (default 4) the stream is `busy`.
+
+`bohio remote ... search PATTERN [PATH...] [-g GLOB] [-x GLOB] [-i] [-F] [-C N]` prints `path:line:text` and, for context, `path-line-text`; it exits 0 when a line matched, 1 when none did and 2 when something could not be read. `bohio remote ... glob GLOB [PATH...]` is a `bohio-walk/1` with that `include`. `bohio_client::search::{search, search_with, SearchIter::finish}` run a search from a program.
 
 ## Bundles
 
@@ -705,7 +774,7 @@ Nothing is negotiated before a stream opens, and nothing falls back. A client le
 
 1. **The link's `link/1` stream** answers what this peer may open now (`offers`), the authoritative list of protocol tokens, as coqui-link specifies: a token is offered when the answering side's grant for this peer holds a permission it needs. A client does not open a token that is not offered. Either side of a link may ask, and see [Roles](#roles).
 2. **`bohio/1` `hello`** with the client's protocol version; the reply is the version both speak. This page is version 1.
-3. **`bohio/1` `info`** (a peer that holds `info`) reports the host's operating system and architecture, its shells, what its filesystem supports (`symlinks`, `unix_modes`, `windows_attributes`, `case_sensitive`, `separator`), whether `exec` and `shell` are enabled and which signals each delivers, whether it runs detached sessions and what it keeps for one, its limits, and `forward` (whether it forwards and the kinds of target it connects to).
+3. **`bohio/1` `info`** (a peer that holds `info`; `stats` and `which` need it too) reports the host's operating system and architecture, its shells, what its filesystem supports (`symlinks`, `unix_modes`, `windows_attributes`, `case_sensitive`, `separator`), whether `exec` and `shell` are enabled and which signals each delivers, whether it runs detached sessions and what it keeps for one, its limits, and `forward` (whether it forwards and the kinds of target it connects to).
 
 A client reads `info` and adapts: it takes the path separator from `filesystem.separator`, does not send `set_mode` to a host without `unix_modes`, and picks a shell from `shells`. Every field has a default and unknown fields are ignored, so a client works with a host that reports less or more than it expects. A new protocol is a new token with its own version (`bohio-exec/2`); a host serving both offers both.
 
@@ -754,7 +823,7 @@ A joiner on a listener sends one message first, `coqui-link/pairing/1`, which is
 
 ## Vectors
 
-`vectors/control.json`, `exec.json`, `shell.json`, `read.json`, `write.json`, `hash.json`, `forward.json`, `gui.json`, `listen.json`, `accept.json` and `attach.json` hold one entry per message; `vectors/delta.json` holds the [weak sums, a signature and a stream of steps](#deltas) in its own shape. Each file is:
+`vectors/control.json`, `exec.json`, `shell.json`, `read.json`, `write.json`, `hash.json`, `forward.json`, `gui.json`, `listen.json`, `accept.json`, `attach.json` and `search.json` hold one entry per message; `vectors/delta.json` holds the [weak sums, a signature and a stream of steps](#deltas) in its own shape. Each file is:
 
 ```json
 { "protocol": "bohio-exec/1", "encoding": "...", "vectors": [ { "name": "stdout", "direction": "host_to_client", "kind": "frame",
@@ -766,7 +835,7 @@ A joiner on a listener sends one message first, `coqui-link/pairing/1`, which is
 | `name` | what the vector shows |
 | `direction` | `client_to_host` or `host_to_client`; an open's metadata is `client_to_host` |
 | `kind` | `open` (the open's metadata), `message` (a control message) or `frame` (a tag byte, then the body) |
-| `type` | the message's name in this page: `control.Request`, `control.Response`, `exec.Request`, `exec.Output`, `exec.Input`, `shell.Request`, `shell.Output`, `shell.Input`, `fs.ReadRequest`, `fs.ReadOutput`, `fs.ReadInput`, `fs.WriteRequest`, `fs.WriteOutput`, `fs.WriteInput`, `hash.Request`, `hash.Output`, `hash.Input`, `forward.ConnectRequest`, `forward.Answer`, `forward.ListenRequest`, `forward.ListenFrame`, `forward.AcceptRequest`, `session.Attach`, `session.Attached` |
+| `type` | the message's name in this page: `control.Request`, `control.Response`, `exec.Request`, `exec.Output`, `exec.Input`, `shell.Request`, `shell.Output`, `shell.Input`, `fs.ReadRequest`, `fs.ReadOutput`, `fs.ReadInput`, `fs.WriteRequest`, `fs.WriteOutput`, `fs.WriteInput`, `hash.Request`, `hash.Output`, `hash.Input`, `forward.ConnectRequest`, `forward.Answer`, `forward.ListenRequest`, `forward.ListenFrame`, `forward.AcceptRequest`, `session.Attach`, `session.Attached`, `search.Request`, `search.Output` |
 | `hex` | the stream message exactly as it travels |
 | `value` | its meaning: the decoded CBOR as JSON for a message; for a frame, `tag`, and `message` (the CBOR body as JSON) or `data_hex` (the raw body) |
 | `decode_only` | the bytes are not what a writer produces (a message with a key this version does not know): a decoder accepts them and finds `value`, and a test does not compare a re-encoding |
