@@ -6,8 +6,8 @@ use std::process::ExitCode;
 use bohio_proto::info::Info;
 
 use super::{
-    CheckArgs, Command, ConfigAction, ConfigOption, Format, InfoArgs, access, gui, host, remote,
-    service,
+    CheckArgs, Command, ConfigAction, ConfigOption, Format, InfoArgs, access, gui, host, mcp,
+    remote, service,
 };
 use crate::config::{Config, Environment, Layered, Layers};
 use crate::info;
@@ -31,6 +31,7 @@ pub(super) fn run(command: &Command, environment: &Environment) -> Result<ExitCo
         Command::Remote(args) => remote::run(args, environment),
         Command::Links(args) => done(remote::links(args, environment)),
         Command::Gui(args) => done(gui::approve(args, environment)),
+        Command::Mcp(args) => mcp::run(args, environment),
     }
 }
 

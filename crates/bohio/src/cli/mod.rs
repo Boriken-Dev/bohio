@@ -9,6 +9,7 @@ mod access;
 mod commands;
 mod gui;
 mod host;
+mod mcp;
 mod remote;
 pub mod service;
 
@@ -71,6 +72,8 @@ pub enum Command {
     Remote(RemoteArgs),
     /// List the links this node's running `bohio serve` holds, whichever side made each.
     Links(LinksArgs),
+    /// Serve the agent tools over the Model Context Protocol on standard input and output: files, programs and sessions of the named hosts.
+    Mcp(McpArgs),
     /// Answer a peer's request to look at or drive this screen, on the running node (`pending`, `allow`, `deny`).
     Gui(gui::GuiArgs),
 }
@@ -957,4 +960,34 @@ pub struct LinksArgs {
     /// How long to wait for each peer to say what it offers. Default `[client] links_wait` (5s).
     #[arg(long, value_name = "TIME")]
     pub wait: Option<String>,
+}
+
+/// `bohio mcp`.
+#[derive(Debug, Args)]
+pub struct McpArgs {
+    /// The configuration: this node's identity, and the keys of the hosts it trusts. Give each agent its own data directory, so
+    /// each agent's key gets its own grant on a host.
+    #[command(flatten)]
+    pub config: ConfigOption,
+    /// A host the agent may use, `[NAME=]ENDPOINT` followed by any flags of `bohio remote` (`--server ID`, `--jump ENDPOINT`,
+    /// `--ca FILE`, ...), the whole text in quotes. Repeat for several hosts: a call then names its host. The link is made
+    /// when the host is first used, and once more after a loss.
+    #[arg(long, value_name = "[NAME=]ENDPOINT [FLAGS]")]
+    pub host: Vec<String>,
+    /// Bytes of one output stream a call returns by default (`bohio_client::tools::Settings::output`). Default 65536.
+    #[arg(long, value_name = "BYTES")]
+    pub max_output: Option<u64>,
+    /// A directory of this machine the `put` and `get` tools may use (repeat). With none, those tools are unavailable.
+    #[arg(long, value_name = "DIR")]
+    pub local_root: Vec<PathBuf>,
+    /// A target of this machine (`HOST:PORT`) that `forward_remote` may bridge the host's listener to (repeat). With none, that
+    /// tool is unavailable.
+    #[arg(long, value_name = "HOST:PORT")]
+    pub forward_local_target: Vec<String>,
+    /// Let `forward_local` listen beyond loopback: whoever reaches the listener has this key's grant on the host.
+    #[arg(long)]
+    pub forward_allow_remote_bind: bool,
+    /// Calls that run at once; one more is answered as busy. Default 8.
+    #[arg(long, value_name = "N", default_value_t = 8)]
+    pub max_calls: usize,
 }

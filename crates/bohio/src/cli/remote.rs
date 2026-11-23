@@ -1928,3 +1928,27 @@ pub(super) fn links(args: &super::LinksArgs, environment: &Environment) -> Resul
     }
     Ok(())
 }
+
+/// Makes the link to one host, as `bohio remote` would: what an MCP server calls the first time a host is used and again after
+/// the link was lost.
+pub(super) type Dialer = Box<dyn Fn() -> Result<Arc<dyn Open>, String> + Send + Sync>;
+
+/// How `args` reaches its host, and the tool settings its configuration gives: the waits of `[client]` and of the forwards.
+pub(super) fn dialer(
+    args: &RemoteArgs,
+    environment: &Environment,
+) -> Result<(Dialer, bohio_client::tools::Settings), String> {
+    let plan = match &args.via {
+        Some(id) => via_plan(id, args, environment)?,
+        None => direct_plan(args, environment)?,
+    };
+    let found = source(&args.config, environment)?.0;
+    let client = Client::new(found.config(), args);
+    let mut settings = bohio_client::tools::Settings::default();
+    settings.reply_timeout = client.reply;
+    settings.transfer_timeout = client.transfer;
+    settings.gui_timeout = client.gui;
+    settings.poll = client.poll;
+    settings.forward = found.config().forward.client();
+    Ok((Box::new(move || plan.dial()), settings))
+}
