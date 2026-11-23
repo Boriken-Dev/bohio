@@ -15,6 +15,7 @@ use bohio_client::fs::{PutOptions, ReadOptions, Reader, put, resolve_auto};
 use bohio_client::hash::hash_many;
 use bohio_client::keep::{Backoff, Kept, Links, Reconnecting, Relink};
 use bohio_client::link::Settings;
+use bohio_client::parallel::{ParallelOptions, get_parallel, put_parallel, read_parallel};
 use bohio_client::shell::{Event as ShellEvent, Shell};
 use bohio_client::sync::{Compare, DeltaMode, Moved, SyncOptions};
 use bohio_client::{Error, Open};
@@ -32,10 +33,11 @@ use coqui_peer::PeerId;
 use super::commands::{print_info, source};
 use super::output;
 use super::{
-    KeepArgs, OnFullArg, RemoteAction, RemoteArgs, RemoteAttachArgs, RemoteConnectArgs,
-    RemoteConsoleArgs, RemoteEndArgs, RemoteExecArgs, RemoteForwardArgs, RemoteGlobArgs,
-    RemoteHashArgs, RemoteListenArgs, RemoteReadArgs, RemoteSearchArgs, RemoteShellArgs,
-    RemoteSyncArgs, RemoteWalkArgs, RemoteWhichArgs, RemoteWriteArgs, SessionArgs, SyncDirection,
+    KeepArgs, OnFullArg, ParallelArgs, RemoteAction, RemoteArgs, RemoteAttachArgs,
+    RemoteConnectArgs, RemoteConsoleArgs, RemoteEndArgs, RemoteExecArgs, RemoteForwardArgs,
+    RemoteGlobArgs, RemoteHashArgs, RemoteListenArgs, RemoteReadArgs, RemoteSearchArgs,
+    RemoteShellArgs, RemoteSyncArgs, RemoteWalkArgs, RemoteWhichArgs, RemoteWriteArgs, SessionArgs,
+    SyncDirection,
 };
 use crate::config::{DialConfig, Environment, Layers};
 use crate::forward::{BadSpec, LocalSpec, RemoteKeep, RemoteSpec, SocksSpec, keep_remote};
@@ -334,6 +336,18 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
     let found = source(&args.config, environment)?.0;
     let settings = found.config().forward.client();
     let client = Client::new(found.config(), args);
+    let spread = match &args.action {
+        RemoteAction::Read(read) if !(read.follow || read.follow_name) => {
+            Spread::of(&read.parallel, found.config())
+        }
+        RemoteAction::Put(put) => Spread::of(&put.parallel, found.config()),
+        RemoteAction::Get(get) => Spread::of(&get.parallel, found.config()),
+        _ => None,
+    };
+    let more = match &spread {
+        Some(spread) => spread.more_links(&plan)?,
+        None => Vec::new(),
+    };
     let kept = match persist {
         Some(persist) => keeping(
             plan,
@@ -369,6 +383,21 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
             if read.tail.is_some() || read.interval.is_some() {
                 return Err("--tail and --interval go with --follow or -F".to_owned());
             }
+            if let Some(spread) = &spread {
+                if read.prepare {
+                    return Err(
+                        "--prepare reads the whole file as one stream: not with --parallel"
+                            .to_owned(),
+                    );
+                }
+                let mut options = spread.options(&client);
+                options.compression = wanted(read.compress.as_deref(), read.window_log)?;
+                let links = spread.links(&link, &more);
+                let mut out = std::io::stdout().lock();
+                read_parallel(&links, &read.path, &mut out, &options)
+                    .map_err(|error| explain(&error))?;
+                return Ok(done_status());
+            }
             let mut request = bohio_proto::fs::ReadRequest::whole(read.path.clone());
             request.compression = wanted(read.compress.as_deref(), read.window_log)?;
             request.prepare = read.prepare;
@@ -393,12 +422,38 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
         RemoteAction::Sync(sync) => sync_command(&*link, sync, &client),
         RemoteAction::Put(put) => {
             let options = sync_options(&*link, &put.sync, true, &client)?;
+            if let Some(spread) = &spread {
+                spread.whole_file(&put.sync)?;
+                let mut wanted = spread.options(&client);
+                wanted.compression.clone_from(&options.compression);
+                let moved = put_parallel(
+                    &spread.links(&link, &more),
+                    &put.local,
+                    &put.remote,
+                    &wanted,
+                )
+                .map_err(|error| explain(&error))?;
+                return report_moved(&moved);
+            }
             let moved = bohio_client::sync::put(&*link, &put.local, &put.remote, &options)
                 .map_err(|error| explain(&error))?;
             report_moved(&moved)
         }
         RemoteAction::Get(get) => {
             let options = sync_options(&*link, &get.sync, false, &client)?;
+            if let Some(spread) = &spread {
+                spread.whole_file(&get.sync)?;
+                let mut wanted = spread.options(&client);
+                wanted.compression.clone_from(&options.compression);
+                let moved = get_parallel(
+                    &spread.links(&link, &more),
+                    &get.remote,
+                    &get.local,
+                    &wanted,
+                )
+                .map_err(|error| explain(&error))?;
+                return report_moved(&moved);
+            }
             let moved = bohio_client::sync::get(&*link, &get.remote, &get.local, &options)
                 .map_err(|error| explain(&error))?;
             report_moved(&moved)
@@ -430,6 +485,86 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
             &settings,
             &client,
         ),
+    }
+}
+
+/// How `get`, `put` and `read` spread one file: the flags over `[client] parallel_*`.
+struct Spread {
+    streams: usize,
+    links: usize,
+    range: Option<u64>,
+}
+
+impl Spread {
+    /// `None` when the file goes the ordinary way: one stream on one link.
+    fn of(args: &ParallelArgs, config: &crate::config::Config) -> Option<Self> {
+        let client = &config.client;
+        let links = args
+            .links
+            .map_or(client.parallel_links, |links| links as usize);
+        let streams = args
+            .parallel
+            .map_or(client.parallel_streams, |streams| streams as usize)
+            .max(links);
+        let range = args.range.unwrap_or(client.parallel_range);
+        (streams > 1).then_some(Self {
+            streams,
+            links,
+            range: (range > 0).then_some(range),
+        })
+    }
+
+    /// A transfer that moves the whole file in ranges has no delta and no comparison.
+    fn whole_file(&self, sync: &super::SyncArgs) -> Result<(), String> {
+        if sync.delta != super::DeltaChoice::Auto || sync.compare.is_some() {
+            return Err(
+                "--parallel moves the whole file in ranges: not with --delta or --compare"
+                    .to_owned(),
+            );
+        }
+        Ok(())
+    }
+
+    fn options(&self, client: &Client) -> ParallelOptions {
+        ParallelOptions {
+            streams: self.streams,
+            range: self.range,
+            timeout: client.transfer,
+            read_size: client.read_size,
+            ..ParallelOptions::default()
+        }
+    }
+
+    /// The links beyond the first, each dialed with its own proof, all at once. Through `--via` the node has the one
+    /// link, so there is no more to dial.
+    fn more_links(&self, plan: &Plan) -> Result<Vec<Arc<dyn Open>>, String> {
+        if self.links <= 1 {
+            return Ok(Vec::new());
+        }
+        if matches!(plan, Plan::Via { .. }) {
+            eprintln!(
+                "bohio: --links has no effect through --via: the node keeps one link to the peer"
+            );
+            return Ok(Vec::new());
+        }
+        thread::scope(|scope| {
+            let dials: Vec<_> = (1..self.links)
+                .map(|_| scope.spawn(|| plan.dial()))
+                .collect();
+            dials
+                .into_iter()
+                .map(|dial| {
+                    dial.join()
+                        .unwrap_or_else(|_| Err("a link could not be dialed".to_owned()))
+                })
+                .collect()
+        })
+    }
+
+    fn links<'a>(&self, first: &'a Arc<dyn Open>, more: &'a [Arc<dyn Open>]) -> Vec<&'a dyn Open> {
+        core::iter::once(&**first)
+            .chain(more.iter().map(|link| &**link))
+            .collect()
     }
 }
 

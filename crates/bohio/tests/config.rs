@@ -170,6 +170,11 @@ fn values_out_of_range_name_their_key() {
         ("[client]\nprobe_timeout = 0\n", "client.probe_timeout"),
         ("[client]\nlinks_wait = 0\n", "client.links_wait"),
         (
+            "[client]\nparallel_streams = 0\n",
+            "client.parallel_streams",
+        ),
+        ("[client]\nparallel_links = 0\n", "client.parallel_links"),
+        (
             "[pairing]\nattempt_delay = \"5s\"\nattempt_delay_max = \"1s\"\n",
             "pairing.attempt_delay_max",
         ),
@@ -686,6 +691,14 @@ fn the_waits_that_were_literals_are_settings_with_their_old_values() {
     assert_eq!(client.input_queue, 4);
     assert_eq!(client.probe_timeout, Span(Duration::from_secs(1)));
     assert_eq!(client.links_wait, Span(Duration::from_secs(5)));
+    assert_eq!(
+        (
+            client.parallel_streams,
+            client.parallel_links,
+            client.parallel_range
+        ),
+        (1, 1, 0)
+    );
     let waiting = config.waiting.settings();
     assert_eq!(waiting, coqui_peer::WaitingSettings::default());
     assert_eq!(waiting.limits.per_source, 16);

@@ -777,6 +777,121 @@ fn the_command_puts_and_gets_a_file_sending_only_what_changed() {
 }
 
 #[test]
+fn the_command_moves_one_file_on_several_streams_and_links() {
+    let world = World::new("");
+    let root = world.path("files");
+    std::fs::create_dir_all(&root).unwrap();
+    let host = world.serve("warn");
+    let client = approved(
+        &world,
+        "spreader",
+        &[
+            "--allow",
+            "fs.read,fs.write",
+            "--fs-root",
+            &root.to_string_lossy(),
+        ],
+    );
+    let size: u64 = 3 << 20;
+    let local = world.path("local.bin");
+    let theirs = root.join("remote.bin");
+    let remote_text = theirs.to_string_lossy().into_owned();
+    let local_text = local.to_string_lossy().into_owned();
+    big_file(&local, size);
+
+    // A put on four streams over one link, then on four streams over two links.
+    let put = remote(
+        &client,
+        &host,
+        &[
+            "put",
+            "--parallel",
+            "4",
+            "--range",
+            "700000",
+            &local_text,
+            &remote_text,
+        ],
+    );
+    assert_eq!(put.code, Some(0), "{}", put.stderr);
+    assert_eq!(sha256_of(&theirs), sha256_of(&local));
+    std::fs::remove_file(&theirs).unwrap();
+    let put = remote(
+        &client,
+        &host,
+        &[
+            "put",
+            "--parallel",
+            "4",
+            "--links",
+            "2",
+            &local_text,
+            &remote_text,
+        ],
+    );
+    assert_eq!(put.code, Some(0), "{}", put.stderr);
+    assert_eq!(sha256_of(&theirs), sha256_of(&local));
+
+    // A get over two links replaces the local file.
+    let pulled = world.path("pulled.bin");
+    let pulled_text = pulled.to_string_lossy().into_owned();
+    let got = remote(
+        &client,
+        &host,
+        &["get", "--links", "2", &remote_text, &pulled_text],
+    );
+    assert_eq!(got.code, Some(0), "{}", got.stderr);
+    assert_eq!(sha256_of(&pulled), sha256_of(&local));
+
+    // A read hands the ranges to standard output in order.
+    let text: String = (0..60_000)
+        .map(|line| format!("line {line:06}\n"))
+        .collect();
+    std::fs::write(root.join("text.txt"), &text).unwrap();
+    let read = remote(
+        &client,
+        &host,
+        &[
+            "read",
+            "--parallel",
+            "3",
+            "--range",
+            "100000",
+            &root.join("text.txt").to_string_lossy(),
+        ],
+    );
+    assert_eq!(read.code, Some(0), "{}", read.stderr);
+    assert!(read.stdout == text, "the output differs");
+
+    // A delta or a comparison needs the ordinary transfer.
+    let refused = remote(
+        &client,
+        &host,
+        &[
+            "get",
+            "--parallel",
+            "2",
+            "--delta",
+            "always",
+            &remote_text,
+            &pulled_text,
+        ],
+    );
+    assert_ne!(refused.code, Some(0));
+    assert!(refused.stderr.contains("--parallel"), "{}", refused.stderr);
+    // Nothing is left beside either file.
+    for dir in [&root, pulled.parent().unwrap()] {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+            assert!(
+                !name.contains(".part") && !name.contains("bohio-part"),
+                "{name}"
+            );
+        }
+    }
+}
+
+#[test]
 fn the_command_walks_a_tree_and_syncs_it_both_ways_moving_only_what_differs() {
     let world = World::new("");
     let root = world.path("files");

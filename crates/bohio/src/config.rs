@@ -1585,6 +1585,20 @@ pub struct ClientConfig {
     /// How long `bohio links` and `bohio remote --via` wait for each peer to say what it offers; a peer that answers later
     /// is listed as unknown. Not zero. Default `5s`.
     pub links_wait: Span,
+    /// The streams `get`, `put` and `read` run at once for one file (`remote --parallel`): each carries its own range, so
+    /// `n` streams on one link have `n` receive windows in flight, which is what a long path with a wide pipe needs. `1`
+    /// is the ordinary one-stream transfer, which also uses a delta when the destination has an old copy; more moves
+    /// the whole file, and on a path that is short or already full it costs a stream per range and gains nothing.
+    /// At least 1. Default `1`.
+    pub parallel_streams: usize,
+    /// The links `get`, `put` and `read` spread those streams over (`remote --links`): each is a connection of its own
+    /// with its own proof (about two round trips) and its own congestion window, which a path that loses packets
+    /// needs and one that does not does not. Through `--via` there is one link, the node's. At least 1. Default `1`.
+    pub parallel_links: usize,
+    /// The bytes of one range of a parallel transfer (`remote --range`); `0` is one range per stream for `get` and `put`
+    /// and 8 MiB for `read`, which holds ranges in memory (at most two per stream). A smaller range balances a slow
+    /// stream against a fast one and costs an open, a round trip, per range. Default `0`.
+    pub parallel_range: u64,
 }
 
 impl Default for ClientConfig {
@@ -1598,6 +1612,9 @@ impl Default for ClientConfig {
             input_queue: 4,
             probe_timeout: Span(Duration::from_secs(1)),
             links_wait: Span(Duration::from_secs(5)),
+            parallel_streams: 1,
+            parallel_links: 1,
+            parallel_range: 0,
         }
     }
 }
@@ -1622,6 +1639,12 @@ impl ClientConfig {
         }
         if self.input_queue == 0 {
             return Err(("client.input_queue", "must be at least 1"));
+        }
+        if self.parallel_streams == 0 {
+            return Err(("client.parallel_streams", "must be at least 1"));
+        }
+        if self.parallel_links == 0 {
+            return Err(("client.parallel_links", "must be at least 1"));
         }
         Ok(())
     }

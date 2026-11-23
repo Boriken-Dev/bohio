@@ -739,6 +739,9 @@ pub struct RemoteReadArgs {
     /// ends); the host clamps it to its own limit.
     #[arg(long, value_name = "LOG2", requires = "compress")]
     pub window_log: Option<u32>,
+    /// How the file is spread over streams and links.
+    #[command(flatten)]
+    pub parallel: ParallelArgs,
     /// Keep the file open and print what is appended, as `tail -f` does, until interrupted. The host's `[filesystem]
     /// follow_interval` says how often it looks; the file is sent from its start unless `--tail` says otherwise. Not with
     /// the compression options.
@@ -804,6 +807,26 @@ pub enum CompareChoice {
     Blocks,
 }
 
+/// How `get`, `put` and `read` spread one file over streams and links. Unset, each is `[client] parallel_streams`,
+/// `parallel_links` and `parallel_range`.
+#[derive(Debug, Args)]
+pub struct ParallelArgs {
+    /// Carry the file on N streams at once, each a range of it. One stream moves at most its receive window per round
+    /// trip, so N streams on a long path with room in it move N windows. With N above 1 the whole file moves (no delta,
+    /// no --compare), written beside its destination and renamed into place after its SHA-256 matches the other side's.
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
+    pub parallel: Option<u32>,
+    /// Spread those streams over M links, each a connection of its own with its own proof (about two round trips) and
+    /// its own congestion window: for a path that loses packets. Through --via there is one link, the node's.
+    #[arg(long, value_name = "M", value_parser = clap::value_parser!(u32).range(1..))]
+    pub links: Option<u32>,
+    /// The bytes of one range: a stream that finishes one takes the next, at the price of an open (a round trip) per
+    /// range. By default `get` and `put` use one range per stream and `read` 8 MiB, which it holds in memory (at most two
+    /// per stream). 0 is that default.
+    #[arg(long, value_name = "BYTES")]
+    pub range: Option<u64>,
+}
+
 /// The options `put` and `get` share.
 #[derive(Debug, Args)]
 pub struct SyncArgs {
@@ -834,6 +857,9 @@ pub struct RemotePutArgs {
     /// The options of a transfer.
     #[command(flatten)]
     pub sync: SyncArgs,
+    /// How the file is spread over streams and links.
+    #[command(flatten)]
+    pub parallel: ParallelArgs,
 }
 
 /// `bohio remote ... get`.
@@ -846,6 +872,9 @@ pub struct RemoteGetArgs {
     /// The options of a transfer.
     #[command(flatten)]
     pub sync: SyncArgs,
+    /// How the file is spread over streams and links.
+    #[command(flatten)]
+    pub parallel: ParallelArgs,
 }
 
 /// `bohio remote ... walk`.

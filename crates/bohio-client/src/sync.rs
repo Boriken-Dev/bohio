@@ -550,14 +550,14 @@ fn push_delta(
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// A temporary file beside the destination: renamed over it when the file is complete, removed when not.
-struct Part {
+pub(crate) struct Part {
     path: PathBuf,
     out: Option<BufWriter<File>>,
     kept: bool,
 }
 
 impl Part {
-    fn create(destination: &Path, buffer: usize) -> Result<Self, Error> {
+    pub(crate) fn create(destination: &Path, buffer: usize) -> Result<Self, Error> {
         let name = destination.file_name().map_or_else(
             || "file".to_owned(),
             |name| name.to_string_lossy().into_owned(),
@@ -579,6 +579,19 @@ impl Part {
         })
     }
 
+    /// Where the temporary file is, for a writer that opens it again.
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The file the part was created with.
+    pub(crate) fn file(&self) -> &File {
+        self.out
+            .as_ref()
+            .expect("the part is open until it is put in place")
+            .get_ref()
+    }
+
     fn out(&mut self) -> &mut BufWriter<File> {
         self.out
             .as_mut()
@@ -586,7 +599,7 @@ impl Part {
     }
 
     /// Flushes, gives the new file the old one's permissions and renames it over `destination`.
-    fn put_in_place(
+    pub(crate) fn put_in_place(
         mut self,
         destination: &Path,
         like: Option<&fs::Metadata>,

@@ -16,6 +16,7 @@ pub mod hash;
 pub mod keep;
 pub mod link;
 pub mod media;
+pub mod parallel;
 pub mod power;
 pub mod range;
 pub mod relay;
