@@ -969,3 +969,175 @@ fn a_write_that_names_the_digest_it_read_is_refused_when_the_file_moved_on() {
     );
     assert_eq!(missing.code, "not_found", "{missing}");
 }
+
+#[test]
+fn search_finds_lines_pages_by_skip_and_reports_what_it_could_not_read() {
+    let _deadline = Deadline::start();
+    let world = World::new();
+    let tools = world.tools(grant(world.dir.path()));
+    let root = world.dir.path().to_string_lossy().into_owned();
+    let lines: String = (1..=7)
+        .map(|n| {
+            if n % 2 == 1 {
+                format!("needle {n}\n")
+            } else {
+                format!("hay {n}\n")
+            }
+        })
+        .collect();
+    std::fs::write(world.path("a.txt"), &lines).unwrap();
+    std::fs::write(world.path("b.log"), "a Needle in the log\n").unwrap();
+    std::fs::write(world.path("blob.bin"), b"needle\0binary").unwrap();
+
+    let all = ok(
+        &tools,
+        "search",
+        json!({"pattern": "needle", "path": root, "include": ["*.txt"], "context": 1}),
+    );
+    let matches = all["matches"].as_array().unwrap();
+    assert_eq!(matches.len(), 4, "{all}");
+    assert_eq!(matches[0]["path"], "a.txt");
+    assert_eq!(matches[0]["line"], 1);
+    assert_eq!(matches[0]["text"], "needle 1");
+    assert_eq!(matches[1]["before"], json!(["hay 2"]));
+    assert_eq!(matches[1]["after"], json!(["hay 4"]));
+    assert_eq!(all["more"], false);
+
+    // A page of two, then the rest: the pages join into the whole answer, in order.
+    let mut seen = Vec::new();
+    let mut skip = 0_u64;
+    loop {
+        let page = ok(
+            &tools,
+            "search",
+            json!({"pattern": "needle", "path": root, "include": ["*.txt"], "limit": 2, "skip": skip}),
+        );
+        let found = page["matches"].as_array().unwrap();
+        assert!(found.len() <= 2);
+        seen.extend(found.iter().map(|m| m["line"].as_u64().unwrap()));
+        match page["next_skip"].as_u64() {
+            Some(next) => skip = next,
+            None => break,
+        }
+    }
+    assert_eq!(seen, [1, 3, 5, 7]);
+
+    // Case is the caller's choice; a binary file is skipped and counted, not searched.
+    let both = ok(
+        &tools,
+        "search",
+        json!({"pattern": "needle", "path": root, "literal": true, "case_insensitive": true}),
+    );
+    let paths: Vec<&str> = both["matches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["path"].as_str().unwrap())
+        .collect();
+    assert!(
+        paths.contains(&"b.log") && paths.contains(&"a.txt"),
+        "{both}"
+    );
+    assert!(!paths.contains(&"blob.bin"), "{both}");
+    assert_eq!(both["done"]["skipped"]["binary"], 1, "{both}");
+
+    // A pattern that does not compile is the host's bad_request; a peer without fs.read is refused.
+    assert_eq!(
+        failed(&tools, "search", json!({"pattern": "(", "path": root})).code,
+        "bad_request"
+    );
+    let blind = world.tools(Grant::allowing([Permission::Info]));
+    assert_eq!(
+        failed(&blind, "search", json!({"pattern": "x", "path": root})).code,
+        "denied"
+    );
+}
+
+#[test]
+fn stats_and_which_describe_the_host_and_need_info() {
+    let _deadline = Deadline::start();
+    let world = World::new();
+    let tools = world.tools(grant(world.dir.path()));
+    let stats = ok(&tools, "stats", json!({}));
+    assert!(stats["memory"]["total"].as_u64().unwrap() > 0, "{stats}");
+    assert!(!stats["disks"].as_array().unwrap().is_empty(), "{stats}");
+    assert!(stats["cpus"].as_u64().unwrap() >= 1);
+
+    let shell = if cfg!(windows) { "cmd" } else { "sh" };
+    let found = ok(
+        &tools,
+        "which",
+        json!({"names": [shell, "no-such-program-here"]}),
+    );
+    let path = found["found"][shell].as_str().expect("the shell is found");
+    assert!(Path::new(path).is_absolute(), "{path}");
+    assert_eq!(found["found"]["no-such-program-here"], Value::Null);
+    assert_eq!(
+        failed(&tools, "which", json!({"names": []})).code,
+        "bad_request"
+    );
+
+    let without = world.tools(
+        Grant::allowing([Permission::FsRead]).with_fs_roots([world.dir.path().to_path_buf()]),
+    );
+    assert_eq!(failed(&without, "stats", json!({})).code, "denied");
+    assert_eq!(
+        failed(&without, "which", json!({"names": [shell]})).code,
+        "denied"
+    );
+}
+
+#[test]
+fn follow_returns_what_is_appended_while_it_watches_and_says_when_the_file_was_cut() {
+    let _deadline = Deadline::start();
+    let world = World::new();
+    let tools = world.tools(grant(world.dir.path()));
+    let path = world.path("app.log");
+    std::fs::write(&path, "before\n").unwrap();
+
+    let writer = {
+        let path = path.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(600));
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            file.write_all(b"appended one\n").unwrap();
+            file.sync_all().unwrap();
+            thread::sleep(Duration::from_millis(600));
+            std::fs::write(&path, "cut\n").unwrap();
+        })
+    };
+    let seen = ok(
+        &tools,
+        "follow",
+        json!({"path": path, "tail": 0, "duration_ms": 3000}),
+    );
+    writer.join().unwrap();
+    let output = text_of(&seen["output"]);
+    assert!(output.contains("appended one"), "{seen}");
+    assert!(
+        !output.contains("before"),
+        "tail 0 is only what is appended: {seen}"
+    );
+    assert_eq!(seen["size_at_start"], 7);
+    let cut = seen["truncations"].as_array().unwrap();
+    assert_eq!(cut.len(), 1, "{seen}");
+    assert_eq!(cut[0]["size"], 4);
+    assert!(cut[0]["at_output_byte"].as_u64().unwrap() >= 13);
+
+    // The watch lasts its time, and a missing file is the host's answer.
+    let started = Instant::now();
+    let idle = ok(
+        &tools,
+        "follow",
+        json!({"path": path, "tail": 0, "duration_ms": 400}),
+    );
+    assert!(started.elapsed() >= Duration::from_millis(400));
+    assert_eq!(idle["output"]["total_bytes"], 0);
+    assert_eq!(
+        failed(&tools, "follow", json!({"path": world.path("none.log")})).code,
+        "not_found"
+    );
+}

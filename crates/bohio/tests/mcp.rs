@@ -598,3 +598,100 @@ fn a_host_that_cannot_be_reached_is_an_error_of_the_call_not_of_the_server() {
     std::fs::write(world.path("a.txt"), "x").unwrap();
     client.ok("stat", json!({"host": "up", "path": world.path("a.txt")}));
 }
+
+#[test]
+fn search_stats_which_and_follow_are_listed_and_answer_over_mcp() {
+    let world = World::new(ALL);
+    let mut client = world.mcp(&[world.host_flag("lab")], &[]);
+    client.initialize();
+    let listed = client.request("tools/list", json!({}));
+    let names: Vec<&str> = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap())
+        .collect();
+    for wanted in ["search", "stats", "which", "follow"] {
+        assert!(names.contains(&wanted), "{wanted} is not listed: {names:?}");
+    }
+
+    std::fs::write(world.path("one.txt"), "alpha\nneedle here\nomega\n").unwrap();
+    std::fs::write(world.path("two.txt"), "nothing\n").unwrap();
+    let found = client.ok(
+        "search",
+        json!({"pattern": "needle", "path": world.root.to_string_lossy(), "context": 1}),
+    );
+    let matches = found["matches"].as_array().unwrap();
+    assert_eq!(matches.len(), 1, "{found}");
+    assert_eq!(matches[0]["path"], "one.txt");
+    assert_eq!(matches[0]["line"], 2);
+    assert_eq!(matches[0]["before"], json!(["alpha"]));
+    assert_eq!(matches[0]["after"], json!(["omega"]));
+    assert_eq!(found["more"], false);
+
+    let stats = client.ok("stats", json!({}));
+    assert!(stats["memory"]["total"].as_u64().unwrap() > 0, "{stats}");
+    assert!(!stats["disks"].as_array().unwrap().is_empty(), "{stats}");
+
+    let shell = if cfg!(windows) { "cmd" } else { "sh" };
+    let which = client.ok("which", json!({"names": [shell, "no-such-program-here"]}));
+    assert!(which["found"][shell].is_string(), "{which}");
+    assert_eq!(which["found"]["no-such-program-here"], Value::Null);
+
+    let log = world.path("app.log");
+    std::fs::write(&log, "old line\n").unwrap();
+    let writer = {
+        let log = log.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(500));
+            let mut file = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+            file.write_all(b"new line\n").unwrap();
+            file.sync_all().unwrap();
+        })
+    };
+    let followed = client.ok(
+        "follow",
+        json!({"path": log, "tail": 0, "duration_ms": 2500}),
+    );
+    writer.join().unwrap();
+    assert_eq!(text_of(&followed["output"]), "new line\n", "{followed}");
+    assert_eq!(followed["truncations"], json!([]));
+}
+
+#[test]
+fn a_host_named_in_the_configuration_is_served_by_its_bare_name() {
+    let world = World::new(ALL);
+    // The agent's own configuration names the host; `--host lab` carries nothing else.
+    let config = std::path::PathBuf::from(world.agent.config());
+    let mut text = std::fs::read_to_string(&config).unwrap();
+    text.push_str(&format!(
+        "\n[remote.lab]\nendpoint = \"{}\"\nserver = \"{}\"\n",
+        world.endpoint, world.host.id
+    ));
+    std::fs::write(&config, text).unwrap();
+    let mut client = world.mcp(&["lab".to_owned()], &[]);
+    client.initialize();
+    std::fs::write(world.path("named.txt"), "by name\n").unwrap();
+    let read = client.ok("read", json!({"path": world.path("named.txt")}));
+    assert_eq!(read["text"], "by name\n");
+
+    // A bare word that names no host stops the server at its start, saying which.
+    let output = Command::new(env!("CARGO_BIN_EXE_bohio"))
+        .args([
+            "mcp",
+            "--config",
+            &world.agent.config(),
+            "--host",
+            "nowhere",
+        ])
+        .env_remove("BOHIO_CONFIG")
+        .stdin(Stdio::null())
+        .output()
+        .expect("bohio mcp runs");
+    assert_eq!(output.status.code(), Some(1));
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        said.contains("nowhere") && said.contains("[remote]"),
+        "{said}"
+    );
+}

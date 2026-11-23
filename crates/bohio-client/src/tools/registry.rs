@@ -2,7 +2,7 @@
 
 use serde_json::{Value, json};
 
-use super::{Effect, Need, ToolSpec, files, net, object, process, screen};
+use super::{Effect, Need, ToolSpec, discover, files, net, object, process, screen};
 
 fn text(description: &str) -> Value {
     json!({"type": "string", "description": description})
@@ -394,6 +394,46 @@ fn watch_schema() -> Value {
     )
 }
 
+fn search_schema() -> Value {
+    object(
+        json!({
+            "pattern": text("a regular expression (linear time, no backtracking), or plain text with `literal`"),
+            "path": text("the directory or file to search (default .)"),
+            "depth": count("how far below the path; default the whole tree"),
+            "include": list_of(&json!({"type": "string"}), "globs: only matching files are searched"),
+            "exclude": list_of(&json!({"type": "string"}), "globs: matching files and their subtrees are left out"),
+            "hidden": flag("search hidden files and directories as well"),
+            "literal": flag("take `pattern` as plain text"),
+            "case_insensitive": flag("ignore case"),
+            "context": count("lines of context before and after each match"),
+            "skip": count("matches to skip: the `next_skip` of the previous page"),
+            "limit": count("matches in the page"),
+        }),
+        &["pattern"],
+    )
+}
+
+fn which_schema() -> Value {
+    object(
+        json!({"names": list_of(&json!({"type": "string"}), "program names to look up on the host's own PATH")}),
+        &["names"],
+    )
+}
+
+fn follow_schema() -> Value {
+    object(
+        json!({
+            "path": text("the file on the host"),
+            "duration_ms": count("how long to watch for appended bytes (default 5000, at most the tools' setting)"),
+            "tail": count("start this many bytes before the end (0: only what is appended); default `offset`"),
+            "offset": count("the first byte to return when `tail` is not given (default 0)"),
+            "by_name": flag("look the path up again each time, so a rotated file is followed from its start"),
+            "max_output": count("bytes to return at most: the first half and the last half are kept, `omitted_bytes` says how many lay between"),
+        }),
+        &["path"],
+    )
+}
+
 /// Every tool. A new group of calls is new entries here and a function; nothing else lists tools.
 pub static REGISTRY: &[ToolSpec] = &[
     ToolSpec {
@@ -547,6 +587,38 @@ pub static REGISTRY: &[ToolSpec] = &[
         needs: &[Need::FsRead, Need::LocalRoots],
         effect: Effect::Changes,
         run: files::get_file,
+    },
+    ToolSpec {
+        name: "search",
+        description: "Search the contents of files below a directory for a regular expression, on the host: only the matching lines cross the link. Binary and very large files are skipped (counted in `done`), links are not followed. Paged by `skip` and `limit`: `more` and `next_skip` say where to go on.",
+        schema: search_schema,
+        needs: &[Need::FsRead],
+        effect: Effect::ReadOnly,
+        run: discover::search,
+    },
+    ToolSpec {
+        name: "stats",
+        description: "The host's state: hostname, uptime, processors, load, memory, swap and disks. Needs the `info` permission.",
+        schema: nothing,
+        needs: &[Need::Info],
+        effect: Effect::ReadOnly,
+        run: discover::stats,
+    },
+    ToolSpec {
+        name: "which",
+        description: "Where programs are on the host's own PATH, as `exec` of a bare name finds them: each name with its absolute path or null. Needs the `info` permission.",
+        schema: which_schema,
+        needs: &[Need::Info],
+        effect: Effect::ReadOnly,
+        run: discover::which,
+    },
+    ToolSpec {
+        name: "follow",
+        description: "Watch a file for a time (tail -f): what it holds from `tail` or `offset`, then every byte appended until `duration_ms` passes. A cut or replaced file is reported in `truncations`. Output is bounded like exec's.",
+        schema: follow_schema,
+        needs: &[Need::FsRead],
+        effect: Effect::ReadOnly,
+        run: discover::follow_file,
     },
     ToolSpec {
         name: "session_start",

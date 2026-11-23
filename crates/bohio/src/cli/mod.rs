@@ -1031,10 +1031,10 @@ pub struct McpArgs {
     /// each agent's key gets its own grant on a host.
     #[command(flatten)]
     pub config: ConfigOption,
-    /// A host the agent may use, `[NAME=]ENDPOINT` followed by any flags of `bohio remote` (`--server ID`, `--jump ENDPOINT`,
+    /// A host the agent may use: `[NAME=]ENDPOINT`, or the name of a host in `[remote]` (`bohio hosts`), followed by any flags of `bohio remote` (`--server ID`, `--jump ENDPOINT`,
     /// `--ca FILE`, ...), the whole text in quotes. Repeat for several hosts: a call then names its host. The link is made
     /// when the host is first used, and once more after a loss.
-    #[arg(long, value_name = "[NAME=]ENDPOINT [FLAGS]")]
+    #[arg(long, value_name = "[NAME=]ENDPOINT|NAME [FLAGS]")]
     pub host: Vec<String>,
     /// Bytes of one output stream a call returns by default (`bohio_client::tools::Settings::output`). Default 65536.
     #[arg(long, value_name = "BYTES")]

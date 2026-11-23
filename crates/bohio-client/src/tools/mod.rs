@@ -25,6 +25,7 @@ use serde_json::{Map, Value, json};
 use crate::forward::ForwardSettings;
 use crate::{Error, Open};
 
+mod discover;
 mod files;
 mod net;
 mod process;
@@ -67,6 +68,8 @@ pub struct Settings {
     pub list: Bound,
     /// See [`Settings::list`]: the walk's.
     pub walk: Bound,
+    /// How long a `follow` watches a file, in milliseconds. Default 5 s, ceiling 5 minutes.
+    pub follow: Bound,
     /// Bytes of all the files of one `read_many`. Default 1 MiB, ceiling 16 MiB.
     pub bundle: Bound,
     /// The largest file `edit` reads and the largest text `write` and `write_many` send, in bytes. Default 8 MiB.
@@ -116,6 +119,10 @@ impl Default for Settings {
             walk: Bound {
                 default: 1000,
                 ceiling: 100_000,
+            },
+            follow: Bound {
+                default: 5000,
+                ceiling: 300_000,
             },
             bundle: Bound {
                 default: 1024 * 1024,
@@ -650,6 +657,11 @@ impl Capture {
             tail_cap,
             total: 0,
         }
+    }
+
+    /// How many bytes have been pushed so far, kept or not.
+    pub(crate) const fn pushed(&self) -> u64 {
+        self.total
     }
 
     pub(crate) fn push(&mut self, bytes: &[u8]) {
