@@ -1119,3 +1119,14 @@ fn a_jump_that_names_no_host_a_cycle_and_a_host_without_an_endpoint_are_refused_
     // A chain that does not loop is fine.
     assert!(parse(HOSTS).is_ok());
 }
+
+#[test]
+fn the_agentless_console_node_example_is_accepted() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/console_node.cfg");
+    let text = std::fs::read_to_string(path).expect("the example is there");
+    let config = Config::from_toml(&text, "console_node.cfg").expect("it is accepted");
+    assert_eq!(config.access.terminals(), ["console"]);
+    assert!(config.access.desktops().is_empty());
+    assert_eq!(config.access.fs, bohio::config::Switch::None);
+    assert!(config.source.contains_key("console"));
+}
