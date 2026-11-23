@@ -262,7 +262,7 @@ Signals: a `signal` frame (`0x15`) is answered with `signalled` (`delivered`, an
 ## Shells (`bohio::shell`)
 
 ```rust
-pub struct Context<'a> { pub grant: &'a Grant, pub config: &'a ShellConfig, pub slots: &'a Slots, pub path: &'a OsStr }   // Copy
+pub struct Context<'a> { pub grant: &'a Grant, pub config: &'a ShellConfig, pub slots: &'a Slots, pub path: &'a OsStr, pub sources: &'a Sources }   // Copy
 pub fn serve(channel: Arc<dyn Channel>, metadata: &[u8], context: &Context<'_>) -> Result<bohio_proto::shell::Exit, ErrorBody>;
 ```
 
@@ -418,6 +418,30 @@ failure) and again at every `[link] recheck`, when a lost grant resets the conne
 Unix socket or Windows pipe by `bohio_client::forward::ipc::pump`, both on the link stream itself with no relay. `NodeEvent::Forwarded { peer, kind: ForwardKind::Connect, target, outcome: ForwardOutcome::{Connected, Failed(code)} }`
 tells the owner each connect (the target's text, never a byte). `limit::Counted<K>` is the per-key bound (`take(key) -> Option<Hold>`).
 
+## Sources and access (`bohio::access`, `[source.<name>]`, `[access]`)
+
+```rust
+pub struct Sources;     // Default = today's node; the registry of providers (guatiao) lives as long as it
+impl Sources {
+    pub fn from_config(source: &SourceTables, access: &AccessConfig) -> Result<Self, (String, String)>;   // (key, why)
+    pub fn unconfigured() -> Self;                                                  // no source, not even native; built-in providers registered
+    pub fn register_library(&self, name, describe) -> Result<(), String>;           // a linked guatiao library (`local_providers!`)
+    pub fn reconfigure(&self, source, access) -> Result<(), (String, String)>;      // unchanged tables keep their instance; a changed one is rebuilt and the old retired
+    pub fn with_terminal / with_desktop / with_power / with_media(self, name, Arc<dyn Kind>) -> Self;   // an embedder's own source; add_terminal/add_desktop on &self
+    pub fn with_access(self, Capability, names) -> Self;
+    pub fn terminal / desktop / power / media(&self, name: Option<&str>) -> Result<Source<dyn Kind>, ErrorBody>;   // None: the default; unsupported when none
+    pub fn names(&self, Capability) -> Vec<String>;  pub fn fs(&self) -> Switch;  pub fn exec(&self) -> Switch;
+}
+pub struct Source<K: ?Sized>;   // name(), get(), is_current() (false once its table changed: what runs on it ends `unavailable`, "the source was reconfigured")
+```
+
+`[source.<name>]` is `provider = "<id>"` plus that provider's own keys, checked against its schema before the provider is built
+(`ConfigError::Invalid` naming `source.<name>.<key>`; an unknown provider lists the known ones; `native` needs no `provider` and takes no other). `[access]`
+lists the sources of each capability, the first the default: `terminal` and `desktop` (absent: `["native"]`; `[]` serves none), `power`, `media` (default none), and
+`fs` and `exec` (`"native"` or `"none"`, read when the node is built: `"none"` makes the engine `unsupported`). `[source.native]` keys, all optional: `read_chunk` `16384`,
+`queue_chunks` `16`, `windows_capture` `"auto"`, `windows_frame_wait` `250ms`, `windows_capture_idle` `10s`, `windows_clipboard_wait` `500ms`, `clipboard_max_bytes` `1048576`.
+`Node::with_sources(Sources)` replaces them (call it first); `Node::sources()` reaches them for a reload; `[gui] backend` and the `[gui] windows_*` keys moved here.
+
 ## Desktop (`bohio::gui`, `[gui]`)
 
 ```rust
@@ -438,17 +462,17 @@ pub fn serve(channel: Arc<dyn Channel>, metadata: &[u8], context: &Context<'_>) 
 pub fn covers(grant: &Grant, metadata: &[u8]) -> bool;
 ```
 
-`[gui]` (`GuiConfig`; every key in `examples/bohio.cfg`): `enabled` `false`, `backend` `"auto"`, `max_streams` `4`, `max_streams_per_peer` `2`, `snapshots_per_minute` `120`, `max_snapshot_pixels` `33554432`,
+`[gui]` (`GuiConfig`; every key in `examples/bohio.cfg`): `enabled` `false`, `max_streams` `4`, `max_streams_per_peer` `2`, `snapshots_per_minute` `120`, `max_snapshot_pixels` `33554432`,
 `formats` `["png","jpeg","webp"]`, `jpeg_quality` `80`, `max_input_rate` `1000`, `max_batch_events` `256`, `max_text` `4096`, `max_batch_wait` `5s`, `input_when_locked` `false`, `settle_interval` `100ms`,
 `settle_quiet` `300ms`, `settle_timeout` `5s`, `settle_ignore_tiles` `1`, `clipboard_max_bytes` `1048576`, `chunk_size` `65536`, `poll_interval` `50ms`, `state_interval` `500ms`, `idle_timeout` `30m`,
-`indicator` `"notify"`, `indicator_linger` `30s`, `approval` `"none"`, `approval_timeout` `60s`, `approval_ttl` `15m`; the Windows backend's `windows_capture` `"auto"` (`WindowsCapture::{Auto, Dxgi, Gdi}`), `windows_frame_wait` `250ms`, `windows_capture_idle` `10s`, `windows_clipboard_wait` `500ms`; the watch's `default_fps` `5`, `max_fps` `15`, `min_fps` `1`, `tile` `64`, `frames_in_flight` `2`,
+`indicator` `"notify"`, `indicator_linger` `30s`, `approval` `"none"`, `approval_timeout` `60s`, `approval_ttl` `15m`; the watch's `default_fps` `5`, `max_fps` `15`, `min_fps` `1`, `tile` `64`, `frames_in_flight` `2`,
 `lossless_max_bpp` `0.75` (a float: `GuiConfig` is not `Eq`), `refine_after` `1s`, `zstd_level` `3`, `watch_quality` `90`, `adapt` `true`, `adapt_ladder` `["85","70","50","50@0.75","40@0.5"]` (`LadderStep::parse`: `QUALITY[@SCALE]`),
 `adapt_window` `32`, `adapt_down_after` `3`, `adapt_up_after` `5`, `adapt_late` `1.5`, `adapt_early` `0.5`, `max_rate` unset (bytes a second), `max_rect_bytes` `33554432`; a zero count or time is an error naming the key.
 A `watch` (`gui/stream.rs`, `gui/adapt.rs`): the stream thread captures only while fewer than `frames_in_flight` updates are unacknowledged and at most `fps` times a second, compares the frame in `tile` tiles
 (`bohio_transfer::screen::TileGrid`), sends the changed rectangles (`zstd_rgb` where it costs at most `lossless_max_bpp` bytes a pixel, else JPEG; a JPEG rectangle that stays unchanged for `refine_after` is sent
 again lossless), and moves along the ladder by how late each `ack` was, judged by its excess over the least delay of the last `adapt_window` acks (`adapt_down_after` late in a row step down, `adapt_up_after` early ones step up; a lossless watch lowers only the rate). The grant is read again
 every `state_interval`. Without feature `gui` a watch is `unsupported`. `examples/gui_host.rs` serves a synthetic desktop (`examples/support/synthetic.rs`: `text` or `motion`) over TCP, for measuring a watch with the built command. A node serves a stream only with `enabled`, a desktop
-(`with_desktop`; `bohio serve` gives a Windows node `WindowsDesktop` when `[gui] enabled` and `backend` is `auto` or `windows`, and no other platform has a backend yet) and a peer whose grant holds what the request wants (`gui.clipboard` only beside `gui.view` or `gui.input`). Each request is decided by the grant
+(`with_desktop` adds it as the source `app` and makes it the default desktop; the `native` source serves the platform desktop on Windows, via `[access] desktop`, and no other platform has a backend yet) and a peer whose grant holds what the request wants (`gui.clipboard` only beside `gui.view` or `gui.input`). Each request is decided by the grant
 as it is then; the stream ends `revoked` at the next `[link] recheck`. An engagement (one peer, one session) starts at its first stream and ends `indicator_linger` after its last, so many short streams make one notice.
 `bohio-gui-approve/1` is served on the local endpoint only (`LocalLink::gui_pending`, `gui_decide`; `bohio gui pending|allow|deny`).
 
