@@ -212,6 +212,21 @@ compression-info = { algorithm: text, ? levels: { min: int, max: int },    ; the
 shell-kind = "sh" / "bash" / "zsh" / "cmd" / "powershell" / "pwsh" / "other"
 ```
 
+### Pipelining
+
+The wire has no pipelining feature because none is needed: a host answers a stream's requests in the order they arrive and reads the next one only after answering, so a client may send many requests before it reads any answer. Each costs the host its own time and the path one round trip in all, not one each. Two rules hold it together:
+
+- A client that sends more than the stream's window holds must read answers while it sends, or the host, which cannot send, stops reading and both sides wait. The Rust client does this on two threads.
+- An answer to a request the host could not read carries id `0` and stands in the place of the oldest request still unanswered.
+
+A host serves one stream's calls one at a time, so a long `copy` or `move` of a tree holds the calls behind it on that stream; a client that needs both opens a second control stream for the long one.
+
+A request that opens a stream (`bohio-read/1`, `bohio-write/1`, ...) carries its parameters as the open's metadata, which also costs one round trip; streams open at once are limited by `[link] max_pending_opens` and `max_opens_per_minute` on the host, and each stream has its own receive window.
+
+### Parallel ranges
+
+Each stream has its own flow-control window, so `n` streams carry `n` windows. A read of one file in `n` ranges is `n` `bohio-read/1` streams with `offset` and `length`, written at their offsets; a write is a `create` of a staged file `.NAME.bohio-part-HEX` beside the target, `n` `at` writes of the ranges, a `bohio-hash/1` of the staged file compared with the sender's digest, and a `move` with `overwrite` onto the target; a failure removes the staged file. The streams may be on one link, or on several links to the same host when one connection's congestion window is the limit. Nothing here is on the wire that a plain client lacks.
+
 ## Reading a file
 
 `bohio-read/1`. The open's metadata is a CBOR `read-request`; the client sends nothing more on the stream.

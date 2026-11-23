@@ -17,7 +17,10 @@ so a theater provider, a command line and the host's own tests share one client.
 - `fs::Fs`, `fs::Reader`, `fs::Writer`: stat, list, create, remove, rename, copy files on the host, and `hash` for digests computed there, and
   stream a file in either direction in chunks.
 - `shell::Shell`: an interactive shell on a terminal: type, read output, resize, kill.
-- `control::Control`: the control stream the small calls share.
+- `control::Control`: the control stream the small calls share; `call_many` (and `submit` with `collect`) sends many calls before reading
+  any answer, so a long path costs one round trip for the batch. `connect::Connection::fs` keeps one such stream warm.
+- `parallel`: one file over several streams and links, `get_parallel`, `put_parallel` and `read_parallel`, each range its own stream with
+  its own receive window.
 - `connect::Connection`: a proven connection over TCP (or any coqui channel) that is itself an `Open`: the host and this side
   prove keys to each other with `coqui-link`, and every operation above then runs on a stream of that link.
 - Blocking calls with explicit timeouts; every method takes `&self`, so reading and writing can

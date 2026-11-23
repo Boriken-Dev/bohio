@@ -184,13 +184,30 @@ pub fn attach(link: &dyn Open, session: &str, from: Option<u64>) -> Result<(Atta
 
 A session starts with a request whose `session` is set (`Exec::start`, `Shell::start`; the id is `Exec::session()` or `Shell::session()`) and needs the peer's `session` permission. `Attached { kind, from, lost }`: `from` is where the output starts (the offset asked for, or the oldest the host still keeps), `lost` the bytes between. Dropping the returned stream detaches: the program runs on.
 
+## Parallel ranges (`bohio_client::parallel`)
+
+```rust
+pub fn get_parallel(links: &[&dyn Open], remote: &str, local: &Path, &ParallelOptions) -> Result<Moved, Error>;   // stat, then `streams` workers each take the next range (ReadRequest offset/length) and write it at its offset into a temporary sibling `.NAME.bohio-PID-N.part`; the whole file's digests (`hashes`) are asked of the host at the same time and compared with the part's; then renamed over `local` (keeping its permissions). Any failure removes the part and leaves `local`
+pub fn put_parallel(links: &[&dyn Open], local: &Path, remote: &str, &ParallelOptions) -> Result<Moved, Error>;   // stats the target (its mode is kept), `create`s `.NAME.bohio-part-<16 hex>` beside it (the host's own path text: the last `/` or `\` ends the directory; `parents` is not made), `at` streams per range, `bohio-hash/1` of the staged file against the local digest, `move` with overwrite; a failure removes the staged file
+pub fn read_parallel(links: &[&dyn Open], remote: &str, out: &mut dyn Write, &ParallelOptions) -> Result<u64, Error>;   // ranges are handed to `out` in order; at most 2 x streams ranges are fetched ahead (memory = that many ranges); the digest check comes after the last byte
+pub struct ParallelOptions { pub streams: usize /*4*/, pub range: Option<u64> /*None: one per stream (get, put); DEFAULT_READ_RANGE (8 MiB) for read*/, pub compression: Option<Compression> /*each range its own stream; a write names the algorithm*/, pub caps: Caps, pub hashes: Vec<Algorithm> /*[Sha256]; empty skips the check and the host's second read*/, pub timeout: Option<Duration> /*5 min*/, pub chunk: usize /*64 KiB*/, pub read_size: usize /*1 MiB*/ }   // Default
+pub const DEFAULT_READ_RANGE: u64 = 8 << 20;
+```
+
+`links` may hold one `Open` (the streams share its connection and its congestion window: `n` streams carry `n` receive windows) or several `Connection`s to the same host (stream `i` uses link `i % links.len()`; each link proves itself, about two round trips). The first link carries the stat, the digests, the `create` and the `move`. Moves the whole file: no delta, no comparison. The host's `[hash] max_streams` limits the digest streams and `max_pending_opens` / `max_opens_per_minute` the opens (one open per range).
+
 ## Control stream (`bohio_client::control`)
 
 ```rust
-pub struct Control;                                               // Debug; every method takes &self, calls take turns; Drop closes the stream
+pub struct Control;                                               // Debug; every method takes &self; the host answers in the order calls arrive; Drop closes the stream
 impl Control {
     pub fn open(link: &dyn Open) -> Result<Self, Error>;          // `bohio/1`, no metadata
-    pub fn call(&self, call: bohio_proto::control::Call, timeout: Option<Duration>) -> Result<Reply, Error>;
+    pub fn call(&self, call: bohio_proto::control::Call, timeout: Option<Duration>) -> Result<Reply, Error>;   // submit + collect; a Timeout abandons the call (its late answer is dropped)
+    pub fn submit(&self, call: Call, timeout: Option<Duration>) -> Result<u64, Error>;     // sends, returns the id; the timeout is for room to send. Many may be outstanding; a thread that submits more than the stream's window carries must collect meanwhile
+    pub fn collect(&self, id: u64, timeout: Option<Duration>) -> Result<Reply, Error>;     // that call's answer; others that arrive are kept for their own collect; Timeout leaves the call outstanding; an id with nothing outstanding is Protocol
+    pub fn abandon(&self, id: u64);                               // stop waiting: the answer is dropped when it comes
+    pub fn call_many(&self, calls: Vec<Call>, timeout: Option<Duration>) -> Vec<Result<Reply, Error>>;   // all sent (on one thread) while the answers are read (on the caller's), in order, each its own result; `timeout` is per wait, so a call the host does not answer reports Timeout and the ones the host holds behind it do too, and the stream goes on
+    pub fn is_closed(&self) -> bool;
     pub fn hello(&self, client: &str, timeout: Option<Duration>) -> Result<u32, Error>;    // the version the host will speak
     pub fn info(&self, timeout: Option<Duration>) -> Result<Info, Error>;
     pub fn sessions(&self, timeout: Option<Duration>) -> Result<Vec<bohio_proto::session::Listed>, Error>;   // the detached sessions this peer holds (an admin: all, with `peer`)
@@ -264,6 +281,7 @@ pub struct RangeOptions { pub range: u64 /*1 MiB*/, pub prefetch: usize /*2*/, p
 pub fn sync::sync_tree(link, local: &Path, remote: &str, &TreeOptions) -> Result<TreeReport, Error>;   // walks both sides (the host's in one stream), compares, moves files up to bundle_max in bundles of bundle_items and larger ones by delta, `parallel` streams at once; delete, dry_run; links are skipped
 pub struct TreeOptions { pub direction: Direction /*Push*/, pub compare: Compare /*Meta*/, pub delete: bool, pub dry_run: bool, pub bundle_max: u64 /*1 MiB*/, pub bundle_items: usize /*1000*/, pub parallel: usize /*4*/, pub modify_window: Duration /*1 us*/, pub sync: SyncOptions, pub bundle: BundleOptions }
 pub struct TreeReport { pub actions: Vec<Action { step: Step, path, size }>, unchanged, bundled, bundles, singles, deltas, deleted, skipped, bytes, wire_bytes, walk_entries, walk_wire_bytes: u64, pub failures: Vec<(String, String)> }   // is_clean(); Step::{MakeDirectory, Create, Update, Delete}
+// Fs gains stat_many(&[&str], follow) -> Vec<Result<Metadata, Error>> and list_many(&[&str]) -> Vec<Result<Vec<Entry>, Error>> (calls pipelined: about one round trip for the batch; list_many asks each directory's next page together with the others', never one directory's pages ahead of each other), and Connection::fs() -> Result<Arc<Fs>, Error> (one control stream per connection, opened on first use and opened again when it has ended; calls wait without limit).
 // Fs gains move_to(from, to, overwrite), truncate(path, length), copy_with(from, to, &CopyOptions { overwrite, recursive, preserve }), spawn_control(link) -> Fs (a second control stream: a copy or move of a tree holds its stream).
 // Writer gains token() (a resumable write's), resumed_at() (a resumed write's offset) and flush_remote(timeout) -> Result<u64, Error> (append and at: the bytes the host has written, made safe).
 ```
