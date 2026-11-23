@@ -324,6 +324,7 @@ impl Open for Link {
                     protocol::CONTROL => {
                         let context = control::Context {
                             gui: None,
+                            access: None,
                             filesystem: context,
                             info: &info,
                             current: None,

@@ -31,18 +31,23 @@ struct World {
 
 impl World {
     fn new(allow: &str) -> Self {
+        Self::with_config(allow, "")
+    }
+
+    /// As [`World::new`], with `extra` text in the host's `bohio.cfg`.
+    fn with_config(allow: &str, extra: &str) -> Self {
         let dir = tempfile::tempdir().expect("a directory");
         let host = Node::new(dir.path(), "host");
         let agent = Node::new(dir.path(), "agent");
         let root = dir.path().join("files");
         std::fs::create_dir_all(&root).unwrap();
-        host.write(&format!(
+        host.write(&(format!(
             "[peer.\"{}\"]\nallow = [{allow}]\nfs_roots = [{}]\n[peer.\"{}\".exec]\nprograms = [{}]\n",
             agent.id,
             toml_path(&root),
             agent.id,
             toml_path(Path::new(&helper())),
-        ));
+        ) + extra));
         let mut world = Self {
             _dir: dir,
             host,
@@ -694,4 +699,35 @@ fn a_host_named_in_the_configuration_is_served_by_its_bare_name() {
         said.contains("nowhere") && said.contains("[remote]"),
         "{said}"
     );
+}
+
+#[test]
+fn a_node_that_serves_no_files_or_processes_lists_no_tool_for_them() {
+    let world = World::with_config(
+        "\"info\", \"session\", \"fs.read\", \"fs.write\", \"exec\"",
+        "[access]
+fs = \"none\"
+exec = \"none\"
+",
+    );
+    let mut client = world.mcp(&[world.host_flag("host")], &[]);
+    client.initialize();
+    // The first call makes the link, so the host's capabilities are known when the tools are listed.
+    let _ = client.ok("session_list", json!({}));
+    let listed = client.request("tools/list", json!({}));
+    let names: Vec<String> = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap().to_owned())
+        .collect();
+    for gone in ["exec", "read", "write", "stat", "list", "hash"] {
+        assert!(
+            !names.iter().any(|name| name == gone),
+            "{gone} is listed: {names:?}"
+        );
+    }
+    assert!(names.iter().any(|name| name == "session_list"), "{names:?}");
+    let refused = client.refused("read", json!({"path": world.path("x")}));
+    assert!(refused.contains("serves no files"), "{refused}");
 }

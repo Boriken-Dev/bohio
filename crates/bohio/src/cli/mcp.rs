@@ -173,10 +173,25 @@ impl Server {
         }
     }
 
+    /// Whether every host this server has heard from says its node serves no such thing (`[access] fs` or `exec` is
+    /// `none`): such a tool is not listed at all, rather than listed as unavailable.
+    fn served_nowhere(&self, spec: &bohio_client::tools::ToolSpec) -> bool {
+        let heard: Vec<_> = self.hosts.iter().filter_map(|host| host.made()).collect();
+        !heard.is_empty()
+            && heard.iter().all(|tools| {
+                matches!(
+                    tools.availability(spec),
+                    Availability::Unavailable(reason)
+                        if reason.starts_with("this node serves no") || reason.starts_with("this node runs no")
+                )
+            })
+    }
+
     fn list(&self) -> Value {
         let names: Vec<&str> = self.hosts.iter().map(|host| host.name.as_str()).collect();
         let tools: Vec<Value> = REGISTRY
             .iter()
+            .filter(|spec| !self.served_nowhere(spec))
             .map(|spec| {
                 let mut schema = (spec.schema)();
                 if let Some(properties) =

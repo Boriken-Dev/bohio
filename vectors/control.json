@@ -362,6 +362,31 @@
         "error": null,
         "id": 2,
         "reply": {
+          "access": {
+            "desktop": [],
+            "exec": "none",
+            "fs": "none",
+            "media": [],
+            "power": [],
+            "terminal": [
+              {
+                "available": false,
+                "default": true,
+                "lacks": [
+                  "resize",
+                  "signals",
+                  "programs"
+                ],
+                "name": "console",
+                "offers": [
+                  "read",
+                  "write"
+                ],
+                "provider": "serial",
+                "reason": "the device is not there"
+              }
+            ]
+          },
           "arch": "x86_64",
           "exec": {
             "enabled": true,
@@ -1030,6 +1055,14 @@
         "error": null,
         "id": 22,
         "reply": {
+          "access": {
+            "desktop": [],
+            "exec": "",
+            "fs": "",
+            "media": [],
+            "power": [],
+            "terminal": []
+          },
           "arch": "",
           "exec": {
             "enabled": false,

@@ -1413,12 +1413,14 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
             }
             protocol::CONTROL => {
                 let probe = |grant: &Grant| shared.gui.info(&config.gui, grant);
+                let access = |grant: &Grant| shared.sources.info(grant);
                 let context = control::Context {
                     filesystem: files,
                     info: &shared.info,
                     current: Some(control::Current(&now)),
                     gui: Some(control::GuiProbe(&probe)),
                     path: Some(shared.path.as_os_str()),
+                    access: Some(control::AccessProbe(&access)),
                     sessions: Some(control::SessionsView {
                         registry: &shared.detached,
                         peer: &peer,

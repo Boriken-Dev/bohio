@@ -21,6 +21,7 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use bohio_api::guatiao::library::{InstantiateError, KindMismatch, Registry};
 use bohio_api::guatiao::{ToValue, Value};
 use bohio_api::{DesktopSource, MediaSource, PowerSource, TerminalSource};
+use bohio_proto::info::SourceEntry;
 use bohio_proto::{ErrorBody, ErrorCode};
 
 pub use desktop::{DesktopOf, KindDesktop, code_of, gui_error};
@@ -478,6 +479,52 @@ impl Sources {
     #[must_use]
     pub fn exec(&self) -> Switch {
         self.state_ref().exec
+    }
+
+    /// What `info` says of the sources `grant` reaches: each source's name, provider, whether it is the default, and its
+    /// `describe`, asked now. Only a peer holding `info` is told, and a source that cannot describe itself is listed
+    /// unavailable with that as the reason.
+    #[must_use]
+    pub fn info(&self, _grant: &crate::policy::Grant) -> bohio_proto::info::AccessInfo {
+        let state = self.state_ref();
+        fn entries<K: ?Sized>(
+            table: &Table<K>,
+            describe: impl Fn(
+                &K,
+            ) -> Result<
+                bohio_api::SourceInfo,
+                bohio_api::guatiao::library::ProviderError,
+            >,
+        ) -> Vec<SourceEntry> {
+            table
+                .order
+                .iter()
+                .enumerate()
+                .filter_map(|(at, name)| table.by_name.get(name).map(|source| (at, name, source)))
+                .map(|(at, name, source)| {
+                    let info = describe(source.get()).unwrap_or_else(|error| {
+                        bohio_api::SourceInfo::default().unavailable(error.message())
+                    });
+                    SourceEntry {
+                        name: name.clone(),
+                        provider: info.provider,
+                        default: at == 0,
+                        available: info.available,
+                        reason: info.reason,
+                        offers: info.offers,
+                        lacks: info.lacks,
+                    }
+                })
+                .collect()
+        }
+        bohio_proto::info::AccessInfo {
+            terminal: entries(&state.terminal, |source| source.describe()),
+            desktop: entries(&state.desktop, |source| source.describe()),
+            power: entries(&state.power, |source| source.describe()),
+            media: entries(&state.media, |source| source.describe()),
+            fs: state.fs.name().to_owned(),
+            exec: state.exec.name().to_owned(),
+        }
     }
 
     /// Ends every instance: what runs on them ends `unavailable`. A node that stops calls it.

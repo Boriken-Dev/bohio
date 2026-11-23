@@ -467,6 +467,12 @@ impl Tools {
                     (!on).then(|| format!("the host has {what} turned off or not offered"))
                 };
                 match need {
+                    Need::FsRead | Need::FsWrite if info.access.fs == "none" => {
+                        Some("this node serves no files".to_owned())
+                    }
+                    Need::Exec if info.access.exec == "none" => {
+                        Some("this node runs no programs".to_owned())
+                    }
                     Need::FsRead | Need::FsWrite => off(info.filesystem.enabled, "files"),
                     Need::Exec => off(info.exec.enabled, "running programs"),
                     Need::Session => off(info.sessions.enabled, "detached sessions"),

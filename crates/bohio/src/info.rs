@@ -149,6 +149,8 @@ pub fn collect(config: &NodeConfig, path: &OsStr) -> Info {
             formats: config.gui.formats.clone(),
             ..Default::default()
         },
+        // The sources are asked at every `info`, never cached: the control stream fills them in.
+        access: bohio_proto::info::AccessInfo::default(),
     }
 }
 

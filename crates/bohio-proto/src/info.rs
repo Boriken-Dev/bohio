@@ -47,6 +47,46 @@ pub struct Info {
     pub forward: ForwardInfo,
     /// The desktop: screen, keyboard and mouse.
     pub gui: GuiInfo,
+    /// How the host reaches the system it is for: the sources of each capability and what each can do now.
+    pub access: AccessInfo,
+}
+
+/// The sources a peer may use, asked at every `info` and never cached. A peer sees only the sources its grant reaches.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AccessInfo {
+    /// The terminal sources, the default first.
+    pub terminal: Vec<SourceEntry>,
+    /// The desktop sources.
+    pub desktop: Vec<SourceEntry>,
+    /// The power sources.
+    pub power: Vec<SourceEntry>,
+    /// The virtual-media sources.
+    pub media: Vec<SourceEntry>,
+    /// Whether files are served: `native` or `none`.
+    pub fs: String,
+    /// Whether processes are run: `native` or `none`.
+    pub exec: String,
+}
+
+/// One source of a capability.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SourceEntry {
+    /// The name `[source.<name>]` gave it; what a request's `source` names.
+    pub name: String,
+    /// The provider's id.
+    pub provider: String,
+    /// Whether this is the source a request without one means.
+    pub default: bool,
+    /// Whether it can be used now.
+    pub available: bool,
+    /// Why not, when it cannot.
+    pub reason: Option<String>,
+    /// What it can do, in its capability's words.
+    pub offers: Vec<String>,
+    /// What it cannot: the limits a peer should know before it asks.
+    pub lacks: Vec<String>,
 }
 
 /// The serving program.

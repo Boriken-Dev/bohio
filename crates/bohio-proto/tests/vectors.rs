@@ -238,6 +238,20 @@ fn sample_info() -> Info {
             listen: vec!["tcp".into(), "unix".into()],
         },
         gui: sample_gui_info(),
+        access: bohio_proto::info::AccessInfo {
+            terminal: vec![bohio_proto::info::SourceEntry {
+                name: "console".into(),
+                provider: "serial".into(),
+                default: true,
+                available: false,
+                reason: Some("the device is not there".into()),
+                offers: vec!["read".into(), "write".into()],
+                lacks: vec!["resize".into(), "signals".into(), "programs".into()],
+            }],
+            fs: "none".into(),
+            exec: "none".into(),
+            ..bohio_proto::info::AccessInfo::default()
+        },
     }
 }
 

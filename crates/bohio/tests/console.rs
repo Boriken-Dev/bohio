@@ -66,6 +66,8 @@ fn world(source_toml: &str, grant: Grant) -> World {
             &AccessConfig {
                 terminal: Some(vec!["console".to_owned()]),
                 desktop: Some(Vec::new()),
+                fs: bohio::config::Switch::None,
+                exec: bohio::config::Switch::None,
                 ..AccessConfig::default()
             },
         )
@@ -231,6 +233,43 @@ fn the_agent_session_tools_reach_a_console_with_no_new_tool() {
         serde_json::json!({"session": "console:console", "from": 0}),
     );
     assert!(read.to_string().contains("boot ok"), "{read}");
+}
+
+#[test]
+fn info_access_lists_the_console_with_its_limits_and_asks_the_device_every_time() {
+    let link = testing::terminal_link("console-info");
+    let world = world(&fake("console-info"), granted());
+    let info = || {
+        Control::open(&world.link)
+            .expect("control")
+            .info(Some(WAIT))
+            .expect("info")
+    };
+    let first = info();
+    assert_eq!(first.access.fs, "none");
+    assert_eq!(first.access.exec, "none");
+    assert_eq!(first.access.terminal.len(), 1);
+    let source = &first.access.terminal[0];
+    assert_eq!(
+        (source.name.as_str(), source.provider.as_str()),
+        ("console", "fake_terminal")
+    );
+    assert!(source.default && source.available);
+    for word in ["resize", "signals", "exit_status", "programs"] {
+        assert!(
+            source.lacks.iter().any(|lacks| lacks == word),
+            "{word}: {source:?}"
+        );
+    }
+    assert!(first.access.desktop.is_empty() && first.access.power.is_empty());
+
+    // The device is unplugged: the next `info` says so, with the reason, and the one after the plug says it is back.
+    link.set_available(false);
+    let gone = info();
+    assert!(!gone.access.terminal[0].available);
+    assert!(gone.access.terminal[0].reason.is_some());
+    link.set_available(true);
+    assert!(info().access.terminal[0].available);
 }
 
 #[test]

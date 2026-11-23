@@ -68,6 +68,7 @@ fn sample_info() -> Info {
             listen: Vec::new(),
         },
         gui: bohio_proto::gui::GuiInfo::default(),
+        access: bohio_proto::info::AccessInfo::default(),
     }
 }
 

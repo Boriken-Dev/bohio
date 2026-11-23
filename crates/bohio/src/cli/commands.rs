@@ -365,6 +365,29 @@ pub(super) fn print_info(info: &Info) {
     } else {
         println!("gui: disabled");
     }
+    let access = &info.access;
+    println!("files: {}  exec: {}", access.fs, access.exec);
+    for (capability, sources) in [
+        ("terminal", &access.terminal),
+        ("desktop", &access.desktop),
+        ("power", &access.power),
+        ("media", &access.media),
+    ] {
+        for source in sources {
+            println!(
+                "source {capability} {} provider={} default={} available={} lacks=[{}]{}",
+                source.name,
+                source.provider,
+                source.default,
+                source.available,
+                source.lacks.join(","),
+                source
+                    .reason
+                    .as_deref()
+                    .map_or_else(String::new, |reason| format!(" ({reason})"))
+            );
+        }
+    }
 }
 
 fn limit(value: Option<u64>) -> String {

@@ -27,6 +27,8 @@ pub struct Context<'a> {
     pub current: Option<Current<'a>>,
     /// What `info` says of the desktop to a peer with a given grant, asked at every `info`; `info.gui` is used when absent.
     pub gui: Option<GuiProbe<'a>>,
+    /// What `info` says of the sources to a peer with a given grant, asked at every `info`; none is reported when absent.
+    pub access: Option<AccessProbe<'a>>,
     /// The node's sessions and the peer asking, for `sessions` and `end_session`; they are `unsupported` when absent.
     pub sessions: Option<SessionsView<'a>>,
     /// The host's own `PATH`, where `which` looks; `which` is `unsupported` when absent.
@@ -45,6 +47,16 @@ pub struct SessionsView<'a> {
 impl core::fmt::Debug for SessionsView<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("SessionsView")
+    }
+}
+
+/// The sources part of `info` for a grant, as it is now.
+#[derive(Clone, Copy)]
+pub struct AccessProbe<'a>(pub &'a dyn Fn(&Grant) -> bohio_proto::info::AccessInfo);
+
+impl core::fmt::Debug for AccessProbe<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("AccessProbe")
     }
 }
 
@@ -129,7 +141,7 @@ fn answer_with(
     call: &Call,
     limit: usize,
 ) -> Result<Reply, ErrorBody> {
-    let (info, gui) = (context.info, context.gui);
+    let (info, gui, access) = (context.info, context.gui, context.access);
     match call {
         Call::Sessions | Call::EndSession { .. } => {
             let Some(view) = context.sessions else {
@@ -216,6 +228,9 @@ fn answer_with(
             let mut info = info.clone();
             if let Some(probe) = gui {
                 info.gui = (probe.0)(filesystem.grant);
+            }
+            if let Some(probe) = access {
+                info.access = (probe.0)(filesystem.grant);
             }
             Ok(Reply::Info(Box::new(info)))
         }
