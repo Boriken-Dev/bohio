@@ -553,3 +553,57 @@ fn the_probe_window_is_captured_and_driven() {
     }
     drop(back);
 }
+
+/// How fast the screen is captured, as sanity numbers (a local run is not evidence of performance). The pixels are
+/// dropped at once and never printed or written.
+#[test]
+#[ignore = "measures captures of the primary display; needs an unlocked desktop and BOHIO_TEST_GUI_LIVE=1"]
+fn how_fast_the_primary_display_is_captured() {
+    if !live("how_fast_the_primary_display_is_captured") {
+        return;
+    }
+    let probe = desktop(WindowsCapture::Auto);
+    let state = match probe.state() {
+        Ok(state) if state.active && state.locked == Some(false) => state,
+        other => {
+            println!(
+                "SKIPPED: how_fast_the_primary_display_is_captured: no unlocked interactive desktop ({other:?})"
+            );
+            return;
+        }
+    };
+    let primary = state.display(None).expect("a display").clone();
+    for capture in [WindowsCapture::Dxgi, WindowsCapture::Gdi] {
+        let desktop = self::desktop(capture);
+        for (name, region) in [
+            ("whole display", None),
+            ("128x128", Some(Rect::new(0, 0, 128, 128))),
+        ] {
+            // The first capture opens the duplication; it is not a rate.
+            let first = Instant::now();
+            if let Err(error) = desktop.capture(&primary.id, region) {
+                println!("{capture:?} {name}: {error}");
+                continue;
+            }
+            let first = first.elapsed();
+            let mut each = Vec::new();
+            let start = Instant::now();
+            while each.len() < 60 && start.elapsed() < Duration::from_secs(20) {
+                let one = Instant::now();
+                drop(desktop.capture(&primary.id, region).expect("a capture"));
+                each.push(one.elapsed());
+            }
+            let total = start.elapsed();
+            each.sort();
+            println!(
+                "{capture:?} {name} ({}x{}): first {first:?}, {} captures in {total:?} = {:.1} a second, median {:?}, slowest {:?}",
+                region.map_or(primary.width, |r| r.width),
+                region.map_or(primary.height, |r| r.height),
+                each.len(),
+                each.len() as f64 / total.as_secs_f64(),
+                each[each.len() / 2],
+                each[each.len() - 1],
+            );
+        }
+    }
+}
