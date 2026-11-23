@@ -131,6 +131,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A caller that opens short streams in a row (a control stream opened and closed in a loop) is no longer refused with no progress because its own closes are still in flight: an open waits up to `[link] open_wait` (`250ms`; `0` fails at once) for one of the link's streams to end when it holds `max_streams`.
+- The host's drain time (`[execution] drain_timeout`) no longer cuts the output of a process that has already ended while the reader is slow to take it; it still ends a descendant that holds a pipe open.
 - Windows: a process `exec` starts, and the PowerShell the access check starts, hold only their three standard streams of the host. It used to inherit every inheritable handle, among them the sockets `TcpStream::try_clone` makes, so a connection the host had dropped stayed open until the process ended and then read as a reset (os error 10054) on the other side. A batch file is no longer started directly (its arguments would be read by `cmd`); run `cmd /C` on it.
 - A configuration layer another account owns can no longer turn its own check off. `[service] check_access = false` in the lowest layer
   waived every finding, so on Windows any local user who created `%ProgramData%ohioohio.cfg` (every user may, while the folder does not
