@@ -53,6 +53,8 @@ mod stream {
     }
 }
 
+#[cfg(windows)]
+pub use crate::platform::gui::{WindowsDesktop, WindowsSettings};
 pub use desktop::{Capabilities, Desktop, DesktopState, Frame, GuiError};
 #[cfg(feature = "notify")]
 pub use notify::DesktopNotifier;

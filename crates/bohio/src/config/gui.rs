@@ -28,6 +28,19 @@ pub enum ApprovalMode {
     Local,
 }
 
+/// How the Windows backend captures the screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowsCapture {
+    /// DXGI Desktop Duplication, and GDI for a display it cannot duplicate (a rotated one, a remote session, an adapter
+    /// without it).
+    Auto,
+    /// DXGI Desktop Duplication only: a display it cannot duplicate is `unavailable`.
+    Dxgi,
+    /// GDI only: slower on a large screen, and it works wherever a screen is drawn.
+    Gdi,
+}
+
 /// `[gui]`: the desktop, as a host offers it. Every permission is off by default: a peer needs `gui.view`, `gui.input` or
 /// `gui.clipboard` in its own table, and the host needs `enabled = true`.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -139,6 +152,17 @@ pub struct GuiConfig {
     pub approval_timeout: Span,
     /// How long a peer allowed on a session is not asked again. `0s` asks for every stream. Default `15m`.
     pub approval_ttl: Span,
+    /// How the Windows backend captures: `auto`, `dxgi` or `gdi`. Default `auto`.
+    pub windows_capture: WindowsCapture,
+    /// How long the Windows backend waits for a display's first frame from DXGI before it captures that display with
+    /// GDI instead. `0s` never waits. Default `250ms`.
+    pub windows_frame_wait: Span,
+    /// How long the Windows backend keeps its DXGI duplications after the last capture: each makes the compositor track
+    /// the display's changes. `0s` releases them after every capture. Default `10s`.
+    pub windows_capture_idle: Span,
+    /// How long the Windows backend retries the clipboard while another program holds it open. `0s` tries once.
+    /// Default `500ms`.
+    pub windows_clipboard_wait: Span,
 }
 
 impl Default for GuiConfig {
@@ -191,6 +215,10 @@ impl Default for GuiConfig {
             approval: ApprovalMode::None,
             approval_timeout: Span(Duration::from_secs(60)),
             approval_ttl: Span(Duration::from_secs(15 * 60)),
+            windows_capture: WindowsCapture::Auto,
+            windows_frame_wait: Span(Duration::from_millis(250)),
+            windows_capture_idle: Span(Duration::from_secs(10)),
+            windows_clipboard_wait: Span(Duration::from_millis(500)),
         }
     }
 }

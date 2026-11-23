@@ -7,6 +7,7 @@
 
 #[cfg(unix)]
 mod guard;
+pub(crate) mod gui;
 mod pty;
 #[cfg(windows)]
 pub(crate) mod rename;

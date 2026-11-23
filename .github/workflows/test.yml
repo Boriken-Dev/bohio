@@ -48,6 +48,10 @@ jobs:
       # The exec and shell tests start this helper by its plain name, which a test run does not build.
       - run: cargo build -p bohio --example exec_helper
       - run: cargo test --workspace --all-features -- --nocapture
+        env:
+          # The Windows desktop backend's live test drives a window of its own; a runner with no
+          # interactive desktop prints SKIPPED with the reason.
+          BOHIO_TEST_GUI_LIVE: ${{ runner.os == 'Windows' && '1' || '' }}
       - name: The vectors are current
         # The vectors test rewrites a file that differs; a clean tree means they were current.
         shell: bash
