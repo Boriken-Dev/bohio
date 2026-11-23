@@ -4,7 +4,7 @@ Header-file-style reference for the `bohio-client` crate: every public item with
 crate can be used without reading its source. It ships inside the package and is self-contained. Development documentation lives
 with the source at <https://github.com/Boriken-Dev/bohio>.
 
-No Cargo features. MSRV Rust 1.89. Depends on `bohio-proto`, `coqui-transport` (with `process`), `coqui-link` (with `sealed`), `coqui-peer`, `coqui-transport-pipe` (`channel`), `coqui-transport-web` (`websocket`, `webtransport`), `coqui-peer-tls`, `rustls` and
+Cargo features: `zstd` (decode zstd), `screen` (the compositor of a watch: `bohio-transfer/screen`). MSRV Rust 1.89. Depends on `bohio-proto`, `coqui-transport` (with `process`), `coqui-link` (with `sealed`), `coqui-peer`, `coqui-transport-pipe` (`channel`), `coqui-transport-web` (`websocket`, `webtransport`), `coqui-peer-tls`, `rustls` and
 `coqui-transport-serial` (each a git revision, one copy), `url`, `socket2`, `serde_json`, `tracing` and `thiserror`. Version
 `0.0.0-alpha.0`, not published.
 
@@ -203,10 +203,18 @@ impl Gui {
     pub fn input(&self, events: &[InputEvent], timeout: Option<Duration>) -> Result<u32, Error>;            // applied; `denied`, `busy`, `unavailable`, `bad_request` are Error::Remote and the stream goes on
     pub fn settle(&self, request: &Settle, timeout: Option<Duration>) -> Result<SettleResult, Error>;
     pub fn clipboard(&self, timeout: Option<Duration>) -> Result<String, Error>;   pub fn set_clipboard(&self, text: &str, timeout: Option<Duration>) -> Result<(), Error>;
+    pub fn watch(&self, options: &WatchOptions) -> Result<(), Error>;   pub fn unwatch(&self) -> Result<(), Error>;   // a watch replaces the settings of a running one; the host refusal is an Error::Remote from the next `next_event`
+    pub fn next_event(&self, timeout: Option<Duration>) -> Result<WatchEvent, Error>;   // WatchEvent::{Update(UpdateInfo { header, bytes, acknowledged }), Cursor(CursorFrame)}: an update is applied to `screen()` (and acknowledged, unless `set_auto_ack(false)`) before it is returned; Error::Timeout when nothing came (call again), Error::Screen for an update the limits or the decoders refuse
+    pub fn screen(&self) -> Option<Screen>;   // Screen { width, height, rgb }: the frame the updates built (feature `screen`, on with the host crate `gui`; None without it)
+    pub fn ack(&self, frame: u64) -> Result<(), Error>;   pub fn set_auto_ack(&self, on: bool);   pub fn updates(&self) -> u64;
+    pub fn set_screen_limits(&self, max_rect_bytes: u64, max_frame_pixels: u64);   // feature `screen`; defaults 32 MiB each (`[gui] max_rect_bytes`, `max_snapshot_pixels`)
     pub fn close(&self);
 }
 pub struct SnapshotOptions { display, region, format, quality, max_width, max_height, cursor, settle }   // Default
+pub struct WatchOptions { display, region, fps, encoding: Option<WatchEncoding>, quality, max_width, max_height, max_rate, cursor, refine, key }   // Default
 ```
+
+`Error::Screen(String)` is an update that cannot be used (a rectangle outside the frame, bytes that do not decode, a size past the limits); the text never carries pixels. A request made during a watch (`snapshot`, `input`...) reads, applies and acknowledges the updates that arrive meanwhile.
 
 ## Sync (`bohio_client::sync`)
 

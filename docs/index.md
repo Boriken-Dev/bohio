@@ -125,9 +125,12 @@ A host that runs in, or is attached to, a graphical session can show it and be d
 ```bash
 bohio remote tcp://host.example:7620 gui info
 bohio remote tcp://host.example:7620 gui snapshot --max-size 1280x800 --settle -o screen.png
+bohio remote tcp://host.example:7620 gui watch --seconds 30 --stats
 bohio remote tcp://host.example:7620 gui click 640 400
 bohio remote tcp://host.example:7620 gui type "hello" && bohio remote tcp://host.example:7620 gui key ctrl+s
 ```
+
+`gui watch` receives the screen as a stream of the tiles that changed, lossless where that is cheap and JPEG where it is not, never more than `frames_in_flight` updates ahead of what the client acknowledged, and steps down in quality, size and rate when the link falls behind (`--stats` prints the rate, the bytes and the host's own measure of how late acknowledgements are). The client keeps the frame the updates build (`--out DIR` writes it as PNG files).
 
 [The protocol](protocol.md#desktop-bohio-gui1) has the wire and [Security](security.md#what-gui-access-gives-a-peer) what a view of the screen gives a peer. A host that already runs a VNC server is reached with `forward -L` under a `forward.connect` rule for it.
 ## Having a host listen for you

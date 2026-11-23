@@ -489,6 +489,14 @@ settle      = { seq: uint, ? display: opt<text>, ? region: opt<rect>, ? quiet_ms
 settled     = { seq: uint, settled: bool, waited_ms: uint }
 clipboard   = { seq: uint, text: text }   ; the host's answer to both clipboard requests (the text is empty for a write)
 request-error = { seq: uint, code: error-code, ? message: text }
+watch       = { seq: uint, ? display: opt<text>, ? region: opt<rect>, ? fps: opt<uint>, ? encoding: opt<"auto" / "lossless" / "jpeg">, ? quality: opt<uint>,
+                ? max_width: opt<uint>, ? max_height: opt<uint>, ? max_rate: opt<uint>, ? cursor: bool, ? refine: opt<bool>, ? key: bool }
+unwatch     = { seq: uint }
+ack         = { frame: uint }
+update      = { frame: uint, display: text, width: uint, height: uint, scale: float, key: bool, rects: [* update-rect],
+                ? cursor: opt<{ x: int, y: int }>, ? level: uint, ? ack_ms: opt<uint> }
+update-rect = { x: uint, y: uint, width: uint, height: uint, encoding: "zstd_rgb" / "raw_rgb" / "jpeg" / "png", length: uint }
+cursor      = { display: text, x: int, y: int, visible: bool }
 ```
 
 Key names, snake case: `enter`, `tab`, `escape`, `backspace`, `delete`, `insert`, `home`, `end`, `page_up`, `page_down`, `up`, `down`, `left`, `right`, `space`, `shift`, `control`, `alt`, `meta`, `caps_lock`, `print_screen`, `menu` and `f1` to `f24`; any other key is one character. An unknown name is `bad_request`.
@@ -498,19 +506,24 @@ Key names, snake case: `enter`, `tab`, `escape`, `backspace`, `delete`, `insert`
 | host to client | `0x01` | `ready` | CBOR `ready`, first |
 | host to client | `0x02` | `image` | CBOR `image`; the image's `length` bytes follow in `0x03` frames |
 | host to client | `0x03` | `data` | raw bytes of the image |
+| host to client | `0x04` | `update` | CBOR `update`; the rectangles' bytes follow in `0x03` frames, in order, exactly the sum of their `length` |
 | host to client | `0x05` | `error` | CBOR `error-body`; the last frame |
 | host to client | `0x06` | `input_done` | CBOR `input-done` |
 | host to client | `0x07` | `settled` | CBOR `settled` |
 | host to client | `0x08` | `clipboard` | CBOR `clipboard` |
 | host to client | `0x09` | `state` | CBOR `state`, whenever it changes |
+| host to client | `0x0a` | `cursor` | CBOR `cursor`: only the pointer moved |
 | host to client | `0x0b` | `request_error` | CBOR `request-error`; the stream goes on |
 | client to host | `0x10` | `snapshot` | CBOR `snapshot` |
+| client to host | `0x11` | `watch` | CBOR `watch` |
+| client to host | `0x12` | `unwatch` | CBOR `unwatch` |
+| client to host | `0x13` | `ack` | CBOR `ack` |
 | client to host | `0x14` | `input` | CBOR `input` |
 | client to host | `0x15` | `settle` | CBOR `settle` |
 | client to host | `0x16` | `clipboard_get` | CBOR `{ seq: uint }` |
 | client to host | `0x17` | `clipboard_set` | CBOR `{ seq: uint, text: text }` |
 
-`0x04`, `0x0a`, `0x11` to `0x13` are reserved for a screen stream. A frame with another tag is skipped.
+A frame with another tag is skipped.
 
 The host decides the open in this order: the request (`bad_request`), `[gui] enabled` and a desktop (`unsupported`), each wanted item against the grant (`denied`; the link refuses an open the grant does not cover before the engine sees it), the session (`not_found`), a free slot (`busy`), and, with `[gui] approval = "local"`, the person at the desk (`denied`, "not approved"). Each request is then decided by the grant as it is at that moment, so a narrowed grant refuses the next frame at once and ends the stream at the next `[link] recheck`.
 
@@ -518,6 +531,12 @@ The host decides the open in this order: the request (`bad_request`), `[gui] ena
 - **Input.** The events are applied in order and `applied` counts them. A frame holds at most `max_batch_events` events, its `wait` events add up to at most `max_batch_wait`, a `text` event holds at most `max_text` characters, and a stream sends at most `max_input_rate` events a second: a frame that would pass the rate is `busy` and none of it is applied. A click counts as its `count`. While the session is not at the screen, or the screen is locked and `input_when_locked` is false, input is `unavailable`.
 - **Settle.** The host captures every `settle_interval`, compares the 64 by 64 pixel tiles (XXH3) and answers when no more than `settle_ignore_tiles` tiles changed between captures for `quiet_ms`, or with `settled: false` at `timeout_ms`: one round trip, not one per poll.
 - **Clipboard.** Text only, at most `clipboard_max_bytes`; each read is an event the owner hears.
+- **Watch.** `watch` (it needs `gui.view`) starts a stream of what changes on a display; a `watch` while one runs replaces its settings (an absent field is the host default again) and `key: true` asks for a key frame. The *frame* is the display, or the `region`, scaled to fit `max_width` and `max_height` (never up). The host compares the frame with the one before in tiles of `[gui] tile` pixels (XXH3), merges the changed tiles into rectangles (touching tiles of a row make a run, runs of the same columns in the next rows join it) and sends them in an `update`; `key` is true for the first update, after the frame's size changed and when asked, and then the rectangles cover the whole frame. A client applies each update to the frame it holds. An unchanged screen sends nothing; a pointer that moved alone sends a `cursor` frame when the watch asked for `cursor`.
+  - **Encodings.** `zstd_rgb` is the rectangle's RGB24 rows as one zstd frame; `raw_rgb` the same without compression (a host built without zstd); `jpeg` and `png` are images of the rectangle. With `encoding: "lossless"` every rectangle is `zstd_rgb` (or `raw_rgb`); with `"jpeg"` every one is `jpeg` at `quality`; with `"auto"` (the default) each rectangle is `zstd_rgb` when that costs at most `[gui] lossless_max_bpp` bytes a pixel and `jpeg` when it costs more, and a rectangle sent as JPEG that stays unchanged for `[gui] refine_after` is sent again as `zstd_rgb` (`refine`, on for `auto`, off for `jpeg`). `quality` is where JPEG starts (`[gui] watch_quality`, `90`); the host only lowers it.
+  - **Flow control.** The host sends at most `[gui] frames_in_flight` updates the client has not acknowledged, and captures only when it may send, so nothing queues and the delay is the link's. The client sends `ack { frame }` after it applied an update; a client that never acknowledges gets `frames_in_flight` updates and no more. An update goes out at most `fps` times a second (`[gui] default_fps`, never above `max_fps`), and the host's `max_rate` and the client's, in bytes a second, space them further: after an update of *n* bytes the next waits *n* / rate.
+  - **Adaptive quality.** The host takes how long each update took to be acknowledged. That time holds the link's round trip, which the watch cannot lower, so each delay is judged by what it exceeds the least delay of the last `[gui] adapt_window` (`32`) acknowledgements by. `[gui] adapt_down_after` (`3`) acknowledgements in a row that exceed it by more than `adapt_late` (`1.5`) frame intervals (of the requested rate) step the watch down one level, and `adapt_up_after` (`5`) in a row within `adapt_early` (`0.5`) step it up; any acknowledgement between the two starts the count again. A link whose round trip is longer than the frame interval but whose delays do not grow is not late, and the watch is then limited by `frames_in_flight` over the round trip. Level `0` is the requested quality and rate; levels `1` and up follow `[gui] adapt_ladder` (default JPEG `85`, `70`, `50`, `50` at scale `0.75`, `40` at scale `0.5`: a rectangle's JPEG quality is the lower of the ladder's and the watch's, a scale shrinks the frame and so sends a key frame), and past its last step the rate halves down to `min_fps`. A lossless watch skips the ladder's steps and lowers only the rate. `update.level` and `update.ack_ms` (the host's average) say where it is. The ladder is the host's alone; `adapt = false` keeps what was asked.
+  - **What a client holds.** A client's frame is `width * height * 3` bytes at most `[gui] max_snapshot_pixels` pixels; it refuses an update whose rectangle is outside the frame, whose `length` (or whose rectangles together) passes `[gui] max_rect_bytes`, whose lengths do not add up to the bytes sent, whose key frame does not cover the frame, whose size changes without a key frame, or whose bytes do not decode to exactly the rectangle's size (an image's own header is read first, so a small file cannot claim a large picture).
+  - **Ending.** `unwatch` stops it; updates already sent may still arrive. The grant is checked again each `[gui] state_interval`, and a stream whose grant lost `gui.view` is ended `revoked` at the next `[link] recheck`; a refused `watch` (`denied`, `bad_request` for a zero rate, size, rate or a quality outside 1 to 100) is a `request_error` carrying the `watch`'s `seq`. While the session is not at the screen the host sends no updates.
 
 `info` reports the desktop in `gui`:
 
