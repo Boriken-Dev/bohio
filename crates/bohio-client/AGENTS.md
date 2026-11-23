@@ -5,10 +5,10 @@ crate can be used without reading its source. It ships inside the package and is
 with the source at <https://github.com/Boriken-Dev/bohio>.
 
 Cargo features: `zstd` (decode zstd), `screen` (the compositor of a watch: `bohio-transfer/screen`). MSRV Rust 1.89. Depends on `bohio-proto`, `coqui-transport` (with `process`), `coqui-link` (with `sealed`), `coqui-peer`, `coqui-transport-pipe` (`channel`), `coqui-transport-web` (`websocket`, `webtransport`), `coqui-peer-tls`, `rustls` and
-`coqui-transport-serial` (each a git revision, one copy), `url`, `socket2`, `serde_json`, `tracing` and `thiserror`. Version
+`coqui-transport-serial` (each a git revision, one copy), `url`, `socket2`, `serde`, `serde_json`, `tracing` and `thiserror`. Version
 `0.0.0-alpha.0`, not published.
 
-Imports: the root holds `Open` and `Error`. Public modules: `connect`, `control`, `dial`, `exec`, `forward`, `fs`, `gui`, `link`, `relay`, `shell`. No `unsafe` code
+Imports: the root holds `Open` and `Error`. Public modules: `connect`, `control`, `dial`, `exec`, `forward`, `fs`, `gui`, `link`, `relay`, `shell`, `tools`. No `unsafe` code
 (`#![forbid(unsafe_code)]`). The operations start no threads and do no I/O of their own: every call blocks on the channel it was given
 (only `connect` and `relay` start threads, and `connect` opens a socket).
 
@@ -441,6 +441,35 @@ One stream moves at most its receive window per round trip. `window` is what eac
 sides: a side whose window is larger can make the other end its streams as broken. `Open::open_with` and `Settings::bulk_window` widen one stream instead, by
 granting credit the sender already accepts, which needs no setting at the peer; a link logs once, as a warning and not a refusal, a `window` or `max_frame` its
 peer's `link/1` document shows differing from its own.
+
+## Agent tools (`bohio_client::tools`)
+
+What an agent does on a host, as typed JSON calls over any `Open`; `bohio mcp` carries the same tools over the Model Context Protocol (`docs/agents.md`).
+
+```rust
+pub struct Tools;                                                  // Debug, Send + Sync; Drop closes the forwards it holds
+impl Tools {
+    pub fn new(link: Arc<dyn Open>) -> Result<Tools, Error>;       // reads `info` once; a peer without `info` is not an error (`info()` is then None)
+    pub fn with_settings(link: Arc<dyn Open>, settings: Settings) -> Result<Tools, Error>;
+    pub const fn info(&self) -> Option<&Info>;   pub const fn settings(&self) -> &Settings;
+    pub fn availability(&self, spec: &ToolSpec) -> Availability;   // Available | Unavailable(reason): by what `info` says the host has off and what `Settings` allows
+    pub fn available(&self) -> Vec<(&'static ToolSpec, Availability)>;
+    pub fn call(&self, name: &str, arguments: Value, cancel: &Cancel) -> Result<Output, ToolError>;   // arguments: a JSON object (null is {}); blocks until the tool is done or `cancel` is set
+}
+pub static REGISTRY: &[ToolSpec];                                  // one entry per tool; a new group of calls is new entries and a function
+pub struct ToolSpec { pub name, pub description: &'static str, pub schema: fn() -> Value /* JSON Schema of the arguments */, pub needs: &'static [Need], pub effect: Effect /* ReadOnly | Changes | Runs */, pub run: Runner }
+pub struct Output { pub value: Value, pub images: Vec<Image { mime, data }> }
+pub struct ToolError { pub code: String, pub message: String, pub detail: Option<Value> }   // Display `code: message`; codes: the host's (`denied`, `not_found`, `exists`, `changed`, `outside_root`, ...) and `bad_request`, `unknown_tool`, `unavailable`, `not_text`, `no_match`, `ambiguous`, `too_large`, `timeout`, `closed`, `link`, `cancelled`
+pub struct Cancel;   impl Cancel { pub fn new() -> Self; pub fn cancel(&self); pub fn is_cancelled(&self) -> bool }   // Clone: a running exec is killed, a read or watch stops
+pub struct Settings { reply_timeout /*30 s*/, transfer_timeout /*5 min*/, output: Bound /*64 KiB, ceiling 4 MiB*/, lines /*2000, 100 000*/, list /*200, 10 000*/, walk /*1000, 100 000*/, bundle /*1 MiB, 16 MiB*/,
+    max_text /*8 MiB: the largest edit and write*/, exec_deadline_ms /*120 000; 0 none*/, exec_grace /*15 s*/, poll /*50 ms*/, session_quiet_ms /*300*/, local_roots: Vec<PathBuf> /*none: put and get unavailable*/,
+    forward_local_targets: Vec<String> /*none: forward_remote unavailable*/, forward_allow_remote_bind /*false*/, max_forwards /*16*/, forward: ForwardSettings, gui_timeout /*120 s*/, gui_max_image /*4 MiB*/ }   // Default, non_exhaustive; Bound { default, ceiling }
+pub fn base64_encode(&[u8]) -> String;   pub fn base64_decode(&str) -> Option<Vec<u8>>;
+```
+
+Tools and what each needs on the host (`needs` is also checked here: `info` says a host has files, programs, sessions, forwards or the desktop off, and `Settings` allows the local-machine tools): `info` (info); `exec` (exec; `pty` needs shell); `read`, `list`, `stat`, `hash`, `walk`, `glob`, `read_many` (fs.read); `write`, `write_many`, `move`, `copy`, `truncate`, `mkdir`, `remove` (fs.write; `write` with `if_sha256` also fs.read); `edit` (fs.read and fs.write); `put`, `get` (fs.write / fs.read, and `local_roots`); `session_start` (session and exec), `session_read`, `session_write`, `session_signal`, `session_list`, `session_end` (session); `forward_local` (forward.connect), `forward_remote` (forward.listen and `forward_local_targets`), `forward_list`, `forward_close` (none); `gui_snapshot`, `gui_watch` (gui.view), `gui_input` (gui.input). A refusal by the host is a `denied` error that names what the tool needs.
+
+Bounds: `exec` keeps the first and last halves of each output stream within `max_output` (`Capture`: `{ encoding: utf8|base64, data, tail?, total_bytes, omitted_bytes, truncated }`, cut between characters of text); `read` pages by `offset_line`, `limit_lines` and `max_bytes` (`more`, `next_offset_line`, `total_lines` once the end was reached, `sha256` only when the whole file was read, `line_cut` for a line longer than the bound); `list`, `walk`, `glob` return a page and a cursor; `read_many` has a byte budget and lists a file with no room with its size; `session_read` returns up to `max_output` bytes from an offset and `next`. A request above a ceiling is lowered to it. `edit` reads the file (at most `max_text`), counts `old` (`no_match`, `ambiguous` with the count) and writes with a `base` of the size, time and SHA-256 it read, so the host answers `changed` when a second writer moved the file. `session_start` starts detached (`detach: true`); `session_read` attaches from `from` and drops the stream, so the session keeps running. Local forwards stop accepting on close; connections they carry run to their end.
 
 ## Gotchas
 

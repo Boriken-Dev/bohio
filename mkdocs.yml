@@ -19,4 +19,5 @@ nav:
   - Security: security.md
   - Embedding a node: embedding.md
   - Using it from hostctl: hostctl.md
+  - Agents and MCP: agents.md
   - Building: building.md
