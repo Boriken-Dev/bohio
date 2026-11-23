@@ -107,6 +107,7 @@ struct Shared {
     processes: Arc<Slots>,
     transfers: Slots,
     hashes: Slots,
+    walks: Slots,
     sessions: Arc<Slots>,
     detached: Arc<session::Sessions>,
     forwards: Slots,
@@ -139,6 +140,7 @@ impl Shared {
             processes: Arc::new(Slots::new(config.execution.max_processes)),
             transfers: Slots::new(config.filesystem.max_transfers),
             hashes: Slots::new(config.hash.max_streams),
+            walks: Slots::new(config.walk.max_streams),
             sessions: Arc::new(Slots::new(config.shell.max_sessions)),
             detached: session::Sessions::new(
                 &config.sessions,
@@ -1205,6 +1207,13 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
         let channel: Arc<dyn Channel> = relay.clone();
         let metadata = accepted.metadata.as_slice();
         let config = &shared.config;
+        // Each item of a bundle, root of a walk or hash is decided by the grant as it is then, not as it was
+        // when the stream opened.
+        let now = || {
+            grant_of(shared.grants.as_ref(), &accepted.peer).map_err(|_| {
+                ErrorBody::new(ErrorCode::Internal, "the host cannot read its peer grants")
+            })
+        };
         let files = fs::Context {
             grant: &grant,
             config: &config.filesystem,
@@ -1213,6 +1222,7 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
             compression: &config.compression,
             peer: &peer,
             slots: &shared.transfers,
+            current: Some(control::Current(&now)),
         };
         match accepted.protocol.as_str() {
             protocol::EXEC if session::wants_exec(metadata) => {
@@ -1287,13 +1297,18 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
                     tracing::info!(code = ?error.code, "write refused");
                 }
             }
-            protocol::HASH => {
-                // Each item is decided by the grant as it is then, not as it was when the stream opened.
-                let now = || {
-                    grant_of(shared.grants.as_ref(), &accepted.peer).map_err(|_| {
-                        ErrorBody::new(ErrorCode::Internal, "the host cannot read its peer grants")
-                    })
+            protocol::WALK => {
+                let context = fs::WalkContext {
+                    files,
+                    walk: &config.walk,
+                    slots: &shared.walks,
                 };
+                match fs::serve_walk(channel, metadata, &context) {
+                    Ok(entries) => tracing::debug!(entries, "walk ended"),
+                    Err(error) => tracing::info!(code = ?error.code, "walk refused"),
+                }
+            }
+            protocol::HASH => {
                 let context = fs::HashContext {
                     files,
                     slots: &shared.hashes,
@@ -1305,12 +1320,6 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
                 }
             }
             protocol::CONTROL => {
-                // Each call is decided by the grant as it is then, not as it was when the stream opened.
-                let now = || {
-                    grant_of(shared.grants.as_ref(), &accepted.peer).map_err(|_| {
-                        ErrorBody::new(ErrorCode::Internal, "the host cannot read its peer grants")
-                    })
-                };
                 let probe = |grant: &Grant| shared.gui.info(&config.gui, grant);
                 let context = control::Context {
                     filesystem: files,

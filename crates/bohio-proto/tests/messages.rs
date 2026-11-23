@@ -82,6 +82,13 @@ fn sample_transfer() -> TransferInfo {
         compression_default: None,
         prepared: false,
         delta: bohio_proto::info::DeltaInfo::default(),
+        walk: true,
+        walk_limits: bohio_proto::info::WalkLimits {
+            max_streams: 4,
+            max_entries: 1_000_000,
+        },
+        bundles: true,
+        resume: false,
     }
 }
 
@@ -359,6 +366,9 @@ fn sample_metadata() -> bohio_proto::fs::Metadata {
         mode: Some(0o640),
         readonly: false,
         attributes: Some(32),
+        device: Some(2049),
+        inode: Some(131_077),
+        links: Some(1),
     }
 }
 
@@ -394,6 +404,17 @@ fn every_filesystem_call_and_reply_round_trips() {
             from: "a".into(),
             to: "b".into(),
             overwrite: false,
+            recursive: true,
+            preserve: true,
+        },
+        Call::Move {
+            from: "a".into(),
+            to: "b".into(),
+            overwrite: true,
+        },
+        Call::Truncate {
+            path: "a".into(),
+            length: 1 << 40,
         },
         Call::Symlink {
             target: "../t".into(),
@@ -461,6 +482,7 @@ fn every_transfer_message_round_trips() {
             strong_len: 16,
             base_size: 99,
         }),
+        items: true,
     };
     assert_eq!(
         ReadRequest::from_metadata(&read.to_metadata().unwrap()).unwrap(),
@@ -488,6 +510,8 @@ fn every_transfer_message_round_trips() {
             expect: Digests::from([(Algorithm::Sha256, "cd".repeat(32))]),
             hashes: Some(vec![Algorithm::Sha256, Algorithm::Crc32c]),
             compression: Some(Compression::new(Codec::Lz4)),
+            items: true,
+            resume: true,
         };
         assert_eq!(
             WriteRequest::from_metadata(&write.to_metadata().unwrap()).unwrap(),
@@ -504,6 +528,9 @@ fn every_transfer_message_round_trips() {
             compressed_length: Some(4),
             token: Some("ab".into()),
             delta: true,
+            index: Some(3),
+            modified: Some(bohio_proto::fs::Timestamp { secs: 3, nanos: 4 }),
+            mode: Some(0o644),
         }),
         ReadOutput::Copy(DeltaCopy { block: 7, count: 2 }),
         ReadOutput::Data(vec![0, 1, 255]),
@@ -511,7 +538,10 @@ fn every_transfer_message_round_trips() {
         ReadOutput::Progress(Progress { prepared: 3 }),
         ReadOutput::Done(ReadDone {
             hashes: Digests::from([(Algorithm::Crc32c, "e3069283".into())]),
+            index: Some(2),
         }),
+        ReadOutput::ItemError(ItemError::new(1, error.clone())),
+        ReadOutput::End(bohio_proto::fs::BundleEnd { items: 9 }),
         ReadOutput::Error(error.clone()),
     ] {
         assert_eq!(
@@ -520,10 +550,22 @@ fn every_transfer_message_round_trips() {
         );
     }
     for output in [
-        WriteOutput::Ready,
+        WriteOutput::ready(),
+        WriteOutput::Ready(bohio_proto::fs::Ready {
+            token: Some("ab".into()),
+            offset: None,
+        }),
+        WriteOutput::Ready(bohio_proto::fs::Ready {
+            token: None,
+            offset: Some(77),
+        }),
+        WriteOutput::Flushed(bohio_proto::fs::Flushed { written: 5 }),
+        WriteOutput::ItemError(ItemError::new(4, error.clone())),
+        WriteOutput::End(bohio_proto::fs::BundleEnd { items: 9 }),
         WriteOutput::Done(WriteDone {
             written: 3,
             hashes: Digests::from([(Algorithm::Sha256, "ef".repeat(32))]),
+            index: Some(5),
         }),
         WriteOutput::Error(error),
     ] {
@@ -540,6 +582,16 @@ fn every_transfer_message_round_trips() {
             count: 1,
         }),
         WriteInput::End,
+        WriteInput::Flush,
+        WriteInput::ItemsEnd,
+        WriteInput::Item(bohio_proto::fs::WriteItem {
+            path: "a/b".into(),
+            mode: WriteMode::Create,
+            parents: true,
+            file_mode: Some(0o600),
+            modified: Some(bohio_proto::fs::Timestamp { secs: 5, nanos: 6 }),
+            expect: Digests::from([(Algorithm::Crc32c, "e3069283".into())]),
+        }),
     ] {
         assert_eq!(WriteInput::decode(&input.encode()).unwrap(), input);
     }

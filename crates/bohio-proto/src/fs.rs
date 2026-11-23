@@ -10,11 +10,15 @@
 //! | --- | --- | --- | --- |
 //! | host to client | `0x01` | [`ReadOutput::Header`] | CBOR [`ReadHeader`] |
 //! | host to client | `0x02` | [`ReadOutput::Data`] | raw bytes |
+//! | host to client | `0x03` | [`ReadOutput::ItemError`] | CBOR [`ItemError`] (a bundle) |
 //! | host to client | `0x04` | [`ReadOutput::Done`] | CBOR [`ReadDone`] |
 //! | host to client | `0x05` | [`ReadOutput::Error`] | CBOR [`ErrorBody`] |
 //! | host to client | `0x06` | [`ReadOutput::Compressed`] | a piece of the compressed stream |
+//! | host to client | `0x07` | [`ReadOutput::End`] | CBOR [`BundleEnd`] (a bundle) |
 //! | host to client | `0x08` | [`ReadOutput::Progress`] | CBOR [`Progress`] |
 //! | host to client | `0x09` | [`ReadOutput::Copy`] | CBOR [`DeltaCopy`] (a delta read) |
+//! | client to host | `0x10` | [`ReadInput::Item`] | CBOR [`ReadItem`] (a bundle) |
+//! | client to host | `0x11` | [`ReadInput::ItemsEnd`] | empty (a bundle) |
 //! | client to host | `0x12` | [`ReadInput::Signature`] | CBOR [`SignatureBatch`] (a delta read) |
 //! | client to host | `0x13` | [`ReadInput::SignatureEnd`] | empty (a delta read) |
 //!
@@ -22,20 +26,26 @@
 //!
 //! | Direction | Tag | Frame | Body |
 //! | --- | --- | --- | --- |
-//! | host to client | `0x01` | [`WriteOutput::Ready`] | empty |
+//! | host to client | `0x01` | [`WriteOutput::Ready`] | empty, or CBOR [`Ready`] |
+//! | host to client | `0x02` | [`WriteOutput::Flushed`] | CBOR [`Flushed`] (answers a flush) |
+//! | host to client | `0x03` | [`WriteOutput::ItemError`] | CBOR [`ItemError`] (a bundle) |
 //! | host to client | `0x04` | [`WriteOutput::Done`] | CBOR [`WriteDone`] |
 //! | host to client | `0x05` | [`WriteOutput::Error`] | CBOR [`ErrorBody`] |
+//! | host to client | `0x07` | [`WriteOutput::End`] | CBOR [`BundleEnd`] (a bundle) |
 //! | client to host | `0x10` | [`WriteInput::Data`] | raw bytes |
-//! | client to host | `0x11` | [`WriteInput::End`] | empty |
+//! | client to host | `0x11` | [`WriteInput::End`] | empty (the end of the data, or of a bundle's item) |
+//! | client to host | `0x12` | [`WriteInput::Flush`] | empty (`append` and `at`) |
 //! | client to host | `0x14` | [`WriteInput::Compressed`] | a piece of the compressed stream |
 //! | client to host | `0x15` | [`WriteInput::Copy`] | CBOR [`DeltaCopy`] (a delta write) |
+//! | client to host | `0x16` | [`WriteInput::Item`] | CBOR [`WriteItem`] (a bundle) |
+//! | client to host | `0x17` | [`WriteInput::ItemsEnd`] | empty (a bundle) |
 
 use serde::{Deserialize, Serialize};
 
 use crate::codec::bytes;
 use crate::compress::{Compression, Progress, Resume};
 use crate::error::{Error, ErrorBody};
-use crate::hash::{Algorithm, Digests};
+use crate::hash::{Algorithm, Digests, ItemError};
 use crate::{decode, encode};
 
 /// The name of the weak checksum a delta uses: rsync's rolling sum of two 16-bit halves.
@@ -144,6 +154,15 @@ pub struct Metadata {
     /// Windows file attributes; absent on other hosts.
     #[serde(default)]
     pub attributes: Option<u32>,
+    /// The device the file lies on, with `inode` what makes two names one file; absent where the host cannot tell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<u64>,
+    /// The file's number on its device; absent where the host cannot tell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inode: Option<u64>,
+    /// How many names the file has; absent where the host cannot tell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub links: Option<u64>,
 }
 
 /// One name in a directory with its metadata (not following a symbolic link).
@@ -172,7 +191,8 @@ pub struct Listing {
 /// What a `bohio-read/1` stream asks for: the open's metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadRequest {
-    /// The file.
+    /// The file; empty for a bundle, whose files come as items.
+    #[serde(default)]
     pub path: String,
     /// The first byte to send. Default `0`.
     #[serde(default)]
@@ -201,6 +221,43 @@ pub struct ReadRequest {
     /// `info.transfer.delta`; not with a prepared read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delta: Option<ReadDelta>,
+    /// A bundle: many files on this one stream. The client sends one `item` frame per file and an `items
+    /// end`, and the host answers each in order (a header, the data, `done`, or an item error) and `end`.
+    /// `hashes` and `compression` apply to every item, one compression context spanning them all. Not with
+    /// `prepare`, `resume` or `delta`.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub items: bool,
+}
+
+/// One file of a bundle read: the client's `0x10` frame.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadItem {
+    /// The file.
+    pub path: String,
+    /// The first byte to send. Default `0`.
+    #[serde(default)]
+    pub offset: u64,
+    /// How many bytes at most; to the end of the file when absent.
+    #[serde(default)]
+    pub length: Option<u64>,
+}
+
+impl ReadItem {
+    /// The whole of `path`.
+    pub fn whole(path: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            offset: 0,
+            length: None,
+        }
+    }
+}
+
+/// The end of a bundle: the host's `0x07` frame, once every item was answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct BundleEnd {
+    /// How many items were answered.
+    pub items: u64,
 }
 
 impl ReadRequest {
@@ -215,6 +272,15 @@ impl ReadRequest {
             prepare: false,
             resume: None,
             delta: None,
+            items: false,
+        }
+    }
+
+    /// A bundle: the files come as items.
+    pub fn bundle() -> Self {
+        Self {
+            items: true,
+            ..Self::whole("")
         }
     }
 
@@ -258,6 +324,16 @@ pub struct ReadHeader {
     /// The read is a delta: `copy` frames and data frames add up to `length` bytes.
     #[serde(default, skip_serializing_if = "core::ops::Not::not")]
     pub delta: bool,
+    /// In a bundle, which item this is: its position among the client's items, from `0`. The first
+    /// frame of a bundle, which says what the host compresses with, has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<u64>,
+    /// In a bundle, the file's modification time when the host knows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified: Option<Timestamp>,
+    /// In a bundle, the file's Unix permission bits when it has them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<u32>,
 }
 
 impl ReadHeader {
@@ -270,6 +346,9 @@ impl ReadHeader {
             compressed_length: None,
             token: None,
             delta: false,
+            index: None,
+            modified: None,
+            mode: None,
         }
     }
 }
@@ -280,6 +359,9 @@ pub struct ReadDone {
     /// The digests of the bytes sent that the request named.
     #[serde(default)]
     pub hashes: Digests,
+    /// In a bundle, which item this ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<u64>,
 }
 
 /// How a `bohio-write/1` stream puts the bytes in place.
@@ -311,6 +393,13 @@ pub enum WriteMode {
         /// The target as the client saw it.
         base: DeltaBase,
     },
+    /// Continue a `replace` whose stream ended early (it asked for `resume`): the host answers `ready` with
+    /// the offset it holds, the client sends the file from there, and the new file replaces the target as
+    /// `replace` does. Only the peer that began it, for the same path, may continue it.
+    Resume {
+        /// The token the first `ready` named.
+        token: String,
+    },
 }
 
 /// What a `bohio-write/1` stream does: the open's metadata.
@@ -340,6 +429,68 @@ pub struct WriteRequest {
     /// a concrete algorithm (never `auto`) the host offers; the host decodes within its bounds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compression: Option<Compression>,
+    /// A bundle: many files on this one stream. The client sends, per file, an `item` frame, its data and
+    /// an `end`, then `items end`; the host answers each file with `done` or an item error, then `end`.
+    /// The path, mode, parents, file mode and `expect` come from each item. `hashes` and `compression` apply
+    /// to every item, one compression context spanning them all. Each file is put in place on its own.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub items: bool,
+    /// For `replace`: keep the temporary file when the stream ends early (for `[filesystem] resume_ttl`), and
+    /// answer `ready` with a token to continue it by. `unsupported` where the host keeps none.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub resume: bool,
+}
+
+/// One file of a bundle write: the client's `0x16` frame. The data follows, then an `end`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct WriteItem {
+    /// The file.
+    pub path: String,
+    /// How the bytes are put in place: `replace` (the default) or `create`.
+    #[serde(default)]
+    pub mode: WriteMode,
+    /// Create missing directories above the file.
+    #[serde(default)]
+    pub parents: bool,
+    /// Unix permission bits for a file this item creates.
+    #[serde(default)]
+    pub file_mode: Option<u32>,
+    /// The modification time the file gets before it is put in place, so a sync's next quick check by
+    /// size and time finds it unchanged.
+    #[serde(default)]
+    pub modified: Option<Timestamp>,
+    /// The digests the data must have, as a single write's `expect`.
+    #[serde(default)]
+    pub expect: Digests,
+}
+
+impl WriteItem {
+    /// An item that replaces `path`.
+    pub fn replace(path: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            ..Self::default()
+        }
+    }
+}
+
+/// The body of a `ready` that has something to say: the host's `0x01` frame. A `ready` with no body says nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Ready {
+    /// For a write that asked to `resume`: the token that continues it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    /// For a write that continues one: how many bytes of the file the host holds, where the client goes on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u64>,
+}
+
+/// What a flush answers: the host's `0x02` frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Flushed {
+    /// The bytes this stream has written to the file, all of them now handed to the operating system (and
+    /// to storage when the host syncs writes).
+    pub written: u64,
 }
 
 impl WriteRequest {
@@ -353,6 +504,16 @@ impl WriteRequest {
             expect: Digests::new(),
             hashes: None,
             compression: None,
+            items: false,
+            resume: false,
+        }
+    }
+
+    /// A bundle: the files come as items.
+    pub fn bundle() -> Self {
+        Self {
+            items: true,
+            ..Self::replace("")
         }
     }
 
@@ -383,20 +544,31 @@ pub struct WriteDone {
     /// The digests of those bytes the request asked for.
     #[serde(default)]
     pub hashes: Digests,
+    /// In a bundle, which item this ends: its position among the client's items, from `0`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<u64>,
 }
 
 const HEADER: u8 = 0x01;
 const READY: u8 = 0x01;
 const DATA: u8 = 0x02;
+const FLUSHED: u8 = 0x02;
+const ITEM_ERROR: u8 = 0x03;
 const DONE: u8 = 0x04;
 const ERROR: u8 = 0x05;
+const COMPRESSED: u8 = 0x06;
+const END: u8 = 0x07;
+const PROGRESS: u8 = 0x08;
+const COPY: u8 = 0x09;
 const WRITE_DATA: u8 = 0x10;
 const WRITE_END: u8 = 0x11;
-const COMPRESSED: u8 = 0x06;
-const PROGRESS: u8 = 0x08;
+const WRITE_FLUSH: u8 = 0x12;
 const WRITE_COMPRESSED: u8 = 0x14;
-const COPY: u8 = 0x09;
 const WRITE_COPY: u8 = 0x15;
+const WRITE_ITEM: u8 = 0x16;
+const WRITE_ITEMS_END: u8 = 0x17;
+const READ_ITEM: u8 = 0x10;
+const READ_ITEMS_END: u8 = 0x11;
 const SIGNATURE: u8 = 0x12;
 const SIGNATURE_END: u8 = 0x13;
 
@@ -418,7 +590,8 @@ fn split(frame: &[u8]) -> Result<(u8, &[u8]), Error> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ReadOutput {
-    /// The file was opened; the first frame.
+    /// The file was opened; the first frame. A bundle's first frame says what the host compresses with, and
+    /// each item then starts with one of its own.
     Header(ReadHeader),
     /// Bytes of the file, in order.
     Data(Vec<u8>),
@@ -429,8 +602,12 @@ pub enum ReadOutput {
     Progress(Progress),
     /// A delta read: these blocks of the client's old copy stand here.
     Copy(DeltaCopy),
-    /// Every byte was sent; the last frame.
+    /// A bundle's item could not be read; the stream goes on with the next.
+    ItemError(ItemError),
+    /// Every byte was sent; the last frame (in a bundle, the end of one item).
     Done(ReadDone),
+    /// Every item of a bundle was answered; the last frame.
+    End(BundleEnd),
     /// The read failed; the last frame.
     Error(ErrorBody),
 }
@@ -448,7 +625,9 @@ impl ReadOutput {
             Self::Compressed(bytes) => tagged(COMPRESSED, bytes),
             Self::Progress(body) => tagged(PROGRESS, &encode(body)?),
             Self::Copy(body) => tagged(COPY, &encode(body)?),
+            Self::ItemError(body) => tagged(ITEM_ERROR, &encode(body)?),
             Self::Done(body) => tagged(DONE, &encode(body)?),
+            Self::End(body) => tagged(END, &encode(body)?),
             Self::Error(body) => tagged(ERROR, &encode(body)?),
         })
     }
@@ -467,17 +646,23 @@ impl ReadOutput {
             COMPRESSED => Ok(Self::Compressed(body.to_vec())),
             PROGRESS => decode(body).map(Self::Progress),
             COPY => decode(body).map(Self::Copy),
+            ITEM_ERROR => decode(body).map(Self::ItemError),
             DONE => decode(body).map(Self::Done),
+            END => decode(body).map(Self::End),
             ERROR => decode(body).map(Self::Error),
             other => Err(Error::Tag(other)),
         }
     }
 }
 
-/// A frame of a read, from the client: only a delta read has any.
+/// A frame of a read, from the client: a bundle's items, and a delta read's signature.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ReadInput {
+    /// The next file of a bundle.
+    Item(ReadItem),
+    /// The bundle's last item was sent.
+    ItemsEnd,
     /// The next blocks of the signature of the client's old copy.
     Signature(SignatureBatch),
     /// The signature is complete.
@@ -492,6 +677,8 @@ impl ReadInput {
     /// [`Error::Encode`] when a CBOR body cannot be written.
     pub fn encode(&self) -> Result<Vec<u8>, Error> {
         Ok(match self {
+            Self::Item(body) => tagged(READ_ITEM, &encode(body)?),
+            Self::ItemsEnd => tagged(READ_ITEMS_END, &[]),
             Self::Signature(body) => tagged(SIGNATURE, &encode(body)?),
             Self::SignatureEnd => tagged(SIGNATURE_END, &[]),
         })
@@ -506,6 +693,8 @@ impl ReadInput {
     pub fn decode(frame: &[u8]) -> Result<Self, Error> {
         let (tag, body) = split(frame)?;
         match tag {
+            READ_ITEM => decode(body).map(Self::Item),
+            READ_ITEMS_END => Ok(Self::ItemsEnd),
             SIGNATURE => decode(body).map(Self::Signature),
             SIGNATURE_END => Ok(Self::SignatureEnd),
             other => Err(Error::Tag(other)),
@@ -518,14 +707,25 @@ impl ReadInput {
 #[non_exhaustive]
 pub enum WriteOutput {
     /// The target is open: the client may send data. The first frame.
-    Ready,
-    /// The data is in place; the last frame.
+    Ready(Ready),
+    /// A flush was done: the answer to the client's `flush`.
+    Flushed(Flushed),
+    /// A bundle's item failed and nothing of it was put in place; the stream goes on with the next.
+    ItemError(ItemError),
+    /// The data is in place; the last frame (in a bundle, the end of one item).
     Done(WriteDone),
+    /// Every item of a bundle was answered; the last frame.
+    End(BundleEnd),
     /// The write failed and nothing was put in place (for `replace` and `create`); the last frame.
     Error(ErrorBody),
 }
 
 impl WriteOutput {
+    /// A `ready` that says nothing.
+    pub fn ready() -> Self {
+        Self::Ready(Ready::default())
+    }
+
     /// The frame as one stream message.
     ///
     /// # Errors
@@ -533,8 +733,12 @@ impl WriteOutput {
     /// [`Error::Encode`] when a CBOR body cannot be written.
     pub fn encode(&self) -> Result<Vec<u8>, Error> {
         Ok(match self {
-            Self::Ready => tagged(READY, &[]),
+            Self::Ready(body) if *body == Ready::default() => tagged(READY, &[]),
+            Self::Ready(body) => tagged(READY, &encode(body)?),
+            Self::Flushed(body) => tagged(FLUSHED, &encode(body)?),
+            Self::ItemError(body) => tagged(ITEM_ERROR, &encode(body)?),
             Self::Done(body) => tagged(DONE, &encode(body)?),
+            Self::End(body) => tagged(END, &encode(body)?),
             Self::Error(body) => tagged(ERROR, &encode(body)?),
         })
     }
@@ -548,8 +752,12 @@ impl WriteOutput {
     pub fn decode(frame: &[u8]) -> Result<Self, Error> {
         let (tag, body) = split(frame)?;
         match tag {
-            READY => Ok(Self::Ready),
+            READY if body.is_empty() => Ok(Self::ready()),
+            READY => decode(body).map(Self::Ready),
+            FLUSHED => decode(body).map(Self::Flushed),
+            ITEM_ERROR => decode(body).map(Self::ItemError),
             DONE => decode(body).map(Self::Done),
+            END => decode(body).map(Self::End),
             ERROR => decode(body).map(Self::Error),
             other => Err(Error::Tag(other)),
         }
@@ -567,8 +775,14 @@ pub enum WriteInput {
     /// A delta write: these blocks of the target stand here. It neither ends nor disturbs a compression
     /// context, since every compressed piece decodes completely.
     Copy(DeltaCopy),
-    /// No more data: put it in place.
+    /// The next file of a bundle; its data follows.
+    Item(WriteItem),
+    /// Make what was written so far safe and say how much it was (`append` and `at` only).
+    Flush,
+    /// No more data: put it in place. In a bundle, the end of the item's data.
     End,
+    /// The bundle's last item was sent.
+    ItemsEnd,
 }
 
 impl WriteInput {
@@ -578,7 +792,10 @@ impl WriteInput {
             Self::Data(bytes) => tagged(WRITE_DATA, bytes),
             Self::Compressed(bytes) => tagged(WRITE_COMPRESSED, bytes),
             Self::Copy(body) => tagged(WRITE_COPY, &encode(body).unwrap_or_default()),
+            Self::Item(body) => tagged(WRITE_ITEM, &encode(body).unwrap_or_default()),
+            Self::Flush => tagged(WRITE_FLUSH, &[]),
             Self::End => tagged(WRITE_END, &[]),
+            Self::ItemsEnd => tagged(WRITE_ITEMS_END, &[]),
         }
     }
 
@@ -587,14 +804,17 @@ impl WriteInput {
     /// # Errors
     ///
     /// [`Error::Short`] for an empty message, [`Error::Tag`] for a tag this version does not know,
-    /// [`Error::Decode`] for a copy that is not one.
+    /// [`Error::Decode`] for a copy or an item that is not one.
     pub fn decode(frame: &[u8]) -> Result<Self, Error> {
         let (tag, body) = split(frame)?;
         match tag {
             WRITE_DATA => Ok(Self::Data(body.to_vec())),
             WRITE_COMPRESSED => Ok(Self::Compressed(body.to_vec())),
             WRITE_COPY => decode(body).map(Self::Copy),
+            WRITE_ITEM => decode(body).map(Self::Item),
+            WRITE_FLUSH => Ok(Self::Flush),
             WRITE_END => Ok(Self::End),
+            WRITE_ITEMS_END => Ok(Self::ItemsEnd),
             other => Err(Error::Tag(other)),
         }
     }

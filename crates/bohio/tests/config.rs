@@ -253,6 +253,7 @@ fn values_out_of_range_name_their_key() {
             "[delta]\nmax_signature_bytes = 0\n",
             "delta.max_signature_bytes",
         ),
+        ("[walk]\nmax_streams = 0\n", "walk.max_streams"),
         ("[shell]\nmax_sessions = 0\n", "shell.max_sessions"),
         ("[shell]\nchunk_size = 0\n", "shell.chunk_size"),
         ("[shell]\npoll_interval = 0\n", "shell.poll_interval"),

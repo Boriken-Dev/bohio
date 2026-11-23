@@ -1,17 +1,15 @@
 //! The control calls, each resolved against a directory handle for the root its path lies under.
 
 use std::collections::BTreeMap;
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use bohio_proto::fs::{Entry, FileKind, Listing, Metadata, Timestamp, WriteMode};
+use bohio_proto::fs::{Entry, FileKind, Listing, Metadata, Timestamp};
 use bohio_proto::{ErrorBody, ErrorCode};
 use cap_fs_ext::{DirExt, SystemTimeSpec};
 use cap_std::fs::{Dir, DirBuilder, DirEntry, File};
 
 use super::path::{self, check_link_target};
-use super::stage::Staged;
 use super::{Context, io_error};
 
 /// The granted roots of one peer.
@@ -84,7 +82,7 @@ pub(crate) fn timestamp(time: cap_std::time::SystemTime) -> Timestamp {
     }
 }
 
-fn system_time(stamp: Timestamp) -> Result<SystemTime, ErrorBody> {
+pub(crate) fn system_time(stamp: Timestamp) -> Result<SystemTime, ErrorBody> {
     if stamp.nanos >= 1_000_000_000 {
         return Err(bad("a time's nanoseconds must be below one billion"));
     }
@@ -98,7 +96,7 @@ fn system_time(stamp: Timestamp) -> Result<SystemTime, ErrorBody> {
     moved.ok_or_else(|| bad("the time is out of range"))
 }
 
-fn describe(meta: &cap_std::fs::Metadata) -> Metadata {
+pub(crate) fn describe(meta: &cap_std::fs::Metadata) -> Metadata {
     let kind = if meta.is_file() {
         FileKind::File
     } else if meta.is_dir() {
@@ -123,6 +121,13 @@ fn describe(meta: &cap_std::fs::Metadata) -> Metadata {
     };
     #[cfg(not(windows))]
     let attributes = None;
+    #[cfg(unix)]
+    let (device, inode, links) = {
+        use cap_std::fs::MetadataExt;
+        (Some(meta.dev()), Some(meta.ino()), Some(meta.nlink()))
+    };
+    #[cfg(not(unix))]
+    let (device, inode, links) = (None, None, None);
     Metadata {
         kind,
         size: meta.len(),
@@ -132,6 +137,9 @@ fn describe(meta: &cap_std::fs::Metadata) -> Metadata {
         mode,
         readonly: permissions.readonly(),
         attributes,
+        device,
+        inode,
+        links,
     }
 }
 
@@ -280,54 +288,8 @@ pub(crate) fn rename(
 ) -> Result<(), ErrorBody> {
     let (from_dir, from_relative) = roots.resolve_entry(from)?;
     let (to_dir, to_relative) = roots.resolve_entry(to)?;
-    if !overwrite && to_dir.symlink_metadata(&to_relative).is_ok() {
-        return Err(ErrorBody::new(ErrorCode::Exists, "the target exists"));
-    }
-    from_dir
-        .rename(&from_relative, &to_dir, &to_relative)
+    super::tree::rename_in(&from_dir, &from_relative, &to_dir, &to_relative, overwrite)
         .map_err(|error| io_error(&error))
-}
-
-pub(crate) fn copy(
-    roots: &Roots<'_>,
-    context: &Context<'_>,
-    from: &str,
-    to: &str,
-    overwrite: bool,
-) -> Result<(), ErrorBody> {
-    let (from_dir, from_relative) = roots.resolve_entry(from)?;
-    let (to_dir, to_relative) = roots.resolve_entry(to)?;
-    let (mut source, meta) = open_regular_in(&from_dir, &from_relative)?;
-    #[cfg(unix)]
-    let file_mode = {
-        use cap_std::fs::PermissionsExt;
-        Some(meta.permissions().mode() & 0o7777 & !super::ID_BITS)
-    };
-    #[cfg(not(unix))]
-    let file_mode = {
-        let _ = &meta;
-        None
-    };
-    let mode = if overwrite {
-        WriteMode::Replace
-    } else {
-        WriteMode::Create
-    };
-    let mut staged = Staged::open(&to_dir, &to_relative, &mode, false, file_mode)?;
-    let mut buffer = vec![0_u8; context.config.chunk_size];
-    loop {
-        let count = match source.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(count) => count,
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(io_error(&error)),
-        };
-        staged
-            .file()
-            .write_all(&buffer[..count])
-            .map_err(|error| io_error(&error))?;
-    }
-    staged.commit(context.config.sync_writes)
 }
 
 pub(crate) fn symlink(roots: &Roots<'_>, target: &str, link: &str) -> Result<(), ErrorBody> {

@@ -37,6 +37,7 @@
 
 #![forbid(unsafe_code)]
 
+mod bundle;
 pub(crate) mod compress;
 mod delta;
 mod hash;
@@ -45,18 +46,22 @@ mod path;
 mod prepare;
 mod read;
 mod stage;
+mod tree;
+mod walk;
 mod write;
 
 use bohio_proto::control::{Call, Reply};
 use bohio_proto::{ErrorBody, ErrorCode};
 
 use crate::config::{CompressionConfig, DeltaConfig, FilesystemConfig, HashConfig};
+use crate::control::Current;
 use crate::limit::Slots;
 use crate::policy::{Grant, Permission};
 
 pub use hash::{HashContext, serve_hash};
 pub use prepare::sweep as sweep_prepared;
 pub use read::serve_read;
+pub use walk::{WalkContext, serve_walk};
 pub use write::serve_write;
 
 use ops::Roots;
@@ -78,6 +83,9 @@ pub struct Context<'a> {
     pub peer: &'a str,
     /// The bound on concurrent transfers, shared by every stream.
     pub slots: &'a Slots,
+    /// Where the peer's grant is read before each item of a bundle, so a grant narrowed while the stream is open
+    /// applies to the next item; `grant` is used when absent.
+    pub current: Option<Current<'a>>,
 }
 
 /// Answers one filesystem call of the control stream.
@@ -98,6 +106,8 @@ pub fn call(context: &Context<'_>, call: &Call, budget: usize) -> Result<Reply, 
         Call::Mkdir { .. }
         | Call::Remove { .. }
         | Call::Rename { .. }
+        | Call::Move { .. }
+        | Call::Truncate { .. }
         | Call::Symlink { .. }
         | Call::SetTimes { .. }
         | Call::SetMode { .. }
@@ -141,12 +151,31 @@ pub fn call(context: &Context<'_>, call: &Call, budget: usize) -> Result<Reply, 
             ops::rename(&roots, from, to, *overwrite)?;
             Reply::Done
         }
-        Call::Copy {
+        Call::Move {
             from,
             to,
             overwrite,
         } => {
-            ops::copy(&roots, context, from, to, *overwrite)?;
+            tree::move_to(&roots, context, from, to, *overwrite)?;
+            Reply::Done
+        }
+        Call::Truncate { path, length } => {
+            tree::truncate(&roots, path, *length)?;
+            Reply::Done
+        }
+        Call::Copy {
+            from,
+            to,
+            overwrite,
+            recursive,
+            preserve,
+        } => {
+            let options = tree::CopyOptions {
+                overwrite: *overwrite,
+                recursive: *recursive,
+                preserve: *preserve,
+            };
+            tree::copy(&roots, context, from, to, &options)?;
             Reply::Done
         }
         Call::Symlink { target, link } => {

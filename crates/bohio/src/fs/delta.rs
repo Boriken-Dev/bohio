@@ -225,7 +225,10 @@ pub(super) fn pull(
     }
     ship(matcher.finish())?;
     let hashes = hasher.finish();
-    if !send(&ReadOutput::Done(ReadDone { hashes })) {
+    if !send(&ReadOutput::Done(ReadDone {
+        hashes,
+        index: None,
+    })) {
         return Err(give_up());
     }
     Ok(pull.size)

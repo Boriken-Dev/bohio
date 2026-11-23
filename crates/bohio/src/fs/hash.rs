@@ -455,7 +455,7 @@ fn item_result(
 /// Holds a stream to `[hash] rate` bytes a second: each read is followed by a wait until its share of
 /// time has passed. A wait that overshoots is made up by the next ones, up to one `slice` (`[filesystem]
 /// poll_interval`), and time a stream spent idle earns no more credit than that.
-struct Pace {
+pub(super) struct Pace {
     rate: u64,
     due: Instant,
     /// The granularity of the limit: a read is at most this much of the rate, and this much lag is caught up.
@@ -463,7 +463,7 @@ struct Pace {
 }
 
 impl Pace {
-    fn new(rate: u64, slice: Duration) -> Self {
+    pub(super) fn new(rate: u64, slice: Duration) -> Self {
         Self {
             rate,
             due: Instant::now(),
@@ -472,7 +472,7 @@ impl Pace {
     }
 
     /// The buffer size: `read_size`, or one `slice` of `rate` when that is less.
-    fn piece(&self, read_size: usize) -> usize {
+    pub(super) fn piece(&self, read_size: usize) -> usize {
         if self.rate == 0 {
             return read_size;
         }
@@ -485,7 +485,7 @@ impl Pace {
 
     /// Accounts for `count` bytes just read and waits until the rate allows the next read. The wait is at most a
     /// `slice`, so a stream that closes meanwhile is noticed at the next read.
-    fn spent(&mut self, channel: &dyn Channel, count: u64) {
+    pub(super) fn spent(&mut self, channel: &dyn Channel, count: u64) {
         if self.rate == 0 {
             return;
         }

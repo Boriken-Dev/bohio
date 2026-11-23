@@ -1,18 +1,114 @@
 //! A file being written: the target, or a temporary sibling that replaces it when the data is
 //! complete. Dropping it before [`Staged::commit`] leaves nothing behind.
 
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, PoisonError};
+use std::time::{Duration, SystemTime};
 
 use bohio_proto::fs::WriteMode;
 use bohio_proto::{ErrorBody, ErrorCode};
+use cap_fs_ext::{DirExt, SystemTimeSpec};
 use cap_std::fs::{Dir, File, OpenOptions};
 
 use super::io_error;
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// The resume tokens a stream of this process is writing under: a second stream continuing one of them is `busy`.
+static CLAIMED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+
+/// The name prefix of a temporary file kept for a resumable write.
+const RESUME_PREFIX: &str = ".bohio-resume-";
+
+/// A token a running stream holds, released when it drops.
+#[derive(Debug)]
+struct Claim(String);
+
+impl Claim {
+    fn take(token: &str) -> Option<Self> {
+        let mut claimed = CLAIMED.lock().unwrap_or_else(PoisonError::into_inner);
+        claimed
+            .get_or_insert_with(HashSet::new)
+            .insert(token.to_owned())
+            .then(|| Self(token.to_owned()))
+    }
+}
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        if let Some(claimed) = CLAIMED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()
+        {
+            claimed.remove(&self.0);
+        }
+    }
+}
+
+fn resume_name(tag: &str, token: &str) -> OsString {
+    OsString::from(format!("{RESUME_PREFIX}{tag}-{token}.tmp"))
+}
+
+/// Removes the kept temporary files of `parent` that nothing continued for `ttl`.
+fn sweep(parent: &Dir, ttl: Duration) {
+    let Ok(entries) = parent.read_dir(".") else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(text) = name.to_str() else { continue };
+        if !(text.starts_with(RESUME_PREFIX) && text.ends_with(".tmp")) {
+            continue;
+        }
+        let old = entry
+            .metadata()
+            .ok()
+            .filter(cap_std::fs::Metadata::is_file)
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|made| SystemTime::now().duration_since(made.into_std()).ok())
+            .is_some_and(|age| age >= ttl);
+        if old {
+            let _ = parent.remove_file(&name);
+        }
+    }
+}
+
+/// The directory holding `relative`, made when `parents`, and the name in it.
+fn locate(
+    root: &Dir,
+    relative: &Path,
+    parents: bool,
+    file_mode: Option<u32>,
+) -> Result<(Dir, OsString), ErrorBody> {
+    let Some(name) = relative.file_name() else {
+        return Err(ErrorBody::new(
+            ErrorCode::BadRequest,
+            "the path names a root, not a file",
+        ));
+    };
+    if cfg!(windows) && file_mode.is_some() {
+        return Err(ErrorBody::new(
+            ErrorCode::Unsupported,
+            "this host has no permission bits",
+        ));
+    }
+    let parent_relative = relative.parent().filter(|p| !p.as_os_str().is_empty());
+    if parents && let Some(parent_relative) = parent_relative {
+        root.create_dir_all(parent_relative)
+            .map_err(|e| io_error(&e))?;
+    }
+    let parent = match parent_relative {
+        Some(parent_relative) => root.open_dir(parent_relative),
+        None => root.try_clone(),
+    }
+    .map_err(|e| io_error(&e))?;
+    Ok((parent, name.to_owned()))
+}
 
 /// A destination file opened for writing under a directory handle.
 #[derive(Debug)]
@@ -27,6 +123,12 @@ pub(crate) struct Staged {
     /// A `create` stream made the target itself, so abandoning it removes it.
     made: bool,
     committed: bool,
+    /// The modification time the file gets just before it is put in place.
+    modified: Option<std::time::SystemTime>,
+    /// Leave the temporary file where it is when this is dropped, for a write to continue.
+    keep: bool,
+    /// The token a resumable write is held under while it runs.
+    claim: Option<Claim>,
 }
 
 impl Staged {
@@ -43,30 +145,7 @@ impl Staged {
         parents: bool,
         file_mode: Option<u32>,
     ) -> Result<Self, ErrorBody> {
-        let Some(name) = relative.file_name() else {
-            return Err(ErrorBody::new(
-                ErrorCode::BadRequest,
-                "the path names a root, not a file",
-            ));
-        };
-        if cfg!(windows) && file_mode.is_some() {
-            return Err(ErrorBody::new(
-                ErrorCode::Unsupported,
-                "this host has no permission bits",
-            ));
-        }
-        let parent_relative = relative.parent().filter(|p| !p.as_os_str().is_empty());
-        if parents && let Some(parent_relative) = parent_relative {
-            root.create_dir_all(parent_relative)
-                .map_err(|e| io_error(&e))?;
-        }
-        let parent = match parent_relative {
-            Some(parent_relative) => root.open_dir(parent_relative),
-            None => root.try_clone(),
-        }
-        .map_err(|e| io_error(&e))?;
-        let name = name.to_owned();
-
+        let (parent, name) = locate(root, relative, parents, file_mode)?;
         let mut staged = Self {
             parent,
             name: name.clone(),
@@ -75,6 +154,9 @@ impl Staged {
             temp: None,
             made: false,
             committed: false,
+            modified: None,
+            keep: false,
+            claim: None,
         };
         match mode {
             WriteMode::Replace | WriteMode::Delta { .. } => staged.open_temp(file_mode)?,
@@ -109,6 +191,15 @@ impl Staged {
     }
 
     fn open_temp(&mut self, file_mode: Option<u32>) -> Result<(), ErrorBody> {
+        let temp = OsString::from(format!(
+            ".bohio-{}-{}.tmp",
+            std::process::id(),
+            SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        self.open_temp_named(file_mode, temp)
+    }
+
+    fn open_temp_named(&mut self, file_mode: Option<u32>, temp: OsString) -> Result<(), ErrorBody> {
         let existing = self.parent.symlink_metadata(&self.name).ok();
         if existing.as_ref().is_some_and(cap_std::fs::Metadata::is_dir) {
             return Err(ErrorBody::new(
@@ -116,11 +207,6 @@ impl Staged {
                 "the target is a directory",
             ));
         }
-        let temp = OsString::from(format!(
-            ".bohio-{}-{}.tmp",
-            std::process::id(),
-            SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
         let file = open_with(&self.parent, Path::new(&temp), create_new(file_mode))?;
         self.temp = Some(temp);
         // A replaced file keeps its mode unless the request names one, without the set-ID bits.
@@ -136,11 +222,143 @@ impl Staged {
         Ok(())
     }
 
+    /// Opens a `replace` whose temporary file can be kept when the stream ends early, named by `tag` (who asked,
+    /// for which path) and a new token, which is returned: the write is continued with [`Staged::resume`]. The
+    /// temporary files of the target's directory that nothing continued for `ttl` are removed first.
+    ///
+    /// # Errors
+    ///
+    /// As [`Staged::open`].
+    pub(crate) fn open_resumable(
+        root: &Dir,
+        relative: &Path,
+        parents: bool,
+        file_mode: Option<u32>,
+        tag: &str,
+        ttl: Duration,
+    ) -> Result<(Self, String), ErrorBody> {
+        let (parent, name) = locate(root, relative, parents, file_mode)?;
+        sweep(&parent, ttl);
+        let token = super::prepare::token()?;
+        let mut staged = Self {
+            parent,
+            name,
+            mode: WriteMode::Replace,
+            file: None,
+            temp: None,
+            made: false,
+            committed: false,
+            modified: None,
+            keep: false,
+            claim: Claim::take(&token),
+        };
+        staged.open_temp_named(file_mode, resume_name(tag, &token))?;
+        Ok((staged, token))
+    }
+
+    /// Opens the temporary file `token` names for the write that began it (`tag` says who and which path), to
+    /// go on after the bytes it holds; returns how many there are.
+    ///
+    /// # Errors
+    ///
+    /// `not_found` for a token nothing holds, or one that expired; `busy` when a stream is still writing under
+    /// it; otherwise as [`Staged::open`].
+    pub(crate) fn resume(
+        root: &Dir,
+        relative: &Path,
+        tag: &str,
+        token: &str,
+        ttl: Duration,
+    ) -> Result<(Self, u64), ErrorBody> {
+        let unknown = || ErrorBody::new(ErrorCode::NotFound, "no write waits under that token");
+        if !super::prepare::well_formed(token) {
+            return Err(unknown());
+        }
+        let (parent, name) = locate(root, relative, false, None)?;
+        sweep(&parent, ttl);
+        let temp = resume_name(tag, token);
+        let meta = parent
+            .symlink_metadata(Path::new(&temp))
+            .map_err(|_| unknown())?;
+        if !meta.is_file() {
+            return Err(unknown());
+        }
+        let Some(claim) = Claim::take(token) else {
+            return Err(ErrorBody::new(
+                ErrorCode::Busy,
+                "a stream is still writing under that token",
+            ));
+        };
+        let mut options = OpenOptions::new();
+        options.write(true);
+        let mut file = open_with(&parent, Path::new(&temp), options)?;
+        let offset = file.seek(SeekFrom::End(0)).map_err(|e| io_error(&e))?;
+        Ok((
+            Self {
+                parent,
+                name,
+                mode: WriteMode::Replace,
+                file: Some(file),
+                temp: Some(temp),
+                made: false,
+                committed: false,
+                modified: None,
+                keep: false,
+                claim: Some(claim),
+            },
+            offset,
+        ))
+    }
+
+    /// Keeps the temporary file when this is dropped without a commit, so a later write can continue it.
+    pub(crate) fn keep_for_resume(&mut self) {
+        self.keep = self.claim.is_some();
+    }
+
+    /// The bytes of the file as they are now, read from the start into `into` (a resumed write's digests cover
+    /// what an earlier stream wrote).
+    pub(crate) fn read_back(&mut self, into: &mut dyn FnMut(&[u8])) -> Result<(), ErrorBody> {
+        use std::io::Read;
+        let mut reader = self
+            .parent
+            .open(Path::new(
+                self.temp
+                    .as_deref()
+                    .map_or_else(|| Path::new(&self.name), Path::new),
+            ))
+            .map_err(|e| io_error(&e))?;
+        let mut buffer = vec![0_u8; 256 * 1024];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => return Ok(()),
+                Ok(count) => into(&buffer[..count]),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(io_error(&error)),
+            }
+        }
+    }
+
+    /// Flushes what was written and, when `sync`, makes it durable: the file stays open and writable.
+    pub(crate) fn flush(&mut self, sync: bool) -> Result<(), ErrorBody> {
+        let file = self.file();
+        file.flush().map_err(|e| io_error(&e))?;
+        if sync {
+            file.sync_all().map_err(|e| io_error(&e))?;
+        }
+        Ok(())
+    }
+
     /// The file to write.
     pub(crate) fn file(&mut self) -> &mut File {
         self.file
             .as_mut()
             .expect("a staged file stays open until it is committed or dropped")
+    }
+
+    /// Gives the file this modification time when it is put in place, before the rename, so no reader sees it with
+    /// another.
+    pub(crate) fn set_modified(&mut self, modified: std::time::SystemTime) {
+        self.modified = Some(modified);
     }
 
     /// Puts the data in place: flushes (and syncs when `sync`), then for `replace` renames the
@@ -160,6 +378,16 @@ impl Staged {
             Ok::<(), std::io::Error>(())
         })();
         flushed.map_err(|e| io_error(&e))?;
+        if let Some(modified) = self.modified {
+            let name = self
+                .temp
+                .as_deref()
+                .map_or_else(|| Path::new(&self.name), Path::new);
+            let spec = SystemTimeSpec::Absolute(cap_std::time::SystemTime::from_std(modified));
+            self.parent
+                .set_times(name, None, Some(spec))
+                .map_err(|e| io_error(&e))?;
+        }
         if let Some(temp) = &self.temp {
             self.parent
                 .rename(Path::new(temp), &self.parent, Path::new(&self.name))
@@ -177,6 +405,9 @@ impl Drop for Staged {
         }
         // The file must be closed before it can be removed on Windows.
         self.file = None;
+        if self.keep {
+            return;
+        }
         if let Some(temp) = &self.temp {
             let _ = self.parent.remove_file(Path::new(temp));
         } else if self.made && matches!(self.mode, WriteMode::Create) {

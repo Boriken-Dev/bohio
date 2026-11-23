@@ -31,6 +31,8 @@ use crate::fs::{Fs, ReadOptions, Reader, Writer};
 use crate::hash::{hash_blocks, hash_file};
 use crate::{Error, Open, OpenOptions};
 
+pub use crate::tree::{Action, Direction, Step, TreeOptions, TreeReport, sync_tree};
+
 /// How far [`compare_file`] goes to tell two files apart.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Compare {

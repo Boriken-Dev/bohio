@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use bohio::config::{
     CompressionConfig, DeltaConfig, ExecutionConfig, FilesystemConfig, HashConfig, ShellConfig,
+    WalkConfig,
 };
 use bohio::exec::{self, Context};
 use bohio::limit::Slots;
@@ -54,6 +55,9 @@ pub struct Link {
     pub peer: String,
     pub transfers: Arc<Slots>,
     pub hash_slots: Arc<Slots>,
+    /// The `[walk]` settings of the host; a test changes them with [`Link::walking`].
+    pub walk: Arc<WalkConfig>,
+    pub walk_slots: Arc<Slots>,
     /// What the peer is granted now, when it differs from `grant`: a hash stream reads it before each item, as the
     /// node does, so a test narrows a grant while a stream is open.
     pub live: Arc<Mutex<Option<Grant>>>,
@@ -114,6 +118,14 @@ impl Link {
         self
     }
 
+    /// This host with the `[walk]` settings `walk`.
+    #[must_use]
+    pub fn walking(mut self, walk: WalkConfig) -> Self {
+        self.walk_slots = Arc::new(Slots::new(walk.max_streams));
+        self.walk = Arc::new(walk);
+        self
+    }
+
     /// This host with the `[compression]` settings `compression`.
     #[must_use]
     pub fn compressing(mut self, compression: CompressionConfig) -> Self {
@@ -141,6 +153,8 @@ impl Link {
             slots: Arc::new(slots),
             hash_slots: Arc::new(Slots::new(HashConfig::default().max_streams)),
             hash: Arc::new(HashConfig::default()),
+            walk: Arc::new(WalkConfig::default()),
+            walk_slots: Arc::new(Slots::new(WalkConfig::default().max_streams)),
             delta: Arc::new(DeltaConfig::default()),
             compression: Arc::new(CompressionConfig::default()),
             peer: "test-peer".to_owned(),
@@ -266,7 +280,15 @@ impl Open for Link {
                 Arc::clone(&self.compression),
                 Arc::clone(&self.delta),
             );
+            let (walk, walk_slots) = (Arc::clone(&self.walk), Arc::clone(&self.walk_slots));
             let handle = std::thread::spawn(move || {
+                let now = || {
+                    Ok(live
+                        .lock()
+                        .unwrap()
+                        .clone()
+                        .unwrap_or_else(|| (*grant).clone()))
+                };
                 let context = fs::Context {
                     grant: &grant,
                     config: &files,
@@ -275,6 +297,7 @@ impl Open for Link {
                     compression: &compression,
                     peer: &peer,
                     slots: &transfers,
+                    current: Some(control::Current(&now)),
                 };
                 let result = match name.as_str() {
                     protocol::CONTROL => {
@@ -294,14 +317,15 @@ impl Open for Link {
                     protocol::WRITE => {
                         fs::serve_write(Arc::clone(&host), &metadata, &context).map(|_| ())
                     }
-                    protocol::HASH => {
-                        let now = || {
-                            Ok(live
-                                .lock()
-                                .unwrap()
-                                .clone()
-                                .unwrap_or_else(|| (*grant).clone()))
+                    protocol::WALK => {
+                        let context = fs::WalkContext {
+                            files: context,
+                            walk: &walk,
+                            slots: &walk_slots,
                         };
+                        fs::serve_walk(Arc::clone(&host), &metadata, &context).map(|_| ())
+                    }
+                    protocol::HASH => {
                         let context = fs::HashContext {
                             files: context,
                             slots: &hash_slots,

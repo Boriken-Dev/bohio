@@ -10,8 +10,8 @@ use bohio_transfer::compress::{Bounds, Caps, DecodeError, Decoder, Encoder, Piec
 
 use bohio_proto::control::{Call, Reply};
 use bohio_proto::fs::{
-    DeltaCopy, Entry, Listing, Metadata, ReadHeader, ReadOutput, ReadRequest, Timestamp, WriteDone,
-    WriteInput, WriteOutput, WriteRequest,
+    DeltaCopy, Entry, Listing, Metadata, ReadHeader, ReadOutput, ReadRequest, Ready, Timestamp,
+    WriteDone, WriteInput, WriteOutput, WriteRequest,
 };
 use bohio_proto::hash::Digests;
 use bohio_proto::protocol;
@@ -19,6 +19,17 @@ use coqui_transport::Channel;
 
 use crate::control::Control;
 use crate::{Error, Open, OpenOptions};
+
+/// What a [`Fs::copy_with`] does besides copying the bytes of a file.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CopyOptions {
+    /// Replace an existing target; a directory is merged into an existing one.
+    pub overwrite: bool,
+    /// Copy a directory with what it holds.
+    pub recursive: bool,
+    /// Give the copy the original's permission bits (without the set-ID bits) and modification time.
+    pub preserve: bool,
+}
 
 /// The filesystem calls of one host, over a control stream.
 #[derive(Debug)]
@@ -163,11 +174,70 @@ impl Fs {
     ///
     /// As [`Fs::stat`].
     pub fn copy(&self, from: &str, to: &str, overwrite: bool) -> Result<(), Error> {
+        self.copy_with(
+            from,
+            to,
+            &CopyOptions {
+                overwrite,
+                ..CopyOptions::default()
+            },
+        )
+    }
+
+    /// Copies `from` to `to` on the host, never through this client: a regular file, or with
+    /// `options.recursive` a directory and everything in it (links stay links).
+    ///
+    /// # Errors
+    ///
+    /// As [`Fs::stat`]; `exists` when `to` exists and not `options.overwrite`, `busy` past the host's
+    /// `[filesystem] max_tree_entries`.
+    pub fn copy_with(&self, from: &str, to: &str, options: &CopyOptions) -> Result<(), Error> {
         self.done(Call::Copy {
+            from: from.to_owned(),
+            to: to.to_owned(),
+            overwrite: options.overwrite,
+            recursive: options.recursive,
+            preserve: options.preserve,
+        })
+    }
+
+    /// Moves `from` to `to` on the host: a rename where the host can, else (another filesystem) a copy that
+    /// keeps permission bits and modification time and then the removal of the original. `exists` when `to`
+    /// exists and not `overwrite`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Fs::stat`]; `busy` past the host's `[filesystem] max_tree_entries` for a tree.
+    pub fn move_to(&self, from: &str, to: &str, overwrite: bool) -> Result<(), Error> {
+        self.done(Call::Move {
             from: from.to_owned(),
             to: to.to_owned(),
             overwrite,
         })
+    }
+
+    /// Sets the regular file `path` to `length` bytes: a shorter length cuts it, a longer one extends it with
+    /// zeros.
+    ///
+    /// # Errors
+    ///
+    /// As [`Fs::stat`].
+    pub fn truncate(&self, path: &str, length: u64) -> Result<(), Error> {
+        self.done(Call::Truncate {
+            path: path.to_owned(),
+            length,
+        })
+    }
+
+    /// Opens a second control stream with the same timeout: the host answers each stream's calls in order, so a
+    /// long `copy` or `move` of a tree holds its stream and the calls that follow it wait. Run it on this one
+    /// and keep the first for the short calls.
+    ///
+    /// # Errors
+    ///
+    /// Whatever `link` reports.
+    pub fn spawn_control(&self, link: &dyn Open) -> Result<Self, Error> {
+        Ok(Self::connect(link)?.with_timeout(self.timeout))
     }
 
     /// Creates the symbolic link `link` holding the relative text `target`.
@@ -548,6 +618,8 @@ pub struct Writer {
     encoder: Mutex<Option<Encoder>>,
     /// The bytes of the frames sent so far, as they travelled.
     sent: AtomicU64,
+    /// What the host's `ready` said: the token of a resumable write, or where a resumed one goes on.
+    ready: Ready,
 }
 
 impl core::fmt::Debug for Writer {
@@ -617,14 +689,50 @@ impl Writer {
                 return Err(Error::Closed);
             };
             match WriteOutput::decode(&frame) {
-                Ok(WriteOutput::Ready) => {
+                Ok(WriteOutput::Ready(ready)) => {
                     return Ok(Self {
                         channel,
                         chunk: Self::DEFAULT_CHUNK,
                         encoder: Mutex::new(encoder),
                         sent: AtomicU64::new(0),
+                        ready,
                     });
                 }
+                Ok(WriteOutput::Error(body)) => return Err(Error::Remote(body)),
+                Ok(_) | Err(bohio_proto::Error::Tag(_)) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
+    /// For a write that asked to `resume`: the token that continues it if the stream ends early.
+    pub fn token(&self) -> Option<&str> {
+        self.ready.token.as_deref()
+    }
+
+    /// For a write in mode `resume`: how many bytes of the file the host holds. The data sent from here on
+    /// is the file from this offset.
+    pub const fn resumed_at(&self) -> Option<u64> {
+        self.ready.offset
+    }
+
+    /// Asks the host to make what was written so far safe (`append` and `at` writes only) and waits up to
+    /// `timeout` for it to say how many bytes this stream has written. Any other write mode is `bad_request`
+    /// and ends the stream.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Remote`] when the host refused, [`Error::Timeout`], [`Error::Closed`].
+    pub fn flush_remote(&self, timeout: Option<Duration>) -> Result<u64, Error> {
+        let deadline = timeout.map(|limit| Instant::now() + limit);
+        self.send(&WriteInput::Flush.encode())?;
+        loop {
+            let left = deadline.map(|at| at.saturating_duration_since(Instant::now()));
+            let Some(frame) = self.channel.receive(left)? else {
+                return Err(Error::Closed);
+            };
+            match WriteOutput::decode(&frame) {
+                Ok(WriteOutput::Flushed(flushed)) => return Ok(flushed.written),
                 Ok(WriteOutput::Error(body)) => return Err(Error::Remote(body)),
                 Ok(_) | Err(bohio_proto::Error::Tag(_)) => {}
                 Err(error) => return Err(error.into()),

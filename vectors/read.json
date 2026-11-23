@@ -296,6 +296,150 @@
       }
     },
     {
+      "direction": "client_to_host",
+      "hex": "a6647061746860666f666673657400666c656e677468f66668617368657381666372633332636b636f6d7072657373696f6ea369616c676f726974686d647a737464656c6576656c036a77696e646f775f6c6f67f6656974656d73f5",
+      "kind": "open",
+      "name": "open_bundle",
+      "type": "fs.ReadRequest",
+      "value": {
+        "compression": {
+          "algorithm": "zstd",
+          "level": 3,
+          "window_log": null
+        },
+        "hashes": [
+          "crc32c"
+        ],
+        "items": true,
+        "length": null,
+        "offset": 0,
+        "path": ""
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "10a364706174686a2f7372762f612e747874666f666673657400666c656e677468f6",
+      "kind": "frame",
+      "name": "item",
+      "type": "fs.ReadInput",
+      "value": {
+        "message": {
+          "length": null,
+          "offset": 0,
+          "path": "/srv/a.txt"
+        },
+        "tag": 16
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "10a364706174686c2f7372762f6269672e62696e666f6666736574190400666c656e677468191000",
+      "kind": "frame",
+      "name": "item_range",
+      "type": "fs.ReadInput",
+      "value": {
+        "message": {
+          "length": 4096,
+          "offset": 1024,
+          "path": "/srv/big.bin"
+        },
+        "tag": 16
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "11",
+      "kind": "frame",
+      "name": "items_end",
+      "type": "fs.ReadInput",
+      "value": {
+        "tag": 17
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "01a36473697a6500666c656e677468006b636f6d7072657373696f6ea369616c676f726974686d647a737464656c6576656c036a77696e646f775f6c6f67f6",
+      "kind": "frame",
+      "name": "header_bundle",
+      "type": "fs.ReadOutput",
+      "value": {
+        "message": {
+          "compression": {
+            "algorithm": "zstd",
+            "level": 3,
+            "window_log": null
+          },
+          "length": 0,
+          "size": 0
+        },
+        "tag": 1
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "01a56473697a6505666c656e6774680565696e64657802686d6f646966696564a264736563731a6553f100656e616e6f7305646d6f64651901a4",
+      "kind": "frame",
+      "name": "header_item",
+      "type": "fs.ReadOutput",
+      "value": {
+        "message": {
+          "index": 2,
+          "length": 5,
+          "mode": 420,
+          "modified": {
+            "nanos": 5,
+            "secs": 1700000000
+          },
+          "size": 5
+        },
+        "tag": 1
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "04a266686173686573a16663726333326368653330363932383365696e64657802",
+      "kind": "frame",
+      "name": "done_item",
+      "type": "fs.ReadOutput",
+      "value": {
+        "message": {
+          "hashes": {
+            "crc32c": "e3069283"
+          },
+          "index": 2
+        },
+        "tag": 4
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "03a365696e6465780364636f6465696e6f745f666f756e64676d6573736167656c6e6f20737563682066696c65",
+      "kind": "frame",
+      "name": "item_error",
+      "type": "fs.ReadOutput",
+      "value": {
+        "message": {
+          "code": "not_found",
+          "index": 3,
+          "message": "no such file"
+        },
+        "tag": 3
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "07a1656974656d7304",
+      "kind": "frame",
+      "name": "end_bundle",
+      "type": "fs.ReadOutput",
+      "value": {
+        "message": {
+          "items": 4
+        },
+        "tag": 7
+      }
+    },
+    {
       "direction": "host_to_client",
       "hex": "04a166686173686573a0",
       "kind": "frame",

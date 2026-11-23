@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+pub mod bundle;
 mod certificate;
 pub mod connect;
 pub mod control;
@@ -13,11 +14,14 @@ pub mod gui;
 pub mod hash;
 pub mod keep;
 pub mod link;
+pub mod range;
 pub mod relay;
 pub mod session;
 pub mod shell;
 pub mod socks;
 pub mod sync;
+mod tree;
+pub mod walk;
 
 pub use error::Error;
 

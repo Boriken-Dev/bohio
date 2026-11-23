@@ -150,6 +150,14 @@ pub struct TransferInfo {
     pub prepared: bool,
     /// What the host offers for deltas and block signatures.
     pub delta: DeltaInfo,
+    /// Whether the host serves `bohio-walk/1`.
+    pub walk: bool,
+    /// The bounds `bohio-walk/1` runs under.
+    pub walk_limits: WalkLimits,
+    /// Whether reads and writes take bundles of many files on one stream (`items`).
+    pub bundles: bool,
+    /// Whether a `replace` write may ask to `resume`: the host keeps an abandoned one for a while.
+    pub resume: bool,
 }
 
 /// What the host offers for deltas (`bohio-read/1` with `delta`, `bohio-write/1` in mode `delta`, and block
@@ -204,4 +212,15 @@ pub struct HashLimits {
     pub max_streams: u64,
     /// The most bytes a second one stream hashes; `0` is no limit.
     pub rate: u64,
+}
+
+/// The bounds of `bohio-walk/1`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WalkLimits {
+    /// The most walk streams running at once on the host; a stream past it is `busy`. `0` when the host
+    /// serves none.
+    pub max_streams: u64,
+    /// The most entries one walk stream sends; past it the walk ends with an item error. `0` is no limit.
+    pub max_entries: u64,
 }

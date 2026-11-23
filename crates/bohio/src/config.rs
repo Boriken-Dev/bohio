@@ -131,6 +131,8 @@ pub struct Config {
     pub filesystem: FilesystemConfig,
     /// `[hash]`.
     pub hash: HashConfig,
+    /// `[walk]`.
+    pub walk: WalkConfig,
     /// `[delta]`.
     pub delta: DeltaConfig,
     /// `[compression]`.
@@ -723,6 +725,16 @@ pub struct FilesystemConfig {
     /// `[hash] algorithms`. An empty list answers none, which saves the CPU of hashing every byte
     /// written. Default `["sha256"]`.
     pub write_hashes: Vec<Algorithm>,
+    /// The most entries a recursive `copy`, or a `move` across filesystems, goes through before it stops with
+    /// `busy`. `0` is no limit. Default `1000000`.
+    pub max_tree_entries: usize,
+    /// The most files one bundle (`bohio-read/1` or `bohio-write/1` with `items`) carries before it stops with
+    /// `busy`. `0` is no limit. Default `1000000`.
+    pub max_bundle_items: u64,
+    /// How long a `replace` write that asked to `resume` keeps its temporary file after its stream ended
+    /// early, for a later write to continue it. `0` keeps none, and such a request is `unsupported`. A kept
+    /// file takes the disk space of what was received. Default `0`.
+    pub resume_ttl: Span,
 }
 
 impl Default for FilesystemConfig {
@@ -736,6 +748,34 @@ impl Default for FilesystemConfig {
             poll_interval: Span(Duration::from_millis(20)),
             sync_writes: true,
             write_hashes: vec![Algorithm::Sha256],
+            max_tree_entries: 1_000_000,
+            max_bundle_items: 1_000_000,
+            resume_ttl: Span(Duration::ZERO),
+        }
+    }
+}
+
+/// `[walk]`: the bounds of `bohio-walk/1`, which lists whole trees on one stream.
+///
+/// A walk reads every directory it enters (and every file, for the digests a request asks for), so a peer that
+/// may read can make the host spend its disk: `max_streams` bounds how many walks run, `max_entries` how far one
+/// goes. Digests are paced by `[hash] rate`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct WalkConfig {
+    /// The most `bohio-walk/1` streams running at once, across peers; one past it is `busy`. At least 1.
+    /// Default `4`.
+    pub max_streams: usize,
+    /// The most entries one walk stream sends, over all its roots; past it the walk ends with an item error
+    /// and `done`. `0` is no limit. Default `1000000`.
+    pub max_entries: u64,
+}
+
+impl Default for WalkConfig {
+    fn default() -> Self {
+        Self {
+            max_streams: 4,
+            max_entries: 1_000_000,
         }
     }
 }
@@ -1616,6 +1656,8 @@ pub struct NodeConfig {
     pub filesystem: FilesystemConfig,
     /// `[hash]`.
     pub hash: HashConfig,
+    /// `[walk]`.
+    pub walk: WalkConfig,
     /// `[delta]`.
     pub delta: DeltaConfig,
     /// `[compression]`.
@@ -1641,6 +1683,7 @@ impl Default for NodeConfig {
             link: LinkConfig::default(),
             filesystem: FilesystemConfig::default(),
             hash: HashConfig::default(),
+            walk: WalkConfig::default(),
             delta: DeltaConfig::default(),
             compression: CompressionConfig::default(),
             execution: ExecutionConfig::default(),
@@ -1769,6 +1812,9 @@ impl NodeConfig {
         }
         if self.hash.max_streams == 0 {
             return Err(invalid("hash.max_streams", "must be at least 1"));
+        }
+        if self.walk.max_streams == 0 {
+            return Err(invalid("walk.max_streams", "must be at least 1"));
         }
         if self.hash.read_size == 0 {
             return Err(invalid("hash.read_size", "must be at least 1"));
@@ -1943,6 +1989,7 @@ impl Config {
             link: self.link.clone(),
             filesystem: self.filesystem.clone(),
             hash: self.hash.clone(),
+            walk: self.walk.clone(),
             delta: self.delta.clone(),
             compression: self.compression.clone(),
             execution: self.execution.clone(),

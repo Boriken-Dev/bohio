@@ -5,7 +5,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bohio_proto::fs::{
-    DeltaBase, Timestamp, WriteDone, WriteInput, WriteMode, WriteOutput, WriteRequest,
+    DeltaBase, Flushed, Ready, Timestamp, WriteDone, WriteInput, WriteMode, WriteOutput,
+    WriteRequest,
 };
 use bohio_proto::hash::Algorithm;
 use bohio_proto::{ErrorBody, ErrorCode};
@@ -69,13 +70,24 @@ pub fn serve_write(
     }
 }
 
-fn check_request(request: &WriteRequest) -> Result<(), ErrorBody> {
-    let bad = |message: &'static str| Err(ErrorBody::new(ErrorCode::BadRequest, message));
-    if let Some(bits) = request.file_mode {
-        super::check_mode(bits)?;
-    }
-    // An algorithm this build does not know is refused as unsupported, with the other names, once the hasher is made.
-    for (algorithm, expected) in &request.expect {
+/// What names a kept temporary file besides its token: the peer and the path, so only the write that began it can
+/// continue it.
+fn resume_tag(peer: &str, path: &str) -> String {
+    let mut hasher =
+        bohio_transfer::hash::Hasher::new(&[Algorithm::Sha256]).expect("sha256 is always built");
+    hasher.update(peer.as_bytes());
+    hasher.update(&[0]);
+    hasher.update(path.as_bytes());
+    hasher
+        .finish()
+        .remove(&Algorithm::Sha256)
+        .map_or_else(String::new, |digest| digest.chars().take(16).collect())
+}
+
+/// Checks that each expected digest is written as its algorithm writes it. An algorithm this build does not
+/// know is refused as unsupported, with the other names, once the hasher is made.
+pub(super) fn check_digests(expect: &bohio_proto::hash::Digests) -> Result<(), ErrorBody> {
+    for (algorithm, expected) in expect {
         let text = algorithm
             .hex_len()
             .is_none_or(|length| length == expected.len())
@@ -83,16 +95,47 @@ fn check_request(request: &WriteRequest) -> Result<(), ErrorBody> {
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
         if !text {
-            return bad("an expected digest is the algorithm's lowercase hexadecimal digits");
+            return Err(ErrorBody::new(
+                ErrorCode::BadRequest,
+                "an expected digest is the algorithm's lowercase hexadecimal digits",
+            ));
         }
     }
+    Ok(())
+}
+
+pub(super) fn check_request(request: &WriteRequest) -> Result<(), ErrorBody> {
+    let bad = |message: &'static str| Err(ErrorBody::new(ErrorCode::BadRequest, message));
+    if let Some(bits) = request.file_mode {
+        super::check_mode(bits)?;
+    }
+    check_digests(&request.expect)?;
     if !request.expect.is_empty()
         && !matches!(
             request.mode,
-            WriteMode::Replace | WriteMode::Create | WriteMode::Delta { .. }
+            WriteMode::Replace
+                | WriteMode::Create
+                | WriteMode::Delta { .. }
+                | WriteMode::Resume { .. }
         )
     {
-        return bad("a digest is only checked for replace, create and delta");
+        return bad("a digest is only checked for replace, create, delta and resume");
+    }
+    if request.resume && !matches!(request.mode, WriteMode::Replace) {
+        return bad(
+            "only a replace asks to resume; a write that continues one names its token as the mode",
+        );
+    }
+    if request.items
+        && (request.resume
+            || !request.expect.is_empty()
+            || !matches!(request.mode, WriteMode::Replace)
+            || request.file_mode.is_some()
+            || request.parents)
+    {
+        return bad(
+            "a bundle takes each file's mode, parents, file mode and digests from its items",
+        );
     }
     if let WriteMode::Delta { block_size, base } = &request.mode {
         if *block_size == 0 || u32::try_from(*block_size).is_err() {
@@ -178,6 +221,9 @@ fn run(
     let request = WriteRequest::from_metadata(metadata)
         .map_err(|_| ErrorBody::new(ErrorCode::BadRequest, "the request cannot be read"))?;
     // A delta copies from the target, so a peer that may only write cannot use one to test guesses about it.
+    if request.items {
+        return super::bundle::write(channel, &request, context, poll);
+    }
     let needs: &[Permission] = if matches!(request.mode, WriteMode::Delta { .. }) {
         &[Permission::FsWrite, Permission::FsRead]
     } else {
@@ -221,13 +267,51 @@ fn run(
         _ => None,
     };
     let (dir, relative) = roots.resolve(&request.path)?;
-    let mut staged = Staged::open(
-        &dir,
-        &relative,
-        &request.mode,
-        request.parents,
-        request.file_mode,
-    )?;
+    let ttl = context.config.resume_ttl.0;
+    let tag = || resume_tag(context.peer, &request.path);
+    let no_resume = || {
+        ErrorBody::new(
+            ErrorCode::Unsupported,
+            "this host keeps no write to continue ([filesystem] resume_ttl)",
+        )
+    };
+    let mut ready = Ready::default();
+    let mut resumed_at = 0_u64;
+    let mut staged = match &request.mode {
+        WriteMode::Resume { token } => {
+            if ttl.is_zero() {
+                return Err(no_resume());
+            }
+            let (mut staged, offset) = Staged::resume(&dir, &relative, &tag(), token, ttl)?;
+            // The digests cover the whole file, so the bytes an earlier stream wrote go through them again.
+            staged.read_back(&mut |bytes| hasher.update(bytes))?;
+            ready.offset = Some(offset);
+            resumed_at = offset;
+            staged
+        }
+        _ if request.resume => {
+            if ttl.is_zero() {
+                return Err(no_resume());
+            }
+            let (staged, token) = Staged::open_resumable(
+                &dir,
+                &relative,
+                request.parents,
+                request.file_mode,
+                &tag(),
+                ttl,
+            )?;
+            ready.token = Some(token);
+            staged
+        }
+        _ => Staged::open(
+            &dir,
+            &relative,
+            &request.mode,
+            request.parents,
+            request.file_mode,
+        )?,
+    };
 
     let ended = || {
         ErrorBody::new(
@@ -235,11 +319,17 @@ fn run(
             "the stream ended before the data was complete",
         )
     };
-    if !send_waiting(channel.as_ref(), &encode(&WriteOutput::Ready), poll, idle) {
+    if !send_waiting(
+        channel.as_ref(),
+        &encode(&WriteOutput::Ready(ready)),
+        poll,
+        idle,
+    ) {
+        staged.keep_for_resume();
         return Err(ended());
     }
 
-    let mut written = 0_u64;
+    let mut written = resumed_at;
     // What arrived, which bounds what a delta may expand to.
     let mut received = 0_u64;
     let mut last_progress = Instant::now();
@@ -313,22 +403,41 @@ fn run(
                     written += bytes.len() as u64;
                     last_progress = Instant::now();
                 }
+                Ok(WriteInput::Flush) => {
+                    if !matches!(request.mode, WriteMode::Append | WriteMode::At { .. }) {
+                        return Err(ErrorBody::new(
+                            ErrorCode::BadRequest,
+                            "a flush is only for append and at",
+                        ));
+                    }
+                    staged.flush(context.config.sync_writes)?;
+                    let flushed = WriteOutput::Flushed(Flushed { written });
+                    if !send_waiting(channel.as_ref(), &encode(&flushed), poll, idle) {
+                        return Err(ended());
+                    }
+                    last_progress = Instant::now();
+                }
                 Ok(WriteInput::End) => break,
                 // A frame this version does not know is skipped.
                 Ok(_) | Err(_) => {}
             },
             Err(Failure::Timeout) => {
                 if channel.is_closed() {
+                    staged.keep_for_resume();
                     return Err(ended());
                 }
                 if last_progress.elapsed() >= idle {
+                    staged.keep_for_resume();
                     return Err(ErrorBody::new(
                         ErrorCode::Io,
                         "the client sent nothing for too long",
                     ));
                 }
             }
-            Ok(None) | Err(_) => return Err(ended()),
+            Ok(None) | Err(_) => {
+                staged.keep_for_resume();
+                return Err(ended());
+            }
         }
         let allowed = u128::from(context.delta.max_expansion);
         if let Some(base) = &base
@@ -371,6 +480,7 @@ fn run(
     let done = WriteDone {
         written,
         hashes: digests,
+        index: None,
     };
     if !send_waiting(
         channel.as_ref(),

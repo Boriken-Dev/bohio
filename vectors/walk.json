@@ -1,0 +1,232 @@
+{
+  "encoding": "hex is the stream message exactly as it travels: open metadata and control messages are bare CBOR, a frame is one tag byte then its body",
+  "protocol": "bohio-walk/1",
+  "vectors": [
+    {
+      "direction": "client_to_host",
+      "hex": "a0",
+      "kind": "open",
+      "name": "open_whole",
+      "type": "walk.Request",
+      "value": {}
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a66564657074680266666f6c6c6f77f567696e636c75646581672a2a2f2a2e7273676578636c7564658266746172676574652a2e746d70666861736865738164787868336b636f6d7072657373696f6ea369616c676f726974686d647a737464656c6576656c036a77696e646f775f6c6f67f6",
+      "kind": "open",
+      "name": "open_filtered",
+      "type": "walk.Request",
+      "value": {
+        "compression": {
+          "algorithm": "zstd",
+          "level": 3,
+          "window_log": null
+        },
+        "depth": 2,
+        "exclude": [
+          "target",
+          "*.tmp"
+        ],
+        "follow": true,
+        "hashes": [
+          "xxh3"
+        ],
+        "include": [
+          "**/*.rs"
+        ]
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a165646570746800",
+      "kind": "open",
+      "name": "open_stat_many",
+      "type": "walk.Request",
+      "value": {
+        "depth": 0
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "10a16470617468692f7372762f646f6373",
+      "kind": "frame",
+      "name": "root",
+      "type": "walk.Input",
+      "value": {
+        "message": {
+          "path": "/srv/docs"
+        },
+        "tag": 16
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "11",
+      "kind": "frame",
+      "name": "end",
+      "type": "walk.Input",
+      "value": {
+        "tag": 17
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "01a0",
+      "kind": "frame",
+      "name": "header",
+      "type": "walk.Output",
+      "value": {
+        "message": {},
+        "tag": 1
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "01a16b636f6d7072657373696f6ea369616c676f726974686d647a737464656c6576656c036a77696e646f775f6c6f67f6",
+      "kind": "frame",
+      "name": "header_compressed",
+      "type": "walk.Output",
+      "value": {
+        "message": {
+          "compression": {
+            "algorithm": "zstd",
+            "level": 3,
+            "window_log": null
+          }
+        },
+        "tag": 1
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "02a264726f6f740067656e747269657383a2647061746860686d65746164617461ab646b696e64696469726563746f72796473697a65191000686d6f646966696564a264736563731a6553f100656e616e6f7305686163636573736564f66763726561746564f6646d6f64651901ed68726561646f6e6c79f46a61747472696275746573f66664657669636519080165696e6f64651a00020005656c696e6b7301a364706174686a646f63732f612e747874686d65746164617461ab646b696e646466696c656473697a65182a686d6f646966696564a264736563731a6553f100656e616e6f7305686163636573736564f66763726561746564f6646d6f64651901a068726561646f6e6c79f46a61747472696275746573f66664657669636519080165696e6f64651a00020005656c696e6b730166686173686573a166637263333263686533303639323833a364706174686b646f63732f6c6174657374686d65746164617461ab646b696e646773796d6c696e6b6473697a6505686d6f646966696564a264736563731a6553f100656e616e6f7305686163636573736564f66763726561746564f6646d6f64651901a068726561646f6e6c79f46a61747472696275746573f66664657669636519080165696e6f64651a00020005656c696e6b73016674617267657465612e747874",
+      "kind": "frame",
+      "name": "entries",
+      "type": "walk.Output",
+      "value": {
+        "message": {
+          "entries": [
+            {
+              "metadata": {
+                "accessed": null,
+                "attributes": null,
+                "created": null,
+                "device": 2049,
+                "inode": 131077,
+                "kind": "directory",
+                "links": 1,
+                "mode": 493,
+                "modified": {
+                  "nanos": 5,
+                  "secs": 1700000000
+                },
+                "readonly": false,
+                "size": 4096
+              },
+              "path": ""
+            },
+            {
+              "hashes": {
+                "crc32c": "e3069283"
+              },
+              "metadata": {
+                "accessed": null,
+                "attributes": null,
+                "created": null,
+                "device": 2049,
+                "inode": 131077,
+                "kind": "file",
+                "links": 1,
+                "mode": 416,
+                "modified": {
+                  "nanos": 5,
+                  "secs": 1700000000
+                },
+                "readonly": false,
+                "size": 42
+              },
+              "path": "docs/a.txt"
+            },
+            {
+              "metadata": {
+                "accessed": null,
+                "attributes": null,
+                "created": null,
+                "device": 2049,
+                "inode": 131077,
+                "kind": "symlink",
+                "links": 1,
+                "mode": 416,
+                "modified": {
+                  "nanos": 5,
+                  "secs": 1700000000
+                },
+                "readonly": false,
+                "size": 5
+              },
+              "path": "docs/latest",
+              "target": "a.txt"
+            }
+          ],
+          "root": 0
+        },
+        "tag": 2
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "0628b52ffd00586c00003868656c6c6f200a0100b94b11",
+      "kind": "frame",
+      "name": "compressed",
+      "type": "walk.Output",
+      "value": {
+        "data_hex": "28b52ffd00586c00003868656c6c6f200a0100b94b11",
+        "tag": 6
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "03a464726f6f740164706174686c646f63732f7072697661746564636f64656664656e696564676d6573736167657823746865206f7065726174696e672073797374656d207265667573656420616363657373",
+      "kind": "frame",
+      "name": "item_error",
+      "type": "walk.Output",
+      "value": {
+        "message": {
+          "code": "denied",
+          "message": "the operating system refused access",
+          "path": "docs/private",
+          "root": 1
+        },
+        "tag": 3
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "04a267656e74726965730367736b697070656401",
+      "kind": "frame",
+      "name": "done",
+      "type": "walk.Output",
+      "value": {
+        "message": {
+          "entries": 3,
+          "skipped": 1
+        },
+        "tag": 4
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "05a264636f64656462757379676d6573736167656e746f6f206d616e792077616c6b73",
+      "kind": "frame",
+      "name": "error_busy",
+      "type": "walk.Output",
+      "value": {
+        "message": {
+          "code": "busy",
+          "message": "too many walks"
+        },
+        "tag": 5
+      }
+    }
+  ]
+}

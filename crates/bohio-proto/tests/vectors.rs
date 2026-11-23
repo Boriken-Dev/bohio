@@ -16,9 +16,10 @@ use bohio_proto::forward::{
     ListenRequest, Listening, Target,
 };
 use bohio_proto::fs::{
-    DeltaBase, DeltaCopy, Entry, FileKind, Listing, Metadata, ReadDelta, ReadDone, ReadHeader,
-    ReadInput, ReadOutput, ReadRequest, SignatureBatch, Timestamp, WriteDone, WriteInput,
-    WriteMode, WriteOutput, WriteRequest,
+    BundleEnd, DeltaBase, DeltaCopy, Entry, FileKind, Flushed, Listing, Metadata, ReadDelta,
+    ReadDone, ReadHeader, ReadInput, ReadItem, ReadOutput, ReadRequest, Ready as WriteReady,
+    SignatureBatch, Timestamp, WriteDone, WriteInput, WriteItem, WriteMode, WriteOutput,
+    WriteRequest,
 };
 use bohio_proto::gui::{
     Ack, ApproveInput, ApproveOutput, Button, ButtonAction, ClipboardGet, ClipboardSet,
@@ -33,11 +34,15 @@ use bohio_proto::hash::{
 };
 use bohio_proto::info::{
     CompressionInfo, DeltaInfo, DetachedInfo, ExecInfo, FilesystemInfo, HashLimits, Info, Levels,
-    Limits, PROTOCOL_VERSION, Service, SessionInfo, ShellInfo, TransferInfo,
+    Limits, PROTOCOL_VERSION, Service, SessionInfo, ShellInfo, TransferInfo, WalkLimits,
 };
 use bohio_proto::session::{Attach, Attached, Kind, Listed, OnFull, SessionRequest};
 use bohio_proto::shell::{self, ShellKind, Size};
 use bohio_proto::signal::Signal;
+use bohio_proto::walk::{
+    WalkDone, WalkEntries, WalkEntry, WalkHeader, WalkInput, WalkItemError, WalkOutput,
+    WalkRequest, WalkRoot,
+};
 use bohio_proto::{Error, ErrorBody, ErrorCode, decode, encode};
 use ciborium::Value as Cbor;
 use serde::Serialize;
@@ -310,6 +315,13 @@ fn sample_transfer() -> TransferInfo {
             min_size: 1_048_576,
             max_signature_bytes: 67_108_864,
         },
+        walk: true,
+        walk_limits: WalkLimits {
+            max_streams: 4,
+            max_entries: 1_000_000,
+        },
+        bundles: true,
+        resume: true,
     }
 }
 
@@ -332,6 +344,9 @@ fn sample_metadata() -> Metadata {
         mode: Some(0o640),
         readonly: false,
         attributes: None,
+        device: Some(2049),
+        inode: Some(131_077),
+        links: Some(1),
     }
 }
 
@@ -418,6 +433,36 @@ fn control() -> Vec<Case> {
                 from: "/srv/a".into(),
                 to: "/srv/c".into(),
                 overwrite: true,
+                recursive: false,
+                preserve: false,
+            },
+        ),
+        request(
+            "copy_tree",
+            80,
+            Call::Copy {
+                from: "/srv/tree".into(),
+                to: "/srv/tree.bak".into(),
+                overwrite: false,
+                recursive: true,
+                preserve: true,
+            },
+        ),
+        request(
+            "move",
+            81,
+            Call::Move {
+                from: "/srv/a".into(),
+                to: "/mnt/b".into(),
+                overwrite: true,
+            },
+        ),
+        request(
+            "truncate",
+            82,
+            Call::Truncate {
+                path: "/srv/a".into(),
+                length: 4096,
             },
         ),
         request(
@@ -1043,15 +1088,32 @@ fn read_cases() -> Vec<Case> {
             ),
             (Algorithm::Xxh3, "78af5f94892f3950".into()),
         ]),
+        index: None,
     };
     let compressed_header = ReadHeader {
         size: 9_000_000,
         length: 9_000_000,
         compression: Some(Compression::new(Codec::Zstd).level(19).window_log(23)),
-        compressed_length: None,
-        token: None,
-        delta: false,
+        ..ReadHeader::raw(9_000_000, 9_000_000)
     };
+    let item_header = ReadHeader {
+        index: Some(2),
+        modified: Some(Timestamp {
+            secs: 1_700_000_000,
+            nanos: 5,
+        }),
+        mode: Some(0o644),
+        ..ReadHeader::raw(5, 5)
+    };
+    let stream_header = ReadHeader {
+        compression: Some(Compression::new(Codec::Zstd).level(3)),
+        ..ReadHeader::raw(0, 0)
+    };
+    let item_done = ReadDone {
+        hashes: Digests::from([(Algorithm::Crc32c, "e3069283".into())]),
+        index: Some(2),
+    };
+    let item_error = ItemError::new(3, ErrorBody::new(ErrorCode::NotFound, "no such file"));
     let delta_header = ReadHeader {
         delta: true,
         ..ReadHeader::raw(9_000_000, 9_000_300)
@@ -1062,7 +1124,7 @@ fn read_cases() -> Vec<Case> {
         compression: Some(Compression::new(Codec::Zstd).level(3)),
         compressed_length: Some(1_200_000),
         token: Some("0123456789abcdef0123456789abcdef".into()),
-        delta: false,
+        ..ReadHeader::raw(9_000_000, 9_000_000)
     };
     let signature_batch = SignatureBatch {
         first: 0,
@@ -1221,6 +1283,75 @@ fn read_cases() -> Vec<Case> {
                 prepared: 1_048_576,
             }),
         ),
+        message(
+            "open_bundle",
+            OPEN,
+            "open",
+            "fs.ReadRequest",
+            &ReadRequest {
+                hashes: vec![Algorithm::Crc32c],
+                compression: Some(Compression::new(Codec::Zstd).level(3)),
+                ..ReadRequest::bundle()
+            },
+        ),
+        frame(
+            "item",
+            TO_HOST,
+            "fs.ReadInput",
+            ReadInput::Item(ReadItem::whole("/srv/a.txt"))
+                .encode()
+                .unwrap(),
+            to_json(&ReadItem::whole("/srv/a.txt")),
+        ),
+        frame(
+            "item_range",
+            TO_HOST,
+            "fs.ReadInput",
+            ReadInput::Item(ReadItem {
+                path: "/srv/big.bin".into(),
+                offset: 1024,
+                length: Some(4096),
+            })
+            .encode()
+            .unwrap(),
+            to_json(&ReadItem {
+                path: "/srv/big.bin".into(),
+                offset: 1024,
+                length: Some(4096),
+            }),
+        ),
+        frame(
+            "items_end",
+            TO_HOST,
+            "fs.ReadInput",
+            ReadInput::ItemsEnd.encode().unwrap(),
+            Value::Null,
+        ),
+        output(
+            "header_bundle",
+            ReadOutput::Header(stream_header.clone()),
+            to_json(&stream_header),
+        ),
+        output(
+            "header_item",
+            ReadOutput::Header(item_header.clone()),
+            to_json(&item_header),
+        ),
+        output(
+            "done_item",
+            ReadOutput::Done(item_done.clone()),
+            to_json(&item_done),
+        ),
+        output(
+            "item_error",
+            ReadOutput::ItemError(item_error.clone()),
+            to_json(&item_error),
+        ),
+        output(
+            "end_bundle",
+            ReadOutput::End(BundleEnd { items: 4 }),
+            to_json(&BundleEnd { items: 4 }),
+        ),
         output(
             "done",
             ReadOutput::Done(ReadDone::default()),
@@ -1262,7 +1393,24 @@ fn write_cases() -> Vec<Case> {
             (Algorithm::Md5, "5d41402abc4b2a76b9719d911017c592".into()),
             (Algorithm::Sha256, sha256.into()),
         ]),
+        index: None,
     };
+    let item_done = WriteDone {
+        index: Some(1),
+        ..done.clone()
+    };
+    let item = WriteItem {
+        path: "/srv/out/a.txt".into(),
+        mode: WriteMode::Create,
+        parents: true,
+        file_mode: Some(0o600),
+        modified: Some(Timestamp {
+            secs: 1_700_000_000,
+            nanos: 5,
+        }),
+        expect: Digests::from([(Algorithm::Sha256, sha256.into())]),
+    };
+    let item_error = ItemError::new(2, ErrorBody::new(ErrorCode::Exists, "exists"));
     let mut checked = WriteRequest::replace("/srv/out.txt");
     checked.parents = true;
     checked.file_mode = Some(0o600);
@@ -1338,7 +1486,85 @@ fn write_cases() -> Vec<Case> {
                 ..WriteRequest::replace("/srv/big.bin")
             },
         ),
-        output("ready", WriteOutput::Ready, Value::Null),
+        output("ready", WriteOutput::ready(), Value::Null),
+        output(
+            "ready_token",
+            WriteOutput::Ready(WriteReady {
+                token: Some("0123456789abcdef0123456789abcdef".into()),
+                offset: None,
+            }),
+            to_json(&WriteReady {
+                token: Some("0123456789abcdef0123456789abcdef".into()),
+                offset: None,
+            }),
+        ),
+        output(
+            "ready_offset",
+            WriteOutput::Ready(WriteReady {
+                token: None,
+                offset: Some(1_048_576),
+            }),
+            to_json(&WriteReady {
+                token: None,
+                offset: Some(1_048_576),
+            }),
+        ),
+        output(
+            "flushed",
+            WriteOutput::Flushed(Flushed { written: 65_536 }),
+            to_json(&Flushed { written: 65_536 }),
+        ),
+        output(
+            "item_done",
+            WriteOutput::Done(item_done.clone()),
+            to_json(&item_done),
+        ),
+        output(
+            "item_error",
+            WriteOutput::ItemError(item_error.clone()),
+            to_json(&item_error),
+        ),
+        output(
+            "end_bundle",
+            WriteOutput::End(BundleEnd { items: 3 }),
+            to_json(&BundleEnd { items: 3 }),
+        ),
+        message(
+            "open_resumable",
+            OPEN,
+            "open",
+            "fs.WriteRequest",
+            &WriteRequest {
+                resume: true,
+                ..WriteRequest::replace("/srv/big.iso")
+            },
+        ),
+        message(
+            "open_resume",
+            OPEN,
+            "open",
+            "fs.WriteRequest",
+            &WriteRequest {
+                mode: WriteMode::Resume {
+                    token: "0123456789abcdef0123456789abcdef".into(),
+                },
+                ..WriteRequest::replace("/srv/big.iso")
+            },
+        ),
+        message(
+            "open_bundle",
+            OPEN,
+            "open",
+            "fs.WriteRequest",
+            &WriteRequest {
+                hashes: Some(vec![Algorithm::Crc32c]),
+                compression: Some(Compression::new(Codec::Zstd).level(3)),
+                ..WriteRequest::bundle()
+            },
+        ),
+        input("item", WriteInput::Item(item.clone()), to_json(&item)),
+        input("items_end", WriteInput::ItemsEnd, Value::Null),
+        input("flush", WriteInput::Flush, Value::Null),
         output("done", WriteOutput::Done(done.clone()), to_json(&done)),
         output(
             "error_exists",
@@ -1363,6 +1589,139 @@ fn write_cases() -> Vec<Case> {
             }),
         ),
         input("end", WriteInput::End, Value::Null),
+    ]
+}
+
+fn walk_cases() -> Vec<Case> {
+    let output = |name: &str, value: WalkOutput, body: Value| {
+        frame(
+            name,
+            TO_CLIENT,
+            "walk.Output",
+            value.encode().unwrap(),
+            body,
+        )
+    };
+    let input = |name: &str, value: WalkInput, body: Value| {
+        frame(name, TO_HOST, "walk.Input", value.encode().unwrap(), body)
+    };
+    let root_entry = WalkEntry {
+        path: String::new(),
+        metadata: Metadata {
+            kind: FileKind::Directory,
+            size: 4096,
+            mode: Some(0o755),
+            ..sample_metadata()
+        },
+        target: None,
+        hashes: None,
+    };
+    let file_entry = WalkEntry {
+        path: "docs/a.txt".into(),
+        metadata: sample_metadata(),
+        target: None,
+        hashes: Some(Digests::from([(Algorithm::Crc32c, "e3069283".into())])),
+    };
+    let link_entry = WalkEntry {
+        path: "docs/latest".into(),
+        metadata: Metadata {
+            kind: FileKind::Symlink,
+            size: 5,
+            ..sample_metadata()
+        },
+        target: Some("a.txt".into()),
+        hashes: None,
+    };
+    let entries = WalkEntries {
+        root: 0,
+        entries: vec![root_entry, file_entry, link_entry],
+    };
+    let error = WalkItemError {
+        root: 1,
+        path: Some("docs/private".into()),
+        code: ErrorCode::Denied,
+        message: "the operating system refused access".into(),
+    };
+    let header = WalkHeader {
+        compression: Some(Compression::new(Codec::Zstd).level(3)),
+    };
+    let done = WalkDone {
+        entries: 3,
+        skipped: 1,
+    };
+    vec![
+        message(
+            "open_whole",
+            OPEN,
+            "open",
+            "walk.Request",
+            &WalkRequest::default(),
+        ),
+        message(
+            "open_filtered",
+            OPEN,
+            "open",
+            "walk.Request",
+            &WalkRequest {
+                depth: Some(2),
+                follow: true,
+                include: vec!["**/*.rs".into()],
+                exclude: vec!["target".into(), "*.tmp".into()],
+                hashes: vec![Algorithm::Xxh3],
+                compression: Some(Compression::new(Codec::Zstd).level(3)),
+            },
+        ),
+        message(
+            "open_stat_many",
+            OPEN,
+            "open",
+            "walk.Request",
+            &WalkRequest {
+                depth: Some(0),
+                ..WalkRequest::default()
+            },
+        ),
+        input(
+            "root",
+            WalkInput::Root(WalkRoot {
+                path: "/srv/docs".into(),
+            }),
+            to_json(&WalkRoot {
+                path: "/srv/docs".into(),
+            }),
+        ),
+        input("end", WalkInput::End, Value::Null),
+        output(
+            "header",
+            WalkOutput::Header(WalkHeader::default()),
+            to_json(&WalkHeader::default()),
+        ),
+        output(
+            "header_compressed",
+            WalkOutput::Header(header.clone()),
+            to_json(&header),
+        ),
+        output(
+            "entries",
+            WalkOutput::Entries(entries.clone()),
+            to_json(&entries),
+        ),
+        output(
+            "compressed",
+            WalkOutput::Compressed(unhex(ZSTD_PIECE)),
+            raw(&unhex(ZSTD_PIECE)),
+        ),
+        output(
+            "item_error",
+            WalkOutput::ItemError(error.clone()),
+            to_json(&error),
+        ),
+        output("done", WalkOutput::Done(done), to_json(&done)),
+        output(
+            "error_busy",
+            WalkOutput::Error(ErrorBody::new(ErrorCode::Busy, "too many walks")),
+            to_json(&ErrorBody::new(ErrorCode::Busy, "too many walks")),
+        ),
     ]
 }
 
@@ -2017,6 +2376,7 @@ fn files() -> Vec<(&'static str, &'static str, Vec<Case>)> {
         ("read.json", "bohio-read/1", read_cases()),
         ("write.json", "bohio-write/1", write_cases()),
         ("hash.json", "bohio-hash/1", hash_cases()),
+        ("walk.json", "bohio-walk/1", walk_cases()),
         ("forward.json", "bohio-connect/1", forward_cases()),
         ("gui.json", "bohio-gui/1", gui_cases()),
         ("listen.json", "bohio-listen/1", listen_cases()),
@@ -2059,6 +2419,9 @@ fn decode_error(ty: &str, bytes: &[u8]) -> Result<(), Error> {
         "hash.Request" => HashRequest::from_metadata(bytes).map(|_| ()),
         "hash.Output" => HashOutput::decode(bytes).map(|_| ()),
         "hash.Input" => HashInput::decode(bytes).map(|_| ()),
+        "walk.Request" => WalkRequest::from_metadata(bytes).map(|_| ()),
+        "walk.Output" => WalkOutput::decode(bytes).map(|_| ()),
+        "walk.Input" => WalkInput::decode(bytes).map(|_| ()),
         "session.Attach" => Attach::from_metadata(bytes).map(|_| ()),
         "session.Attached" => Attached::decode(bytes).map(|_| ()),
         "forward.ConnectRequest" => ConnectRequest::from_metadata(bytes).map(|_| ()),
@@ -2131,6 +2494,9 @@ fn check(entry: &Value) {
         "fs.WriteInput" => check_frame(entry, &bytes, WriteInput::decode, WriteInput::encode),
         "hash.Output" => check_frame(entry, &bytes, HashOutput::decode, |v| v.encode().unwrap()),
         "hash.Input" => check_frame(entry, &bytes, HashInput::decode, |v| v.encode().unwrap()),
+        "walk.Request" => check_message::<WalkRequest>(entry, &bytes),
+        "walk.Output" => check_frame(entry, &bytes, WalkOutput::decode, |v| v.encode().unwrap()),
+        "walk.Input" => check_frame(entry, &bytes, WalkInput::decode, |v| v.encode().unwrap()),
         "session.Attach" => check_message::<Attach>(entry, &bytes),
         "session.Attached" => check_frame(entry, &bytes, Attached::decode, |v| v.encode().unwrap()),
         "forward.ConnectRequest" => check_message::<ConnectRequest>(entry, &bytes),

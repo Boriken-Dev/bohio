@@ -81,15 +81,42 @@ pub enum Call {
         #[serde(default)]
         overwrite: bool,
     },
-    /// Copies a regular file.
+    /// Copies a regular file, or with `recursive` a directory and everything in it (links are copied as
+    /// links), on the host and never through the client.
     Copy {
         /// The file.
         from: String,
         /// The copy.
         to: String,
-        /// Replace an existing target; otherwise `exists`.
+        /// Replace an existing target; otherwise `exists`. A directory is merged into an existing one.
         #[serde(default)]
         overwrite: bool,
+        /// Copy a directory with what it holds; without it a directory is `bad_request`.
+        #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+        recursive: bool,
+        /// Give the copy the original's permission bits (without the set-ID bits) and modification time.
+        #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+        preserve: bool,
+    },
+    /// Moves a file, a link or a directory: a rename where the host can, else (the two names lie on different
+    /// filesystems) a copy that keeps permission bits and modification time, then removal of the original, all
+    /// on the host. A failed copy leaves the original where it was.
+    Move {
+        /// The existing path.
+        from: String,
+        /// The new path.
+        to: String,
+        /// Replace an existing target; otherwise `exists`, which the host decides atomically where the
+        /// operating system allows.
+        #[serde(default)]
+        overwrite: bool,
+    },
+    /// Sets a regular file's length: a shorter one cuts it, a longer one extends it with zeros.
+    Truncate {
+        /// The file.
+        path: String,
+        /// The new length in bytes.
+        length: u64,
     },
     /// Creates a symbolic link at `link` holding the relative text `target`.
     Symlink {

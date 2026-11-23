@@ -9,7 +9,7 @@ use bohio_proto::PROTOCOL_VERSION;
 use bohio_proto::forward::ForwardInfo;
 use bohio_proto::info::{
     DeltaInfo, DetachedInfo, ExecInfo, FilesystemInfo, HashLimits, Info, Limits, Service,
-    SessionInfo, ShellInfo, TransferInfo,
+    SessionInfo, ShellInfo, TransferInfo, WalkLimits,
 };
 use bohio_proto::shell::ShellKind;
 
@@ -92,6 +92,17 @@ pub fn collect(config: &NodeConfig, path: &OsStr) -> Info {
                 .contains(&config.compression.default.algorithm)
                 .then(|| caps_default(&config.compression)),
             prepared: config.filesystem.enabled && config.compression.prepare_dir.is_some(),
+            walk: config.filesystem.enabled,
+            walk_limits: if config.filesystem.enabled {
+                WalkLimits {
+                    max_streams: config.walk.max_streams as u64,
+                    max_entries: config.walk.max_entries,
+                }
+            } else {
+                WalkLimits::default()
+            },
+            bundles: config.filesystem.enabled,
+            resume: config.filesystem.enabled && !config.filesystem.resume_ttl.0.is_zero(),
             delta: if config.filesystem.enabled {
                 DeltaInfo {
                     weak: vec![bohio_proto::fs::WEAK_RSYNC.to_owned()],

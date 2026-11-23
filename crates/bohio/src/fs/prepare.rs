@@ -61,7 +61,7 @@ pub fn sweep(dir: &Path, ttl: Duration) {
     }
 }
 
-fn token() -> Result<String, ErrorBody> {
+pub(crate) fn token() -> Result<String, ErrorBody> {
     let mut bytes = [0_u8; 16];
     getrandom::fill(&mut bytes).map_err(|_| {
         ErrorBody::new(

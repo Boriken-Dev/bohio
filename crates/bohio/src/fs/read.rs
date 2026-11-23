@@ -79,6 +79,9 @@ fn run(
 ) -> Result<u64, ErrorBody> {
     let request = ReadRequest::from_metadata(metadata)
         .map_err(|_| ErrorBody::new(ErrorCode::BadRequest, "the request cannot be read"))?;
+    if request.items {
+        return super::bundle::read(channel, &request, context, poll, idle);
+    }
     authorize(context, &[Permission::FsRead])?;
     let settings = Settings::new(context.compression);
     let resolved = settings.resolve(request.compression.as_ref())?;
@@ -244,7 +247,10 @@ fn run(
         sent += count as u64;
     }
     let hashes = hasher.finish();
-    if !send(&ReadOutput::Done(ReadDone { hashes })) {
+    if !send(&ReadOutput::Done(ReadDone {
+        hashes,
+        index: None,
+    })) {
         return Err(give_up());
     }
     Ok(sent)
@@ -261,7 +267,7 @@ fn prepared_dir<'a>(settings: &Settings<'a>) -> Result<&'a std::path::Path, Erro
 
 /// Whether the start of the range compresses so badly (`sample_ratio`) that the file is sent raw. The
 /// file is left where it was.
-fn sampled_as_raw(
+pub(super) fn sampled_as_raw(
     settings: &Settings<'_>,
     compression: &Compression,
     file: &mut (impl Read + Seek),
@@ -305,7 +311,7 @@ fn send_prepared(
         compression: Some(meta.compression.clone()),
         compressed_length: Some(meta.compressed_length),
         token: Some(token),
-        delta: false,
+        ..ReadHeader::raw(meta.size, meta.length)
     };
     if !send(&ReadOutput::Header(header)) {
         return Err(give_up());
@@ -333,6 +339,7 @@ fn send_prepared(
     }
     if !send(&ReadOutput::Done(ReadDone {
         hashes: meta.hashes,
+        index: None,
     })) {
         return Err(give_up());
     }
