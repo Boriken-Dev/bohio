@@ -340,7 +340,7 @@ impl Opens {
     pub bulk_window: u32 /*1 MiB*/, pub max_frame: usize /*64 KiB*/, pub max_metadata: usize /*4096*/, pub max_pending_opens: usize /*8*/, pub max_opens_per_minute: u32 /*600*/,
     pub tcp_send_buffer: Option<usize> /*None: system*/, pub tcp_receive_buffer: Option<usize> /*None: system*/,
     pub max_message: usize /*1 MiB*/, pub queue_bytes: usize /*256 KiB*/, pub read_ahead: usize /*8*/, pub queued_bytes: usize /*1 MiB*/,
-    pub send_limit: Duration /*10 s*/, pub send_wait: Duration /*250 ms*/, pub poll_interval: Duration /*50 ms*/,
+    pub send_limit: Duration /*10 s*/, pub send_wait: Duration /*250 ms*/, pub open_wait: Duration /*250 ms; zero: refuse at once*/, pub poll_interval: Duration /*50 ms*/,
     pub heartbeat: Duration /*25 s; zero is off*/, pub heartbeat_misses: u32 /*3; at least 1*/ }   // Default; the host's `[link]` section
 impl Settings { pub fn limits(&self) -> coqui_link::mux::Limits; pub fn record_length(&self, method: coqui_link::auth::Method) -> usize; }
 pub fn framed<S: Split, C: Codec>(stream: S, codec: C, settings: &Settings) -> io::Result<StreamChannel>;   // an unproven peer held to one proof-sized message

@@ -95,6 +95,7 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[link] queued_bytes` | `1048576` | bytes the socket's writer may have queued; at least 1 |
 | `[link] send_limit` | `10s` | how long a frame the socket takes nothing of ends the link, and a finished stream's queue is given to drain; not zero |
 | `[link] send_wait` | `250ms` | how long a send waits for credit before it reports no progress and is tried again; not zero |
+| `[link] open_wait` | `250ms` | how long an open waits for one of the link's own streams to end when it holds `max_streams`, before it fails as no progress; `0` fails at once |
 | `[link] poll_interval` | `50ms` | how often a stream's threads look at whether it was closed; not zero |
 | `[link] heartbeat` | `25s` | how often the link asks its peer whether it is there (both sides ask; also keeps a quiet link from a proxy's or NAT's idle timeout); `0` is off |
 | `[link] heartbeat_misses` | `3` | heartbeat intervals with nothing heard after which the link is lost; at least 1 |
