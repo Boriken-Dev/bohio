@@ -1,0 +1,448 @@
+{
+  "kinds": [
+    {
+      "name": "bohio_terminal",
+      "floor_hash": 4168119332,
+      "object": false,
+      "doc": "A source of terminals.",
+      "slots": [
+        {
+          "name": "describe",
+          "required": true,
+          "fallible": true,
+          "args": [],
+          "answer": {
+            "type": "value"
+          },
+          "doc": "What this source is and can do now; asked at every `info`, never cached by the host.\n\n# Errors\n\nOnly a source that cannot even describe itself."
+        },
+        {
+          "name": "open",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "request",
+              "type": "value",
+              "pass": "borrowed"
+            }
+          ],
+          "answer": {
+            "type": "object",
+            "kind": "bohio_terminal_session"
+          },
+          "doc": "Opens a terminal. The host has already decided the grant: the request holds what the source needs and nothing\na peer may not ask.\n\n# Errors\n\n`NOT_FOUND` (the program), `BAD_VALUE` (a request the source cannot serve, as a program for a console),\n`GONE` (the source is unavailable), `BUSY`."
+        }
+      ]
+    },
+    {
+      "name": "bohio_terminal_session",
+      "floor_hash": 1879845119,
+      "object": true,
+      "doc": "One open terminal. Every method takes `&self`: the host reads on one thread and writes on another.",
+      "slots": [
+        {
+          "name": "read",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "dst",
+              "type": "bytes_mut"
+            },
+            {
+              "name": "wait_ms",
+              "type": "u64"
+            }
+          ],
+          "answer": {
+            "type": "i64"
+          },
+          "doc": "Reads output into `dst`, waiting up to `wait_ms` for some. Answers the bytes read; `0` when none came in\ntime; `-1` when the terminal has ended and nothing more will come.\n\n# Errors\n\n`GONE` when the device went away."
+        },
+        {
+          "name": "write",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "data",
+              "type": "bytes"
+            }
+          ],
+          "answer": {
+            "type": "u64"
+          },
+          "doc": "Types `data` at the terminal. Answers the bytes taken, all of them unless the terminal has ended.\n\n# Errors\n\n`GONE` when the device went away."
+        },
+        {
+          "name": "kill",
+          "required": true,
+          "fallible": true,
+          "args": [],
+          "answer": {
+            "type": "value"
+          },
+          "doc": "Ends the terminal's program and everything it started and closes the terminal. A console that starts no\nprogram has nothing to end and only lets go of its attach. Answers how the program ended.\n\n# Errors\n\nAnything the source cannot end."
+        },
+        {
+          "name": "exit",
+          "required": true,
+          "fallible": true,
+          "args": [],
+          "answer": {
+            "type": "value"
+          },
+          "doc": "How the program ended, `None` while it runs. A source with no program never ends it by itself.\n\n# Errors\n\n`GONE` when the device went away."
+        },
+        {
+          "name": "pid",
+          "required": false,
+          "fallible": true,
+          "args": [],
+          "answer": {
+            "type": "value"
+          },
+          "doc": "The program's process id on the host, when it has one.\n\n# Errors\n\nNever, by default."
+        },
+        {
+          "name": "resize",
+          "required": false,
+          "fallible": true,
+          "args": [
+            {
+              "name": "cols",
+              "type": "u16"
+            },
+            {
+              "name": "rows",
+              "type": "u16"
+            }
+          ],
+          "doc": "Changes the terminal's size.\n\n# Errors\n\n`UNSUPPORTED` when the source has no size (it lacks `resize`)."
+        },
+        {
+          "name": "signal",
+          "required": false,
+          "fallible": true,
+          "args": [
+            {
+              "name": "name",
+              "type": "str"
+            }
+          ],
+          "answer": {
+            "type": "value"
+          },
+          "doc": "Delivers a signal by name (`interrupt`, `terminate`, `kill`, `hangup`, `quit`, `user1`, `user2`).\n\n# Errors\n\n`UNSUPPORTED` when the source has no program to signal (it lacks `signals`)."
+        }
+      ]
+    },
+    {
+      "name": "bohio_desktop",
+      "floor_hash": 1612473616,
+      "object": false,
+      "doc": "A source of desktop sessions.",
+      "slots": [
+        {
+          "name": "describe",
+          "required": true,
+          "fallible": true,
+          "args": [],
+          "answer": {
+            "type": "value"
+          },
+          "doc": "What this source is and can do now; asked at every `info`, never cached by the host.\n\n# Errors\n\nOnly a source that cannot even describe itself."
+        },
+        {
+          "name": "open",
+          "required": true,
+          "fallible": true,
+          "args": [],
+          "answer": {
+            "type": "object",
+            "kind": "bohio_desktop_session"
+          },
+          "doc": "Opens a session on the desktop.\n\n# Errors\n\n`GONE` when there is no desktop to reach (the reason is the message)."
+        }
+      ]
+    },
+    {
+      "name": "bohio_desktop_session",
+      "floor_hash": 27463504,
+      "object": true,
+      "doc": "One session on a desktop. The host calls it one call at a time, after its own checks of the grant, the display,\nthe region and the rates.",
+      "slots": [
+        {
+          "name": "state",
+          "required": true,
+          "fallible": true,
+          "args": [],
+          "answer": {
+            "type": "value"
+          },
+          "doc": "The session's state: who owns it, whether it is at the screen and locked, and its displays.\n\n# Errors\n\n`GONE` when there is no desktop to describe."
+        },
+        {
+          "name": "frame_size",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "display",
+              "type": "str"
+            },
+            {
+              "name": "region",
+              "type": "value",
+              "pass": "borrowed"
+            }
+          ],
+          "answer": {
+            "type": "value"
+          },
+          "doc": "The size of the frame `capture` of this display and region will write; the host sizes its buffer from it.\n\n# Errors\n\n`NOT_FOUND` for a display the desktop does not have, `GONE`."
+        },
+        {
+          "name": "capture",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "display",
+              "type": "str"
+            },
+            {
+              "name": "region",
+              "type": "value",
+              "pass": "borrowed"
+            },
+            {
+              "name": "dst",
+              "type": "bytes_mut"
+            }
+          ],
+          "answer": {
+            "type": "value"
+          },
+          "doc": "Writes a picture of `region` of `display` (all of it when absent) into `dst`, RGB, three bytes a pixel, rows\nfrom the top, no padding, and answers its size. `dst` is at least what `frame_size` said.\n\n# Errors\n\n`GONE` when the session is not at the screen, `INTERNAL`."
+        },
+        {
+          "name": "input",
+          "required": false,
+          "fallible": true,
+          "args": [
+            {
+              "name": "events",
+              "type": "value",
+              "pass": "borrowed"
+            }
+          ],
+          "answer": {
+            "type": "u64"
+          },
+          "doc": "Applies the events in order and answers how many it took.\n\n# Errors\n\n`GONE` when input is blocked, `UNSUPPORTED` for an event the source cannot make."
+        },
+        {
+          "name": "cursor",
+          "required": false,
+          "fallible": true,
+          "args": [],
+          "answer": {
+            "type": "value"
+          },
+          "doc": "The pointer's display and position (an `InputModel` of kind `move`), when the source can tell.\n\n# Errors\n\nNever, by default."
+        },
+        {
+          "name": "clipboard_text",
+          "required": false,
+          "fallible": true,
+          "args": [],
+          "answer": {
+            "type": "text"
+          },
+          "doc": "The clipboard's text.\n\n# Errors\n\n`UNSUPPORTED` when the source has no clipboard, `GONE` when it holds something that is not text."
+        },
+        {
+          "name": "set_clipboard_text",
+          "required": false,
+          "fallible": true,
+          "args": [
+            {
+              "name": "text",
+              "type": "str"
+            }
+          ],
+          "doc": "Replaces the clipboard's text.\n\n# Errors\n\nAs `clipboard_text`."
+        }
+      ]
+    },
+    {
+      "name": "bohio_power",
+      "floor_hash": 3362560333,
+      "object": false,
+      "doc": "A source of power control.",
+      "slots": [
+        {
+          "name": "describe",
+          "required": true,
+          "fallible": true,
+          "args": [],
+          "answer": {
+            "type": "value"
+          },
+          "doc": "What this source is and can do now; `offers` lists the actions it takes ([`crate::vocab::power`]).\n\n# Errors\n\nOnly a source that cannot even describe itself."
+        },
+        {
+          "name": "state",
+          "required": true,
+          "fallible": true,
+          "args": [],
+          "answer": {
+            "type": "value"
+          },
+          "doc": "The system's power state now.\n\n# Errors\n\n`GONE` when the source cannot be reached."
+        },
+        {
+          "name": "act",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "action",
+              "type": "str"
+            }
+          ],
+          "answer": {
+            "type": "value"
+          },
+          "doc": "Takes an action (`on`, `off`, `soft_off`, `cycle`, `reset`, `nmi`) and answers the state it left the system\nin. A call may block until the action finished; the host bounds it by `[power] action_timeout`.\n\n# Errors\n\n`UNSUPPORTED` for an action the source does not take, `BAD_VALUE` for a word it does not know, `GONE`."
+        }
+      ]
+    },
+    {
+      "name": "bohio_media",
+      "floor_hash": 240719559,
+      "object": false,
+      "doc": "A source of virtual media.",
+      "slots": [
+        {
+          "name": "describe",
+          "required": true,
+          "fallible": true,
+          "args": [],
+          "answer": {
+            "type": "value"
+          },
+          "doc": "What this source is and can do now; `offers` lists `status`, `insert_url`, `insert_reader` and `eject`.\n\n# Errors\n\nOnly a source that cannot even describe itself."
+        },
+        {
+          "name": "status",
+          "required": true,
+          "fallible": true,
+          "args": [],
+          "answer": {
+            "type": "value"
+          },
+          "doc": "The slots and what is inserted in each.\n\n# Errors\n\n`GONE` when the source cannot be reached."
+        },
+        {
+          "name": "insert_url",
+          "required": false,
+          "fallible": true,
+          "args": [
+            {
+              "name": "slot",
+              "type": "str"
+            },
+            {
+              "name": "url",
+              "type": "str"
+            }
+          ],
+          "answer": {
+            "type": "value"
+          },
+          "doc": "Inserts the image at `url`, which the source (a BMC) fetches itself.\n\n# Errors\n\n`UNSUPPORTED` when the source cannot fetch, `NOT_FOUND` for a slot it does not have, `BUSY` when the slot holds one."
+        },
+        {
+          "name": "insert_reader",
+          "required": false,
+          "fallible": true,
+          "args": [
+            {
+              "name": "slot",
+              "type": "str"
+            },
+            {
+              "name": "name",
+              "type": "str"
+            },
+            {
+              "name": "reader",
+              "type": "object",
+              "kind": "bohio_block_reader",
+              "pass": "taken"
+            }
+          ],
+          "answer": {
+            "type": "value"
+          },
+          "doc": "Inserts an image the host serves: the source reads it through `reader` for as long as it is inserted.\n\n# Errors\n\n`UNSUPPORTED` when the source cannot read from the host."
+        },
+        {
+          "name": "eject",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "slot",
+              "type": "str"
+            }
+          ],
+          "answer": {
+            "type": "value"
+          },
+          "doc": "Ejects what `slot` holds.\n\n# Errors\n\n`NOT_FOUND` for a slot the source does not have."
+        }
+      ]
+    },
+    {
+      "name": "bohio_block_reader",
+      "floor_hash": 3458871641,
+      "object": true,
+      "doc": "A file the host lets a media source read: confined by the host, read-only, of a size the host reports.",
+      "slots": [
+        {
+          "name": "size",
+          "required": true,
+          "fallible": true,
+          "args": [],
+          "answer": {
+            "type": "u64"
+          },
+          "doc": "The size in bytes.\n\n# Errors\n\n`INTERNAL` when the file cannot be measured."
+        },
+        {
+          "name": "read_at",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "offset",
+              "type": "u64"
+            },
+            {
+              "name": "dst",
+              "type": "bytes_mut"
+            }
+          ],
+          "answer": {
+            "type": "u64"
+          },
+          "doc": "Reads at `offset` into `dst` and answers the bytes read; fewer than `dst` only at the end.\n\n# Errors\n\n`INTERNAL` for an I/O failure."
+        }
+      ]
+    }
+  ]
+}

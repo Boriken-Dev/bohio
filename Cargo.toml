@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/bohio-proto", "crates/bohio-transfer", "crates/bohio-client", "crates/bohio", "crates/bohio-bench"]
+members = ["crates/bohio-api", "crates/bohio-proto", "crates/bohio-transfer", "crates/bohio-client", "crates/bohio", "crates/bohio-bench"]
 
 [workspace.package]
 version = "0.0.0-alpha.0"
@@ -105,6 +105,10 @@ image-webp = "0.2"
 notify-rust = { version = "4.19", default-features = false, features = ["z"] }
 # Tests: scratch directories that remove themselves.
 tempfile = "3"
+# The provider kinds (guatiao): terminal, desktop, power and media sources. The family pins one guatiao revision.
+guatiao = { git = "https://github.com/Boriken-Dev/guatiao", rev = "e0136dcc9760ddd6dd8dc89fc4d41320eec6306e", features = ["provider"] }
+guatiao-serde = { git = "https://github.com/Boriken-Dev/guatiao", rev = "e0136dcc9760ddd6dd8dc89fc4d41320eec6306e", default-features = false }
+bohio-api = { path = "crates/bohio-api" }
 bohio-proto = { path = "crates/bohio-proto" }
 bohio-transfer = { path = "crates/bohio-transfer", default-features = false }
 bohio-client = { path = "crates/bohio-client" }

@@ -278,6 +278,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "bohio-api"
+version = "0.0.0-alpha.0"
+dependencies = [
+ "guatiao",
+ "guatiao-serde",
+]
+
+[[package]]
 name = "bohio-bench"
 version = "0.0.0-alpha.0"
 dependencies = [
@@ -1287,6 +1295,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "guatiao"
+version = "0.0.0-alpha.1"
+source = "git+https://github.com/Boriken-Dev/guatiao?rev=e0136dcc9760ddd6dd8dc89fc4d41320eec6306e#e0136dcc9760ddd6dd8dc89fc4d41320eec6306e"
+dependencies = [
+ "guatiao-derive",
+ "libloading",
+ "object",
+ "sha2 0.10.9",
+ "winapi-util",
+]
+
+[[package]]
+name = "guatiao-derive"
+version = "0.0.0-alpha.1"
+source = "git+https://github.com/Boriken-Dev/guatiao?rev=e0136dcc9760ddd6dd8dc89fc4d41320eec6306e#e0136dcc9760ddd6dd8dc89fc4d41320eec6306e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "guatiao-serde"
+version = "0.0.0-alpha.1"
+source = "git+https://github.com/Boriken-Dev/guatiao?rev=e0136dcc9760ddd6dd8dc89fc4d41320eec6306e#e0136dcc9760ddd6dd8dc89fc4d41320eec6306e"
+dependencies = [
+ "guatiao",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1669,6 +1709,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
+name = "libloading"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
+dependencies = [
+ "cfg-if",
+ "windows-link 0.2.1",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1964,6 +2014,15 @@ checksum = "33fafba39597d6dc1fb709123dfa8289d39406734be322956a69f0931c73bb15"
 dependencies = [
  "libc",
  "objc2-core-foundation",
+]
+
+[[package]]
+name = "object"
+version = "0.40.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd229a0361b9d0d4396176e02d65897f487eebeab7caa6d443855ee152ca0b9c"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]

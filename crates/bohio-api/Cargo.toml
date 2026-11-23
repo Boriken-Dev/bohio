@@ -1,0 +1,36 @@
+[package]
+name = "bohio-api"
+description = "The provider kinds of Bohío: how a node reaches a terminal, a desktop, power and virtual media, as guatiao kinds"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["bohio", "providers", "plugins", "guatiao"]
+categories = ["network-programming"]
+exclude = [".*", "*.local.*"]
+# Its git dependencies are unpublished: released once they are.
+publish = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+# In-memory sources for tests (`bohio_api::testing`): a terminal, a desktop, a power and a media provider whose far end a test plays.
+testing = []
+
+[dependencies]
+guatiao.workspace = true
+
+[dev-dependencies]
+guatiao = { workspace = true, features = ["load"] }
+guatiao-serde = { workspace = true, features = ["json"] }
+
+[lints]
+workspace = true
+
+[[test]]
+name = "contract"
+required-features = ["testing"]
