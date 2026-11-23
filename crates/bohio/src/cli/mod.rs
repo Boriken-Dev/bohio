@@ -12,6 +12,7 @@ mod host;
 mod mcp;
 pub(crate) mod output;
 mod remote;
+mod secret;
 pub mod service;
 
 use std::ffi::OsString;

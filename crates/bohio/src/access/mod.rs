@@ -28,6 +28,7 @@ pub use desktop::{DesktopOf, KindDesktop, code_of, gui_error};
 pub use native::{ID as NATIVE_ID, Native, NativeSettings};
 
 use crate::config::{AccessConfig, NATIVE, SourceTable, SourceTables, Switch};
+use crate::secret::{self, NoSecrets, Secret, SecretResolver};
 
 /// What a source gives a node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -189,7 +190,26 @@ impl State {
 pub struct Sources {
     registry: Mutex<Registry>,
     state: RwLock<State>,
+    /// Reads the references a sensitive setting holds, and the most bytes one may be (`[secrets] max_bytes`).
+    secrets: Mutex<(Arc<dyn SecretResolver>, usize)>,
+    /// Sources whose settings hold a secret reference are left out until a resolver is given.
+    deferring: AtomicBool,
+    /// The configuration the sources were last built from, to build them again when a resolver arrives.
+    last: Mutex<Option<(SourceTables, AccessConfig)>>,
 }
+
+/// What a sensitive setting's reference is turned into when a source is built.
+enum Resolve<'a> {
+    /// The reference's shape is checked and nothing is read: a configuration is validated before anything is opened.
+    Shape,
+    /// A source with a secret reference is left out: the node has no resolver yet.
+    Defer,
+    /// The reference is read.
+    With(&'a dyn SecretResolver, usize),
+}
+
+/// The default of `[secrets] max_bytes`.
+pub const DEFAULT_SECRET_BYTES: usize = 65_536;
 
 impl core::fmt::Debug for Sources {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -214,7 +234,49 @@ impl Sources {
         Self {
             registry: Mutex::new(builtin_registry()),
             state: RwLock::new(State::empty()),
+            secrets: Mutex::new((Arc::new(NoSecrets), DEFAULT_SECRET_BYTES)),
+            deferring: AtomicBool::new(false),
+            last: Mutex::new(None),
         }
+    }
+
+    /// Leaves out the sources whose settings hold a secret reference until [`Sources::set_secrets`] gives a resolver:
+    /// what a node does when it is built, before its owner has said how references are read.
+    pub fn defer_secrets(&self) {
+        self.deferring.store(true, Ordering::Release);
+    }
+
+    /// Reads the references of sensitive settings with `resolver`, at most `max_bytes` each, and builds the sources that
+    /// were left out for want of one.
+    ///
+    /// # Errors
+    ///
+    /// As [`Sources::from_config`]: a reference the resolver refuses is the key's refusal (`source.<name>.<key>`), never
+    /// quoting the secret.
+    pub fn set_secrets(
+        &self,
+        resolver: Arc<dyn SecretResolver>,
+        max_bytes: usize,
+    ) -> Result<(), Refusal> {
+        *self.secrets.lock().unwrap_or_else(PoisonError::into_inner) = (resolver, max_bytes);
+        self.deferring.store(false, Ordering::Release);
+        let last = self
+            .last
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        match last {
+            Some((source, access)) => self.reconfigure(&source, &access),
+            None => Ok(()),
+        }
+    }
+
+    /// The most bytes of one secret, `[secrets] max_bytes`.
+    pub fn set_secret_limit(&self, max_bytes: usize) {
+        self.secrets
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .1 = max_bytes;
     }
 
     /// Sources with no source at all, not even `native`, and the built-in providers registered: add a provider with
@@ -264,9 +326,32 @@ impl Sources {
     ///
     /// As [`Sources::from_config`].
     pub fn reconfigure(&self, source: &SourceTables, access: &AccessConfig) -> Result<(), Refusal> {
+        let (resolver, max) = {
+            let held = self.secrets.lock().unwrap_or_else(PoisonError::into_inner);
+            (Arc::clone(&held.0), held.1)
+        };
+        let mode = if self.deferring.load(Ordering::Acquire) {
+            Resolve::Defer
+        } else {
+            Resolve::With(resolver.as_ref(), max)
+        };
+        self.apply(source, access, &mode)?;
+        *self.last.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some((source.clone(), access.clone()));
+        Ok(())
+    }
+
+    /// Builds the sources, reading references as `mode` says.
+    fn apply(
+        &self,
+        source: &SourceTables,
+        access: &AccessConfig,
+        mode: &Resolve<'_>,
+    ) -> Result<(), Refusal> {
         let registry = self.registry.lock().unwrap_or_else(PoisonError::into_inner);
         let old = self.state.read().unwrap_or_else(PoisonError::into_inner);
         let mut fresh = State::empty();
+        let mut waiting: Vec<String> = Vec::new();
         let mut tables = source.clone();
         tables.entry(NATIVE.to_owned()).or_default();
         for (name, table) in &tables {
@@ -278,7 +363,9 @@ impl Sources {
                 keep(&old.media, &mut fresh.media, name);
                 continue;
             }
-            build(&registry, name, table, &mut fresh)?;
+            if !build(&registry, name, table, &mut fresh, mode)? {
+                waiting.push(name.clone());
+            }
         }
         // What an embedder added stays.
         for (name, held) in &old.terminal.by_name {
@@ -315,6 +402,10 @@ impl Sources {
         fresh.media.order = order_of(Capability::Media, &access.media, &fresh.media.by_name)?;
         fresh.fs = access.fs;
         fresh.exec = access.exec;
+        // A source left out for want of a secret resolver is built, not kept, when one arrives.
+        for name in &waiting {
+            tables.remove(name);
+        }
         fresh.tables = tables;
         drop(old);
         let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
@@ -330,6 +421,58 @@ impl Sources {
 
     fn state_ref(&self) -> std::sync::RwLockReadGuard<'_, State> {
         self.state.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Takes over what `other` holds: its sources, their order and the way it reads secrets. The handle stays the same, so
+    /// what already holds it (the node's grants, its desktop state) sees the new sources.
+    pub(crate) fn absorb(&self, other: Sources) {
+        let mut theirs = other.state.write().unwrap_or_else(PoisonError::into_inner);
+        let taken = std::mem::replace(&mut *theirs, State::empty());
+        drop(theirs);
+        let mut ours = self.state_mut();
+        let previous = std::mem::replace(&mut *ours, taken);
+        drop(ours);
+        let now = self.state_ref();
+        retire_missing(&previous.terminal, &now, |s| &s.terminal);
+        retire_missing(&previous.desktop, &now, |s| &s.desktop);
+        retire_missing(&previous.power, &now, |s| &s.power);
+        retire_missing(&previous.media, &now, |s| &s.media);
+        drop(now);
+        let registry = std::mem::replace(
+            &mut *other
+                .registry
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+            builtin_registry(),
+        );
+        *self.registry.lock().unwrap_or_else(PoisonError::into_inner) = registry;
+        let last = other
+            .last
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        *self.last.lock().unwrap_or_else(PoisonError::into_inner) = last;
+    }
+
+    /// Whether `grant` reaches the source `name`: each capability's default, or one the grant's `sources` names.
+    #[must_use]
+    pub fn permits(&self, grant: &crate::policy::Grant, name: &str) -> bool {
+        grant.permits_source(name) || self.default_names().iter().any(|default| default == name)
+    }
+
+    /// The names of each capability's default source, which a peer reaches without being named.
+    pub(crate) fn default_names(&self) -> Vec<String> {
+        let state = self.state_ref();
+        [
+            state.terminal.order.first(),
+            state.desktop.order.first(),
+            state.power.order.first(),
+            state.media.order.first(),
+        ]
+        .into_iter()
+        .flatten()
+        .cloned()
+        .collect()
     }
 
     /// Adds a terminal source of the embedder's own, as `name`. It is not a default until [`Sources::with_access`] says
@@ -485,10 +628,12 @@ impl Sources {
     /// `describe`, asked now. Only a peer holding `info` is told, and a source that cannot describe itself is listed
     /// unavailable with that as the reason.
     #[must_use]
-    pub fn info(&self, _grant: &crate::policy::Grant) -> bohio_proto::info::AccessInfo {
+    pub fn info(&self, grant: &crate::policy::Grant) -> bohio_proto::info::AccessInfo {
         let state = self.state_ref();
+        let permitted = |name: &String| grant.permits_source(name);
         fn entries<K: ?Sized>(
             table: &Table<K>,
+            permitted: &impl Fn(&String) -> bool,
             describe: impl Fn(
                 &K,
             ) -> Result<
@@ -500,6 +645,7 @@ impl Sources {
                 .order
                 .iter()
                 .enumerate()
+                .filter(|(_, name)| permitted(name))
                 .filter_map(|(at, name)| table.by_name.get(name).map(|source| (at, name, source)))
                 .map(|(at, name, source)| {
                     let info = describe(source.get()).unwrap_or_else(|error| {
@@ -518,10 +664,10 @@ impl Sources {
                 .collect()
         }
         bohio_proto::info::AccessInfo {
-            terminal: entries(&state.terminal, |source| source.describe()),
-            desktop: entries(&state.desktop, |source| source.describe()),
-            power: entries(&state.power, |source| source.describe()),
-            media: entries(&state.media, |source| source.describe()),
+            terminal: entries(&state.terminal, &permitted, |source| source.describe()),
+            desktop: entries(&state.desktop, &permitted, |source| source.describe()),
+            power: entries(&state.power, &permitted, |source| source.describe()),
+            media: entries(&state.media, &permitted, |source| source.describe()),
             fs: state.fs.name().to_owned(),
             exec: state.exec.name().to_owned(),
         }
@@ -599,7 +745,8 @@ fn build(
     name: &str,
     table: &SourceTable,
     into: &mut State,
-) -> Result<(), Refusal> {
+    mode: &Resolve<'_>,
+) -> Result<bool, Refusal> {
     let key = |setting: &str| format!("source.{name}.{setting}");
     let provider = match (name == NATIVE, table.provider.as_deref()) {
         (true, None | Some(NATIVE)) => NATIVE,
@@ -622,7 +769,6 @@ fn build(
     } else {
         provider
     };
-    let settings: Value = value::from_table(&table.settings).into();
     let mut served = 0_usize;
     macro_rules! kind {
         ($trait:ty, $field:ident) => {
@@ -638,6 +784,11 @@ fn build(
                 }
             };
             if let Some(offer) = offer {
+                let Some(settings) = settings_of(name, &offer, table, mode)? else {
+                    // A secret this node cannot read yet: the source waits for its resolver.
+                    tracing::info!(source = name, "a source waits for a secret resolver");
+                    return Ok(false);
+                };
                 let instance = offer
                     .instantiate(&settings)
                     .map_err(|error| instantiate_refusal(name, &error))?;
@@ -663,7 +814,7 @@ fn build(
             ),
         ));
     }
-    Ok(())
+    Ok(true)
 }
 
 fn instantiate_refusal(name: &str, error: &InstantiateError) -> Refusal {
@@ -692,13 +843,61 @@ fn instantiate_refusal(name: &str, error: &InstantiateError) -> Refusal {
     }
 }
 
-/// Checks a configuration's `[source.*]` and `[access]` without keeping what it builds: the key, and what is wrong.
+/// The settings of `table` as the provider is built from them: a sensitive one must be a reference, read as `mode` says.
+/// `None` when a reference cannot be read yet.
+fn settings_of<K: ?Sized + bohio_api::guatiao::library::Kind>(
+    name: &str,
+    offer: &bohio_api::guatiao::library::Offer<K>,
+    table: &SourceTable,
+    mode: &Resolve<'_>,
+) -> Result<Option<Value>, Refusal> {
+    let mut map = value::from_table(&table.settings);
+    let sensitive: Vec<String> = offer
+        .config_schema()
+        .and_then(bohio_api::guatiao::schema::SchemaRef::new)
+        .map(|schema| {
+            schema
+                .fields()
+                .filter(bohio_api::guatiao::schema::FieldRef::is_sensitive)
+                .map(|field| field.key().to_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    for key in sensitive {
+        let Some(setting) = table.settings.get(&key) else {
+            continue;
+        };
+        let at = format!("source.{name}.{key}");
+        let reference = setting
+            .as_str()
+            .filter(|text| secret::split(text).is_some());
+        let Some(reference) = reference else {
+            // Never quote what was written: it may be the secret itself.
+            return Err((
+                at,
+                "is a secret and must name where it is kept (`file:PATH`, `credential:NAME` or `keyring:SERVICE/ACCOUNT`), never hold it".to_owned(),
+            ));
+        };
+        let resolved = match mode {
+            Resolve::Shape => Secret::new("x"),
+            Resolve::Defer => return Ok(None),
+            Resolve::With(resolver, max) => resolver
+                .resolve(reference, *max)
+                .map_err(|error| (at.clone(), error.to_string()))?,
+        };
+        map.set(key.as_str(), Value::from(resolved.expose()));
+    }
+    Ok(Some(map.into()))
+}
+
+/// Checks a configuration's `[source.*]` and `[access]` without keeping what it builds or reading what it references: the
+/// key, and what is wrong.
 ///
 /// # Errors
 ///
 /// As [`Sources::from_config`].
 pub fn check(source: &SourceTables, access: &AccessConfig) -> Result<(), Refusal> {
-    Sources::from_config(source, access).map(drop)
+    Sources::bare().apply(source, access, &Resolve::Shape)
 }
 
 /// A value for a provider that is its own configuration, for tests and embedders that build an instance by hand.

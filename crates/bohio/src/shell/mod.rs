@@ -160,6 +160,9 @@ pub fn serve(
 /// read is covered, so [`serve`] answers it.
 pub(crate) fn covers(grant: &Grant, metadata: &[u8]) -> bool {
     Request::from_metadata(metadata).map_or(true, |request| match &request.program {
+        Program::Console {
+            source: Some(source),
+        } => grant.permits_source(source),
         Program::Argv { argv } => {
             argv.first()
                 .is_none_or(|program| grant.permits_program(program))
@@ -289,6 +292,12 @@ fn start<'a>(
         _ => None,
     };
     let source = context.sources.terminal(named)?;
+    if !context.sources.permits(context.grant, source.name()) {
+        return Err(refuse(
+            ErrorCode::Denied,
+            "this peer may not use that terminal source",
+        ));
+    }
     let program = resolve(&request.program, &request.env, context)?;
     if !console
         && let Ok(described) = source.get().describe()

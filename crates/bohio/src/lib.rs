@@ -17,6 +17,7 @@ pub mod node;
 pub mod pair;
 pub mod peer;
 pub mod policy;
+pub mod secret;
 pub mod session;
 pub mod shell;
 pub mod stats;

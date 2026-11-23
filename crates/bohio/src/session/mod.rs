@@ -554,10 +554,23 @@ impl Sessions {
     }
 
     /// The sessions `peer` may see: its own, or every peer's for an `admin`.
-    pub(crate) fn list(&self, peer: &str, admin: bool) -> Vec<Listed> {
+    pub(crate) fn list(
+        &self,
+        peer: &str,
+        admin: bool,
+        permits: &dyn Fn(&str) -> bool,
+    ) -> Vec<Listed> {
         let mut listed: Vec<(SystemTime, Listed)> = lock(&self.entries)
             .values()
-            .filter(|entry| admin || entry.owner == peer || entry.console)
+            .filter(|entry| {
+                admin
+                    || entry.owner == peer
+                    || (entry.console
+                        && entry
+                            .id
+                            .strip_prefix("console:")
+                            .is_some_and(permits))
+            })
             .map(|entry| (entry.started, entry.listed(admin)))
             .collect();
         listed.sort_by_key(|(started, _)| *started);
@@ -809,6 +822,12 @@ impl Sessions {
             )));
         }
         let named = host.sources.terminal(source.as_deref()).map_err(refuse)?;
+        if !host.sources.permits(host.grant, named.name()) {
+            return Err(refuse(ErrorBody::new(
+                ErrorCode::Denied,
+                "this peer may not use that terminal source",
+            )));
+        }
         let id = format!("console:{}", named.name());
         let held = lock(&self.entries)
             .get(&id)
@@ -1063,6 +1082,11 @@ impl Sessions {
             .cloned()
             .ok_or_else(|| refuse(not_found()))?;
         if !grant.allows(entry.needs) {
+            return Err(refuse(not_found()));
+        }
+        if let Some(source) = entry.id.strip_prefix("console:")
+            && !grant.permits_source(source)
+        {
             return Err(refuse(not_found()));
         }
         let (from, lost) = {
@@ -1332,6 +1356,12 @@ pub(crate) fn wants_shell(metadata: &[u8]) -> bool {
 }
 
 /// Whether `grant` still covers what an attach stream asked for: holding sessions at all.
-pub(crate) fn covers_attach(grant: &Grant, _metadata: &[u8]) -> bool {
+pub(crate) fn covers_attach(grant: &Grant, metadata: &[u8]) -> bool {
     grant.allows(Permission::Session)
+        && Attach::from_metadata(metadata).map_or(true, |request| {
+            request
+                .session
+                .strip_prefix("console:")
+                .is_none_or(|source| grant.permits_source(source))
+        })
 }

@@ -161,6 +161,8 @@ pub struct Config {
     pub client: ClientConfig,
     /// `[control]`: the node's local endpoint.
     pub control: ControlConfig,
+    /// `[secrets]`.
+    pub secrets: SecretsConfig,
     /// `[source.<name>]`: the sources of terminals, desktops, power and media, each a configured provider.
     pub source: SourceTables,
     /// `[access]`: which sources serve each capability.
@@ -1759,6 +1761,8 @@ pub struct NodeConfig {
     pub gui: GuiConfig,
     /// `[pairing]`.
     pub pairing: PairingConfig,
+    /// `[secrets]`.
+    pub secrets: SecretsConfig,
     /// `[source.<name>]`.
     pub source: SourceTables,
     /// `[access]`.
@@ -1782,9 +1786,24 @@ impl Default for NodeConfig {
             forward: ForwardConfig::default(),
             gui: GuiConfig::default(),
             pairing: PairingConfig::default(),
+            secrets: SecretsConfig::default(),
             source: SourceTables::new(),
             access: AccessConfig::default(),
         }
+    }
+}
+
+/// `[secrets]`: the bound on what a secret reference may read.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct SecretsConfig {
+    /// The most bytes one secret may be (a password, a key); a larger one is refused. At least 1. Default `65536`.
+    pub max_bytes: usize,
+}
+
+impl Default for SecretsConfig {
+    fn default() -> Self {
+        Self { max_bytes: 65_536 }
     }
 }
 
@@ -2050,6 +2069,9 @@ impl NodeConfig {
         if let Err((key, message)) = self.gui.validate() {
             return Err(invalid(key, message));
         }
+        if self.secrets.max_bytes == 0 {
+            return Err(invalid("secrets.max_bytes", "must be at least 1"));
+        }
         if let Err((key, message)) = crate::access::check(&self.source, &self.access) {
             return Err(invalid(&key, &message));
         }
@@ -2115,6 +2137,7 @@ impl Config {
             forward: self.forward.clone(),
             gui: self.gui.clone(),
             pairing: self.pairing.clone(),
+            secrets: self.secrets.clone(),
             source: self.source.clone(),
             access: self.access.clone(),
         }

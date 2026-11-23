@@ -70,6 +70,8 @@ fn node(
         peers.clone(),
     )
     .map_err(|error| error.to_string())?
+    .with_secrets(Arc::new(super::secret::CommandSecrets::from_environment()))
+    .map_err(|error| error.to_string())?
     .with_pairing(data.store().map_err(|error| error.to_string())?)
     .map_err(|error| error.to_string())?;
     let node = node.with_path(environment.path.clone().unwrap_or_default());

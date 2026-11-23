@@ -56,6 +56,10 @@ fn tables(text: &str) -> SourceTables {
 /// A host whose only terminal source is the in-memory console `link` (or the serial line named by `serial`), and a
 /// client granted `grant`, linked over memory pipes.
 fn world(source_toml: &str, grant: Grant) -> World {
+    world_with(source_toml, &["console"], grant)
+}
+
+fn world_with(source_toml: &str, order: &[&str], grant: Grant) -> World {
     let sources = Sources::unconfigured();
     sources
         .register_library("bohio-api-testing", testing::library)
@@ -64,7 +68,7 @@ fn world(source_toml: &str, grant: Grant) -> World {
         .reconfigure(
             &tables(source_toml),
             &AccessConfig {
-                terminal: Some(vec!["console".to_owned()]),
+                terminal: Some(order.iter().map(|name| (*name).to_owned()).collect()),
                 desktop: Some(Vec::new()),
                 fs: bohio::config::Switch::None,
                 exec: bohio::config::Switch::None,
@@ -270,6 +274,73 @@ fn info_access_lists_the_console_with_its_limits_and_asks_the_device_every_time(
     assert!(gone.access.terminal[0].reason.is_some());
     link.set_available(true);
     assert!(info().access.terminal[0].available);
+}
+
+#[test]
+fn a_peer_without_sources_reaches_only_the_default_and_a_later_source_grants_it_nothing() {
+    let both = format!(
+        "{}[source.spare]
+provider = \"fake_terminal\"
+link = \"console-spare\"
+",
+        fake("console-default")
+    );
+    let spare = testing::terminal_link("console-spare");
+    let world = world_with(&both, &["console", "spare"], granted());
+    let info = Control::open(&world.link)
+        .expect("control")
+        .info(Some(WAIT))
+        .expect("info");
+    let seen: Vec<&str> = info
+        .access
+        .terminal
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect();
+    assert_eq!(seen, ["console"], "the other source is not even named");
+    let denied = Shell::start(&world.link, &Request::console(Some("spare")), Some(WAIT))
+        .map(drop)
+        .expect_err("a source the grant does not reach");
+    // The link refuses the open itself (`Permission`), before the engine is asked.
+    assert!(
+        matches!(&denied, Error::Transport(_))
+            || matches!(&denied, Error::Remote(body) if body.code == ErrorCode::Denied),
+        "{denied:?}"
+    );
+    assert_eq!(spare.opened(), 0, "nothing reached the source");
+    assert!(Shell::start(&world.link, &Request::console(Some("console")), Some(WAIT)).is_ok());
+    let sessions = Control::open(&world.link)
+        .expect("control")
+        .sessions(Some(WAIT))
+        .expect("sessions");
+    assert!(sessions.iter().all(|session| session.id != "console:spare"));
+
+    // `sources = [..]` names more.
+    let wider = world_with(
+        &both,
+        &["console", "spare"],
+        granted().with_sources(["spare"]),
+    );
+    let info = Control::open(&wider.link)
+        .expect("control")
+        .info(Some(WAIT))
+        .expect("info");
+    assert_eq!(info.access.terminal.len(), 2);
+    let shell =
+        Shell::start(&wider.link, &Request::console(Some("spare")), Some(WAIT)).expect("allowed");
+    spare.device_writes(b"spare up");
+    heard(&shell, "spare up");
+
+    // A source added later grants nobody anything: the first world's peer still reaches the default alone.
+    world
+        .host
+        .sources()
+        .add_terminal("late", Arc::new(testing::FakeTerminal::default()));
+    let info = Control::open(&world.link)
+        .expect("control")
+        .info(Some(WAIT))
+        .expect("info");
+    assert_eq!(info.access.terminal.len(), 1);
 }
 
 #[test]

@@ -74,11 +74,19 @@ pub enum Permission {
     /// the permission is a standing right to run a program on this host.
     #[serde(rename = "session")]
     Session,
+    /// Change the power of the system the node is for (on, off, cycle, reset...), through a power source. A standing right
+    /// to switch a machine off.
+    #[serde(rename = "power")]
+    Power,
+    /// Insert and eject virtual media (a disc image the system boots from), through a media source. The image decides what
+    /// the system runs.
+    #[serde(rename = "media")]
+    Media,
 }
 
 impl Permission {
     /// Every permission, in order.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 14] = [
         Self::Info,
         Self::FsRead,
         Self::FsWrite,
@@ -91,6 +99,8 @@ impl Permission {
         Self::GuiClipboard,
         Self::ForwardListen,
         Self::Session,
+        Self::Power,
+        Self::Media,
     ];
 
     /// The permission named `name` as `bohio.cfg` writes it.
@@ -115,6 +125,8 @@ impl Permission {
             Self::GuiClipboard => "gui.clipboard",
             Self::ForwardListen => "forward.listen",
             Self::Session => "session",
+            Self::Power => "power",
+            Self::Media => "media",
         }
     }
 }
@@ -134,6 +146,13 @@ pub struct Grant {
     /// Where `forward.connect` reaches and what `forward.listen` binds.
     #[serde(skip_serializing_if = "ForwardGrant::is_empty")]
     forward: ForwardGrant,
+    /// The sources beyond each capability's default that the peer may use. Absent: the defaults alone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sources: Option<Vec<String>>,
+    /// The names of the sources that are each capability's default, as the node has them now; what a peer reaches with no
+    /// `sources` list. The node fills it in when it reads the grant.
+    #[serde(skip)]
+    defaults: Vec<String>,
 }
 
 /// `[peer.<id>.forward]`.
@@ -216,6 +235,45 @@ fn same_variable(a: &str, b: &str) -> bool {
 }
 
 impl Grant {
+    /// The same grant that also reaches the sources `names` (beyond each capability's default).
+    #[must_use]
+    pub fn with_sources<I, S>(mut self, names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.sources = Some(names.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// The sources beyond the defaults this grant names; `None` when it names none.
+    #[must_use]
+    pub fn sources(&self) -> Option<&[String]> {
+        self.sources.as_deref()
+    }
+
+    /// The same grant told which sources are each capability's default now. The node does it when it reads a grant.
+    #[must_use]
+    pub fn with_default_sources<I, S>(mut self, names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.defaults = names.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Whether the peer may use the source `name`: each capability's default always, and the others only when the peer's
+    /// `sources` names them. A source added to the node's settings later grants nobody anything.
+    #[must_use]
+    pub fn permits_source(&self, name: &str) -> bool {
+        self.defaults.iter().any(|default| default == name)
+            || self
+                .sources
+                .as_ref()
+                .is_some_and(|named| named.iter().any(|allowed| allowed == name))
+    }
+
     /// A grant of nothing.
     pub fn none() -> Self {
         Self::default()
@@ -333,6 +391,8 @@ pub struct PeerTable {
     fs_roots: Vec<PathBuf>,
     exec: ExecGrant,
     forward: ForwardTable,
+    /// The sources beyond each capability's default the peer may use (`sources = ["bmc-sol"]`); absent, the defaults alone.
+    sources: Option<Vec<String>>,
     /// Where this node dials the peer, any endpoint `bohio remote` takes. The table's name pins the key
     /// that must answer there. Absent: this node does not dial the peer.
     endpoint: Option<String>,
@@ -350,6 +410,8 @@ impl PeerTable {
                 connect: self.forward.connect.clone(),
                 listen: self.forward.listen.clone(),
             },
+            sources: self.sources.clone(),
+            defaults: Vec::new(),
         }
     }
 

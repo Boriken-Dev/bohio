@@ -379,6 +379,25 @@ impl Drop for Listed<'_> {
     }
 }
 
+/// The node's grants with the names of each capability's default source filled in, so a peer with no `sources` list reaches
+/// the defaults alone.
+struct Defaulted {
+    inner: Arc<dyn Grants>,
+    sources: Arc<Sources>,
+}
+
+impl Grants for Defaulted {
+    fn grant(&self, peer: &PeerId) -> Result<Grant, crate::link::GrantsError> {
+        self.inner
+            .grant(peer)
+            .map(|grant| grant.with_default_sources(self.sources.default_names()))
+    }
+
+    fn roots(&self) -> Vec<std::path::PathBuf> {
+        self.inner.roots()
+    }
+}
+
 /// An embeddable host: its identity, the keys and grants its caller supplies and the engines it serves.
 pub struct Node {
     shared: Arc<Shared>,
@@ -479,15 +498,24 @@ impl Node {
                 false
             })
         };
-        let sources = Arc::new(
-            Sources::from_config(&config.source, &config.access).map_err(|(key, message)| {
+        let sources = Arc::new(Sources::unconfigured());
+        // A source whose settings hold a secret reference waits for `Node::with_secrets`.
+        sources.defer_secrets();
+        sources.set_secret_limit(config.secrets.max_bytes);
+        sources
+            .reconfigure(&config.source, &config.access)
+            .map_err(|(key, message)| {
                 NodeError::Config(ConfigError::Invalid {
                     path: "the node settings".to_owned(),
                     key,
                     message,
                 })
-            })?,
-        );
+            })?;
+        // Every grant the node reads says which sources are each capability's default now.
+        let grants: Arc<dyn Grants> = Arc::new(Defaulted {
+            inner: grants,
+            sources: Arc::clone(&sources),
+        });
         let gui = GuiState::new(&config.gui, Arc::clone(&sources));
         let proof = Proof::builder(identity.clone())
             .initiators(asked)
@@ -546,6 +574,28 @@ impl Node {
         self
     }
 
+    /// Says how the references of sensitive source settings are read (`file:`, `credential:`, `keyring:`): the library reads
+    /// no file and no environment variable, so the embedder's resolver does. Sources that were waiting for it are built.
+    ///
+    /// # Errors
+    ///
+    /// [`NodeError::Config`] naming `source.<name>.<key>` for a reference the resolver refuses; the message never quotes it.
+    pub fn with_secrets(
+        self,
+        resolver: Arc<dyn crate::secret::SecretResolver>,
+    ) -> Result<Self, NodeError> {
+        self.sources
+            .set_secrets(resolver, self.shared.config.secrets.max_bytes)
+            .map_err(|(key, message)| {
+                NodeError::Config(ConfigError::Invalid {
+                    path: "the node settings".to_owned(),
+                    key,
+                    message,
+                })
+            })?;
+        Ok(self)
+    }
+
     /// The sources this node serves from, to change what they are while it runs ([`Sources::reconfigure`]).
     #[must_use]
     pub fn sources(&self) -> Arc<Sources> {
@@ -556,9 +606,7 @@ impl Node {
     /// a presence or notifier set before is lost.
     #[must_use]
     pub fn with_sources(mut self, sources: Sources) -> Self {
-        let sources = Arc::new(sources);
-        self.gui = GuiState::new(&self.shared.config.gui, Arc::clone(&sources));
-        self.sources = sources;
+        self.sources.absorb(sources);
         self.shared = Shared::new(
             &self.shared.config,
             &self.grants,

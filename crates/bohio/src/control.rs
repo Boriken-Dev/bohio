@@ -163,7 +163,9 @@ fn answer_with(
                     .end(view.peer, admin, id, *signal)
                     .map(|()| Reply::Done),
                 _ => Ok(Reply::Sessions {
-                    sessions: view.registry.list(view.peer, admin),
+                    sessions: view.registry.list(view.peer, admin, &|source| {
+                        filesystem.grant.permits_source(source)
+                    }),
                 }),
             }
         }
