@@ -50,6 +50,7 @@ A stream's `open` carries a protocol token and metadata. A client ignores a toke
 | `bohio-read/1` | one file read, streamed | CBOR [`read-request`](#reading-a-file) | `fs.read` |
 | `bohio-write/1` | one file written, streamed | CBOR [`write-request`](#writing-a-file) | `fs.write`, and `fs.read` as well for a [delta](#deltas) write |
 | `bohio-hash/1` | digests of many files, computed on the host | CBOR [`hash-request`](#hashing-bohio-hash1) | `fs.read` |
+| `bohio-walk/1` | the entries of whole trees, on one stream | CBOR [`walk-request`](#trees-bohio-walk1) | `fs.read` |
 | `bohio-connect/1` | one connection from the host to a target, then its bytes | CBOR [`connect-request`](#forwarding-bohio-connect1-and-tcp1) | `forward.connect` and a rule that matches the target |
 | `tcp/1` | the same, as [coqui-link](https://github.com/Boriken-Dev/coqui-link) defines it | the text `HOST:PORT` | `forward.connect` and a rule that matches the target |
 | `bohio-gui/1` | a view of the host's desktop: snapshots, keyboard and mouse, the clipboard's text | CBOR [`gui-request`](#desktop-bohio-gui1) | one of `gui.view`, `gui.input`, and each thing the request wants |
@@ -111,7 +112,7 @@ The stream carries any number of calls. Each message is one CBOR `request` from 
 request  = { id: uint, call: call }
 response = { id: uint, ? reply: opt<reply>, ? error: opt<error-body> }   ; exactly one of reply, error is not null
 
-call = hello / info / stat / list / mkdir / remove / rename / copy / symlink
+call = hello / info / stat / list / mkdir / remove / rename / move / copy / truncate / symlink
      / readlink / set-times / set-mode / set-attributes / sessions / end-session
 
 hello          = { type: "hello", ? version: uint, ? client: text }       ; version at least 1
@@ -121,7 +122,10 @@ list           = { type: "list", path: text, ? after: opt<text>, ? limit: opt<ui
 mkdir          = { type: "mkdir", path: text, ? parents: bool, ? mode: opt<uint> }
 remove         = { type: "remove", path: text, ? recursive: bool }
 rename         = { type: "rename", from: text, to: text, ? overwrite: bool }
-copy           = { type: "copy", from: text, to: text, ? overwrite: bool }
+move           = { type: "move", from: text, to: text, ? overwrite: bool }
+copy           = { type: "copy", from: text, to: text, ? overwrite: bool,
+                   ? recursive: bool, ? preserve: bool }                 ; a directory with what it holds; keep the mode and the time
+truncate       = { type: "truncate", path: text, length: uint }
 symlink        = { type: "symlink", target: text, link: text }
 readlink       = { type: "readlink", path: text }
 set-times      = { type: "set_times", path: text, ? accessed: opt<timestamp>, ? modified: opt<timestamp> }
@@ -143,17 +147,23 @@ timestamp = { secs: int, ? nanos: uint }        ; seconds since 1970-01-01T00:00
 file-kind = "file" / "directory" / "symlink" / "other"
 metadata  = { kind: file-kind, ? size: uint, ? modified: opt<timestamp>, ? accessed: opt<timestamp>,
               ? created: opt<timestamp>, ? mode: opt<uint>,     ; Unix permission bits, at most 0o7777
-              ? readonly: bool, ? attributes: opt<uint> }       ; Windows attribute bits
+              ? readonly: bool, ? attributes: opt<uint>,       ; Windows attribute bits
+              ? device: uint, ? inode: uint, ? links: uint }    ; what makes two names one file; absent where the host cannot tell (Windows)
 listing   = { ? entries: [* entry], ? next: opt<text>, ? skipped: uint }
 entry     = { name: text, metadata: metadata }                  ; a link is described, not followed
 ```
 
-What each call needs: `sessions` and `end_session` need `session`; `info` needs `info`; `hello` needs nothing; `stat`, `list` and `readlink` need `fs.read`; `mkdir`, `remove`, `rename`, `symlink`, `set_times`, `set_mode` and `set_attributes` need `fs.write`; `copy` needs both. Each needs the peer to hold a filesystem root, and resolves every path against the roots.
+What each call needs: `sessions` and `end_session` need `session`; `info` needs `info`; `hello` needs nothing; `stat`, `list` and `readlink` need `fs.read`; `mkdir`, `remove`, `rename`, `move`, `truncate`, `symlink`, `set_times`, `set_mode` and `set_attributes` need `fs.write`; `copy` needs both. Each needs the peer to hold a filesystem root, and resolves every path against the roots.
 
 - `hello`: the host answers with `min(version, its own)`. Both sides then speak that version. A `version` of 0 is `bad_request`.
 - `list`: entries are in ascending order by name. A reply holds as many entries as fit the stream's message size; `next` is then the name to send as `after`, and `skipped` counts names that are not valid text and so are left out. `limit` caps the count.
 - Digests are not a control call: a long hash would hold every later call on the stream, so they have their own stream, [`bohio-hash/1`](#hashing-bohio-hash1).
 - `mkdir` with `parents` creates what is missing; `remove` of a link removes the link; `rename` and `copy` without `overwrite` answer `exists` for an existing target.
+- `move` is a rename where the host can, and where the two names lie on different filesystems (a rename then fails), a copy that keeps the permission bits and the modification time followed by the removal of the original, all on the host. A copy that fails leaves the original where it was and removes what it made at a name that was free; `exists` for an existing target without `overwrite`; a tree past `[filesystem] max_tree_entries` is `busy`. Neither `rename` nor `move` without `overwrite` looks and then renames: on Linux the operating system refuses an existing target in the rename itself (`renameat2` with `RENAME_NOREPLACE`), and elsewhere a regular file is given its new name with a hard link, which fails when the name exists, and the old name is then removed; a directory, or a file on a filesystem without hard links, is checked first and renamed after, so a name made in between is replaced.
+- `copy` is made on the host, never through the client. A regular file by default; with `recursive` a directory and everything in it, links copied as links (a link whose text would leave the roots is `outside_root`), anything else (a device, a socket) is `bad_request`; an existing directory is merged into with `overwrite` and is `exists` without it. `preserve` gives the copy the original's permission bits (without the set-user-ID and set-group-ID bits) and modification time. A copy that fails partway leaves what it made, as `cp -r` does.
+- `truncate` sets a regular file's length: a shorter length cuts it, a longer one extends it with zeros (a directory is `bad_request`).
+- A `copy` or a `move` of a tree holds the control stream until it ends, and the host answers calls in order: a client opens a second control stream for a long one.
+- `device`, `inode` and `links` are what `samefile` compares: two paths name one file when both have the same `device` and `inode`. A host that cannot report them (Windows, through the library this host is built on) leaves them out.
 - Calls a platform lacks answer `unsupported`: `set_mode` and `mode` on Windows, `set_attributes` anywhere else.
 - A mode (`set_mode`, `mkdir`'s `mode`, a write's `file_mode`) above `0o7777` is `bad_request`, and one with the set-user-ID or set-group-ID bit (`0o6000`) is `denied`: such a file would run as the host's account for whoever starts it. A `copy`, and a `replace` write over an existing file, keep the source's or the target's mode without those two bits.
 
@@ -176,7 +186,10 @@ transfer-info = { ? hashes: [* text],                        ; the algorithms th
                   ? compression: [* compression-info],                     ; the algorithms the host compresses with, empty when none
                   ? compression_default: opt<compression>,                 ; what "auto" means on this host
                   ? prepared: bool,                                        ; whether a read may say `prepare`
-                  ? delta: delta-info }                                    ; what the host offers for deltas
+                  ? delta: delta-info,                                     ; what the host offers for deltas
+                  ? walk: bool, ? walk_limits: { ? max_streams: uint, ? max_entries: uint },   ; bohio-walk/1, and its bounds (0 entries: no limit)
+                  ? bundles: bool,                                         ; reads and writes take `items`
+                  ? resume: bool }                                         ; a replace write may ask to resume
 delta-info = { ? weak: [* text],                                           ; the weak checksums it computes: "rsync"; empty when it serves no deltas
                ? min_block: uint, ? max_block: uint,                       ; the block sizes it chooses between, and the largest it accepts
                ? min_size: uint,                                           ; the size of file from which a client's "auto" uses a delta
@@ -195,12 +208,14 @@ read-request = { path: text, ? offset: uint, ? length: opt<uint>, ? hashes: [* t
                  ? compression: compression,                                           ; how the host sends the bytes; absent or "none": raw
                  ? prepare: bool,                                                      ; compress the whole range first, then send it
                  ? resume: { token: text, offset: uint },                              ; continue a prepared read at a compressed offset
-                 ? delta: read-delta }                                                 ; send only what differs from the client's old copy (see Deltas)
+                 ? delta: read-delta,                                                  ; send only what differs from the client's old copy (see Deltas)
+                 ? items: bool }                                                       ; a bundle: the files come as `0x10` items (see Bundles); `path` is then empty
 read-header  = { size: uint, length: uint,                                             ; the file's size; the bytes that follow, decompressed
+                 ? index: uint, ? modified: opt<timestamp>, ? mode: opt<uint>,         ; a bundle's item: which, and what the host knows of the file
                  ? compression: compression,                                           ; what the host used, never "auto"; absent: raw
                  ? compressed_length: uint, ? token: text,                             ; prepared reads: the compressed size, the name to resume by
                  ? delta: bool }                                                       ; a delta read: copy frames and data add up to `length`
-read-done    = { ? hashes: { * text => text } }                                        ; the digests asked for, of the bytes sent
+read-done    = { ? hashes: { * text => text }, ? index: uint }                         ; the digests asked for, of the bytes sent; a bundle's item
 progress     = { prepared: uint }                                                      ; the bytes of the file compressed so far
 ```
 
@@ -208,11 +223,15 @@ progress     = { prepared: uint }                                               
 | --- | --- | --- |
 | host to client | `0x01` | CBOR `read-header` |
 | host to client | `0x02` | raw file bytes, in order |
+| host to client | `0x03` | CBOR `item-error`: a bundle's item failed (see Bundles) |
 | host to client | `0x04` | CBOR `read-done`: all `length` bytes were sent |
 | host to client | `0x05` | CBOR `error-body`: the last frame |
 | host to client | `0x06` | a piece of the compressed stream (see [Compression](#compression)) |
+| host to client | `0x07` | CBOR `bundle-end`: every item of a bundle was answered |
 | host to client | `0x08` | CBOR `progress`: a prepared read is still being compressed |
 | host to client | `0x09` | CBOR `delta-copy`: a delta read, these blocks of the client's old copy stand here |
+| client to host | `0x10` | CBOR `read-item`: a bundle, the next file |
+| client to host | `0x11` | empty: a bundle, no more files |
 | client to host | `0x12` | CBOR `signature-batch`: a delta read, the next blocks of the client's signature |
 | client to host | `0x13` | empty: a delta read, the signature is complete |
 
@@ -226,25 +245,92 @@ The host sends the header first, then data frames whose bytes add up to `header.
 write-request = { path: text, ? mode: write-mode, ? parents: bool, ? file_mode: opt<uint>,
                   ? expect: { * text => text },          ; algorithm name => the digest the data must have, in hex
                   ? hashes: opt<[* text]>,                ; digests to answer; null: the host's [filesystem] write_hashes (sha256 by default)
-                  ? compression: compression }            ; what the client sends: a concrete algorithm, never "auto"; absent or "none": raw
+                  ? compression: compression,            ; what the client sends: a concrete algorithm, never "auto"; absent or "none": raw
+                  ? items: bool,                          ; a bundle: the files come as `0x16` items (see Bundles)
+                  ? resume: bool }                        ; a replace that the host keeps if the stream ends early (see Streaming writes)
 write-mode    = { type: "replace" } / { type: "create" } / { type: "append" } / { type: "at", offset: uint }   ; replace by default
               / { type: "delta", block_size: uint, base: delta-base }   ; build the new file from the target and what follows (see Deltas)
-write-done    = { written: uint, ? hashes: { * text => text } }            ; the bytes written, and the digests `hashes` asked for
+              / { type: "resume", token: text }                         ; continue a write that asked to resume
+write-done    = { written: uint, ? hashes: { * text => text }, ? index: uint }   ; the bytes written, and the digests `hashes` asked for; a bundle's item
+ready         = { ? token: text, ? offset: uint }                          ; a `0x01` body: the token of a resumable write, or where a resumed one goes on
+flushed       = { written: uint }
 ```
 
 | Direction | Tag | Body |
 | --- | --- | --- |
-| host to client | `0x01` | empty: ready, the client may send data |
+| host to client | `0x01` | empty, or CBOR `ready`: the client may send data |
+| host to client | `0x02` | CBOR `flushed`: the answer to a `0x12` |
+| host to client | `0x03` | CBOR `item-error`: a bundle's item failed (see Bundles) |
 | host to client | `0x04` | CBOR `write-done`: the write is complete |
 | host to client | `0x05` | CBOR `error-body`: the last frame |
+| host to client | `0x07` | CBOR `bundle-end`: every item of a bundle was answered |
 | client to host | `0x10` | raw file bytes, in order |
-| client to host | `0x11` | empty: the end of the data |
+| client to host | `0x11` | empty: the end of the data (in a bundle, of the item's data) |
+| client to host | `0x12` | empty: flush (`append` and `at` only) |
 | client to host | `0x14` | a piece of the compressed stream (see [Compression](#compression)) |
 | client to host | `0x15` | CBOR `delta-copy`: a delta write, these blocks of the target stand here |
+| client to host | `0x16` | CBOR `write-item`: a bundle, the next file |
+| client to host | `0x17` | empty: a bundle, no more files |
 
 The client waits for `0x01`, sends `0x10` frames, then `0x11`, then waits for `0x04`. A `replace` write goes to a temporary sibling and is renamed over the target after `0x11` and a matching `expect` (every named digest is checked, a mismatch is `io`, and nothing is replaced; `expect` is for `replace`, `create` and `delta` only, and a value that is not the algorithm's lowercase hex is `bad_request`); until the host's `0x04` the target is as it was. `create` fails with `exists` when the file is there. `append` and `at` write in place, and what was written stays when the stream is abandoned. `parents` creates missing directories; `file_mode` sets Unix permission bits on a new file. A write the client abandons (closing the stream) leaves no temporary file.
 
+**Streaming writes.** With `append` and `at` a client may send `0x12` (flush) at any point: the host flushes what it has written to the file, makes it durable when `[filesystem] sync_writes` is set (the default), and answers `0x02` `flushed` with the bytes this stream has written, so a log or an upload knows how much is safe without ending the stream. In any other mode a flush is `bad_request` and ends the stream. A `replace` that asks `resume: true` has its temporary file kept, beside the target and named for the peer and the path, when the stream ends before the client's `0x11` (the link was lost, the client closed it, or it was idle for `idle_timeout`; not when the write failed): `ready` carries a `token`, and a later `bohio-write/1` with `mode` `{type: "resume", token}` for the same path, from the same peer, is answered `ready` with an `offset`, the bytes the host holds, from which the client sends the rest. The host reads the kept bytes again, so `expect` and `hashes` cover the whole file, and the new file replaces the target as a `replace` does. A stream that has not ended (a second resume while the first still runs) is `busy`; an unknown token, another peer's, another path's or one that expired is `not_found`, and says nothing more. A kept file lasts `[filesystem] resume_ttl` since it was last written (default `0s`: the host keeps none and a request to resume is `unsupported`); expired ones are removed by the next resumable write or resume in the same directory. A kept file takes the disk space of what was received.
+
 A host computes the union of `hashes` and `expect` in one pass and answers only `hashes`. An algorithm the host does not offer (`[hash] algorithms`), in a read, a write or a hash stream, is `unsupported` before any data moves.
+
+## Trees: `bohio-walk/1`
+
+The entries of whole trees on one stream, so listing a tree costs one open and the data, not a round trip for each directory and page. The open's metadata is a CBOR `walk-request`; the client then sends one `0x10` frame per tree and a `0x11`, and may send roots while entries come back; the host walks each root in order.
+
+```text
+walk-request = { ? depth: opt<uint>,                  ; 0: the roots alone (a batched stat), 1: and their names, null: the whole tree
+                 ? follow: bool,                      ; enter links to directories and describe what a link to a file points at, inside the root only
+                 ? include: [* text], ? exclude: [* text],   ; globs on the path below the root (with `/`) or the name
+                 ? hashes: [* text],                  ; digests of each regular file's content
+                 ? compression: compression }         ; how the host sends the entries: absent or "none": raw
+walk-header  = { ? compression: compression }         ; what the host used
+walk-root    = { path: text }
+walk-entry   = { path: text, metadata: metadata,      ; path below the root with `/`, empty for the root itself
+                 ? target: text,                      ; a link's text
+                 ? hashes: { * text => text } }
+walk-entries = { root: uint, entries: [* walk-entry] }
+walk-error   = { root: uint, ? path: text, code: error-code, ? message: text }   ; something that could not be read; the walk goes on
+walk-done    = { entries: uint, ? skipped: uint }     ; entries sent; names that are not valid text and are left out
+```
+
+| Direction | Tag | Body |
+| --- | --- | --- |
+| host to client | `0x01` | CBOR `walk-header`: the first frame |
+| host to client | `0x02` | CBOR `walk-entries`: a batch of one root's entries |
+| host to client | `0x03` | CBOR `walk-error` |
+| host to client | `0x04` | CBOR `walk-done`: every root was walked |
+| host to client | `0x05` | CBOR `error-body`: the stream failed or was refused; the last frame |
+| host to client | `0x06` | a piece of the compressed stream: it decodes to the body of one `0x02` frame |
+| client to host | `0x10` | CBOR `walk-root` |
+| client to host | `0x11` | empty: no more roots |
+
+Order. Each root's first entry is the root itself, with an empty `path`; then each directory's names in the order of their UTF-8 bytes, depth first: a directory's entry, then what is in it, then its next sibling. `root` is the position of the tree among the client's roots, from 0. A batch is as many entries as fit a frame. Metadata is as `stat` gives it for the name itself (a link is described, not followed), with `device`, `inode` and `links` where the host has them.
+
+Filters and depth. `include` limits the entries listed to those whose path or name matches one of its globs (every directory is still entered, and the root is always listed); `exclude` removes entries that match, and a directory's whole subtree with them. A glob that does not parse is `bad_request`. A name that is not valid text is counted in `skipped` and left out. With `follow` a link to a directory is entered under the link's own path, and one already entered (by `device` and `inode`, which covers a loop) is not entered twice; a link that leaves the root is an item error (`outside_root`), and so on a host that cannot report `device` and `inode` is a link to a directory (`unsupported`: it cannot tell a loop).
+
+Errors and bounds. A directory that cannot be read, a root that does not exist or a link that leaves the root is a `0x03` frame and the walk goes on. Each root is decided against the peer's grant as it is when the root is reached, so a grant narrowed while the stream is open refuses the next root (`denied`, `outside_root`). A request an algorithm of `hashes` the host does not offer, or a compression it does not allow, is `unsupported` before any root; past `[walk] max_streams` (default 4) the stream is `busy`; past `[walk] max_entries` (default 1,000,000, `0` is no limit) the walk sends a `busy` `0x03` and `0x04` with what it sent. Digests read every file and are paced by `[hash] rate`. A stream that gets no root for `[filesystem] idle_timeout` ends with `io`. `search` of the forwarding plan takes this request as its `walk` field.
+
+## Bundles
+
+Many files on one `bohio-read/1` or `bohio-write/1` stream, so a tree of small files costs one open, one round trip for its names and one compression context, not an open, a round trip and a fresh context for each file. A request with `items: true` is a bundle; `hashes` and `compression` apply to every item, and the one compression context spans all of them (a raw frame still ends it, as [Compression](#compression) says, and a host that sends an item raw because its name or its start does not compress starts a new context for the next).
+
+```text
+read-item   = { path: text, ? offset: uint, ? length: opt<uint> }
+write-item  = { path: text, ? mode: write-mode, ? parents: bool, ? file_mode: opt<uint>,   ; mode: replace (the default) or create
+                ? modified: opt<timestamp>,                                                ; set on the file before it is put in place
+                ? expect: { * text => text } }
+item-error  = { index: uint, code: error-code, ? message: text }
+bundle-end  = { items: uint }
+```
+
+A read. The host's first frame is a `0x01` header with no `index` that says what it compresses with. For each `0x10` item, in order, it sends a `0x01` header with `index` (the item's position among the client's items, from 0), `size`, `length`, `modified` and `mode`, the data (`0x02` or `0x06`), and `0x04` with `index` and the digests; or, when the item fails, `0x03`: after a header, the bytes already received are to be thrown away. After `0x11` it sends `0x07` with the count. A write. The host answers `0x01` once; for each `0x16` item the client sends the file's data (`0x10`, `0x14`) and `0x11`, and the host answers `0x04` with `index` or `0x03`; after `0x17` it sends `0x07`. Each file is put in place on its own, as a `replace` or a `create` is (a temporary sibling renamed; `modified` set before the rename so a sync's next quick check by size and time finds the file unchanged), so a bundle is atomic per file and not as a whole; an item that fails leaves its target as it was and the stream goes on (the data of a failed item is still read and dropped, so the compression context stays in step). An item's `expect` is checked as a single write's is.
+
+Each item is decided against the peer's grant as it is when the item is reached. A bundle holds one transfer slot; past `[filesystem] max_bundle_items` (default 1,000,000, `0` is no limit) it ends with `busy`. A frame outside its place (data outside an item, an item inside an item, a flush) ends the stream with `bad_request`. `bohio_client::bundle::{get_many, read_bundle, put_many}` do this, and `bohio_client::sync::sync_tree` uses it: walk both sides, compare, and move the files up to `bundle_max` in bundles and the larger changed ones by [delta](#deltas).
 
 ## Hashing: `bohio-hash/1`
 

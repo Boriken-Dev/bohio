@@ -237,6 +237,29 @@ What the host offers is read from its `hello` reply (`Control::transfer`), which
 `expect`, and sends `copy` and literal frames (`Writer::copy`, `Writer::write`); a delta `get` streams the signature of the local file while it reads it and
 rebuilds as the host's copies and data arrive. `Error::Local` is a local file failure (no path in the text); `Error::Mismatch` a rebuilt file that does not match.
 
+## Trees and bundles (`bohio_client::walk`, `bundle`, `range`, `sync::sync_tree`)
+
+```rust
+pub fn walk(link: &dyn Open, roots: &[&str], options: &WalkOptions) -> Result<WalkIter, Error>;   // walk_with(.., timeout) too; roots are sent while entries come back; one stream
+#[derive(Default)] pub struct WalkOptions { pub depth: Option<u64>, pub follow: bool, pub include: Vec<String>, pub exclude: Vec<String>, pub hashes: Vec<Algorithm>, pub compression: Option<Compression> }
+pub enum WalkItem { Entry { root: u64, entry: Box<WalkEntry> }, Failure(WalkItemError) }
+pub struct WalkIter;   // Iterator<Item = Result<WalkItem, Error>>; done() -> Option<WalkDone>; wire_bytes(); compression(); dropping it closes the stream
+pub fn read_bundle(link, items: &[ReadItem], &BundleOptions, on: &mut dyn FnMut(Fetch<'_>) -> Result<(), Error>) -> Result<BundleStats, Error>;   // Fetch::{Begin(&ReadHeader), Data(&[u8]), End { index, hashes }, Failed { index, error }}: a Failed after a Begin discards what came
+pub fn get_many(link, items: &[ReadItem], &BundleOptions) -> Result<(Vec<Result<Fetched, ErrorBody>>, BundleStats), Error>;   // Fetched { header, data, hashes }; all in memory
+pub fn put_many(link, files: &mut [BundleFile<'_>], &BundleOptions) -> Result<Put, Error>;   // BundleFile { item: WriteItem, source: &mut (dyn Read + Send) } (BundleFile::replace(path, source)); Put { results: Vec<Result<WriteDone, ErrorBody>>, stats }
+pub struct BundleOptions { pub compression: Option<Compression>, pub hashes: Option<Vec<Algorithm>>, pub caps: Caps, pub chunk: usize /*64 KiB*/, pub window_log_max: Option<u32>, pub timeout: Option<Duration> /*5 min*/ }   // Default
+pub struct BundleStats { pub items: u64, pub wire_bytes: u64 }
+pub struct RangeReader<'a>;   // RangeReader::open(link, path, &RangeOptions) -> Read + Seek; len(), position(); each range is one read stream of `range` bytes with `prefetch` more open ahead; a seek inside the range held or to the start of one open is free, any other closes what is ahead
+pub struct RangeOptions { pub range: u64 /*1 MiB*/, pub prefetch: usize /*2*/, pub compression: Option<Compression>, pub timeout: Option<Duration> }   // Default
+pub fn sync::sync_tree(link, local: &Path, remote: &str, &TreeOptions) -> Result<TreeReport, Error>;   // walks both sides (the host's in one stream), compares, moves files up to bundle_max in bundles of bundle_items and larger ones by delta, `parallel` streams at once; delete, dry_run; links are skipped
+pub struct TreeOptions { pub direction: Direction /*Push*/, pub compare: Compare /*Meta*/, pub delete: bool, pub dry_run: bool, pub bundle_max: u64 /*1 MiB*/, pub bundle_items: usize /*1000*/, pub parallel: usize /*4*/, pub modify_window: Duration /*1 us*/, pub sync: SyncOptions, pub bundle: BundleOptions }
+pub struct TreeReport { pub actions: Vec<Action { step: Step, path, size }>, unchanged, bundled, bundles, singles, deltas, deleted, skipped, bytes, wire_bytes, walk_entries, walk_wire_bytes: u64, pub failures: Vec<(String, String)> }   // is_clean(); Step::{MakeDirectory, Create, Update, Delete}
+// Fs gains move_to(from, to, overwrite), truncate(path, length), copy_with(from, to, &CopyOptions { overwrite, recursive, preserve }), spawn_control(link) -> Fs (a second control stream: a copy or move of a tree holds its stream).
+// Writer gains token() (a resumable write's), resumed_at() (a resumed write's offset) and flush_remote(timeout) -> Result<u64, Error> (append and at: the bytes the host has written, made safe).
+```
+
+A pushed file takes the local modification time (a bundle item's `modified`, `set_times` after a single write), a pulled one the host's, so the next sync by `Compare::Meta` finds it unchanged; `Compare::Hash(alg)` has the host hash during the walk and this side read its files; `Compare::Blocks` compares file by file. A push does not set permission bits (a Windows host has none); a pull keeps them on Unix.
+
 ## Hash (`bohio_client::hash`)
 
 ```rust

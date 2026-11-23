@@ -343,6 +343,18 @@ target as it was and removes the temporary file. `create` removes the file it ma
 place and keep what was written. A read and a write hash the bytes they move for `hashes` and `expect` (a write: the union, one pass; only `hashes`, else `[filesystem] write_hashes`, is answered). A hash stream holds one `[hash] max_streams` slot, a transfer one `max_transfers` slot, until it ends; a hash stream reads at most `[hash] rate` bytes a second. Memory is one chunk plus what the
 link's channel queues and reads ahead: a channel that queues `n` bytes can hold `n` more.
 
+## Trees, bundles, moves and resumes (`bohio::fs`, `[walk]`, `[filesystem]`)
+
+```rust
+pub fn fs::serve_walk(channel: Arc<dyn Channel>, metadata: &[u8], context: &WalkContext<'_>) -> Result<u64, ErrorBody>;   // entries sent; one thread; each root decided by the grant as it is then (`Context::current`)
+pub struct fs::WalkContext<'a> { pub files: fs::Context<'a>, pub walk: &'a WalkConfig, pub slots: &'a Slots }   // Debug, Clone, Copy
+// fs::Context gains `current: Option<control::Current>`: where the grant is read before each item of a bundle and root of a walk; the grant is used when absent.
+pub struct config::WalkConfig { pub max_streams: usize /*4*/, pub max_entries: u64 /*1000000; 0: no limit*/ }   // `[walk]`; Config.walk, NodeConfig.walk
+// config::FilesystemConfig gains max_tree_entries: usize /*1000000; 0: none: recursive copy and cross-filesystem move*/, max_bundle_items: u64 /*1000000; 0: none*/, resume_ttl: Span /*0: keeps none*/.
+```
+
+A bundle (`items: true`) holds one transfer slot and serves `bohio-read/1` or `bohio-write/1` from `fs/bundle.rs`; each item is decided alone and fails alone, and its data is read and dropped when it failed so the compression context spans the items. `move` (`fs/tree.rs`) renames, and on `CrossesDevices` copies with mode and time then removes; a rename without `overwrite` is `renameat2(RENAME_NOREPLACE)` on Linux and a hard link plus an unlink for a file elsewhere (a directory is checked and renamed). A resumable `replace` keeps `.bohio-resume-<peer-and-path hash>-<token>.tmp` beside the target when its stream ends early; `Staged::{open_resumable, resume, keep_for_resume}` hold it, a process-wide set refuses a second stream under one token, and expired files are swept from the directory of the next resumable write or resume (not at start). Metadata has `device`, `inode` and `links` on Unix only (cap-std reports none on Windows), so `walk --follow` does not enter a link to a directory there.
+
 ## Sessions (`bohio::session`, `[sessions]`)
 
 ```rust

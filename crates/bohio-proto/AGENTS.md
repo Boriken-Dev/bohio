@@ -7,14 +7,14 @@ with the source at <https://github.com/Boriken-Dev/bohio>.
 No Cargo features. MSRV Rust 1.89. Depends on `serde`, `ciborium` and `thiserror`. Version `0.0.0-alpha.0`, not published.
 
 Imports: the root holds `decode`, `decode_with_depth`, `encode`, `DEFAULT_DEPTH`, `Error`, `ErrorBody`, `ErrorCode` and
-`PROTOCOL_VERSION`. Public modules: `codec`, `control`, `error`, `exec`, `forward`, `fs`, `gui`, `hash`, `info`, `local`, `protocol`, `shell`. No `unsafe` code
+`PROTOCOL_VERSION`. Public modules: `codec`, `control`, `error`, `exec`, `forward`, `fs`, `gui`, `hash`, `info`, `local`, `protocol`, `shell`, `walk`. No `unsafe` code
 (`#![forbid(unsafe_code)]`); no I/O; no process-wide state.
 
 ## Protocols (`bohio_proto::protocol`)
 
 ```rust
 pub const CONTROL: &str = "bohio/1";   pub const EXEC: &str = "bohio-exec/1";   pub const SHELL: &str = "bohio-shell/1";
-pub const READ: &str = "bohio-read/1"; pub const WRITE: &str = "bohio-write/1"; pub const HASH: &str = "bohio-hash/1";
+pub const READ: &str = "bohio-read/1"; pub const WRITE: &str = "bohio-write/1"; pub const HASH: &str = "bohio-hash/1"; pub const WALK: &str = "bohio-walk/1";
 pub const ATTACH: &str = "bohio-attach/1";   // a detached session's output from an offset, then live
 pub const CONNECT: &str = "bohio-connect/1"; pub const TCP: &str = "tcp/1"; pub const LISTEN: &str = "bohio-listen/1"; pub const ACCEPT: &str = "bohio-accept/1";   // `tcp/1` is coqui-link's: metadata is the text HOST:PORT, raw bytes at once, no answer
 ```
@@ -94,6 +94,25 @@ Paths are the host's native text (`info.filesystem.separator`); a Windows host a
 host's first granted root. `bohio-read/1` frames: host to client `0x01` header (CBOR), `0x02` data (raw), `0x04` done (CBOR `ReadDone`), `0x05` error
 (CBOR); `done` follows exactly `header.length` data bytes. `bohio-write/1`: host to client `0x01` ready, `0x04` done (CBOR
 `WriteDone`), `0x05` error; client to host `0x10` data (raw), `0x11` end. A write is in place only after the host's `done`.
+
+## Walk, bundles, streaming writes (`bohio_proto::walk`, `bohio_proto::fs`)
+
+```rust
+// walk: `bohio-walk/1` (needs fs.read). Open metadata WalkRequest; client frames 0x10 Root, 0x11 End; host 0x01 Header, 0x02 Entries, 0x03 ItemError, 0x04 Done, 0x05 Error, 0x06 Compressed (decodes to one Entries body)
+pub struct WalkRequest { depth: Option<u64> /* 0: the roots alone; None: whole tree */, follow: bool, include: Vec<String>, exclude: Vec<String> /* globs on the path below the root or the name */, hashes: Vec<Algorithm>, compression: Option<Compression> }   // Default; to_metadata/from_metadata
+pub struct WalkHeader { compression: Option<Compression> }   pub struct WalkRoot { path: String }
+pub struct WalkEntry { path: String /* below the root, `/`; empty for the root itself */, metadata: Metadata, target: Option<String>, hashes: Option<Digests> }
+pub struct WalkEntries { root: u64, entries: Vec<WalkEntry> }   pub struct WalkItemError { root: u64, path: Option<String>, code: ErrorCode, message: String }   // body()
+pub struct WalkDone { entries: u64, skipped: u64 }
+#[non_exhaustive] pub enum WalkOutput { Header, Entries, Compressed(Vec<u8>), ItemError, Done, Error }   #[non_exhaustive] pub enum WalkInput { Root(WalkRoot), End }   // encode()/decode(&[u8])
+// fs: bundles (`items: true` on a ReadRequest or WriteRequest), flush and resume
+pub struct ReadItem { path, offset: u64, length: Option<u64> }   // ReadItem::whole(path); ReadInput::{Item, ItemsEnd (0x10, 0x11), Signature, SignatureEnd}
+pub struct BundleEnd { items: u64 }   // ReadOutput::End (0x07) and WriteOutput::End (0x07); ReadOutput::ItemError(hash::ItemError) (0x03)
+pub struct WriteItem { path, mode: WriteMode /* replace or create */, parents: bool, file_mode: Option<u32>, modified: Option<Timestamp>, expect: Digests }   // WriteInput::Item (0x16), ItemsEnd (0x17); End (0x11) ends an item's data
+pub struct Ready { token: Option<String>, offset: Option<u64> }   pub struct Flushed { written: u64 }   // WriteOutput::Ready(Ready) (an empty body is Ready::default(); WriteOutput::ready()), Flushed (0x02); WriteInput::Flush (0x12)
+// ReadRequest.items, ReadHeader.{index, modified, mode} (a bundle's item), ReadDone.index, WriteRequest.{items, resume}, WriteDone.index, WriteMode::Resume { token }, ReadRequest::bundle(), WriteRequest::bundle()
+// Metadata gains device, inode, links: Option<u64> (absent where the host cannot report them). Control gains Call::Move { from, to, overwrite }, Call::Truncate { path, length } and Copy { recursive, preserve }. TransferInfo gains walk, walk_limits (WalkLimits { max_streams, max_entries }), bundles, resume.
+```
 
 ## Hash (`bohio_proto::hash`)
 
