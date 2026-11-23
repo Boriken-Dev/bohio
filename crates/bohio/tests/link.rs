@@ -448,7 +448,7 @@ fn an_approved_peer_gets_info_runs_exec_and_reads_a_file() {
         &["--allow", "info,exec,fs.read", "--fs-root", &root_text],
     );
 
-    let info = remote(&client, &host, &["info", "--format", "json"]);
+    let info = remote(&client, &host, &["info", "--json"]);
     assert_eq!(info.code, Some(0), "{}", info.stderr);
     assert!(
         info.stdout
@@ -877,8 +877,7 @@ fn the_command_walks_a_tree_and_syncs_it_both_ways_moving_only_what_differs() {
         &host,
         &[
             "walk",
-            "--format",
-            "json",
+            "--json",
             "--hash",
             "crc32c",
             "--include",
@@ -2131,15 +2130,19 @@ fn the_command_searches_globs_and_reports_the_host_with_no_exec_granted() {
     let bad = remote(&client, &host, &["search", "(", &root_text]);
     assert_eq!(bad.code, Some(1), "{}", bad.stdout);
     assert!(bad.stderr.contains("refused"), "{}", bad.stderr);
-    let json = remote(
-        &client,
-        &host,
-        &["search", "--format", "json", "needle", &root_text],
-    );
+    let json = remote(&client, &host, &["search", "--json", "needle", &root_text]);
     assert_eq!(json.code, Some(0), "{}", json.stderr);
-    let parsed: serde_json::Value = serde_json::from_str(json.stdout.trim()).unwrap();
-    assert_eq!(parsed["line"], 2);
-    assert_eq!(parsed["text"], "line 7/42 needle");
+    // One event for the match, and the host's counts last.
+    let lines: Vec<serde_json::Value> = json
+        .stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 2, "{}", json.stdout);
+    assert_eq!(lines[0]["event"], "match");
+    assert_eq!(lines[0]["line"], 2);
+    assert_eq!(lines[0]["text"], "line 7/42 needle");
+    assert_eq!(lines[1]["event"], "done");
 
     // The same tree by name.
     let listed = remote(&client, &host, &["glob", "d3/f1*.txt", &root_text]);
@@ -2153,7 +2156,7 @@ fn the_command_searches_globs_and_reports_the_host_with_no_exec_granted() {
     );
 
     // What the host runs on, and where its programs are.
-    let stats = remote(&client, &host, &["stats", "--format", "json"]);
+    let stats = remote(&client, &host, &["stats", "--json"]);
     assert_eq!(stats.code, Some(0), "{}", stats.stderr);
     let stats: serde_json::Value = serde_json::from_str(stats.stdout.trim()).unwrap();
     assert!(stats["memory"]["total"].as_u64().unwrap() > 0, "{stats}");
@@ -2228,4 +2231,410 @@ fn a_revoke_ends_a_running_follow_within_recheck() {
     eprintln!("follow ended {took:?} after the revoke (recheck {RECHECK:?})");
     assert!(is_refusal(&error), "{error:?}");
     assert!(took <= RECHECK + SLACK, "took {took:?}");
+}
+
+/// `docs/cli-json.md`'s table of shapes: each name with the keys its output always has.
+fn json_shapes() -> std::collections::BTreeMap<String, (String, Vec<String>)> {
+    let page = include_str!("../../../docs/cli-json.md");
+    let block = page
+        .split("```shapes\n")
+        .nth(1)
+        .and_then(|rest| rest.split("```").next())
+        .expect("the page has a shapes block");
+    block
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            let parts: Vec<&str> = line.split(" | ").collect();
+            assert_eq!(parts.len(), 3, "a shape is `NAME | KIND | KEYS`: {line}");
+            (
+                parts[0].trim().to_owned(),
+                (
+                    parts[1].trim().to_owned(),
+                    parts[2]
+                        .split(',')
+                        .map(|key| key.trim().to_owned())
+                        .collect(),
+                ),
+            )
+        })
+        .collect()
+}
+
+/// The lines of `output` as JSON objects.
+fn json_lines(output: &str) -> Vec<serde_json::Value> {
+    output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            serde_json::from_str(line)
+                .unwrap_or_else(|error| panic!("`{line}` is not JSON: {error}"))
+        })
+        .collect()
+}
+
+/// Checks `value` has every key the page lists for `shape`, and that the page has the shape.
+fn has_shape(
+    shapes: &std::collections::BTreeMap<String, (String, Vec<String>)>,
+    shape: &str,
+    value: &serde_json::Value,
+) {
+    let (_, keys) = shapes
+        .get(shape)
+        .unwrap_or_else(|| panic!("docs/cli-json.md has no shape `{shape}`"));
+    let object = value
+        .as_object()
+        .unwrap_or_else(|| panic!("`{shape}` is not an object: {value}"));
+    for key in keys {
+        assert!(object.contains_key(key), "`{shape}` lacks `{key}`: {value}");
+    }
+}
+
+/// The event of that name among `lines`, checked against the shape `shape/event`.
+fn has_event(
+    shapes: &std::collections::BTreeMap<String, (String, Vec<String>)>,
+    command: &str,
+    event: &str,
+    lines: &[serde_json::Value],
+) {
+    let found = lines
+        .iter()
+        .find(|line| line["event"] == event)
+        .unwrap_or_else(|| panic!("no `{event}` event of `{command}` in {lines:?}"));
+    has_shape(shapes, &format!("{command}/{event}"), found);
+}
+
+/// Every command, run with `--json`, prints what `docs/cli-json.md` says (and nothing else on standard output).
+#[test]
+fn every_command_prints_json_that_docs_cli_json_describes() {
+    let shapes = json_shapes();
+    let world = World::new("\n[remote.demo]\nendpoint = \"tcp://127.0.0.1:1\"\n");
+    let root = world.path("files");
+    std::fs::create_dir_all(root.join("tree")).unwrap();
+    std::fs::write(root.join("tree/a.txt"), "needle one\nsecond\n").unwrap();
+    std::fs::write(root.join("note.txt"), "hello\n").unwrap();
+    let host = world.serve("warn");
+    let root_text = root.to_string_lossy().into_owned();
+    let target = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let target_port = target.local_addr().unwrap().port().to_string();
+    let client = approved(
+        &world,
+        "jsonman",
+        &[
+            "--allow",
+            "info,exec,shell,fs.read,fs.write,session",
+            "--fs-root",
+            &root_text,
+            "--connect",
+            "127.0.0.1:*",
+        ],
+    );
+    let config = world.config.clone();
+
+    // A command's one object, checked against the page.
+    let object_status = |finished: Finished, shape: &str, status: i32| {
+        assert_eq!(finished.code, Some(status), "{shape}: {}", finished.stderr);
+        let value: serde_json::Value =
+            serde_json::from_str(finished.stdout.trim()).unwrap_or_else(|error| {
+                panic!("{shape}: `{}` is one object: {error}", finished.stdout)
+            });
+        has_shape(&shapes, shape, &value);
+        value
+    };
+    let object = |finished: Finished, shape: &str| object_status(finished, shape, 0);
+
+    // The node and its files.
+    object(
+        run(&["config", "check", "--config", &config, "--json"]),
+        "config check",
+    );
+    object(run(&["info", "--config", &config, "--json"]), "info");
+    let id = object(run(&["id", "--config", &config, "--json"]), "id");
+    assert_eq!(id["id"], host.id);
+    object(run(&["status", "--config", &config, "--json"]), "status");
+    let listed = object(
+        run(&["peer", "list", "--config", &config, "--json"]),
+        "peer list",
+    );
+    assert!(
+        listed["accepted"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|peer| peer["id"] == client.id
+                && peer["allow"].as_array().is_some_and(|a| !a.is_empty())),
+        "{listed}"
+    );
+    let hosts = object(run(&["hosts", "--config", &config, "--json"]), "hosts");
+    assert_eq!(hosts["hosts"][0]["name"], "demo");
+    assert_eq!(hosts["hosts"][0]["endpoint"], "tcp://127.0.0.1:1");
+    object(run(&["links", "--config", &config, "--json"]), "links");
+
+    // A peer that pairs, is approved and is revoked, as objects; the pairing as events.
+    let joiner = world.client("joiner");
+    let mut door = Proc::start(
+        &["pair", "--config", &config, "--timeout", "60s", "--json"],
+        None,
+        "warn",
+    );
+    let pin = door.expect_line("{\"event\":\"host\"");
+    assert!(!pin.is_empty());
+    let until = Instant::now() + DEADLINE;
+    let pin = loop {
+        let lines = json_lines(&text(&door.stdout));
+        if let Some(line) = lines.iter().find(|line| line["event"] == "pin") {
+            break line["pin"].as_str().unwrap().to_owned();
+        }
+        assert!(Instant::now() < until, "no pin event");
+        thread::sleep(Duration::from_millis(20));
+    };
+    let joined = run(&[
+        "join",
+        &host.endpoint,
+        "--pin",
+        &pin,
+        "--config",
+        &joiner.config,
+        "--json",
+    ]);
+    let joined = object(joined, "join");
+    assert_eq!(joined["paired"], host.id);
+    let done = door.finish();
+    assert_eq!(done.code, Some(0), "{}", done.stderr);
+    let lines = json_lines(&done.stdout);
+    has_event(&shapes, "pair", "host", &lines);
+    has_event(&shapes, "pair", "pin", &lines);
+    assert!(
+        lines
+            .iter()
+            .any(|line| line["event"] == "paired" && line["peer"] == joiner.id)
+    );
+    let approved_json = object(
+        run(&[
+            "peer", "approve", &joiner.id, "--allow", "info", "--config", &config, "--json",
+        ]),
+        "peer approve",
+    );
+    assert_eq!(approved_json["approved"]["id"], joiner.id);
+    object(
+        run(&["peer", "revoke", &joiner.id, "--config", &config, "--json"]),
+        "peer revoke",
+    );
+
+    // `serve` and `pair` on a node of their own stream events.
+    let other = World::new("");
+    let mut serving = Proc::start(
+        &[
+            "serve",
+            "--config",
+            &other.config,
+            "--listen",
+            "tcp://127.0.0.1:0",
+            "--json",
+        ],
+        None,
+        "warn",
+    );
+    serving.expect_line("{\"endpoint\":");
+    let until = Instant::now() + DEADLINE;
+    let lines = loop {
+        let lines = json_lines(&text(&serving.stdout));
+        if lines.iter().any(|line| line["event"] == "host") {
+            break lines;
+        }
+        assert!(Instant::now() < until, "no host event");
+        thread::sleep(Duration::from_millis(20));
+    };
+    has_event(&shapes, "serve", "listening", &lines);
+    has_event(&shapes, "serve", "host", &lines);
+    drop(serving);
+    let alone = world.path("alone.cfg");
+    std::fs::write(
+        &alone,
+        format!(
+            "[service]\ndata_dir = {}\n[control]\nenabled = false\n[[listen]]\nendpoint = \"tcp://127.0.0.1:0\"\n",
+            toml_path(&world.path("alone-data"))
+        ),
+    )
+    .unwrap();
+    let pairing = Proc::start(
+        &[
+            "pair",
+            "--config",
+            &alone.to_string_lossy(),
+            "--timeout",
+            "60s",
+            "--json",
+        ],
+        None,
+        "warn",
+    );
+    let until = Instant::now() + DEADLINE;
+    let lines = loop {
+        let lines = json_lines(&text(&pairing.stdout));
+        if lines.iter().any(|line| line["event"] == "pin") {
+            break lines;
+        }
+        assert!(Instant::now() < until, "no pin event");
+        thread::sleep(Duration::from_millis(20));
+    };
+    has_event(&shapes, "pair", "pairing", &lines);
+    drop(pairing);
+
+    // What a peer asks of the host.
+    let ask = |args: &[&str]| {
+        let mut all = vec!["--json"];
+        all.extend_from_slice(args);
+        remote(&client, &host, &all)
+    };
+    object(ask(&["info"]), "remote info");
+    object(ask(&["stats"]), "remote stats");
+    let program = if cfg!(windows) { "cmd" } else { "sh" };
+    let found = object_status(
+        ask(&["which", program, "no-such-program-here"]),
+        "remote which",
+        1,
+    );
+    assert!(found["found"]["no-such-program-here"].is_null());
+    let note = format!("{root_text}/note.txt");
+    let written = object(
+        ask(&["write", &format!("{root_text}/written.txt")]),
+        "remote write",
+    );
+    assert_eq!(written["written"], 0);
+    let local = world.path("local.txt");
+    std::fs::write(&local, "from here\n").unwrap();
+    let local_text = local.to_string_lossy().into_owned();
+    object(
+        ask(&["put", &local_text, &format!("{root_text}/put.txt")]),
+        "remote put",
+    );
+    let back = world.path("back.txt");
+    object(
+        ask(&[
+            "get",
+            &format!("{root_text}/put.txt"),
+            &back.to_string_lossy(),
+        ]),
+        "remote get",
+    );
+    assert_eq!(std::fs::read_to_string(&back).unwrap(), "from here\n");
+    let tree = world.path("tree-local");
+    std::fs::create_dir_all(&tree).unwrap();
+    std::fs::write(tree.join("one.txt"), "1\n").unwrap();
+    object(
+        ask(&[
+            "sync",
+            "push",
+            &tree.to_string_lossy(),
+            &format!("{root_text}/synced"),
+        ]),
+        "remote sync",
+    );
+
+    // Streams.
+    let helper = helper();
+    let exec = ask(&["exec", "--", &helper, "echo", "hi"]);
+    assert_eq!(exec.code, Some(0), "{}", exec.stderr);
+    let lines = json_lines(&exec.stdout);
+    has_event(&shapes, "remote exec", "started", &lines);
+    has_event(&shapes, "remote exec", "stdout", &lines);
+    has_event(&shapes, "remote exec", "exit", &lines);
+    assert_eq!(lines.last().unwrap()["event"], "exit");
+    let joined: String = lines
+        .iter()
+        .filter(|line| line["event"] == "stdout")
+        .map(|line| line["b64"].as_str().unwrap())
+        .collect();
+    assert_eq!(joined, "aGkK", "`hi` and a line end in base64");
+    let both = ask(&["exec", "--", &helper, "both"]);
+    has_event(&shapes, "remote exec", "stderr", &json_lines(&both.stdout));
+    let hashed = ask(&["hash", &note, &format!("{root_text}/missing.txt")]);
+    assert_eq!(hashed.code, Some(1), "{}", hashed.stdout);
+    let lines = json_lines(&hashed.stdout);
+    has_event(&shapes, "remote hash", "hash", &lines);
+    has_event(&shapes, "remote hash", "failure", &lines);
+    let walked = ask(&["walk", &root_text]);
+    assert_eq!(walked.code, Some(0), "{}", walked.stderr);
+    has_event(&shapes, "remote walk", "entry", &json_lines(&walked.stdout));
+    let globbed = ask(&["glob", "**/*.txt", &root_text]);
+    assert_eq!(globbed.code, Some(0), "{}", globbed.stderr);
+    has_event(&shapes, "remote glob", "path", &json_lines(&globbed.stdout));
+    let searched = ask(&["search", "needle", &root_text]);
+    assert_eq!(searched.code, Some(0), "{}", searched.stderr);
+    let lines = json_lines(&searched.stdout);
+    has_event(&shapes, "remote search", "match", &lines);
+    has_event(&shapes, "remote search", "done", &lines);
+
+    // Sessions.
+    let detached = object(
+        ask(&["exec", "--detach", "--", &helper, "sleep", "60000"]),
+        "remote exec --detach",
+    );
+    let session = detached["session"].as_str().unwrap().to_owned();
+    let sessions = object(ask(&["sessions"]), "remote sessions");
+    assert!(
+        sessions["sessions"]
+            .as_array()
+            .is_some_and(|all| all.iter().any(|one| one["id"] == session))
+    );
+    let ended = object(ask(&["end", &session]), "remote end");
+    assert_eq!(ended["ended"], session);
+
+    // A connection, a forward and a read whose payload is the file.
+    object(
+        ask(&["connect", "--check", &format!("127.0.0.1:{target_port}")]),
+        "remote connect --check",
+    );
+    let mut forwarding = Proc::start(
+        &[
+            "remote",
+            &host.endpoint,
+            "--config",
+            &client.config,
+            "forward",
+            "-L",
+            &format!("127.0.0.1:0=127.0.0.1:{target_port}"),
+            "--json",
+        ],
+        None,
+        "warn",
+    );
+    forwarding.expect_line("{\"address\":");
+    let lines = json_lines(&text(&forwarding.stdout));
+    has_event(&shapes, "remote forward", "listening", &lines);
+    drop(forwarding);
+    let read = ask(&["read", &note]);
+    assert_eq!(read.code, Some(0), "{}", read.stderr);
+    assert_eq!(read.stdout, "hello\n", "the payload is unchanged");
+    has_shape(&shapes, "remote read/done", &json_lines(&read.stderr)[0]);
+    let pty = ask(&["exec", "--pty", "--", &helper, "echo", "tty"]);
+    assert_eq!(pty.code, Some(0), "{}", pty.stderr);
+    let done = json_lines(&pty.stderr);
+    has_shape(&shapes, "remote shell/done", done.last().unwrap());
+    assert!(done.last().unwrap()["done"]["exit"].is_object());
+    object(ask(&["gui", "info"]), "remote gui info");
+
+    // An error is one object on standard error and nothing on standard output.
+    let missing = ask(&["read", &format!("{root_text}/absent.txt")]);
+    assert_eq!(missing.code, Some(1));
+    assert!(missing.stdout.is_empty(), "{}", missing.stdout);
+    let error = &json_lines(&missing.stderr)[0];
+    has_shape(&shapes, "error", error);
+    assert_eq!(error["error"]["code"], "not_found");
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .is_some_and(|message| !message.is_empty())
+    );
+    let bad = run(&[
+        "config",
+        "check",
+        "--config",
+        "definitely-not-here.cfg",
+        "--json",
+    ]);
+    assert_eq!(bad.code, Some(1));
+    assert_eq!(json_lines(&bad.stderr)[0]["error"]["code"], "failed");
+    drop(target);
 }

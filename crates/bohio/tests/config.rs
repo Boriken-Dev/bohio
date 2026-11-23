@@ -1044,3 +1044,78 @@ fn an_mtu_below_the_least_or_for_another_endpoint_is_refused_naming_it() {
         other => panic!("{other:?}"),
     }
 }
+
+const HOSTS: &str = r#"
+[remote.web]
+endpoint = "tcp://10.0.0.5:7620"
+server = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+jump = ["gateway", "tcp://inner.example:7620"]
+
+[remote.gateway]
+endpoint = "tcp://gateway.example:7620"
+server = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+jump = ["edge"]
+
+[remote.edge]
+endpoint = "tcp://edge.example:7620"
+"#;
+
+#[test]
+fn named_hosts_are_read_and_a_named_jump_brings_its_own_jumps_and_server() {
+    let config = parse(HOSTS).expect("the hosts are valid");
+    assert_eq!(config.remote.len(), 3);
+    assert_eq!(
+        config.remote.names().collect::<Vec<_>>(),
+        ["edge", "gateway", "web"]
+    );
+    let web = config.remote.get("web").unwrap();
+    assert_eq!(web.endpoint, "tcp://10.0.0.5:7620");
+    // The hops in order: the gateway's own jump first, then the gateway, then an endpoint named as it is.
+    let hops = config.remote.hops("web").unwrap();
+    let endpoints: Vec<&str> = hops.iter().map(|hop| hop.endpoint.as_str()).collect();
+    assert_eq!(
+        endpoints,
+        [
+            "tcp://edge.example:7620",
+            "tcp://gateway.example:7620",
+            "tcp://inner.example:7620"
+        ]
+    );
+    assert_eq!(hops[0].server, None);
+    assert!(hops[1].server.as_deref().unwrap().ends_with("3333"));
+    assert_eq!(hops[2].server, None);
+    assert!(config.remote.hops("nowhere").is_err());
+}
+
+fn invalid(text: &str) -> (String, String) {
+    match parse(text) {
+        Err(ConfigError::Invalid { key, message, .. }) => (key, message),
+        other => panic!("expected an invalid configuration, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_jump_that_names_no_host_a_cycle_and_a_host_without_an_endpoint_are_refused_naming_the_key() {
+    let (key, message) = invalid("[remote.web]\nendpoint = \"tcp://a:1\"\njump = [\"missing\"]\n");
+    assert_eq!(key, "remote.web.jump");
+    assert!(message.contains("missing"), "{message}");
+
+    // A cycle through two hosts, and a host that is its own jump.
+    let (key, message) = invalid(
+        "[remote.a]\nendpoint = \"tcp://a:1\"\njump = [\"b\"]\n[remote.b]\nendpoint = \"tcp://b:1\"\njump = [\"a\"]\n",
+    );
+    assert_eq!(key, "remote.a.jump");
+    assert!(message.contains("a -> b -> a"), "{message}");
+    let (key, _) = invalid("[remote.me]\nendpoint = \"tcp://a:1\"\njump = [\"me\"]\n");
+    assert_eq!(key, "remote.me.jump");
+
+    let (key, _) = invalid("[remote.web]\nserver = \"sha256:ab\"\n");
+    assert_eq!(key, "remote.web.endpoint");
+    // A key this version does not know is named, as everywhere else.
+    assert!(matches!(
+        parse("[remote.web]\nendpoint = \"tcp://a:1\"\nport = 3\n"),
+        Err(ConfigError::Parse { .. })
+    ));
+    // A chain that does not loop is fine.
+    assert!(parse(HOSTS).is_ok());
+}

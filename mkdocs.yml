@@ -16,6 +16,7 @@ theme:
 nav:
   - Home: index.md
   - The protocol: protocol.md
+  - Machine-readable output: cli-json.md
   - Security: security.md
   - Embedding a node: embedding.md
   - Using it from hostctl: hostctl.md

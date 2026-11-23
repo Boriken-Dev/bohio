@@ -234,10 +234,14 @@ mod platform {
         service
             .set_description(DESCRIPTION)
             .map_err(|error| describe(&error))?;
-        println!(
-            "installed {}: `sc start {}` starts it",
-            registration.name, registration.name
-        );
+        if crate::cli::output::json() {
+            crate::cli::output::object(&serde_json::json!({ "installed": registration.name }));
+        } else {
+            println!(
+                "installed {}: `sc start {}` starts it",
+                registration.name, registration.name
+            );
+        }
         Ok(())
     }
 
@@ -270,7 +274,11 @@ mod platform {
             }
         }
         service.delete().map_err(|error| describe(&error))?;
-        println!("removed {name}");
+        if crate::cli::output::json() {
+            crate::cli::output::object(&serde_json::json!({ "removed": name }));
+        } else {
+            println!("removed {name}");
+        }
         Ok(())
     }
 

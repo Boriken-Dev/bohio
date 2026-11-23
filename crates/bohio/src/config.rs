@@ -8,9 +8,11 @@
 #![forbid(unsafe_code)]
 
 mod gui;
+mod hosts;
 mod layers;
 
 pub use gui::{ApprovalMode, BACKENDS, GuiConfig, Indicator, LadderStep, WindowsCapture};
+pub use hosts::{Hop, HostConfig, Hosts};
 pub use layers::{Layered, Layers};
 
 use std::ffi::OsString;
@@ -160,6 +162,8 @@ pub struct Config {
     /// `[peer.<id>]`: each accepted peer and what it may do. A key is accepted while any layer holds
     /// its table, even an empty one.
     pub peer: Peers,
+    /// `[remote.<name>]`: hosts `bohio remote` and a jump list can name.
+    pub remote: Hosts,
 }
 
 /// `[service]`: who the host is.
@@ -2094,6 +2098,9 @@ impl Config {
             message: message.to_owned(),
         };
         self.node().validate(path)?;
+        if let Err((key, message)) = self.remote.check() {
+            return Err(invalid(&key, &message));
+        }
         if let Err((key, message)) = self.client.validate() {
             return Err(invalid(key, message));
         }

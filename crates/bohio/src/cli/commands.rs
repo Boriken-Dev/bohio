@@ -6,8 +6,8 @@ use std::process::ExitCode;
 use bohio_proto::info::Info;
 
 use super::{
-    CheckArgs, Command, ConfigAction, ConfigOption, Format, InfoArgs, access, gui, host, mcp,
-    remote, service,
+    CheckArgs, Command, ConfigAction, ConfigOption, HostsArgs, InfoArgs, access, gui, host, mcp,
+    output, remote, service,
 };
 use crate::config::{Config, Environment, Layered, Layers};
 use crate::info;
@@ -30,6 +30,7 @@ pub(super) fn run(command: &Command, environment: &Environment) -> Result<ExitCo
         Command::Service(args) => done(service::run(args, environment)),
         Command::Remote(args) => remote::run(args, environment),
         Command::Links(args) => done(remote::links(args, environment)),
+        Command::Hosts(args) => done(hosts_command(args, environment)),
         Command::Gui(args) => done(gui::approve(args, environment)),
         Command::Mcp(args) => mcp::run(args, environment),
     }
@@ -141,37 +142,69 @@ fn config_check(args: &CheckArgs, environment: &Environment) -> Result<(), Strin
         .iter()
         .map(|path| path.display().to_string())
         .collect();
-    match args.format {
-        Format::Text => {
-            if files.is_empty() {
-                println!("ok: no configuration file found; the defaults apply");
-            } else {
-                println!("ok: {}", files.join(", "));
-            }
-            println!("service: {}", config.service.name);
-            println!("data_dir: {}", config.data_dir(environment).display());
-            println!("listen: {}", config.listen.len());
-            println!("peers: {}", config.peer.len());
-            println!("dial: {}", config.peer.dials().count());
-            println!("filesystem: {}", enabled(config.filesystem.enabled));
-            println!("execution: {}", enabled(config.execution.enabled));
-            println!("shell: {}", enabled(config.shell.enabled));
+    if output::json() {
+        output::object(&serde_json::json!({
+            "ok": true,
+            "files": files,
+            "service": config.service.name,
+            "data_dir": config.data_dir(environment).display().to_string(),
+            "listen": config.listen.iter().map(|l| l.endpoint.as_str()).collect::<Vec<_>>(),
+            "peers": config.peer.len(),
+            "dial": config.peer.dials().map(|(id, endpoint, _)| serde_json::json!({ "peer": id, "endpoint": endpoint })).collect::<Vec<_>>(),
+            "hosts": config.remote.names().collect::<Vec<_>>(),
+            "filesystem": config.filesystem.enabled,
+            "execution": config.execution.enabled,
+            "shell": config.shell.enabled,
+        }));
+        return Ok(());
+    }
+    if files.is_empty() {
+        println!("ok: no configuration file found; the defaults apply");
+    } else {
+        println!("ok: {}", files.join(", "));
+    }
+    println!("service: {}", config.service.name);
+    println!("data_dir: {}", config.data_dir(environment).display());
+    println!("listen: {}", config.listen.len());
+    println!("peers: {}", config.peer.len());
+    println!("dial: {}", config.peer.dials().count());
+    println!("hosts: {}", config.remote.len());
+    println!("filesystem: {}", enabled(config.filesystem.enabled));
+    println!("execution: {}", enabled(config.execution.enabled));
+    println!("shell: {}", enabled(config.shell.enabled));
+    Ok(())
+}
+
+/// `bohio hosts`: the hosts `[remote]` names, one line each, or `{"hosts": [...]}`.
+fn hosts_command(args: &HostsArgs, environment: &Environment) -> Result<(), String> {
+    let (found, _) = source(&args.config, environment)?;
+    let hosts = &found.config().remote;
+    if output::json() {
+        output::object(&serde_json::json!({
+            "hosts": hosts.iter().map(|(name, host)| serde_json::json!({
+                "name": name,
+                "endpoint": host.endpoint,
+                "server": host.server,
+                "ca": host.ca.iter().map(|file| file.display().to_string()).collect::<Vec<_>>(),
+                "cert_hash": host.cert_hash,
+                "fallback": host.fallback,
+                "jump": host.jump,
+            })).collect::<Vec<_>>(),
+        }));
+        return Ok(());
+    }
+    if hosts.is_empty() {
+        println!("no hosts named: add a [remote.NAME] table with an `endpoint` to bohio.cfg");
+    }
+    for (name, host) in hosts.iter() {
+        let mut line = format!("{name} {}", host.endpoint);
+        if let Some(server) = &host.server {
+            line.push_str(&format!(" server={server}"));
         }
-        Format::Json => {
-            let report = serde_json::json!({
-                "ok": true,
-                "files": files,
-                "service": config.service.name,
-                "data_dir": config.data_dir(environment).display().to_string(),
-                "listen": config.listen.iter().map(|l| l.endpoint.as_str()).collect::<Vec<_>>(),
-                "peers": config.peer.len(),
-                "dial": config.peer.dials().map(|(id, endpoint, _)| serde_json::json!({ "peer": id, "endpoint": endpoint })).collect::<Vec<_>>(),
-                "filesystem": config.filesystem.enabled,
-                "execution": config.execution.enabled,
-                "shell": config.shell.enabled,
-            });
-            println!("{report}");
+        if !host.jump.is_empty() {
+            line.push_str(&format!(" jump={}", host.jump.join(",")));
         }
+        println!("{line}");
     }
     Ok(())
 }
@@ -182,14 +215,13 @@ fn info_command(args: &InfoArgs, environment: &Environment) -> Result<(), String
         &super::host::node_settings(found.config(), environment),
         &environment.path.clone().unwrap_or_default(),
     );
-    match args.format {
-        Format::Text => print_info(&info),
-        Format::Json => {
-            println!(
-                "{}",
-                serde_json::to_string(&info).map_err(|_| "the capabilities cannot be written")?
-            );
-        }
+    if output::json() {
+        println!(
+            "{}",
+            serde_json::to_string(&info).map_err(|_| "the capabilities cannot be written")?
+        );
+    } else {
+        print_info(&info);
     }
     Ok(())
 }

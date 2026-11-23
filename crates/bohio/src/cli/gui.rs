@@ -13,7 +13,7 @@ use bohio_proto::gui::{
 use clap::{Args, Subcommand};
 
 use super::remote::{Client, control_endpoint, explain, unreachable};
-use super::{ConfigOption, Format};
+use super::{ConfigOption, output};
 use crate::config::Environment;
 
 /// `bohio remote ... gui`.
@@ -28,7 +28,7 @@ pub struct RemoteGuiArgs {
 #[derive(Debug, Subcommand)]
 pub enum GuiAction {
     /// Print what the host says of its desktop: backend, displays, state.
-    Info(GuiInfoArgs),
+    Info,
     /// Capture a display, or a region of one, to a file or standard output.
     Snapshot(SnapshotArgs),
     /// Receive the screen as it changes and print what the stream costs.
@@ -47,14 +47,6 @@ pub enum GuiAction {
     Clipboard(ClipboardArgs),
 }
 
-/// `gui info`.
-#[derive(Debug, Args)]
-pub struct GuiInfoArgs {
-    /// The output format.
-    #[arg(long, value_enum, default_value = "text")]
-    pub format: Format,
-}
-
 /// `gui snapshot`.
 #[derive(Debug, Args)]
 pub struct SnapshotArgs {
@@ -65,7 +57,7 @@ pub struct SnapshotArgs {
     #[arg(long, value_name = "X,Y,W,H")]
     pub region: Option<String>,
     /// png, jpeg or webp; the host's first allowed one by default.
-    #[arg(long, value_name = "FORMAT")]
+    #[arg(long = "image-format", value_name = "FORMAT")]
     pub format: Option<String>,
     /// JPEG quality, 1 to 100.
     #[arg(long, value_name = "N")]
@@ -227,16 +219,17 @@ pub(super) fn run(
     };
     let fail = |error| explain(&error);
     match &args.action {
-        GuiAction::Info(info) => {
+        GuiAction::Info => {
             let control = bohio_client::control::Control::open(link).map_err(fail)?;
             let found = control.info(Some(client.reply)).map_err(fail)?;
-            match info.format {
-                Format::Json => println!(
+            if output::json() {
+                println!(
                     "{}",
                     serde_json::to_string(&found.gui)
                         .map_err(|_| "the desktop cannot be written")?
-                ),
-                Format::Text => print_gui(&found.gui),
+                );
+            } else {
+                print_gui(&found.gui);
             }
         }
         GuiAction::Snapshot(snapshot) => {
@@ -271,7 +264,9 @@ pub(super) fn run(
             let format = snapshot
                 .format
                 .as_deref()
-                .map(|name| ImageFormat::from_name(name).ok_or("--format is png, jpeg or webp"))
+                .map(|name| {
+                    ImageFormat::from_name(name).ok_or("--image-format is png, jpeg or webp")
+                })
                 .transpose()?;
             let options = SnapshotOptions {
                 display: id(&snapshot.display),
@@ -284,7 +279,8 @@ pub(super) fn run(
                 settle: snapshot.settle.then(SettleOptions::default),
             };
             let image = gui.snapshot(&options, Some(wait)).map_err(fail)?;
-            if snapshot.out.as_os_str() == "-" {
+            let to_stdout = snapshot.out.as_os_str() == "-";
+            if to_stdout {
                 let mut out = std::io::stdout().lock();
                 out.write_all(&image.bytes)
                     .map_err(|error| error.to_string())?;
@@ -292,14 +288,32 @@ pub(super) fn run(
             } else {
                 std::fs::write(&snapshot.out, &image.bytes).map_err(|error| error.to_string())?;
             }
-            eprintln!(
-                "{}x{} {} display {} scale {}",
-                image.header.width,
-                image.header.height,
-                image.header.format,
-                image.header.display,
-                image.header.scale
-            );
+            if output::json() {
+                let described = serde_json::json!({
+                    "width": image.header.width,
+                    "height": image.header.height,
+                    "format": image.header.format.to_string(),
+                    "display": image.header.display.to_string(),
+                    "scale": image.header.scale,
+                    "bytes": image.bytes.len(),
+                    "path": (!to_stdout).then(|| snapshot.out.display().to_string()),
+                });
+                // With the image on standard output the description is the final status on standard error.
+                if to_stdout {
+                    output::status(&serde_json::json!({ "done": described }));
+                } else {
+                    output::object(&described);
+                }
+            } else {
+                eprintln!(
+                    "{}x{} {} display {} scale {}",
+                    image.header.width,
+                    image.header.height,
+                    image.header.format,
+                    image.header.display,
+                    image.header.scale
+                );
+            }
         }
         GuiAction::Watch(watch) => {
             let gui = want(&[Want::View])?;
@@ -375,12 +389,29 @@ pub(super) fn run(
             None => {
                 let gui = want(&[Want::Clipboard])?;
                 let text = gui.clipboard(Some(wait)).map_err(fail)?;
-                let mut out = std::io::stdout().lock();
-                out.write_all(text.as_bytes())
-                    .map_err(|error| error.to_string())?;
-                out.flush().map_err(|error| error.to_string())?;
+                if output::json() {
+                    output::object(&serde_json::json!({ "text": text }));
+                } else {
+                    let mut out = std::io::stdout().lock();
+                    out.write_all(text.as_bytes())
+                        .map_err(|error| error.to_string())?;
+                    out.flush().map_err(|error| error.to_string())?;
+                }
             }
         },
+    }
+    if output::json()
+        && matches!(
+            &args.action,
+            GuiAction::Click(_)
+                | GuiAction::Move(_)
+                | GuiAction::Scroll(_)
+                | GuiAction::Type(_)
+                | GuiAction::Key(_)
+                | GuiAction::Clipboard(ClipboardArgs { set: Some(_), .. })
+        )
+    {
+        output::object(&serde_json::json!({ "ok": true }));
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -469,6 +500,20 @@ fn watch_screen(gui: &Gui, watch: &WatchArgs, wait: std::time::Duration) -> Resu
         }
         if watch.stats && Instant::now() >= next_line {
             next_line += Duration::from_secs(1);
+            if output::json() {
+                output::event(
+                    "second",
+                    serde_json::json!({
+                        "second": started.elapsed().as_secs(),
+                        "updates": second_updates,
+                        "bytes": second_bytes,
+                        "ack_ms": ack_ms,
+                        "level": level,
+                    }),
+                );
+                (second_updates, second_bytes) = (0, 0);
+                continue;
+            }
             println!(
                 "{:>4}s {second_updates} updates {second_bytes} bytes ack {} ms level {level}",
                 started.elapsed().as_secs(),
@@ -477,7 +522,19 @@ fn watch_screen(gui: &Gui, watch: &WatchArgs, wait: std::time::Duration) -> Resu
             (second_updates, second_bytes) = (0, 0);
         }
     }
-    if watch.stats {
+    if output::json() {
+        let seconds = started.elapsed().as_secs_f64();
+        output::event(
+            "total",
+            serde_json::json!({
+                "updates": updates,
+                "bytes": bytes,
+                "seconds": seconds,
+                "ack_ms": ack_ms,
+                "level": level,
+            }),
+        );
+    } else if watch.stats {
         let seconds = started.elapsed().as_secs_f64().max(f64::EPSILON);
         println!(
             "total {updates} updates in {seconds:.1} s ({:.1} a second), {bytes} bytes ({:.0} an update, {:.0} a second), ack {} ms, level {level}",
@@ -585,6 +642,17 @@ pub(super) fn approve(args: &GuiArgs, environment: &Environment) -> Result<(), S
     match &args.action {
         ApproveAction::Pending => {
             let requests = local.gui_pending().map_err(|error| explain(&error))?;
+            if output::json() {
+                output::object(&serde_json::json!({
+                    "pending": requests.iter().map(|request| serde_json::json!({
+                        "id": request.id,
+                        "peer": request.peer.to_string(),
+                        "session": request.session,
+                        "want": request.want.iter().map(|want| want.name()).collect::<Vec<_>>(),
+                    })).collect::<Vec<_>>(),
+                }));
+                return Ok(());
+            }
             if requests.is_empty() {
                 println!("nothing is waiting");
             }
@@ -609,7 +677,16 @@ pub(super) fn approve(args: &GuiArgs, environment: &Environment) -> Result<(), S
                     "request {id} is not waiting: it timed out or was answered"
                 ));
             }
-            println!("{} {id}", if allow { "allowed" } else { "denied" });
+            if output::json() {
+                let mut answer = serde_json::Map::new();
+                answer.insert(
+                    if allow { "allowed" } else { "denied" }.to_owned(),
+                    serde_json::json!(id),
+                );
+                output::object(&serde_json::Value::Object(answer));
+            } else {
+                println!("{} {id}", if allow { "allowed" } else { "denied" });
+            }
         }
     }
     Ok(())

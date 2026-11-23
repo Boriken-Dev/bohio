@@ -196,7 +196,7 @@ fn a_node_built_from_memory_serves_bohio_info_exec_and_read() {
         run(&args)
     };
 
-    let info = remote(&["info", "--format", "json"]);
+    let info = remote(&["info", "--json"]);
     assert_eq!(info.code, Some(0), "{}", info.stderr);
     assert!(
         info.stdout.contains(&format!("\"host_id\":\"{server}\"")),

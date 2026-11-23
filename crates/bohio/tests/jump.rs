@@ -393,8 +393,7 @@ fn remote_jump_to_a_stdio_endpoint_runs_the_program_on_the_jump() {
         "--jump-server",
         jump_server.as_str(),
         "info",
-        "--format",
-        "json",
+        "--json",
     ];
     let mut run = Spawned::start(bohio(&args));
     assert_eq!(run.finish(), Some(0), "{}", run.stderr());
@@ -462,4 +461,64 @@ fn forward_dash_d_through_a_jump_reaches_a_target_only_the_far_host_grants() {
     client.read_to_end(&mut reply).expect("a reply");
     assert_eq!(reply, b"far: hello");
     served.join().expect("the target ended");
+}
+
+#[test]
+fn a_named_host_with_a_named_jump_runs_exec_and_an_unknown_name_is_refused() {
+    let _deadline = Deadline::start();
+    let dir = tempfile::tempdir().expect("a directory");
+    let (a, b, config, _) = two_hosts(dir.path(), true);
+    // The names stand for the endpoints, the ids to prove and the jump; nothing else is on the command line.
+    let mut file = std::fs::read_to_string(&config).unwrap();
+    file.push_str(&format!(
+        "[remote.far]\nendpoint = \"{}\"\nserver = \"{}\"\njump = [\"gate\"]\n[remote.gate]\nendpoint = \"{}\"\nserver = \"{}\"\n",
+        b.endpoint, b.id, a.endpoint, a.id
+    ));
+    std::fs::write(&config, file).unwrap();
+    let helper = helper();
+    let mut named = Spawned::start(bohio(&[
+        "remote", "far", "--config", &config, "exec", "--", &helper, "echo", "by", "name",
+    ]));
+    assert_eq!(named.finish(), Some(0), "{}", named.stderr());
+    assert_eq!(String::from_utf8_lossy(&named.stdout()).trim(), "by name");
+
+    // The hop's own `server` is what the jump must prove: a wrong one on the command line replaces the host's.
+    let mut wrong = Spawned::start(bohio(&[
+        "remote",
+        "far",
+        "--config",
+        &config,
+        "--server",
+        &a.id.to_string(),
+        "info",
+    ]));
+    assert_eq!(wrong.finish(), Some(1));
+
+    // A word with no `://` that names no host is refused saying so, not parsed as an endpoint.
+    let mut unknown = Spawned::start(bohio(&["remote", "nowhere", "--config", &config, "info"]));
+    assert_eq!(unknown.finish(), Some(1));
+    let said = unknown.stderr();
+    assert!(
+        said.contains("nowhere") && said.contains("[remote]"),
+        "{said}"
+    );
+
+    // `bohio hosts` lists them, and a cycle of jumps is refused by every command that reads the file.
+    let mut hosts = Spawned::start(bohio(&["hosts", "--config", &config]));
+    assert_eq!(hosts.finish(), Some(0), "{}", hosts.stderr());
+    let listed = String::from_utf8_lossy(&hosts.stdout()).into_owned();
+    assert!(
+        listed.contains("far ") && listed.contains("jump=gate"),
+        "{listed}"
+    );
+    let mut file = std::fs::read_to_string(&config).unwrap();
+    file.push_str("[remote.loop]\nendpoint = \"tcp://127.0.0.1:9\"\njump = [\"loop2\"]\n[remote.loop2]\nendpoint = \"tcp://127.0.0.1:9\"\njump = [\"loop\"]\n");
+    std::fs::write(&config, file).unwrap();
+    let mut cycle = Spawned::start(bohio(&["config", "check", "--config", &config]));
+    assert_eq!(cycle.finish(), Some(1));
+    let said = cycle.stderr();
+    assert!(
+        said.contains("remote.loop.jump") && said.contains("goes through itself"),
+        "{said}"
+    );
 }

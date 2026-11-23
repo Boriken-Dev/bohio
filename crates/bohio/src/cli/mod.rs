@@ -10,6 +10,7 @@ mod commands;
 mod gui;
 mod host;
 mod mcp;
+pub(crate) mod output;
 mod remote;
 pub mod service;
 
@@ -38,6 +39,11 @@ use crate::config::Environment;
         Exit status: 0 success, 1 the operation failed, 2 the invocation was wrong."
 )]
 pub struct Cli {
+    /// Print results as JSON for a program to read: one object, or for a command that streams one object on each line; a
+    /// command whose output is the payload (a file, a connection, a terminal) writes it unchanged and reports its status as
+    /// one object on standard error. Errors are `{"error": {"code", "message"}}` on standard error. See docs/cli-json.md.
+    #[arg(long, global = true)]
+    pub json: bool,
     /// What to do.
     #[command(subcommand)]
     pub command: Command,
@@ -74,6 +80,8 @@ pub enum Command {
     Links(LinksArgs),
     /// Serve the agent tools over the Model Context Protocol on standard input and output: files, programs and sessions of the named hosts.
     Mcp(McpArgs),
+    /// List the hosts named in `[remote]`: `bohio remote NAME ...` and a jump list take the name.
+    Hosts(HostsArgs),
     /// Answer a peer's request to look at or drive this screen, on the running node (`pending`, `allow`, `deny`).
     Gui(gui::GuiArgs),
 }
@@ -93,15 +101,6 @@ pub enum ConfigAction {
     Check(CheckArgs),
 }
 
-/// How a result is written.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum Format {
-    /// Lines for a person.
-    Text,
-    /// One JSON document, stable across releases.
-    Json,
-}
-
 /// `bohio config check`.
 #[derive(Debug, Args)]
 pub struct CheckArgs {
@@ -109,9 +108,6 @@ pub struct CheckArgs {
     /// `BOHIO_CONFIG` names the one layer; otherwise the system file is read and the user's merged over it.
     #[arg(long, value_name = "FILE", env = "BOHIO_CONFIG")]
     pub config: Vec<PathBuf>,
-    /// The output format.
-    #[arg(long, value_enum, default_value = "text")]
-    pub format: Format,
 }
 
 /// `bohio info`.
@@ -121,9 +117,6 @@ pub struct InfoArgs {
     /// `BOHIO_CONFIG` names the one layer; otherwise the system file is read and the user's merged over it.
     #[arg(long, value_name = "FILE", env = "BOHIO_CONFIG")]
     pub config: Vec<PathBuf>,
-    /// The output format.
-    #[arg(long, value_enum, default_value = "text")]
-    pub format: Format,
 }
 
 /// The configuration layers every command takes.
@@ -415,7 +408,7 @@ pub struct RemoteArgs {
 #[derive(Debug, Subcommand)]
 pub enum RemoteAction {
     /// Print the host's capabilities.
-    Info(RemoteInfoArgs),
+    Info,
     /// Run a program on the host and exit with its status.
     Exec(RemoteExecArgs),
     /// Write a file of the host to standard output.
@@ -434,7 +427,7 @@ pub enum RemoteAction {
     /// List the paths below a root that match a glob, on the host, in one stream (`**/*.rs`).
     Glob(RemoteGlobArgs),
     /// Print what the host is running on: name, uptime, processors, load, memory and disks.
-    Stats(RemoteStatsArgs),
+    Stats,
     /// Print where each name is on the host's own `PATH` (`NAME  PATH`, or `NAME  -` when there is none). Exits 1 when a
     /// name was not found.
     Which(RemoteWhichArgs),
@@ -460,17 +453,9 @@ pub enum RemoteAction {
     /// live, with typing and Ctrl-C going to its program.
     Attach(RemoteAttachArgs),
     /// List the detached sessions this peer holds on the host.
-    Sessions(RemoteSessionsArgs),
+    Sessions,
     /// End a detached session: its program is sent a signal (`kill`, ending the whole tree, unless `--signal` says otherwise).
     End(RemoteEndArgs),
-}
-
-/// `bohio remote ... stats`.
-#[derive(Debug, Args)]
-pub struct RemoteStatsArgs {
-    /// The output format.
-    #[arg(long, value_enum, default_value = "text")]
-    pub format: Format,
 }
 
 /// `bohio remote ... which`.
@@ -479,9 +464,6 @@ pub struct RemoteWhichArgs {
     /// The program names to look up on the host's own `PATH`.
     #[arg(required = true, value_name = "NAME")]
     pub names: Vec<String>,
-    /// The output format.
-    #[arg(long, value_enum, default_value = "text")]
-    pub format: Format,
 }
 
 /// `bohio remote ... search`.
@@ -519,9 +501,6 @@ pub struct RemoteSearchArgs {
     /// The most files to read (at most the host's `[search] max_files`).
     #[arg(long, value_name = "N")]
     pub max_files: Option<u64>,
-    /// The output format.
-    #[arg(long, value_enum, default_value = "text")]
-    pub format: Format,
 }
 
 /// `bohio remote ... glob`.
@@ -535,9 +514,6 @@ pub struct RemoteGlobArgs {
     /// How far below a path to go. The whole tree when absent.
     #[arg(long, value_name = "N")]
     pub depth: Option<u64>,
-    /// The output format.
-    #[arg(long, value_enum, default_value = "text")]
-    pub format: Format,
 }
 
 /// What `exec` and `shell` take to start a detached session.
@@ -591,14 +567,6 @@ pub struct RemoteAttachArgs {
     pub kill_after: std::time::Duration,
 }
 
-/// `bohio remote ... sessions`.
-#[derive(Debug, Args)]
-pub struct RemoteSessionsArgs {
-    /// The output format.
-    #[arg(long, value_enum, default_value = "text")]
-    pub format: Format,
-}
-
 /// `bohio remote ... end`.
 #[derive(Debug, Args)]
 pub struct RemoteEndArgs {
@@ -614,14 +582,6 @@ fn parse_signal(text: &str) -> Result<bohio_proto::signal::Signal, String> {
     bohio_proto::signal::Signal::from_name(text).ok_or_else(|| {
         "a signal is one of interrupt, terminate, hangup, quit, user1, user2, kill".to_owned()
     })
-}
-
-/// `bohio remote ... info`.
-#[derive(Debug, Args)]
-pub struct RemoteInfoArgs {
-    /// The output format.
-    #[arg(long, value_enum, default_value = "text")]
-    pub format: Format,
 }
 
 /// `bohio remote ... exec`.
@@ -811,9 +771,6 @@ pub struct RemoteWalkArgs {
     /// Compress the listing: `ALG` or `ALG:LEVEL`, where ALG is zstd, lz4, deflate or auto (the host's default).
     #[arg(long, value_name = "ALG[:LEVEL]")]
     pub compress: Option<String>,
-    /// The output format.
-    #[arg(long, value_enum, default_value = "text")]
-    pub format: Format,
 }
 
 /// Which way `sync` copies.
@@ -1007,11 +964,12 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>, environment: &Environm
             return ExitCode::from(u8::try_from(error.exit_code()).unwrap_or(2));
         }
     };
+    output::set_json(cli.json);
     install_subscriber();
     match commands::run(&cli.command, environment) {
         Ok(code) => code,
         Err(error) => {
-            eprintln!("bohio: {error}");
+            output::fail(&error);
             ExitCode::from(1)
         }
     }
@@ -1047,15 +1005,20 @@ fn install_subscriber() {
         .try_init();
 }
 
+/// `bohio hosts`.
+#[derive(Debug, Args)]
+pub struct HostsArgs {
+    /// The configuration.
+    #[command(flatten)]
+    pub config: ConfigOption,
+}
+
 /// `bohio links`.
 #[derive(Debug, Args)]
 pub struct LinksArgs {
     /// The configuration.
     #[command(flatten)]
     pub config: ConfigOption,
-    /// How the links are written.
-    #[arg(long, value_enum, default_value = "text")]
-    pub format: Format,
     /// How long to wait for each peer to say what it offers. Default `[client] links_wait` (5s).
     #[arg(long, value_name = "TIME")]
     pub wait: Option<String>,

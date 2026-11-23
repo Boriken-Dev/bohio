@@ -30,12 +30,12 @@ use coqui_link::auth::{Proof, Trust};
 use coqui_peer::PeerId;
 
 use super::commands::{print_info, source};
+use super::output;
 use super::{
-    Format, KeepArgs, OnFullArg, RemoteAction, RemoteArgs, RemoteAttachArgs, RemoteConnectArgs,
+    KeepArgs, OnFullArg, RemoteAction, RemoteArgs, RemoteAttachArgs, RemoteConnectArgs,
     RemoteEndArgs, RemoteExecArgs, RemoteForwardArgs, RemoteGlobArgs, RemoteHashArgs,
-    RemoteListenArgs, RemoteReadArgs, RemoteSearchArgs, RemoteSessionsArgs, RemoteShellArgs,
-    RemoteStatsArgs, RemoteSyncArgs, RemoteWalkArgs, RemoteWhichArgs, RemoteWriteArgs, SessionArgs,
-    SyncDirection,
+    RemoteListenArgs, RemoteReadArgs, RemoteSearchArgs, RemoteShellArgs, RemoteSyncArgs,
+    RemoteWalkArgs, RemoteWhichArgs, RemoteWriteArgs, SessionArgs, SyncDirection,
 };
 use crate::config::{DialConfig, Environment, Layers};
 use crate::forward::{BadSpec, LocalSpec, RemoteKeep, RemoteSpec, SocksSpec, keep_remote};
@@ -84,8 +84,28 @@ impl Client {
     }
 }
 
+/// The code an error is reported with under `--json`: the host's, or what kind of failure it was.
+fn code_of(error: &Error) -> String {
+    match error {
+        Error::Remote(body) => serde_json::to_value(body.code)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .unwrap_or_else(|| "remote".to_owned()),
+        Error::Transport(coqui_transport::Failure::Permission) => "denied".to_owned(),
+        Error::Timeout => "timeout".to_owned(),
+        Error::Closed => "closed".to_owned(),
+        Error::Link(_) => "link".to_owned(),
+        Error::Transport(_) => "transport".to_owned(),
+        Error::Protocol(_) => "protocol".to_owned(),
+        Error::Compression(_) => "compression".to_owned(),
+        Error::Local(_) => "local".to_owned(),
+        _ => "failed".to_owned(),
+    }
+}
+
 /// What a person is told when the host will not do what was asked.
 pub(super) fn explain(error: &Error) -> String {
+    output::code(&code_of(error));
     match error {
         Error::Remote(body) => format!("the host refused: {}", body.message),
         Error::Transport(coqui_transport::Failure::Permission) => {
@@ -95,15 +115,92 @@ pub(super) fn explain(error: &Error) -> String {
     }
 }
 
+/// What a command line and a named host come to: where the host is, how it is proven and trusted, and the hops to it.
+pub(super) struct Reach {
+    /// The endpoint text; none when `--command` names the program.
+    pub(super) endpoint: Option<String>,
+    /// The id the host must prove.
+    pub(super) server: Option<String>,
+    /// TLS trust of the endpoint this side dials itself.
+    pub(super) ca: Vec<std::path::PathBuf>,
+    pub(super) cert_hash: Vec<String>,
+    /// The endpoint to try when the first does not answer.
+    pub(super) fallback: Option<String>,
+    /// The hosts to go through, in order, each with the id it must prove.
+    pub(super) jumps: Vec<crate::config::Hop>,
+}
+
+/// The target `args` name: a word without `://` is a host of `[remote]`, whose settings the flags override; anything else is
+/// the endpoint as given.
+pub(super) fn target(args: &RemoteArgs, config: &crate::config::Config) -> Result<Reach, String> {
+    let flagged_jumps = || {
+        args.jump
+            .iter()
+            .enumerate()
+            .map(|(index, endpoint)| crate::config::Hop {
+                endpoint: endpoint.clone(),
+                server: args.jump_server.get(index).cloned(),
+                ca: Vec::new(),
+                cert_hash: Vec::new(),
+            })
+            .collect::<Vec<_>>()
+    };
+    if args.jump_server.len() > args.jump.len() {
+        return Err("--jump-server names more hosts than --jump does".to_owned());
+    }
+    let Some(text) = args
+        .endpoint
+        .as_deref()
+        .filter(|text| crate::config::Hosts::is_name(text))
+    else {
+        return Ok(Reach {
+            endpoint: args.endpoint.clone(),
+            server: args.server.clone(),
+            ca: args.ca.clone(),
+            cert_hash: args.cert_hash.clone(),
+            fallback: args.fallback.clone(),
+            jumps: flagged_jumps(),
+        });
+    };
+    let host = config.remote.get(text).ok_or_else(|| {
+        output::code("not_found");
+        format!(
+            "`{text}` is not a host named in [remote], and an endpoint has `://` (see `bohio hosts`)"
+        )
+    })?;
+    let jumps = if args.jump.is_empty() {
+        config.remote.hops(text)?
+    } else {
+        flagged_jumps()
+    };
+    Ok(Reach {
+        endpoint: Some(host.endpoint.clone()),
+        server: args.server.clone().or_else(|| host.server.clone()),
+        ca: if args.ca.is_empty() {
+            host.ca.clone()
+        } else {
+            args.ca.clone()
+        },
+        cert_hash: if args.cert_hash.is_empty() {
+            host.cert_hash.clone()
+        } else {
+            args.cert_hash.clone()
+        },
+        fallback: args.fallback.clone().or_else(|| host.fallback.clone()),
+        jumps,
+    })
+}
+
 fn direct_plan(args: &RemoteArgs, environment: &Environment) -> Result<Plan, String> {
     let (found, data) = source(&args.config, environment)?;
     let config = found.config();
-    let endpoint = match (&args.endpoint, &args.command) {
+    let target = target(args, config)?;
+    let endpoint = match (&target.endpoint, &args.command) {
         (Some(text), None) => Endpoint::parse(text)?,
         (None, Some(command)) => Endpoint::Command(split_command(command)?),
         _ => return Err("name the host as an endpoint or with --command, not both".to_owned()),
     };
-    let endpoint = match &args.fallback {
+    let endpoint = match &target.fallback {
         Some(text) => endpoint.with_fallback(Endpoint::parse(text)?)?,
         None => endpoint,
     };
@@ -128,12 +225,10 @@ fn direct_plan(args: &RemoteArgs, environment: &Environment) -> Result<Plan, Str
             .map(Arc::new)
             .map_err(|error| error.to_string())
     };
-    let proof = proof_for(args.server.as_deref())?;
-    if args.jump_server.len() > args.jump.len() {
-        return Err("--jump-server names more hosts than --jump does".to_owned());
-    }
+    let proof = proof_for(target.server.as_deref())?;
     let mut jumps = Vec::new();
-    for (index, text) in args.jump.iter().enumerate() {
+    for (index, hop_spec) in target.jumps.iter().enumerate() {
+        let text = &hop_spec.endpoint;
         let hop = Endpoint::parse(text).map_err(|error| format!("--jump `{text}`: {error}"))?;
         // The first hop is dialed from here, as any endpoint is; each next one is carried by the one before it.
         if index > 0
@@ -146,7 +241,7 @@ fn direct_plan(args: &RemoteArgs, environment: &Environment) -> Result<Plan, Str
                 "--jump `{text}`: only tcp://, pipe:// and stdio:// hops are carried through another host"
             ));
         }
-        let proof = proof_for(args.jump_server.get(index).map(String::as_str))
+        let proof = proof_for(hop_spec.server.as_deref())
             .map_err(|error| format!("--jump-server for `{text}`: {error}"))?;
         jumps.push(Jump {
             endpoint: hop,
@@ -166,7 +261,14 @@ fn direct_plan(args: &RemoteArgs, environment: &Environment) -> Result<Plan, Str
     let settings = config.link.settings();
     // TLS trust is for the endpoint this side dials itself: the first hop.
     let dialed = jumps.first().map_or(&endpoint, |jump| &jump.endpoint);
-    let trust = tls_trust(dialed, &args.ca, &args.cert_hash, args.clock_skew)?;
+    let (ca, cert_hash) = match (
+        target.jumps.first(),
+        args.ca.is_empty() && args.cert_hash.is_empty(),
+    ) {
+        (Some(first), true) => (first.ca.clone(), first.cert_hash.clone()),
+        _ => (target.ca.clone(), target.cert_hash.clone()),
+    };
+    let trust = tls_trust(dialed, &ca, &cert_hash, args.clock_skew)?;
     Ok(Plan::Direct {
         endpoint,
         proof,
@@ -243,18 +345,19 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
         None => None,
     };
     match &args.action {
-        RemoteAction::Info(info) => {
+        RemoteAction::Info => {
             let control = Control::open(&*link).map_err(|error| explain(&error))?;
             let found = control
                 .info(Some(client.reply))
                 .map_err(|error| explain(&error))?;
-            match info.format {
-                Format::Text => print_info(&found),
-                Format::Json => println!(
+            if output::json() {
+                println!(
                     "{}",
                     serde_json::to_string(&found)
                         .map_err(|_| "the capabilities cannot be written")?
-                ),
+                );
+            } else {
+                print_info(&found);
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -278,13 +381,13 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
                 .copy_to(&mut out, None)
                 .map_err(|error| explain(&error))?;
             out.flush().map_err(|error| error.to_string())?;
-            Ok(ExitCode::SUCCESS)
+            Ok(done_status())
         }
         RemoteAction::Write(write) => write_command(&*link, write, &client),
         RemoteAction::Hash(hash) => hash_command(&*link, hash),
         RemoteAction::Walk(walk) => walk_command(&*link, walk, &client),
         RemoteAction::Glob(glob) => glob_command(&*link, glob, &client),
-        RemoteAction::Stats(stats) => stats_command(&*link, stats, &client),
+        RemoteAction::Stats => stats_command(&*link, &client),
         RemoteAction::Which(which) => which_command(&*link, which, &client),
         RemoteAction::Search(search) => search_command(&*link, search, &client),
         RemoteAction::Sync(sync) => sync_command(&*link, sync, &client),
@@ -302,7 +405,7 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
         }
         RemoteAction::Shell(shell) => shell_command(&*link, shell, &client),
         RemoteAction::Attach(attach) => attach_command(&*link, attach, &client),
-        RemoteAction::Sessions(sessions) => sessions_command(&*link, sessions, &client),
+        RemoteAction::Sessions => sessions_command(&*link, &client),
         RemoteAction::End(end) => end_command(&*link, end, &client),
         RemoteAction::Connect(connect) => {
             let open = relinked(&link, kept.as_ref(), &settings);
@@ -509,13 +612,14 @@ fn backoff(
 ) -> Result<Backoff, String> {
     let (found, _) = source(&args.config, environment)?;
     let peers = &found.config().peer;
+    let target = target(args, found.config())?;
     let named = args
         .via
         .as_deref()
-        .or(args.server.as_deref())
+        .or(target.server.as_deref())
         .and_then(|id| peers.table(id))
         .or_else(|| {
-            let endpoint = args.endpoint.as_deref()?;
+            let endpoint = target.endpoint.as_deref()?;
             peers
                 .dials()
                 .find(|(_, text, _)| *text == endpoint)
@@ -567,11 +671,13 @@ fn keeping(
         return None;
     }
     let report: Box<dyn Fn(&Kept) + Send + Sync> = Box::new(|change| match change {
-        Kept::Lost => eprintln!("bohio: the link to the host was lost; making a new one"),
+        Kept::Lost => output::note("the link to the host was lost; making a new one"),
         Kept::Failed { reason, retry_in } => {
-            eprintln!("bohio: no link yet ({reason}); trying again in {retry_in:?}");
+            output::note(&format!(
+                "no link yet ({reason}); trying again in {retry_in:?}"
+            ));
         }
-        Kept::Restored => eprintln!("bohio: the link to the host is back"),
+        Kept::Restored => output::note("the link to the host is back"),
         _ => {}
     });
     Some(Arc::new(Reconnecting::start(
@@ -596,9 +702,15 @@ fn connect_command(
     let tunnel = bohio_client::forward::connect(link, &target, settings)
         .map_err(|error| explain_forward(&error))?;
     if args.check {
-        match tunnel.address() {
-            Some(address) => println!("connected {address}"),
-            None => println!("connected"),
+        if output::json() {
+            output::object(
+                &serde_json::json!({ "connected": tunnel.address().map(|address| address.to_string()) }),
+            );
+        } else {
+            match tunnel.address() {
+                Some(address) => println!("connected {address}"),
+                None => println!("connected"),
+            }
         }
         return Ok(ExitCode::SUCCESS);
     }
@@ -606,7 +718,7 @@ fn connect_command(
     tunnel
         .bridge(std::io::stdin(), &mut out)
         .map_err(|error| explain_forward(&error))?;
-    Ok(ExitCode::SUCCESS)
+    Ok(done_status())
 }
 
 /// What a person is told when a connect or a local forward fails: the host's reason, or that the grant does not cover the
@@ -621,6 +733,7 @@ fn explain_listen(error: &Error) -> String {
 }
 
 fn explain_with(error: &Error, permission: &str, verb: &str) -> String {
+    output::code(&code_of(error));
     match error {
         Error::Remote(body) => format!(
             "the host did not {verb} ({:?}): {}",
@@ -660,7 +773,7 @@ fn forward_command(
             .bind(settings)
             .map_err(|error| format!("-L `{text}`: {error}"))?;
         if let Some(address) = spec.non_default() {
-            println!("non-default: bind {address}");
+            non_default(&address.to_string());
         }
         bound.push((spec, listener, shown));
     }
@@ -673,7 +786,7 @@ fn forward_command(
             .bind()
             .map_err(|error| format!("-D `{text}`: {error}"))?;
         if let Some(address) = spec.non_default() {
-            println!("non-default: bind {address}");
+            non_default(&address.to_string());
         }
         socks.push((listener, shown));
     }
@@ -683,29 +796,33 @@ fn forward_command(
             .parse()
             .map_err(|error: BadSpec| format!("-R `{text}`: {error}"))?;
         if let Some(host) = spec.non_default() {
-            println!("non-default: bind {host}");
+            non_default(host);
         }
         remote.push(spec);
     }
     for (spec, _, shown) in &bound {
-        println!("local {shown} -> {}", spec.target());
+        announce(
+            "local",
+            &shown.to_string(),
+            Some(&spec.target().to_string()),
+        );
     }
     for (_, shown) in &socks {
-        println!("socks5 {shown}");
+        announce("socks5", &shown.to_string(), None);
     }
     let _ = std::io::stdout().flush();
     let stop = std::sync::atomic::AtomicBool::new(false);
     let report = |error: &Error| {
-        eprintln!(
-            "bohio: a forwarded connection failed: {}",
+        output::note(&format!(
+            "a forwarded connection failed: {}",
             explain_forward(error)
-        )
+        ));
     };
     let reporter: Arc<dyn Fn(&Error) + Send + Sync> = Arc::new(|error: &Error| {
-        eprintln!(
-            "bohio: a forwarded connection failed: {}",
+        output::note(&format!(
+            "a forwarded connection failed: {}",
             explain_listen(error)
-        );
+        ));
     });
     // What opens a local listener's connections: the link, or whichever link is up when a connection arrives.
     let open = relinked(link, kept, settings);
@@ -742,16 +859,15 @@ fn forward_command(
                 asking.push(scope.spawn(move || {
                     let tell = |state: KeptState| match state {
                         KeptState::Up { address } => {
-                            println!("remote {address} -> {local}");
-                            let _ = std::io::stdout().flush();
+                            announce("remote", &address.to_string(), Some(&local.to_string()));
                         }
                         KeptState::Down => {
-                            eprintln!("bohio: a remote forward ended; asking for it again");
+                            output::note("a remote forward ended; asking for it again");
                         }
                         KeptState::Failed { reason, retry_in } => {
-                            eprintln!(
-                                "bohio: a remote forward could not be made again ({reason}); trying again in {retry_in:?}"
-                            );
+                            output::note(&format!(
+                                "a remote forward could not be made again ({reason}); trying again in {retry_in:?}"
+                            ));
                         }
                     };
                     let ended = keep_remote(
@@ -780,7 +896,7 @@ fn forward_command(
             }
         } else {
             for (spec, forward) in remote.iter().zip(&forwards) {
-                println!("remote {} -> {}", forward.address(), spec.local());
+                announce("remote", forward.address(), Some(&spec.local().to_string()));
             }
             watcher = (!forwards.is_empty()).then(|| {
                 let (stop, forwards) = (&stop, &forwards);
@@ -926,8 +1042,19 @@ fn sync_options(
     })
 }
 
-/// The one line `put` and `get` print.
+/// The one line `put` and `get` print, or under `--json` one object.
 fn report_moved(moved: &Moved) -> Result<ExitCode, String> {
+    if output::json() {
+        output::object(&serde_json::json!({
+            "size": moved.size,
+            "literal_bytes": moved.literal_bytes,
+            "copied_bytes": moved.copied_bytes,
+            "wire_bytes": moved.wire_bytes,
+            "delta": moved.delta,
+            "skipped": moved.skipped,
+        }));
+        return Ok(ExitCode::SUCCESS);
+    }
     let line = if moved.skipped {
         format!("sent 0 of {} (unchanged)", moved.size)
     } else {
@@ -974,7 +1101,11 @@ fn write_command(
         client.transfer,
     )
     .map_err(|error| explain(&error))?;
-    eprintln!("bohio: wrote {} bytes", done.written);
+    if output::json() {
+        output::object(&serde_json::json!({ "written": done.written, "hashes": done.hashes }));
+    } else {
+        output::note(&format!("wrote {} bytes", done.written));
+    }
     Ok(ExitCode::SUCCESS)
 }
 
@@ -1090,7 +1221,7 @@ fn next_link(kept: &Reconnecting, poll: Duration) -> Arc<dyn Open> {
             return link;
         }
         if !told {
-            eprintln!("bohio: waiting for the link to the host");
+            output::note("waiting for the link to the host");
             told = true;
         }
         thread::sleep(poll);
@@ -1135,10 +1266,10 @@ fn listen_command(
                     failures = failures.saturating_add(1);
                     let wait = backoff.wait(failures, jitter.sample());
                     if !link_lost(&error) {
-                        eprintln!(
-                            "bohio: could not listen again ({}); trying again in {wait:?}",
+                        output::note(&format!(
+                            "could not listen again ({}); trying again in {wait:?}",
                             explain_listen(&error)
-                        );
+                        ));
                     }
                     thread::sleep(wait);
                     current = next_link(kept, poll);
@@ -1151,7 +1282,14 @@ fn listen_command(
         failures = 0;
         bind = crate::forward::same_port(&bind, listener.address());
         // On standard error: standard output is the connection's bytes.
-        eprintln!("listening {}", listener.address());
+        if output::json() {
+            output::status(&serde_json::json!({
+                "event": "listening",
+                "address": listener.address().to_string(),
+            }));
+        } else {
+            eprintln!("listening {}", listener.address());
+        }
         let _ = std::io::stdout().flush();
         loop {
             let arrival = match listener.next_arrival(Some(poll)) {
@@ -1165,10 +1303,10 @@ fn listen_command(
                 Ok(tunnel) => tunnel,
                 Err(error) if kept.is_some() && link_lost(&error) => break,
                 Err(error) if args.keep => {
-                    eprintln!(
-                        "bohio: an arrival could not be claimed: {}",
+                    output::note(&format!(
+                        "an arrival could not be claimed: {}",
                         explain_listen(&error)
-                    );
+                    ));
                     continue;
                 }
                 Err(error) => return Err(explain_listen(&error)),
@@ -1182,13 +1320,13 @@ fn listen_command(
             retired.store(true, std::sync::atomic::Ordering::SeqCst);
             drop(out);
             match result {
-                Ok(()) if !args.keep => return Ok(ExitCode::SUCCESS),
+                Ok(()) if !args.keep => return Ok(done_status()),
                 Ok(()) => {}
                 Err(error) if !args.keep => return Err(explain_listen(&error)),
-                Err(error) => eprintln!(
-                    "bohio: a connection ended badly: {}",
+                Err(error) => output::note(&format!(
+                    "a connection ended badly: {}",
                     explain_listen(&error)
-                ),
+                )),
             }
             if !current.is_up() {
                 break;
@@ -1198,7 +1336,7 @@ fn listen_command(
             return Err("the link to the host ended".to_owned());
         };
         drop(listener);
-        eprintln!("bohio: the link to the host ended; listening again when it is back");
+        output::note("the link to the host ended; listening again when it is back");
         current = next_link(kept, poll);
     }
 }
@@ -1229,6 +1367,12 @@ fn hash_command(link: &dyn Open, args: &RemoteHashArgs) -> Result<ExitCode, Stri
     let mut out = std::io::stdout().lock();
     for (path, answer) in args.paths.iter().zip(answers) {
         match answer {
+            Ok(digests) if output::json() => {
+                output::event(
+                    "hash",
+                    serde_json::json!({ "path": path, "hashes": digests }),
+                );
+            }
             Ok(digests) => {
                 for algorithm in &algorithms {
                     let hex = digests.get(algorithm).map_or("", String::as_str);
@@ -1242,7 +1386,7 @@ fn hash_command(link: &dyn Open, args: &RemoteHashArgs) -> Result<ExitCode, Stri
             }
             Err(body) => {
                 failed = true;
-                eprintln!("bohio: {path}: {}", body.message);
+                item_failure(Some(path), &body.message);
             }
         }
     }
@@ -1299,48 +1443,38 @@ fn walk_command(
                 } else {
                     format!("{}/{}", base.trim_end_matches('/'), entry.path)
                 };
-                match args.format {
-                    Format::Text => {
-                        let kind = match entry.metadata.kind {
-                            bohio_proto::fs::FileKind::File => 'f',
-                            bohio_proto::fs::FileKind::Directory => 'd',
-                            bohio_proto::fs::FileKind::Symlink => 'l',
-                            _ => '?',
-                        };
-                        let digest = entry
-                            .hashes
-                            .as_ref()
-                            .and_then(|digests| digests.values().next())
-                            .map_or(String::new(), |hex| format!("{hex}  "));
-                        let target = entry
-                            .target
-                            .as_ref()
-                            .map_or(String::new(), |target| format!(" -> {target}"));
-                        writeln!(
-                            out,
-                            "{kind} {:>12}  {digest}{path}{target}",
-                            entry.metadata.size
-                        )
-                    }
-                    Format::Json => writeln!(
-                        out,
-                        "{}",
-                        serde_json::json!({
-                            "root": root,
-                            "path": path,
-                            "entry": entry,
-                        })
-                    ),
+                if output::json() {
+                    output::event(
+                        "entry",
+                        serde_json::json!({ "root": root, "path": path, "entry": entry }),
+                    );
+                    continue;
                 }
+                let kind = match entry.metadata.kind {
+                    bohio_proto::fs::FileKind::File => 'f',
+                    bohio_proto::fs::FileKind::Directory => 'd',
+                    bohio_proto::fs::FileKind::Symlink => 'l',
+                    _ => '?',
+                };
+                let digest = entry
+                    .hashes
+                    .as_ref()
+                    .and_then(|digests| digests.values().next())
+                    .map_or(String::new(), |hex| format!("{hex}  "));
+                let target = entry
+                    .target
+                    .as_ref()
+                    .map_or(String::new(), |target| format!(" -> {target}"));
+                writeln!(
+                    out,
+                    "{kind} {:>12}  {digest}{path}{target}",
+                    entry.metadata.size
+                )
                 .map_err(|error| error.to_string())?;
             }
             bohio_client::walk::WalkItem::Failure(failure) => {
                 failed = true;
-                eprintln!(
-                    "bohio: {}: {}",
-                    failure.path.as_deref().unwrap_or(""),
-                    failure.message
-                );
+                item_failure(failure.path.as_deref(), &failure.message);
             }
         }
     }
@@ -1375,15 +1509,23 @@ fn follow_command(
                     .map_err(|error| error.to_string())?;
             }
             bohio_client::follow::FollowEvent::Truncated(truncated) => {
-                eprintln!(
-                    "bohio: {} ({} bytes now)",
-                    if truncated.replaced {
-                        "the file was replaced"
-                    } else {
-                        "the file was truncated"
-                    },
-                    truncated.size
-                );
+                if output::json() {
+                    output::status(&serde_json::json!({
+                        "event": "truncated",
+                        "size": truncated.size,
+                        "replaced": truncated.replaced,
+                    }));
+                } else {
+                    output::note(&format!(
+                        "{} ({} bytes now)",
+                        if truncated.replaced {
+                            "the file was replaced"
+                        } else {
+                            "the file was truncated"
+                        },
+                        truncated.size
+                    ));
+                }
             }
         }
     }
@@ -1392,21 +1534,18 @@ fn follow_command(
 }
 
 /// `bohio remote ... stats`.
-fn stats_command(
-    link: &dyn Open,
-    args: &RemoteStatsArgs,
-    client: &Client,
-) -> Result<ExitCode, String> {
+fn stats_command(link: &dyn Open, client: &Client) -> Result<ExitCode, String> {
     let control = Control::open(link).map_err(|error| explain(&error))?;
     let stats = control
         .stats(Some(client.reply))
         .map_err(|error| explain(&error))?;
-    match args.format {
-        Format::Json => println!(
+    if output::json() {
+        println!(
             "{}",
             serde_json::to_string(&stats).map_err(|_| "the statistics cannot be written")?
-        ),
-        Format::Text => print_stats(&stats),
+        );
+    } else {
+        print_stats(&stats);
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -1472,19 +1611,14 @@ fn which_command(
     let found = control
         .which(&names, Some(client.reply))
         .map_err(|error| explain(&error))?;
-    match args.format {
-        Format::Json => println!(
-            "{}",
-            serde_json::to_string(&serde_json::json!({ "found": found }))
-                .map_err(|_| "the answer cannot be written")?
-        ),
-        Format::Text => {
-            for name in &args.names {
-                println!(
-                    "{name}  {}",
-                    found.get(name).and_then(Option::as_deref).unwrap_or("-")
-                );
-            }
+    if output::json() {
+        output::object(&serde_json::json!({ "found": found }));
+    } else {
+        for name in &args.names {
+            println!(
+                "{name}  {}",
+                found.get(name).and_then(Option::as_deref).unwrap_or("-")
+            );
         }
     }
     Ok(if found.values().all(Option::is_some) {
@@ -1522,28 +1656,23 @@ fn glob_command(
                     .copied()
                     .unwrap_or("");
                 let path = joined(base, &entry.path);
-                match args.format {
-                    Format::Text => writeln!(out, "{path}"),
-                    Format::Json => writeln!(
-                        out,
-                        "{}",
+                if output::json() {
+                    output::event(
+                        "path",
                         serde_json::json!({
                             "root": root,
                             "path": path,
                             "kind": entry.metadata.kind,
                             "size": entry.metadata.size,
-                        })
-                    ),
+                        }),
+                    );
+                } else {
+                    writeln!(out, "{path}").map_err(|error| error.to_string())?;
                 }
-                .map_err(|error| error.to_string())?;
             }
             bohio_client::walk::WalkItem::Failure(failure) => {
                 failed = true;
-                eprintln!(
-                    "bohio: {}: {}",
-                    failure.path.as_deref().unwrap_or(""),
-                    failure.message
-                );
+                item_failure(failure.path.as_deref(), &failure.message);
             }
         }
     }
@@ -1602,11 +1731,9 @@ fn search_command(
                     .copied()
                     .unwrap_or("");
                 let path = joined(base, &hit.path);
-                let written = match args.format {
-                    Format::Text => write_hit(&mut out, &path, &hit.hit),
-                    Format::Json => writeln!(
-                        out,
-                        "{}",
+                if output::json() {
+                    output::event(
+                        "match",
                         serde_json::json!({
                             "root": hit.root,
                             "path": path,
@@ -1615,29 +1742,28 @@ fn search_command(
                             "before": hit.hit.before,
                             "after": hit.hit.after,
                             "truncated": hit.hit.truncated,
-                        })
-                    ),
-                };
-                written.map_err(|error| error.to_string())?;
+                        }),
+                    );
+                } else {
+                    write_hit(&mut out, &path, &hit.hit).map_err(|error| error.to_string())?;
+                }
             }
             bohio_client::search::SearchItem::Failure(failure) => {
                 failed = true;
-                eprintln!(
-                    "bohio: {}: {}",
-                    failure.path.as_deref().unwrap_or(""),
-                    failure.message
-                );
+                item_failure(failure.path.as_deref(), &failure.message);
             }
         }
     }
     out.flush().map_err(|error| error.to_string())?;
-    if let Some(done) = iter.done()
-        && done.truncated
-    {
-        eprintln!(
-            "bohio: the search stopped at a bound of the host after {} files and {} matches",
-            done.files, done.matches
-        );
+    if let Some(done) = iter.done() {
+        if output::json() {
+            output::event("done", serde_json::json!(done));
+        } else if done.truncated {
+            output::note(&format!(
+                "the search stopped at a bound of the host after {} files and {} matches",
+                done.files, done.matches
+            ));
+        }
     }
     Ok(if failed {
         ExitCode::from(2)
@@ -1710,6 +1836,40 @@ fn sync_command(
     };
     let report =
         sync_tree(link, &args.local, &args.remote, &options).map_err(|error| explain(&error))?;
+    if output::json() {
+        let step = |step: &Step| match step {
+            Step::MakeDirectory => "mkdir",
+            Step::Create => "create",
+            Step::Update => "update",
+            Step::Delete => "delete",
+        };
+        output::object(&serde_json::json!({
+            "unchanged": report.unchanged,
+            "bundled": report.bundled,
+            "bundles": report.bundles,
+            "singles": report.singles,
+            "deltas": report.deltas,
+            "deleted": report.deleted,
+            "skipped": report.skipped,
+            "bytes": report.bytes,
+            "wire_bytes": report.wire_bytes,
+            "dry_run": args.dry_run,
+            "actions": report.actions.iter().map(|action| serde_json::json!({
+                "step": step(&action.step),
+                "path": action.path,
+                "size": action.size,
+            })).collect::<Vec<_>>(),
+            "failures": report.failures.iter().map(|(path, why)| serde_json::json!({
+                "path": path,
+                "message": why,
+            })).collect::<Vec<_>>(),
+        }));
+        return Ok(if report.is_clean() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::from(1)
+        });
+    }
     let mut out = std::io::stdout().lock();
     if args.dry_run {
         for action in &report.actions {
@@ -1784,11 +1944,11 @@ fn on_ctrl_c(send: impl Fn(Signal) + Send + 'static, kill_after: Duration) {
 /// Says on standard error that the host could not deliver a signal this command sent for the person's Ctrl-C.
 fn report_undelivered(answer: &bohio_proto::signal::Signalled) {
     if !answer.delivered {
-        eprintln!(
-            "bohio: the host did not deliver {}: {}",
+        output::note(&format!(
+            "the host did not deliver {}: {}",
             answer.signal,
             answer.message.as_deref().unwrap_or("it cannot here")
-        );
+        ));
     }
 }
 
@@ -1867,7 +2027,11 @@ fn detached_exec(exec: &Exec, client: &Client) -> Result<ExitCode, String> {
     let id = exec
         .session()
         .ok_or_else(|| "the host started the program but made no session".to_owned())?;
-    println!("{id}");
+    if output::json() {
+        output::object(&serde_json::json!({ "session": id }));
+    } else {
+        println!("{id}");
+    }
     Ok(ExitCode::SUCCESS)
 }
 
@@ -1905,6 +2069,28 @@ fn drive_exec(
     }
     loop {
         match exec.next(None) {
+            Ok(Some(Event::Started { pid })) if output::json() => {
+                output::event("started", serde_json::json!({ "pid": pid }));
+            }
+            Ok(Some(Event::Stdout(bytes))) if output::json() => {
+                output::event(
+                    "stdout",
+                    serde_json::json!({ "b64": output::base64(&bytes) }),
+                );
+            }
+            Ok(Some(Event::Stderr(bytes))) if output::json() => {
+                output::event(
+                    "stderr",
+                    serde_json::json!({ "b64": output::base64(&bytes) }),
+                );
+            }
+            Ok(Some(Event::Exit(exit))) if output::json() => {
+                output::event("exit", serde_json::json!(exit));
+                return Ok(status_of(&exit));
+            }
+            Ok(Some(Event::Signalled(answer))) if output::json() => {
+                output::event("signalled", serde_json::json!(answer));
+            }
             Ok(Some(Event::Stdout(bytes))) => {
                 let mut out = std::io::stdout().lock();
                 let _ = out.write_all(&bytes);
@@ -1971,7 +2157,11 @@ fn terminal_command(
         let id = shell
             .session()
             .ok_or_else(|| "the host started the shell but made no session".to_owned())?;
-        println!("{id}");
+        if output::json() {
+            output::object(&serde_json::json!({ "session": id }));
+        } else {
+            println!("{id}");
+        }
         return Ok(ExitCode::SUCCESS);
     }
     drive_terminal(&shell, interactive, size, kill_after, client)
@@ -2040,6 +2230,9 @@ fn drive_terminal(
         let _ = crossterm::terminal::disable_raw_mode();
     }
     let exit = result?;
+    if output::json() {
+        output::status(&serde_json::json!({ "done": { "exit": exit } }));
+    }
     // A deadline is 124 as it is for `exec`; a program that ended on a signal is 128 and the signal; else its code.
     let code = if exit.timed_out {
         124
@@ -2060,10 +2253,10 @@ fn attach_command(
     let (attachment, attached) = bohio_client::session::attach(link, &args.id, args.from)
         .map_err(|error| explain(&error))?;
     if attached.lost > 0 {
-        eprintln!(
-            "bohio: the host had forgotten {} bytes before offset {}: the output starts there",
+        output::note(&format!(
+            "the host had forgotten {} bytes before offset {}: the output starts there",
             attached.lost, attached.from
-        );
+        ));
     }
     match attachment {
         bohio_client::session::Attachment::Exec(exec) => {
@@ -2083,24 +2276,15 @@ fn attach_command(
 }
 
 /// `bohio remote ... sessions`.
-fn sessions_command(
-    link: &dyn Open,
-    args: &RemoteSessionsArgs,
-    client: &Client,
-) -> Result<ExitCode, String> {
+fn sessions_command(link: &dyn Open, client: &Client) -> Result<ExitCode, String> {
     let control = Control::open(link).map_err(|error| explain(&error))?;
     let sessions = control
         .sessions(Some(client.reply))
         .map_err(|error| explain(&error))?;
-    match args.format {
-        Format::Json => {
-            println!(
-                "{}",
-                serde_json::to_string(&sessions)
-                    .map_err(|_| "the sessions cannot be written".to_owned())?
-            );
-        }
-        Format::Text => {
+    if output::json() {
+        output::object(&serde_json::json!({ "sessions": sessions }));
+    } else {
+        {
             for session in &sessions {
                 let state = match (&session.exit, session.attached) {
                     (Some(exit), _) => format!(
@@ -2141,6 +2325,9 @@ fn end_command(link: &dyn Open, args: &RemoteEndArgs, client: &Client) -> Result
     control
         .end_session(&args.id, args.signal, Some(client.reply))
         .map_err(|error| explain(&error))?;
+    if output::json() {
+        output::object(&serde_json::json!({ "ended": args.id }));
+    }
     Ok(ExitCode::SUCCESS)
 }
 
@@ -2215,12 +2402,13 @@ pub(super) fn links(args: &super::LinksArgs, environment: &Environment) -> Resul
     let local = crate::local::LocalLink::connect_to(&endpoint, &settings, server)
         .map_err(|error| unreachable(&error))?;
     let reply = local.links(wait).map_err(|error| explain(&error))?;
-    match args.format {
-        Format::Json => println!(
+    if output::json() {
+        println!(
             "{}",
             serde_json::to_string(&reply).map_err(|_| "the links cannot be written")?
-        ),
-        Format::Text => {
+        );
+    } else {
+        {
             if reply.links.is_empty() {
                 println!("no links");
             }
@@ -2275,4 +2463,50 @@ pub(super) fn dialer(
     settings.poll = client.poll;
     settings.forward = found.config().forward.client();
     Ok((Box::new(move || plan.dial()), settings))
+}
+
+/// Tells where a forward listens: `KIND ADDRESS -> TARGET` (`socks5 ADDRESS` has no target), or an event under `--json`.
+fn announce(kind: &str, address: &str, to: Option<&str>) {
+    if output::json() {
+        output::event(
+            "listening",
+            serde_json::json!({ "kind": kind, "address": address, "target": to }),
+        );
+        return;
+    }
+    match to {
+        Some(to) => println!("{kind} {address} -> {to}"),
+        None => println!("{kind} {address}"),
+    }
+    let _ = std::io::stdout().flush();
+}
+
+/// Tells that a listener is bound on an address the operator named, not the loopback default.
+fn non_default(bind: &str) {
+    if output::json() {
+        output::event("non_default", serde_json::json!({ "bind": bind }));
+    } else {
+        println!("non-default: bind {bind}");
+    }
+}
+
+/// The end of a command whose output is its payload: under `--json` the final status, one object on standard error.
+fn done_status() -> ExitCode {
+    if output::json() {
+        output::status(&serde_json::json!({ "done": {} }));
+    }
+    ExitCode::SUCCESS
+}
+
+/// Something a streaming command could not read, and went on: `bohio: PATH: MESSAGE` on standard error, or under `--json` a
+/// `failure` event in the stream.
+fn item_failure(path: Option<&str>, message: &str) {
+    if output::json() {
+        output::event(
+            "failure",
+            serde_json::json!({ "path": path, "message": message }),
+        );
+    } else {
+        eprintln!("bohio: {}: {message}", path.unwrap_or(""));
+    }
 }
