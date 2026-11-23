@@ -29,7 +29,7 @@ pub struct Environment { pub windows: bool, pub local_app_data: Option<PathBuf>,
 impl Environment { pub fn default_data_dir(&self) -> PathBuf; }
 
 pub struct Config { pub service: ServiceConfig, pub listen: Vec<ListenConfig>, pub link: LinkConfig, pub filesystem: FilesystemConfig, pub hash: HashConfig, pub delta: DeltaConfig, pub gui: GuiConfig,
-                    pub execution: ExecutionConfig, pub shell: ShellConfig, pub forward: ForwardConfig, pub pairing: PairingConfig, pub client: ClientConfig, pub control: ControlConfig, pub peer: Peers }     // Default; unknown keys refused; `peer` is `[peer.<id>]`
+                    pub execution: ExecutionConfig, pub shell: ShellConfig, pub forward: ForwardConfig, pub pairing: PairingConfig, pub waiting: WaitingConfig, pub client: ClientConfig, pub control: ControlConfig, pub peer: Peers }     // Default; unknown keys refused; `peer` is `[peer.<id>]`
 pub struct NodeConfig { pub name: String, pub link: LinkConfig, pub filesystem: FilesystemConfig, pub hash: HashConfig, pub delta: DeltaConfig,
                         pub execution: ExecutionConfig, pub shell: ShellConfig, pub forward: ForwardConfig, pub pairing: PairingConfig }   // Default, Deserialize, unknown keys refused: what a Node runs on, read by an app from any section of its own settings
 impl NodeConfig { pub fn validate(&self, label: &str) -> Result<(), ConfigError>; }   // every range check; `Node::new` calls it
@@ -89,6 +89,12 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[pairing] pending_per_source` | `4` | exchanges in progress at once from one source (an IPv4 address, or an IPv6 prefix of `ipv6_prefix` bits), which also bounds one source's simultaneous guesses; at least 1 |
 | `[pairing] ipv6_prefix` | `64` | the IPv6 prefix length sources are grouped by, 1 to 128 |
 | `[pairing] exchange_timeout` | `5s` | how long a joiner has to finish a pairing once it sent the marker (a proof has `[link] proof_timeout`); a silent joiner frees its place after it; a longer time tolerates a slower path and lets silent joiners hold places longer; not zero |
+| `[waiting] per_source` | `16` | entries one source (an IPv4 address, or an IPv6 prefix of `ipv6_prefix` bits) may hold in the waiting list; at least 1 |
+| `[waiting] total` | `1000` | entries the whole waiting list may hold; past it nothing is recorded; at least 1 |
+| `[waiting] rerecord` | `60s` | how long the same peer from the same source is not recorded again |
+| `[waiting] record_interval` | `1s` | the least time between two new records from one source; `0` is no limit |
+| `[waiting] ipv6_prefix` | `64` | the IPv6 prefix length waiting sources are grouped by, 1 to 128 |
+| `[waiting] when_full` | `refuse` | what a source at `per_source` does with a newcomer: `refuse`, or `replace-oldest` (peers sharing a source can then flush each other) |
 | `[client] reply_timeout` | `30s` | the `bohio` command's wait for the host's first answer to a question (`info`, the start of a read, a shell or a desktop session); `remote --reply-timeout`; not zero |
 | `[client] transfer_timeout` | `5m` | one step of a `put`, `get` or `write` may wait this for the host; `remote --transfer-timeout`; `0` waits for good |
 | `[client] gui_timeout` | `2m` | a `gui` action's wait for the host, which may wait for the person at the desktop; not zero |
@@ -472,7 +478,7 @@ pub fn admission(grants: Arc<dyn Grants>, protocol: &'static str) -> coqui_link:
 pub fn covers(grant: &Grant, protocol: &str, metadata: &[u8]) -> bool;   // the grant still covers what the open asked for
 pub fn grant_of(grants: &dyn Grants, peer: &str) -> Result<Grant, GrantsError>;
 
-pub struct Data;                                                   // Data::new(dir): dir(), identity_path(), identity(), store() (the waiting list)
+pub struct Data;                                                   // Data::new(dir): dir(), identity_path(), identity(), store() (the waiting list), with_waiting(&WaitingConfig) (`[waiting]` bounds for it)
 pub struct LayeredPeers;                                           // Keys + Grants over config layers read again at every question: LayeredPeers::new(files: Vec<PathBuf>, &Data) -> Result<Self, PeerError>; a stranger is recorded as waiting in the Data directory
 pub fn list(files: &[PathBuf], data: &Data) -> Result<Listing, PeerError>;   // Listing { accepted: Vec<Accepted{id, grant, endpoint}>, waiting: Vec<Waiting{id, source}> }
 pub fn approve(files: &[PathBuf], create: Option<&Path>, data: &Data, id: &PeerId, grant: Option<&Grant>, endpoint: Option<&str>) -> Result<Approved, PeerError>;   // Approved { file, made }
