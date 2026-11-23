@@ -777,6 +777,156 @@ fn the_command_puts_and_gets_a_file_sending_only_what_changed() {
 }
 
 #[test]
+fn the_command_walks_a_tree_and_syncs_it_both_ways_moving_only_what_differs() {
+    let world = World::new("");
+    let root = world.path("files");
+    std::fs::create_dir_all(&root).unwrap();
+    let host = world.serve("warn");
+    let client = approved(
+        &world,
+        "treeman",
+        &[
+            "--allow",
+            "fs.read,fs.write",
+            "--fs-root",
+            &root.to_string_lossy(),
+        ],
+    );
+    let local = world.path("src");
+    for dir in 0..3 {
+        for file in 0..10 {
+            let path = local.join(format!("d{dir}/f{file}.txt"));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, format!("file {dir}/{file}\n")).unwrap();
+        }
+    }
+    big_file(&local.join("big.bin"), 2 << 20);
+    let local_text = local.to_string_lossy().into_owned();
+    let remote_text = root.join("tree").to_string_lossy().into_owned();
+
+    let first = remote(&client, &host, &["sync", "push", &local_text, &remote_text]);
+    assert_eq!(first.code, Some(0), "{}", first.stderr);
+    assert!(
+        first
+            .stdout
+            .contains("0 unchanged, 30 bundled in 1 bundles, 1 large"),
+        "{}",
+        first.stdout
+    );
+    assert_eq!(
+        sha256_of(&root.join("tree/big.bin")),
+        sha256_of(&local.join("big.bin"))
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("tree/d2/f9.txt")).unwrap(),
+        "file 2/9\n"
+    );
+
+    // The same again: size and time agree, nothing moves.
+    let again = remote(&client, &host, &["sync", "push", &local_text, &remote_text]);
+    assert_eq!(again.code, Some(0), "{}", again.stderr);
+    assert!(
+        again
+            .stdout
+            .contains("31 unchanged, 0 bundled in 0 bundles, 0 large"),
+        "{}",
+        again.stdout
+    );
+
+    // A dry run says what it would do and does none of it.
+    std::fs::remove_file(local.join("d0/f0.txt")).unwrap();
+    std::fs::write(local.join("new.txt"), "new\n").unwrap();
+    let dry = remote(
+        &client,
+        &host,
+        &[
+            "sync",
+            "push",
+            "--dry-run",
+            "--delete",
+            &local_text,
+            &remote_text,
+        ],
+    );
+    assert_eq!(dry.code, Some(0), "{}", dry.stderr);
+    assert!(dry.stdout.contains("delete d0/f0.txt"), "{}", dry.stdout);
+    assert!(dry.stdout.contains("create new.txt"), "{}", dry.stdout);
+    assert!(root.join("tree/d0/f0.txt").exists());
+    assert!(!root.join("tree/new.txt").exists());
+    let done = remote(
+        &client,
+        &host,
+        &["sync", "push", "--delete", &local_text, &remote_text],
+    );
+    assert_eq!(done.code, Some(0), "{}", done.stderr);
+    assert!(!root.join("tree/d0/f0.txt").exists());
+    assert_eq!(
+        std::fs::read_to_string(root.join("tree/new.txt")).unwrap(),
+        "new\n"
+    );
+
+    // The listing: one line each, and JSON when asked.
+    let listed = remote(&client, &host, &["walk", "--depth", "1", &remote_text]);
+    assert_eq!(listed.code, Some(0), "{}", listed.stderr);
+    let lines: Vec<&str> = listed.stdout.lines().collect();
+    assert_eq!(lines.len(), 1 + 3 + 2, "{}", listed.stdout);
+    assert!(lines[0].starts_with("d "), "{}", lines[0]);
+    assert!(listed.stdout.contains("big.bin"), "{}", listed.stdout);
+    let json = remote(
+        &client,
+        &host,
+        &[
+            "walk",
+            "--format",
+            "json",
+            "--hash",
+            "crc32c",
+            "--include",
+            "*.bin",
+            &remote_text,
+        ],
+    );
+    assert_eq!(json.code, Some(0), "{}", json.stderr);
+    assert!(json.stdout.contains("\"path\""), "{}", json.stdout);
+    assert!(json.stdout.contains("big.bin"), "{}", json.stdout);
+    let missing = remote(&client, &host, &["walk", &format!("{remote_text}/absent")]);
+    assert_eq!(missing.code, Some(1), "{}", missing.stdout);
+
+    // The other way into a directory that does not exist yet.
+    let pulled_to = world.path("pulled");
+    let pulled_text = pulled_to.to_string_lossy().into_owned();
+    let pull = remote(
+        &client,
+        &host,
+        &["sync", "pull", &pulled_text, &remote_text],
+    );
+    assert_eq!(pull.code, Some(0), "{}", pull.stderr);
+    assert!(
+        pull.stdout.contains("bundled in 1 bundles, 1 large"),
+        "{}",
+        pull.stdout
+    );
+    assert_eq!(
+        sha256_of(&pulled_to.join("big.bin")),
+        sha256_of(&local.join("big.bin"))
+    );
+    assert_eq!(
+        std::fs::read_to_string(pulled_to.join("d1/f1.txt")).unwrap(),
+        "file 1/1\n"
+    );
+    let quiet = remote(
+        &client,
+        &host,
+        &["sync", "pull", &pulled_text, &remote_text],
+    );
+    assert!(
+        quiet.stdout.contains("0 bundled in 0 bundles, 0 large"),
+        "{}",
+        quiet.stdout
+    );
+}
+
+#[test]
 fn an_unknown_proven_key_is_refused_and_listed_as_waiting() {
     let world = World::new("");
     let host = world.serve("warn");

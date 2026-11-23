@@ -308,6 +308,18 @@ pub(super) fn print_info(info: &Info) {
             transfer.delta.max_signature_bytes
         );
     }
+    println!(
+        "walk: {} (max_streams={} max_entries={}), bundles: {}, resume: {}",
+        enabled(transfer.walk),
+        transfer.walk_limits.max_streams,
+        if transfer.walk_limits.max_entries == 0 {
+            "unlimited".to_owned()
+        } else {
+            transfer.walk_limits.max_entries.to_string()
+        },
+        enabled(transfer.bundles),
+        enabled(transfer.resume)
+    );
     let gui = &info.gui;
     if gui.enabled {
         println!(

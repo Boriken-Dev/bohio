@@ -426,6 +426,10 @@ pub enum RemoteAction {
     /// Fetch a file of the host to a local file, replacing it atomically; only what changed travels when this side has an
     /// older copy.
     Get(RemoteGetArgs),
+    /// List a tree of the host, one line for each entry, in one stream.
+    Walk(RemoteWalkArgs),
+    /// Make a tree of the host and a local tree the same, moving only what differs: small files in bundles, large ones by delta.
+    Sync(RemoteSyncArgs),
     /// Open an interactive shell on the host.
     Shell(RemoteShellArgs),
     /// Have the host connect to a target and bridge it to standard input and output (netcat); `ssh -o ProxyCommand` can
@@ -679,6 +683,77 @@ pub struct RemoteGetArgs {
     /// The options of a transfer.
     #[command(flatten)]
     pub sync: SyncArgs,
+}
+
+/// `bohio remote ... walk`.
+#[derive(Debug, Args)]
+pub struct RemoteWalkArgs {
+    /// The directories (or files) to list, in the host's own path text.
+    #[arg(required = true, value_name = "PATH")]
+    pub paths: Vec<String>,
+    /// How far below a path to go: `0` is the paths themselves (a batched stat). The whole tree when absent.
+    #[arg(long, value_name = "N")]
+    pub depth: Option<u64>,
+    /// Enter links to directories (inside the path only).
+    #[arg(long)]
+    pub follow: bool,
+    /// List only entries whose path or name matches this glob (repeatable).
+    #[arg(long, value_name = "GLOB")]
+    pub include: Vec<String>,
+    /// Leave out entries matching this glob, and what is under a directory that does (repeatable).
+    #[arg(long, value_name = "GLOB")]
+    pub exclude: Vec<String>,
+    /// A digest of each file's content, computed on the host (see `hash` for the names).
+    #[arg(long, value_name = "NAME")]
+    pub hash: Option<String>,
+    /// Compress the listing: `ALG` or `ALG:LEVEL`, where ALG is zstd, lz4, deflate or auto (the host's default).
+    #[arg(long, value_name = "ALG[:LEVEL]")]
+    pub compress: Option<String>,
+    /// The output format.
+    #[arg(long, value_enum, default_value = "text")]
+    pub format: Format,
+}
+
+/// Which way `sync` copies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SyncDirection {
+    /// The local tree is copied to the host.
+    Push,
+    /// The host's tree is copied here.
+    Pull,
+}
+
+/// `bohio remote ... sync`.
+#[derive(Debug, Args)]
+pub struct RemoteSyncArgs {
+    /// Which way to copy.
+    #[arg(value_enum)]
+    pub direction: SyncDirection,
+    /// The local directory.
+    pub local: PathBuf,
+    /// The directory on the host, in the host's own path text.
+    pub remote: String,
+    /// Remove from the destination what the source does not have.
+    #[arg(long)]
+    pub delete: bool,
+    /// Change nothing: say what would be done.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// How a file on both sides is told to be the same: `meta` (size and time), `hash` (blake3 of each side) or `blocks`.
+    #[arg(long, value_enum, default_value = "meta")]
+    pub compare: CompareChoice,
+    /// The largest file moved in a bundle, in bytes; larger ones go one by one, by delta against the old copy.
+    #[arg(long, value_name = "BYTES", default_value_t = 1_048_576)]
+    pub bundle_max: u64,
+    /// The most files in one bundle.
+    #[arg(long, value_name = "N", default_value_t = 1000)]
+    pub bundle_items: usize,
+    /// How many bundles and large files move at once.
+    #[arg(long, value_name = "N", default_value_t = 4)]
+    pub parallel: usize,
+    /// Compress what travels: `ALG` or `ALG:LEVEL`, where ALG is zstd, lz4, deflate or auto (the host's default).
+    #[arg(long, value_name = "ALG[:LEVEL]")]
+    pub compress: Option<String>,
 }
 
 /// `bohio remote ... hash`.

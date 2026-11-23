@@ -33,7 +33,8 @@ use super::commands::{print_info, source};
 use super::{
     Format, KeepArgs, OnFullArg, RemoteAction, RemoteArgs, RemoteAttachArgs, RemoteConnectArgs,
     RemoteEndArgs, RemoteExecArgs, RemoteForwardArgs, RemoteHashArgs, RemoteListenArgs,
-    RemoteSessionsArgs, RemoteShellArgs, RemoteWriteArgs, SessionArgs,
+    RemoteSessionsArgs, RemoteShellArgs, RemoteSyncArgs, RemoteWalkArgs, RemoteWriteArgs,
+    SessionArgs, SyncDirection,
 };
 use crate::config::{DialConfig, Environment, Layers};
 use crate::forward::{BadSpec, LocalSpec, RemoteKeep, RemoteSpec, SocksSpec, keep_remote};
@@ -274,6 +275,8 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
         }
         RemoteAction::Write(write) => write_command(&*link, write, &client),
         RemoteAction::Hash(hash) => hash_command(&*link, hash),
+        RemoteAction::Walk(walk) => walk_command(&*link, walk, &client),
+        RemoteAction::Sync(sync) => sync_command(&*link, sync, &client),
         RemoteAction::Put(put) => {
             let options = sync_options(&*link, &put.sync, true, &client)?;
             let moved = bohio_client::sync::put(&*link, &put.local, &put.remote, &options)
@@ -1237,6 +1240,187 @@ fn hash_command(link: &dyn Open, args: &RemoteHashArgs) -> Result<ExitCode, Stri
         ExitCode::from(1)
     } else {
         ExitCode::SUCCESS
+    })
+}
+
+/// `bohio remote ... walk`: the entries of trees, one line each (or one JSON document each).
+fn walk_command(
+    link: &dyn Open,
+    args: &RemoteWalkArgs,
+    client: &Client,
+) -> Result<ExitCode, String> {
+    let hashes = match &args.hash {
+        Some(name) => {
+            let algorithm = Algorithm::from_name(name);
+            if !algorithm.is_known() {
+                return Err(format!("`{name}` is not an algorithm"));
+            }
+            vec![algorithm]
+        }
+        None => Vec::new(),
+    };
+    let compression = match wanted(args.compress.as_deref(), None)? {
+        Some(compression) if compression.algorithm == Codec::None => None,
+        other => other,
+    };
+    let options = bohio_client::walk::WalkOptions {
+        depth: args.depth,
+        follow: args.follow,
+        include: args.include.clone(),
+        exclude: args.exclude.clone(),
+        hashes,
+        compression,
+    };
+    let roots: Vec<&str> = args.paths.iter().map(String::as_str).collect();
+    let iter = bohio_client::walk::walk_with(link, &roots, &options, Some(client.reply))
+        .map_err(|error| explain(&error))?;
+    let mut out = std::io::stdout().lock();
+    let mut failed = false;
+    for item in iter {
+        match item.map_err(|error| explain(&error))? {
+            bohio_client::walk::WalkItem::Entry { root, entry } => {
+                let base = roots
+                    .get(usize::try_from(root).unwrap_or(usize::MAX))
+                    .copied()
+                    .unwrap_or("");
+                let path = if entry.path.is_empty() {
+                    base.to_owned()
+                } else {
+                    format!("{}/{}", base.trim_end_matches('/'), entry.path)
+                };
+                match args.format {
+                    Format::Text => {
+                        let kind = match entry.metadata.kind {
+                            bohio_proto::fs::FileKind::File => 'f',
+                            bohio_proto::fs::FileKind::Directory => 'd',
+                            bohio_proto::fs::FileKind::Symlink => 'l',
+                            _ => '?',
+                        };
+                        let digest = entry
+                            .hashes
+                            .as_ref()
+                            .and_then(|digests| digests.values().next())
+                            .map_or(String::new(), |hex| format!("{hex}  "));
+                        let target = entry
+                            .target
+                            .as_ref()
+                            .map_or(String::new(), |target| format!(" -> {target}"));
+                        writeln!(
+                            out,
+                            "{kind} {:>12}  {digest}{path}{target}",
+                            entry.metadata.size
+                        )
+                    }
+                    Format::Json => writeln!(
+                        out,
+                        "{}",
+                        serde_json::json!({
+                            "root": root,
+                            "path": path,
+                            "entry": entry,
+                        })
+                    ),
+                }
+                .map_err(|error| error.to_string())?;
+            }
+            bohio_client::walk::WalkItem::Failure(failure) => {
+                failed = true;
+                eprintln!(
+                    "bohio: {}: {}",
+                    failure.path.as_deref().unwrap_or(""),
+                    failure.message
+                );
+            }
+        }
+    }
+    out.flush().map_err(|error| error.to_string())?;
+    Ok(if failed {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+/// `bohio remote ... sync`: a tree and a tree of the host made the same.
+fn sync_command(
+    link: &dyn Open,
+    args: &RemoteSyncArgs,
+    client: &Client,
+) -> Result<ExitCode, String> {
+    use bohio_client::sync::{Direction, Step, TreeOptions, sync_tree};
+    let compression = match wanted(args.compress.as_deref(), None)? {
+        Some(compression) if compression.algorithm == Codec::None => None,
+        Some(compression) if args.direction == SyncDirection::Push => {
+            Some(named(link, compression, client)?)
+        }
+        other => other,
+    };
+    let sync = SyncOptions {
+        compression: compression.clone(),
+        timeout: client.transfer,
+        read_size: client.read_size,
+        ..SyncOptions::default()
+    };
+    let options = TreeOptions {
+        direction: match args.direction {
+            SyncDirection::Push => Direction::Push,
+            SyncDirection::Pull => Direction::Pull,
+        },
+        compare: match args.compare {
+            super::CompareChoice::Meta => Compare::Meta,
+            super::CompareChoice::Hash => Compare::Hash(Algorithm::Blake3),
+            super::CompareChoice::Blocks => Compare::Blocks,
+        },
+        delete: args.delete,
+        dry_run: args.dry_run,
+        bundle_max: args.bundle_max,
+        bundle_items: args.bundle_items,
+        parallel: args.parallel,
+        sync,
+        bundle: bohio_client::bundle::BundleOptions {
+            compression,
+            timeout: client.transfer,
+            ..bohio_client::bundle::BundleOptions::default()
+        },
+        ..TreeOptions::default()
+    };
+    let report =
+        sync_tree(link, &args.local, &args.remote, &options).map_err(|error| explain(&error))?;
+    let mut out = std::io::stdout().lock();
+    if args.dry_run {
+        for action in &report.actions {
+            let verb = match action.step {
+                Step::MakeDirectory => "mkdir",
+                Step::Create => "create",
+                Step::Update => "update",
+                Step::Delete => "delete",
+            };
+            writeln!(out, "{verb} {} ({} bytes)", action.path, action.size)
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    writeln!(
+        out,
+        "{} unchanged, {} bundled in {} bundles, {} large ({} by delta), {} deleted, {} skipped; {} bytes of files, {} on the wire",
+        report.unchanged,
+        report.bundled,
+        report.bundles,
+        report.singles,
+        report.deltas,
+        report.deleted,
+        report.skipped,
+        report.bytes,
+        report.wire_bytes
+    )
+    .map_err(|error| error.to_string())?;
+    out.flush().map_err(|error| error.to_string())?;
+    for (path, why) in &report.failures {
+        eprintln!("bohio: {path}: {why}");
+    }
+    Ok(if report.is_clean() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
     })
 }
 
