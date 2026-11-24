@@ -39,10 +39,47 @@ the registry, so an offline build that quietly reached for the network cannot pa
 
 `tools/sdk.lock` is the only file to trust for what a release is built with: the Rust toolchains (the newest tested stable and
 the minimum, which `Cargo.toml`'s `rust-version` must agree with), `rustup`, the LLVM that compiles `ring` on Windows ARM64
-where no clang is found, the container image's two base images by digest, and the system packages a target needs.
+where no clang is found, the container build's two base images by digest, and the system packages a target needs.
 `python tools/build.py sdk check` holds the repository to it (the Containerfile's digests included, and with `--online` each
 download's hash against what its publisher says); `sdk install --groups core,release` installs the groups under one
 prefix without touching the shell profile.
+
+## Container builds
+
+`packaging/container/Containerfile` builds from the deps branch with no network after the toolchain is installed. It has four
+stages: `sdk` (the pinned `rust` base image, a `rustup-init` checked against the lock's hash, and the toolchain the lock
+names), `build` and `test` (the deps branch copied in, `offline plan` writing the cargo home, then `cargo build` and
+`cargo test` with `RUN --network=none`) and `runtime` (the image, a non-root account and `bohio serve --stdio`). Build it
+through the tool, which supplies the build contexts a plain `podman build` lacks:
+
+```text
+python tools/build.py container build --tag bohio    # the image
+python tools/build.py container test                 # the workspace tests, offline, in the same container
+python tools/build.py container build --print        # the settings and the engine command, nothing fetched or run
+```
+
+The deps commit is the one the lock's `deps crates` row names, fetched from that row's URL into `target/container/` and held
+to `Cargo.lock` before the engine starts. `docker` takes the same command line (`CONTAINER_ENGINE=docker`).
+
+Every override is a source or a location and goes in `.env` (shared by a checkout) or `.env.local` (one machine), both ignored by
+git; `.env.example` lists every key with its default commented out. A later layer wins: `.env`, `.env.local`, the process
+environment, then `--env KEY=VALUE`. A key that is not in the list (`python tools/build.py help env`) is an error naming the
+file and line.
+
+| Keys | What they change |
+| --- | --- |
+| `RUSTUP_DIST_SERVER`, `RUSTUP_UPDATE_ROOT`, `RUSTUP_INIT_BASE_URL`, `APT_MIRROR` | where the `sdk` stage downloads from; the lock's hash still has to match `rustup-init` |
+| `BASE_IMAGE`, `RUNTIME_IMAGE`, `ALLOW_UNPINNED_IMAGE` | the two base images; an override needs an `@sha256:` digest unless `ALLOW_UNPINNED_IMAGE=1`, which is reported |
+| `RUST_VERSION`, `RUSTUP_VERSION` with `RUSTUP_INIT_SHA256_X86_64` and `_AARCH64` | a toolchain or rustup other than the lock's; a rustup version and both its hashes go together |
+| `DEPS_DIR`, or `DEPS_GIT_URL` and `DEPS_REF` | a local deps checkout, or another place or commit to fetch it from; either is read file by file against `Cargo.lock` |
+| `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `EXTRA_CA_CERT` | the `sdk` stage's network; the certificate is trusted there and never reaches the image |
+| `CONTAINER_ENGINE`, `CONTAINER_PLATFORM` | `podman` (the default) or `docker`, and the engine's `--platform` |
+
+A build prints each key that differs from the lock first and records their names, never their values, as the image label
+`build.py.non-default`, beside `org.opencontainers.image.revision` and `build.py.deps-commit`. A value with credentials (a proxy
+with a password) reaches the engine through its environment, is on no command line and is printed with the user and password
+replaced. `python tools/build.py sdk check` holds the Containerfile's base images, toolchain, `rustup` version and hashes to
+the lock.
 
 ## Release builds
 
@@ -58,8 +95,8 @@ A release is one archive per target, built natively on that target's runner, plu
 `python tools/build.py release build --target TRIPLE --offline` builds one from the deps branch and packs
 `dist/bohio-VERSION-TRIPLE.ARCHIVE` with the licence and readme files, recording its hash in `dist/SHA256SUMS`; the same
 inputs give the same archive bytes. `release verify` checks that each Linux binary is statically linked, and `release image
---arch amd64|arm64` builds `packaging/container/Containerfile` and saves it as an OCI archive. The image build runs cargo
-inside the container and uses the network. Nothing is pushed to a registry.
+--arch amd64|arm64` builds `packaging/container/Containerfile` as `container build` does and saves it as an OCI archive.
+Nothing is pushed to a registry.
 
 The `test` workflow builds all of this on every run, and the `release` workflow, on a `v*` tag, runs that workflow, builds the
 docs strictly and attaches the archives, the images and one `SHA256SUMS` to a GitHub release.

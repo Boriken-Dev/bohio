@@ -128,7 +128,8 @@ implementer in another language; `vectors/` holds its messages as hex), [securit
 ## Deployment
 
 `packaging/systemd/bohio.service` runs `bohio serve` as the unprivileged user `bohio` under systemd, `bohio service install` registers a
-Windows service, and `packaging/container/Containerfile` builds an image whose example entrypoint is `bohio serve --stdio`.
+Windows service, and `packaging/container/Containerfile` builds an image whose example entrypoint is `bohio serve --stdio`, from the `deps` branch with no
+network after the toolchain (`python tools/build.py container build`; [building](https://boriken-dev.github.io/bohio/building/) lists the `.env` overrides).
 
 ## API overview
 
