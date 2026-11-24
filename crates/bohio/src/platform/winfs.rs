@@ -467,8 +467,10 @@ pub(crate) fn read_link(parent: &impl AsHandle, name: &OsStr) -> io::Result<Path
         .get(names_at + offset..names_at + offset + length)
         .ok_or_else(malformed)?;
     let mut wide: Vec<u16> = text
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes(*pair))
         .collect();
     let prefix: Vec<u16> = r"\??\".encode_utf16().collect();
     if !relative && wide.starts_with(&prefix) {
@@ -684,8 +686,10 @@ impl<H: AsHandle> Iterator for Listing<H> {
                 let length = usize::try_from(read_u32(entry, length_at)?).ok()?;
                 let text = entry.get(name_at..name_at + length)?;
                 let wide: Vec<u16> = text
-                    .chunks_exact(2)
-                    .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|pair| u16::from_le_bytes(*pair))
                     .collect();
                 Some((next, attributes, OsString::from_wide(&wide)))
             })();
@@ -865,10 +869,9 @@ mod tests {
             )
             .unwrap();
         }
-        let listed = Listing::new(&world.parent)
-            .map(|entry| entry.unwrap().0)
-            .count();
-        assert_eq!(listed, 2500 + 4);
+        let listed: Vec<_> = Listing::new(&world.parent).collect();
+        assert!(listed.iter().all(Result::is_ok));
+        assert_eq!(listed.len(), 2500 + 4);
     }
 
     #[test]
