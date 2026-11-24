@@ -298,7 +298,8 @@ pub struct Listed { id, name: Option<String>, kind, program: String, started: Ti
 Spoken only on a running node's local endpoint, never on a peer's link (CDDL in `docs/protocol.md`, "Local control").
 
 ```rust
-pub const VIA: &str = "bohio-via/1";   pub const LINKS: &str = "bohio-links/1";   pub const PAIR: &str = "bohio-pair/1";
+pub const VIA: &str = "bohio-via/1";   pub const LINKS: &str = "bohio-links/1";   pub const PROVIDERS: &str = "bohio-providers/1";   pub const PAIR: &str = "bohio-pair/1";
+pub struct LibraryEntry { path, state /*"loaded"|"skipped"|"failed"*/, detail, digest: Option<String>, unchecked: Vec<String> }   pub struct ProvidersReply { check_access: bool, libraries: Vec<LibraryEntry> }   // encode(), decode(&[u8]); the open has no metadata
 pub struct PairRequest { lifetime_ms: Option<u64> }   // Default; to_metadata(), from_metadata (empty is the default)
 pub enum PairReply { Armed { pin: String, lifetime_ms: u64 }, Paired { peer: String }, Ended { reason: String } }   // encode(), decode(&[u8]); first Armed, then Paired or Ended
 pub struct ViaRequest { peer: String, protocol: String, metadata: Vec<u8> /* a CBOR byte string */ }   // to_metadata(), from_metadata(&[u8])

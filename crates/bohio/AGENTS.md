@@ -9,7 +9,7 @@ with the source at <https://github.com/Boriken-Dev/bohio>.
 | `cli` | module `cli`, the `bohio` binary; `clap`, `tracing-subscriber`, `serde_`, `crossterm`, and `notify` | the command | on |
 | `gui` | snapshot encoding (`image`: PNG, JPEG; `image-webp`: lossless WebP), and a watch's tiles and rectangle encodings (`bohio-transfer/screen`); without it a snapshot and a watch are `unsupported` | `bohio-gui/1` | on |
 | `gui-wayland` | on Linux, `gui::{WaylandDesktop, WaylandSettings, Persist}`: a Wayland session through `xdg-desktop-portal` (`ashpd`, `pollster`) and a PipeWire stream (`pipewire`); it links the system libpipewire-0.3 (pkg-config, libclang), so glibc builds only, and it does nothing off Linux | a Wayland desktop | off |
-| `serial` | `bohio-provider-serial`: the `serial` terminal provider (`[source.NAME] provider = "serial"`), registered with the built-in providers | a serial console | on with `cli` |
+| `serial` | `bohio-provider-serial`: the `serial` terminal provider (`[source.NAME] provider = "serial"`), registered with the built-in providers (a build without it can load the same provider as a library, `[providers] paths`) | a serial console | on (in `default`, not implied by `cli`) |
 | `notify` | `gui::DesktopNotifier` (`notify-rust`) | the desktop notice of the presence indicator | on with `cli` |
 
 MSRV Rust 1.89. A library-only build (`default-features = false`) depends on `bohio-proto`, `bohio-client` (the link and its relay),
@@ -175,6 +175,8 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[power] enabled`, `action_timeout`, `max_streams` | `false`, `60s`, `4` | whether power is served (a peer needs `power` too), how long an action may take before `timeout`, concurrent requests; not zero / at least 1 |
 | `[media] enabled`, `action_timeout`, `max_streams` | `false`, `60s`, `4` | as `[power]`, for virtual media (a peer needs `media`) |
 | `[secrets] max_bytes` | `65536` | the most bytes one secret reference may read; at least 1 |
+| `[providers] paths` | empty | provider libraries mapped at start: files, or directories of `.so`/`.dll`/`.dylib`; only a library that declares a Bohío kind (`bohio_terminal`, `bohio_desktop`, `bohio_power`, `bohio_media`) is mapped. Empty: nothing is read or loaded. A static musl build refuses a non-empty list (`providers.paths`); an empty path is refused |
+| `[providers] check_access` | `true` | refuse a library, or the directory holding it, that another account owns or may write; `false` loads it and logs `non-default:`; only the lowest layer sets it |
 | `[sessions] queue_frames` | `16` | frames of a program's output that may wait before the session takes them; at least 1 |
 | `[shell] enabled` | `true` | whether shell sessions are opened |
 | `[shell] max_sessions` | `8` | concurrent sessions across peers; at least 1 |
@@ -437,6 +439,8 @@ impl Sources {
     pub fn from_config(source: &SourceTables, access: &AccessConfig) -> Result<Self, (String, String)>;   // (key, why)
     pub fn unconfigured() -> Self;                                                  // no source, not even native; built-in providers registered
     pub fn register_library(&self, name, describe) -> Result<(), String>;           // a linked guatiao library (`local_providers!`)
+    pub fn load_libraries(&self, config: &ProvidersConfig) -> ProvidersReport;   // maps [providers] paths into the registry (Node::new does, before it builds the sources); a library never replaces a built-in provider id
+    pub fn libraries(&self) -> ProvidersReport;    // what the start did: { check_access, libraries: Vec<Library { path, state: Loaded|Skipped|Failed, detail, digest: Option<"sha256:..">, unchecked: Vec<String> }> }
     pub fn reconfigure(&self, source, access) -> Result<(), (String, String)>;      // unchanged tables keep their instance; a changed one is rebuilt and the old retired
     pub fn with_terminal / with_desktop / with_power / with_media(self, name, Arc<dyn Kind>) -> Self;   // an embedder's own source; add_terminal/add_desktop on &self
     pub fn with_access(self, Capability, names) -> Self;
@@ -743,7 +747,7 @@ pub fn since(entry: &LinkEntry) -> SystemTime;
 pub struct ControlConfig { pub enabled: Option<bool> /*true*/, pub endpoint: Option<String>, pub socket_mode: Option<String> /*"0o600"*/, pub socket_group: Option<String>, pub security_descriptor: Option<String> }   // `[control]`; endpoint_for(&PeerId) is `pipe://bohio-` and the first 16 hex digits of the id
 ```
 
-The node serves `bohio-via/1`, `bohio-links/1` and `bohio-pair/1` (CDDL in `docs/protocol.md`, types in `bohio_proto::local`) on this endpoint only, never on a peer's link. `bohio-via/1`
+The node serves `bohio-via/1`, `bohio-links/1`, `bohio-providers/1` (the libraries `[providers] paths` loaded, one `ProvidersReply`; `bohio providers`) and `bohio-pair/1` (CDDL in `docs/protocol.md`, types in `bohio_proto::local`) on this endpoint only, never on a peer's link. `bohio-via/1`
 opens the named protocol on the node's oldest up link to the peer (`Node::peer`) and passes messages both ways; the peer's refusal or revoke closes the local stream with the
 same reason and text (`bohio_client::connect::Opened::end`, `Relay::end`); no link is `refused` with "no link to that peer". The endpoint holds what every peer grants this node:
 it is as sensitive as the key file, and the same-user check is defence in depth, not a replacement for the socket's own access. `bohio serve` binds it unless `[control] enabled = false`

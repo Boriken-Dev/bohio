@@ -30,5 +30,7 @@ system's reason while the device cannot be opened (an unplugged adapter), true a
 that names a program (`bad_request`) and a port that is not open (`unavailable`). `kill` on a terminal only lets go of its attach; nothing is
 ended on the far end. A line has no end of stream: `exit` is `None` and `read` answers `-1` only after the source was dropped or the attach let go.
 
+As a library: `providers/terminal/serial/plugin/` (`bohio-provider-serial-plugin`, a `cdylib`) is this provider behind one `providers!` line, loaded with `[providers] paths`; `crates/bohio/tests/plugins.rs` loads it.
+
 Tests: `crates/bohio/tests/console.rs` runs a peer against the source over a pair of pseudo-terminals from `socat` (Unix; `SKIPPED` when it is
 not installed) and an in-memory source on every platform; Windows has no COM port to open here.

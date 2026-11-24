@@ -101,8 +101,49 @@ A provider linked into the node is registered with `Sources::register_library` (
 as a value with `Sources::with_terminal` and its siblings, then made the default with `with_access`. `Node::with_sources` hands
 the node its sources; `Node::with_secrets` says how secret references are read.
 
+### Loading a provider library
+
+A provider that is not linked into the node is a library the node maps at start. Nothing loads unless `[providers] paths` names
+something, and then only libraries that declare a Bohío kind (`bohio_terminal`, `bohio_desktop`, `bohio_power` or `bohio_media`);
+with the default (`paths = []`) no file is read, no library is mapped and nothing extra runs at start.
+
+```toml
+[providers]
+paths = ["/usr/local/lib/bohio/providers", "/opt/vendor/libbohio_vnc.so"]   # files, or directories of libraries
+# check_access = true    # the default: see below
+
+[source.console]
+provider = "serial"       # a provider a library offers is named like a built-in one
+path = "/dev/ttyUSB0"
+```
+
+- **A file or a directory.** A directory's `.so`, `.dll` or `.dylib` files are taken by name; each is read as data first (headers
+  and the kinds it declares), and a file that is not a guatiao library, or declares no Bohío kind, is **skipped** and never mapped.
+  Paths are read once, at start; a reload of `bohio.cfg` builds sources again from the libraries already mapped and does not look
+  at the paths.
+- **One failure stops nothing else.** Each library is loaded alone. The node logs one line for each at start and
+  `bohio providers` (on the node's local endpoint) prints the same: `loaded`, `skipped` or `failed`, the library's path, why or
+  what it offers, and its SHA-256 (`bohio providers --json` for a script). A stale copy of a library beside a newer one
+  (the same library id) is `skipped` and names the copy that was loaded; a provider id a built-in already holds stays the
+  built-in's (a library never replaces `native` or a built-in `serial`), and the library's report says so.
+- **The owner check is a default.** A library, or the directory that holds it, that another account owns or may write is
+  **refused** (`failed`, `refused: ...`) while `[providers] check_access` is `true` (the default). Set it to `false` and the node
+  loads it anyway, logs `non-default: ...` at start, and the report names what was not checked. Only the lowest configuration
+  layer sets it, as `[service] check_access`. A path that names nothing, or an empty path, cannot work and is reported `failed`
+  (an empty one is a configuration error).
+- **What a library may do.** It runs as the node's own account, inside the node's process, with no sandbox: a library is the
+  node's code. Loading is unpinned, so nothing says the file is the one you meant; `bohio providers` prints each digest so that
+  you can compare it. `docs/security.md` has what that costs.
+- **Which builds can load.** The glibc and macOS and Windows builds map libraries. The static musl archives (Linux `x86_64` and
+  `aarch64`) cannot: a static executable has no dynamic loader, so `[providers] paths` there is a configuration error that says
+  so (`providers.paths`). Use a glibc build, or link the provider in.
+- **Making one.** `providers/terminal/serial/plugin/` is a provider as a library in one line,
+  `bohio_api::guatiao::providers!(bohio_provider_serial::Serial);` in a crate of type `cdylib` that depends on nothing else
+  (the entry symbols it writes are `no_mangle`, so it does not take the workspace's `unsafe_code = "forbid"`). A node built with
+  feature `serial` already has `serial`; build without it (`--no-default-features --features cli`) to serve it from the library.
+
 ### What is not offered yet
 
-Provider libraries loaded at run time, pinned by SHA-256, are not offered: `guatiao` can hash a library only after it has
-mapped it, and a check that runs after the code is mapped protects nothing. Until `guatiao` checks the bytes before it maps
-them, every provider is linked into the node's binary.
+Pinning a library by SHA-256 (refusing a file whose digest is not the one named, checked on the bytes that are mapped) is not
+offered: `guatiao` can hash a library only after it has mapped it, and a check that runs after the code is mapped protects
+nothing. `[providers]` has no `pins` key until it can work; until then the digest `bohio providers` prints is for you to compare.

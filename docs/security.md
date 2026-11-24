@@ -47,7 +47,7 @@ The configuration is the system file with the user's merged over it, or the file
 
 ## The local control endpoint
 
-A running node serves `bohio-via/1`, `bohio-links/1` and `bohio-pair/1` on `[control] endpoint`, a named pipe or a Unix socket. Whoever can connect may open, as this node, any stream any peer grants this node, list its links and arm a pairing PIN. The endpoint is not sealed, so it is guarded like the key:
+A running node serves `bohio-via/1`, `bohio-links/1`, `bohio-providers/1` (which libraries it loaded) and `bohio-pair/1` on `[control] endpoint`, a named pipe or a Unix socket. Whoever can connect may open, as this node, any stream any peer grants this node, list its links and arm a pairing PIN. The endpoint is not sealed, so it is guarded like the key:
 
 - **Who may connect.** With no `socket_mode`, `socket_group` or `security_descriptor`, only this account may: the pipe or socket admits this user alone, and a client the system does not report as this user is closed unread. Setting any of the three replaces that with the operator's choice, and every account it admits holds all of the above.
 - **Who is serving.** A client (`bohio remote --via`, `bohio links`, `bohio pair`) checks that the endpoint is served by its own account before it sends anything, and refuses another account's. A pipe name is visible to every user on Windows, so another account could bind it first while the node is down, and the node then runs without its control endpoint (it logs a warning); such an account would otherwise read every request (an exec's arguments, a file being written) and could answer `bohio pair` with a key of its own as the one that paired. With access settings in `[control]` the node may run as another account, and the client does not check: who may bind that name is then the boundary.
@@ -232,9 +232,22 @@ and the session list show a peer only the sources it reaches (a name it may not 
   others on Windows) and `credential:` from a file of `$CREDENTIALS_DIRECTORY`, none larger than `[secrets] max_bytes` (`65536`);
   this build has no keyring and refuses `keyring:`. A secret is resolved when its source is built, held in a `Secret` that prints
   `[redacted]`, and handed to the provider, which then holds it: a provider's own care for it is the provider's.
-- **What loading a library would trust.** Providers are linked into the binary today: nothing is loaded at run time, and a library
-  placed on disk is never mapped. When `guatiao` can check a library's bytes before it maps them, loading will be opt-in by SHA-256
-  pin.
+- **What loading a library costs.** `[providers] paths` is empty by default, and then nothing is read or mapped. A library named
+  there is the node's own code: it is mapped into the process, runs its initialisers and its provider calls as the account that
+  runs the node (a service account, often with more rights than a user), with no sandbox, and a provider it offers can be named
+  by `[source.<name>]` and reach what the node reaches. Loading is **unpinned**: nothing checks that the file is the one the
+  operator meant, so **whoever can write the library file, or the directory it is in, as the node's own account (or root), chooses
+  the code the node runs** (an account that can already edit `bohio.cfg` could name the library anyway, so this adds a way in only
+  where the library path is writable by someone who cannot edit the configuration). By default a library or its directory that
+  another account owns or may write is refused (`[providers] check_access`, only the lowest layer sets it). Setting it to `false`
+  loads them and the node logs `non-default:` lines at start and `bohio providers` prints them: **another account that can
+  write there then chooses the code the node runs**, so use it only where the directory's write access is held some other way
+  (a read-only mount, a file system whose owner you cannot check). The check covers the file and the directory that holds it, not
+  every directory above; a path whose parents another account can rename is outside it. A file is checked and then mapped, so a
+  swap in between is possible for whoever may write there (which the check refuses). Only libraries that declare a Bohío kind
+  are mapped; the declaration is the library's own claim, so it is a filter against loading unrelated files, not a proof of what
+  a library is. The report holds each file's SHA-256 to compare against what you installed; pins that refuse a mismatch arrive
+  once `guatiao` can check the bytes before it maps them. A static musl build cannot load libraries and refuses the setting.
 
 ## Filesystem confinement
 
