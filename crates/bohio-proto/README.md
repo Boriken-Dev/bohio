@@ -55,6 +55,10 @@ assert_eq!(frame[0], 0x01);
 | `info` | the host's capabilities |
 | `protocol` | the protocol names a stream is opened with |
 | `shell` | shell kinds |
+| `fs`, `walk`, `search` | `bohio-read/1`, `bohio-write/1`, `bohio-walk/1` and `bohio-search/1` |
+| `forward` | `bohio-connect/1`, `bohio-listen/1` and `bohio-accept/1`: targets, binds and answers |
+| `session`, `signal` | detached sessions (`bohio-attach/1`) and the signals of `exec` and `shell` |
+| `gui`, `power`, `media` | the desktop, power and virtual-media protocols |
 
 ## Development
 

@@ -115,9 +115,9 @@ Each CONNECT is a `forward.connect` check on the host for that target; a target 
 `--jump` reaches a host that only a gateway reaches, as `ssh -J`. The gateway carries a stream to the next host and sees sealed bytes only: this side proves itself to each host and each host to this side, so a gateway cannot stand in for the host behind it (name the host's id with `--server`, the gateway's with `--jump-server`). The gateway grants this peer `forward.connect` for the next host's address and nothing else, or, for a gateway that runs a container, `exec` of the program:
 
 ```bash
-bohio remote tcp://10.1.0.20:7620 --server <inner id> --jump tcp://gw.example:7620 --jump-server <gateway id> exec -- hostname
+bohio remote tcp://inner.example:7620 --server <inner id> --jump tcp://gw.example:7620 --jump-server <gateway id> exec -- hostname
 bohio remote --command "bohio serve --stdio" --server <inner id> --jump tcp://gw.example:7620 --jump-server <gateway id> info
-bohio remote tcp://10.1.0.20:7620 --server <inner id> --jump tcp://gw.example:7620 --jump-server <gateway id> forward -D 1080
+bohio remote tcp://inner.example:7620 --server <inner id> --jump tcp://gw.example:7620 --jump-server <gateway id> forward -D 1080
 ```
 
 `--jump` repeats for a chain, in order. A refusal names the hop: `jump 1 (tcp://gw.example:7620) would not carry the link to the host (...)`. [Security](security.md#what-a-socks-listener-and-a-jump-give) says what each gives.
@@ -187,6 +187,31 @@ bohio remote tcp://host.example:7620 exec --pty --timeout-ms 60000 -- top    # a
 
 `shell --detach` does the same for a shell, whose terminal output the host keeps. [Security](security.md#what-a-session-gives-a-peer) says what a session costs the host.
 
+## Finding things and reading logs without a shell
+
+A peer that holds only `fs.read` can search a tree on the host, so only the matches cross the link, and follow a log as it grows. `stats` and `which` need `info`:
+
+```bash
+bohio remote tcp://host.example:7620 search "TODO|FIXME" /srv/data -g "*.rs" -C 2
+bohio remote tcp://host.example:7620 glob "**/*.log" /srv/data
+bohio remote tcp://host.example:7620 read --follow /srv/data/app.log
+bohio remote tcp://host.example:7620 stats
+bohio remote tcp://host.example:7620 which git python3
+```
+
+A search reads what a read would and never follows a link out of the root; [Security](security.md#what-search-stats-which-and-a-follow-give-a-peer) says what it costs the host. Every command takes the global `--json` for output a script can parse ([the shapes](cli-json.md)), and a host named in `[remote.NAME]` of the configuration is reached as `bohio remote NAME ...`.
+
+## An agent on a host
+
+`bohio mcp` is a Model Context Protocol server on standard input and output that gives an agent the tools of a coding harness (`exec`, `read`, `write`, `edit`, `glob`, `search`, and sessions for programs that outlive a call) on the host, bounded by what the host grants its key. Give each agent its own configuration, so the host approves that key with the least it needs:
+
+```bash
+bohio peer approve <agent id> --allow info,fs.read,exec --fs-root /srv/data --program git
+claude mcp add bohio -- bohio mcp --config agent.cfg --host "lab=tcp://host.example:7620 --server <host id>"
+```
+
+[Agents and MCP](agents.md) lists the tools, their bounds and how to configure Claude Code, Codex and other clients, and [Security](security.md#what-an-agents-tools-give) says why the grant is the only bound.
+
 ## Configuration
 
 `bohio.cfg` is read as layers: the system file (`/etc/bohio/bohio.cfg`, `%ProgramData%\bohio\bohio.cfg`) and then the user's (`~/.config/bohio/bohio.cfg`, `%APPDATA%\bohio\bohio.cfg`) merged over it, or the files `--config` names, alone. Tables merge by key and lists and values replace, so a higher layer can narrow a list. Every setting, with its default, is in [`examples/bohio.cfg`](https://github.com/Boriken-Dev/bohio/blob/main/examples/bohio.cfg); the `[peer.*]` tables are read again at every decision, the rest when the node starts.
@@ -195,6 +220,8 @@ bohio remote tcp://host.example:7620 exec --pty --timeout-ms 60000 -- top    # a
 
 - [The protocol](protocol.md): the wire, for an implementer in any language, with test vectors.
 - [Security](security.md): what the service holds, what a peer is granted, where isolation stops, and the known limits.
+- [Agents and MCP](agents.md): the tools an agent has on a host, and `bohio mcp` for any MCP client.
+- [Machine-readable output](cli-json.md): `--json` for every command, and its shapes.
 - [Profiles](profiles.md): named starting points for the transfer settings: a LAN, a weak host, a slow link, a long fast path.
 - [Embedding a node](embedding.md): running a node inside another application, from its own settings, key and peers.
 - [Using it from hostctl](hostctl.md): how a hostctl provider maps `run`, paths, shells and capability selection onto Bohío.

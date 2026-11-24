@@ -31,6 +31,10 @@ Documentation: <https://docs.rs/bohio>.
 - Filesystem access confined to the peer's granted roots: a `..` or a symbolic link that leaves a root is refused,
   every path component is resolved against a directory handle, and files stream in chunks with atomic replace.
 - Per-peer grants (`[peer.<id>]` in `bohio.cfg`, layered: the system file, then the user's): an accepted peer with no `allow` gets nothing.
+  Beyond `info`, `fs.read`, `fs.write`, `exec` and `shell`, a grant can carry `session`, `forward.connect` and `forward.listen`
+  (each with the targets or binds it covers), and the desktop, power and media permissions.
+- Forwarding (`-L`, `-R`, `-D`, `connect`, `listen`, `--jump`), forwards a node keeps across link losses, detached sessions, signals,
+  search, `stats`, `which` and `read --follow` on the host, `--json` output and named hosts, and `bohio mcp` for agents.
 - Threads, not an async runtime: one thread per stream, bounded by configuration.
 - Every bound is a setting with a documented default; nothing is hard-coded.
 
@@ -97,7 +101,7 @@ over it, and with neither the defaults apply.
 `bohio serve [--config F] [--listen ENDPOINT]... [--stdio]` serves the `[[listen]]` endpoints (`tcp://`, `pipe://`, `ws://`, `wss://`, `webtransport://`, `serial://`)
 and each `--listen` and prints `listening <endpoint>` and `host <id>` once bound; `--stdio` serves one link on standard input and output. `bohio status`, `bohio id` and `bohio peer list|approve|revoke` show and change
 who may do what; `bohio pair` arms a PIN on the listeners the node already serves and accepts the one peer that joins with it (`bohio join <endpoint>`, over any endpoint, is the other side);
-`bohio remote <endpoint> info|exec -- <argv>|read <path>|shell` uses a host, and `bohio remote --via <id> ...` the link a running node holds to that peer, whichever side dialed it (`bohio links` lists them). A peer's table with an `endpoint` makes `bohio serve` dial it. See the header (`AGENTS.md`) for every flag.
+`bohio remote <endpoint> info|exec -- <argv>|read <path>|shell|forward|connect|search|...` uses a host (`bohio remote --help` lists them), and `bohio remote --via <id> ...` the link a running node holds to that peer, whichever side dialed it (`bohio links` lists them). A peer's table with an `endpoint` makes `bohio serve` dial it. See the header (`AGENTS.md`) for every flag.
 
 | Status | Meaning |
 | --- | --- |

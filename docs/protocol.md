@@ -2,7 +2,7 @@
 
 This page is the wire, for an implementer in any language. Nothing here needs Rust. `vectors/*.json` in the repository holds every message below as the hex of its bytes, and each implementation decodes them.
 
-A Bohío host serves six protocols over one proven, sealed link. A client opens one stream per operation, names the protocol, and sends the request as the stream's open metadata.
+A Bohío host serves the protocols in [Protocol names](#protocol-names) over one proven, sealed link. A client opens one stream per operation, names the protocol, and sends the request as the stream's open metadata.
 
 ## Layers
 
@@ -11,7 +11,7 @@ A Bohío host serves six protocols over one proven, sealed link. A client opens 
 | Carrier | moves whole messages between two endpoints | [Carriers](#carriers) |
 | Proof | shows who holds a key, then seals every message after it | the proof's method, by [`coqui-link`'s page](https://github.com/Boriken-Dev/coqui-link/blob/main/docs/link.md) |
 | Link | named streams over the proven connection, with credit | [`docs/link.md` of coqui-link](https://github.com/Boriken-Dev/coqui-link/blob/main/docs/link.md) |
-| Bohío | six protocols, each its own messages | this page |
+| Bohío | one protocol per kind of operation, each its own messages | this page |
 
 The proof and the link are not repeated here. An implementation takes them from coqui-link's page, which has the proof's methods (`noise` by default, `webcrypto` for a browser), the frame format (`open`, `data`, `more`, `credit`, `finish`, `close`, `ping`, `pong`), stream ids, flow control and limits, and its own vectors in `vectors/mux.json`. Everything below starts after a stream is open.
 
@@ -44,7 +44,7 @@ A stream's `open` carries a protocol token and metadata. A client ignores a toke
 
 | Token | Purpose | Open metadata | A peer needs |
 | --- | --- | --- | --- |
-| `bohio/1` | hello, info and the small filesystem calls | none | one of `info`, `fs.read`, `fs.write` |
+| `bohio/1` | hello, info, `stats`, `which`, the small filesystem calls and a peer's own sessions | none | one of `info`, `fs.read`, `fs.write`, `session`; each call names its own (see below) |
 | `bohio-exec/1` | one process, run to its exit | CBOR [`exec-request`](#exec-bohio-exec1) | `exec` |
 | `bohio-shell/1` | one interactive shell on a terminal | CBOR [`shell-request`](#shells) | `shell` |
 | `bohio-read/1` | one file read, streamed | CBOR [`read-request`](#reading-a-file) | `fs.read` |
@@ -58,6 +58,8 @@ A stream's `open` carries a protocol token and metadata. A client ignores a toke
 | `bohio-listen/1` | one listener the host binds for the peer, each arrival announced on the stream | CBOR [`listen-request`](#remote-forwards-bohio-listen1-and-bohio-accept1) | `forward.listen` and a `listen` rule that matches the bind |
 | `bohio-accept/1` | one arrival of the peer's own listener, then its bytes | CBOR [`accept-request`](#remote-forwards-bohio-listen1-and-bohio-accept1) | `forward.listen` |
 | `bohio-attach/1` | a detached session's kept output from an offset, then live, and its input | CBOR [`attach-request`](#detached-sessions-bohio-attach1) | `session` |
+| `bohio-power/1` | one power action or the state of a source | CBOR [`power-request`](#sources-console-power-media-and-infoaccess) | `power` and a source it reaches |
+| `bohio-media/1` | one virtual-media operation or the slots of a source | CBOR [`media-request`](#sources-console-power-media-and-infoaccess) | `media` and a source it reaches |
 
 Each `open` is decided against the peer's grant, and each running stream again at the host's recheck interval. Removing a grant closes the stream with reason `revoked`; the reason text reaches the peer.
 
@@ -187,7 +189,8 @@ info = { ? protocol: uint, ? service: { ? name: text, ? version: text }, ? host_
          ? sessions: { ? enabled: bool, ? scrollback: uint, ? max_scrollback: uint, ? linger_ms: uint },
          ? limits: { ? max_streams: opt<uint>, ? max_processes: opt<uint>, ? max_sessions: opt<uint> },
          ? transfer: transfer-info,
-         ? forward: forward-info, ? gui: gui-info }
+         ? forward: forward-info, ? gui: gui-info,
+         ? access: access-info }                    ; the sources a peer reaches, see "Sources"
 gui-info = { ... }   ; see "Desktop: bohio-gui/1"
 forward-info = { ? enabled: bool, ? connect: [* text], ? listen: [* text] }   ; the target kinds `bohio-connect/1` reaches and the listener kinds `bohio-listen/1` binds: "tcp", and "unix" (Unix hosts) or "pipe" (Windows hosts)
 transfer-info = { ? hashes: [* text],                        ; the algorithms the host computes, empty when none
@@ -607,7 +610,7 @@ The host starts the program as it always does and answers `started` with `sessio
 
 Output is kept in memory with one byte offset, counting standard output and standard error together in the order they were written (a shell's terminal bytes for a shell). When the kept output is full, `drop_oldest` forgets the oldest, and `pause` stops reading the program's output so the program waits and nothing it has not yet sent is lost (output already sent to a stream is forgotten first, oldest first: a stream cut in the instant it was sent to may have lost it, so a reattach should name the last offset that arrived; the output a cut link had in flight is at most the link's window and the relay's queue, which a `scrollback` of that size or more keeps). `bohio-attach/1` takes the open `{session, from}` and answers `0x09` `attached`, whose `from` is the offset the output starts at (the one asked for, or the oldest still kept, in which case `lost` is how many bytes lie between) and whose `kind` says whose frames follow: then the exec's or the shell's own host frames (`0x02`/`0x03`/`0x04`, from `from` and then live), and the client sends that protocol's own client frames (input, resize, signals, kill; compressed input is not taken). An absent `from` starts at the end. One stream is attached at a time: a new attach closes the earlier with the reason `superseded`. A session's streams are not compressed (`output_compression` and `stdin_compression` with a `session` are `unsupported`). The `exit` frame follows every byte, as it does on a stream that never detached, and an attach after the exit reads the kept output and the exit again until `keep_exited` passes.
 
-A peer sees and attaches to only its own sessions; another's id is `not_found`, the same words as an id that does not exist. `sessions` lists the caller's (an `admin` sees every peer's, each with its `peer`); `end_session` ends one with a signal (`kill` by default) and the session then reports its exit. The host bounds sessions with `[sessions]` (`max_detached`, `max_per_peer`, `scrollback`, `max_scrollback`, `linger`, `keep_exited`, `check_every`, `queue_frames`; a request past a bound is `busy` or, for a size, `bad_request`), looks at every session each `check_every` and ends one whose peer's key is no longer accepted or whose grant no longer holds `session` and the permission its kind needs, and ends them all when it stops. A session holds its `[execution] max_processes` or `[shell] max_sessions` slot for as long as its program runs.
+A peer sees and attaches to only its own sessions; another's id is `not_found`, the same words as an id that does not exist (the console of a source, which `bohio-attach/1` takes, is one session every peer that may use that source shares). `sessions` lists the caller's (an `admin` sees every peer's, each with its `peer`); `end_session` ends one with a signal (`kill` by default) and the session then reports its exit. The host bounds sessions with `[sessions]` (`max_detached`, `max_per_peer`, `scrollback`, `max_scrollback`, `linger`, `keep_exited`, `check_every`, `queue_frames`; a request past a bound is `busy` or, for a size, `bad_request`), looks at every session each `check_every` and ends one whose peer's key is no longer accepted or whose grant no longer holds `session` and the permission its kind needs, and ends them all when it stops. A session holds its `[execution] max_processes` or `[shell] max_sessions` slot for as long as its program runs.
 
 ## Forwarding: `bohio-connect/1` and `tcp/1`
 
@@ -831,7 +834,7 @@ A client reads `info` and adapts: it takes the path separator from `filesystem.s
 
 A link has two ends and no fixed roles: either side may open streams on it, and either may answer them. Which side dialed (the carrier's direction) decides nothing; a firewalled host can dial out and be controlled over the link it made. Each side hosts what it offers and controls what it opens:
 
-- **What a side offers a peer** is the `offers` of the `link/1` document that side answers: the protocol tokens for which that peer's current grant holds a permission (`bohio/1` for `info`, `fs.read` or `fs.write`; `bohio-exec/1` for `exec`; `bohio-shell/1` for `shell`; `bohio-read/1` and `bohio-hash/1` for `fs.read`; `bohio-write/1` for `fs.write`; `bohio-connect/1` and `tcp/1` for `forward.connect`; `bohio-gui/1` for `gui.view` or `gui.input`; `bohio-attach/1` for `session`). A node that grants a peer nothing offers it nothing, and may still open streams on that peer.
+- **What a side offers a peer** is the `offers` of the `link/1` document that side answers: the protocol tokens for which that peer's current grant holds a permission (`bohio/1` for `info`, `fs.read` or `fs.write`; `bohio-exec/1` for `exec`; `bohio-shell/1` for `shell`; `bohio-read/1` and `bohio-hash/1` for `fs.read`; `bohio-write/1` for `fs.write`; `bohio-walk/1` and `bohio-search/1` for `fs.read`; `bohio-connect/1` and `tcp/1` for `forward.connect`; `bohio-listen/1` and `bohio-accept/1` for `forward.listen`; `bohio-gui/1` for `gui.view` or `gui.input`; `bohio-attach/1` for `session`; `bohio-power/1` for `power`; `bohio-media/1` for `media`). A node that grants a peer nothing offers it nothing, and may still open streams on that peer.
 - **How a side learns its role** is by opening `link/1` on the link and reading the peer's `offers`. The intersection of those tokens and what the side wants to do is what it can do on that link; opening a token that is not offered is refused (a `Permission` failure), as it always was.
 - **Re-evaluation**: `offers` is computed each time the document is read, and admission is decided at every open and every `[link] recheck`, both from the peer's grants as they are then, so a grant added or removed on a live link changes the next document and ends what it no longer covers. Nothing is pushed to the peer.
 - **Nothing is stated on the wire** beyond `link/1`: there is no request for a role, and what a side asks for is only what it opens. A peer that is only a controller offers nothing and opens streams; a peer that is only a host offers its tokens and opens none; either can do both on one link.
@@ -872,7 +875,7 @@ A joiner on a listener sends one message first, `coqui-link/pairing/1`, which is
 
 ## Vectors
 
-`vectors/control.json`, `exec.json`, `shell.json`, `read.json`, `write.json`, `hash.json`, `forward.json`, `gui.json`, `listen.json`, `accept.json`, `attach.json` and `search.json` hold one entry per message; `vectors/delta.json` holds the [weak sums, a signature and a stream of steps](#deltas) in its own shape. Each file is:
+`vectors/control.json`, `exec.json`, `shell.json`, `read.json`, `write.json`, `hash.json`, `walk.json`, `forward.json` (`bohio-connect/1`), `listen.json`, `accept.json`, `attach.json`, `search.json`, `gui.json`, `power.json` and `media.json` hold one entry per message; `vectors/delta.json` holds the [weak sums, a signature and a stream of steps](#deltas) in its own shape. Each file is:
 
 ```json
 { "protocol": "bohio-exec/1", "encoding": "...", "vectors": [ { "name": "stdout", "direction": "host_to_client", "kind": "frame",
@@ -884,7 +887,7 @@ A joiner on a listener sends one message first, `coqui-link/pairing/1`, which is
 | `name` | what the vector shows |
 | `direction` | `client_to_host` or `host_to_client`; an open's metadata is `client_to_host` |
 | `kind` | `open` (the open's metadata), `message` (a control message) or `frame` (a tag byte, then the body) |
-| `type` | the message's name in this page: `control.Request`, `control.Response`, `exec.Request`, `exec.Output`, `exec.Input`, `shell.Request`, `shell.Output`, `shell.Input`, `fs.ReadRequest`, `fs.ReadOutput`, `fs.ReadInput`, `fs.WriteRequest`, `fs.WriteOutput`, `fs.WriteInput`, `hash.Request`, `hash.Output`, `hash.Input`, `forward.ConnectRequest`, `forward.Answer`, `forward.ListenRequest`, `forward.ListenFrame`, `forward.AcceptRequest`, `session.Attach`, `session.Attached`, `search.Request`, `search.Output` |
+| `type` | the message's name in this page: `control.Request`, `control.Response`, `exec.Request`, `exec.Output`, `exec.Input`, `shell.Request`, `shell.Output`, `shell.Input`, `fs.ReadRequest`, `fs.ReadOutput`, `fs.ReadInput`, `fs.WriteRequest`, `fs.WriteOutput`, `fs.WriteInput`, `hash.Request`, `hash.Output`, `hash.Input`, `forward.ConnectRequest`, `forward.Answer`, `forward.ListenRequest`, `forward.ListenFrame`, `forward.AcceptRequest`, `session.Attach`, `session.Attached`, `search.Request`, `search.Output`, `walk.Request`, `walk.Input`, `walk.Output`, `gui.Request`, `gui.Output`, `gui.Input`, `gui.ApproveOutput`, `gui.ApproveInput`, `power.Request`, `power.Answer`, `media.Request`, `media.Answer` |
 | `hex` | the stream message exactly as it travels |
 | `value` | its meaning: the decoded CBOR as JSON for a message; for a frame, `tag`, and `message` (the CBOR body as JSON) or `data_hex` (the raw body) |
 | `decode_only` | the bytes are not what a writer produces (a message with a key this version does not know): a decoder accepts them and finds `value`, and a test does not compare a re-encoding |

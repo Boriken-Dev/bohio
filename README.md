@@ -17,9 +17,18 @@ machines and containers. It is an application: the `coqui-*` names are reserved 
   the whole process tree.
   A program list limits which program starts, not what it does: a listed `git` can still run any alias it is told.
 - **Per-peer grants**: a peer is a `[peer.<id>]` table in `bohio.cfg`, which accepts its key; what it may do
-  (`info`, `fs.read`, `fs.write`, `exec`, `shell`, `admin`, filesystem roots, a program list) is the table's
+  (`info`, `fs.read`, `fs.write`, `exec`, `shell`, `session`, `forward.connect`, `forward.listen`, `admin`, the desktop,
+  power and media permissions, filesystem roots, a program list, the targets and binds a forward may use) is the table's
   `allow` and its keys. A peer with no `allow` gets nothing. `bohio.cfg` is layered: the system file, then the
   user's merged over it.
+- **Forwarding, like ssh**: `-L`, `-R`, `-D` (SOCKS5), `connect` for `ProxyCommand`, jump hosts (`--jump`), and
+  forwards a node keeps up across link losses; every kind of end (TCP, Unix socket, named pipe, standard input and output)
+  pairs with every other, each target decided by a rule in the peer's grant.
+- **Programs that survive a lost link**: detached sessions with scrollback, signals to a running program, and a program on
+  a terminal with a deadline.
+- **Search, `stats`, `which` and `read --follow`** on the host for a peer that only reads, and `--json` for every command.
+- **Agent tools**: `bohio mcp` serves a host's files, programs and sessions to any Model Context Protocol client,
+  bounded by the key's grant; `bohio_client::tools` is the same surface for an embedding agent.
 - **One stream per operation** with a versioned, language-independent protocol: control messages
   are CBOR; bulk bytes travel raw behind a one-byte tag.
 - **Threads, not an async runtime**: one thread per stream, bounded by configuration.
@@ -99,9 +108,12 @@ bohio config check --config examples/bohio.cfg
 bohio info --config examples/bohio.cfg --json
 bohio serve | status | id | pair | join <endpoint>
 bohio peer list | approve <id> [--allow ...] | revoke <id>
-bohio remote <endpoint> info | exec -- <argv> | read <path> | shell
+bohio remote <endpoint> info | exec -- <argv> | read <path> | write <path> | shell | search | glob | stats | which
+bohio remote <endpoint> forward -L ... -R ... -D <port> | connect <target> | listen <bind>
+bohio remote <endpoint> exec --detach -- <argv> | attach <id> | sessions | end <id>
 bohio remote --via <id> info | exec -- <argv> | read <path> | shell
-bohio links
+bohio hosts | links
+bohio mcp --host <name> [--max-output BYTES]
 ```
 
 See the [`bohio` crate](https://github.com/Boriken-Dev/bohio/tree/main/crates/bohio) for the

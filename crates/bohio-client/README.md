@@ -13,7 +13,10 @@ so a theater provider, a command line and the host's own tests share one client.
 
 ## Features
 
-- `exec::Exec`: run one process, stream its output, write its input, kill it, wait for its exit.
+- `exec::Exec`: run one process, stream its output, write its input, signal it, kill it, wait for its exit.
+- `forward`, `socks`, `keep`: a local forward (`ssh -L`), a remote one (`-R`), SOCKS5, jump hosts and a link kept across losses.
+- `session`: detached sessions, picked up again from an offset. `search`, `follow` and `walk`: the host's search, a followed read and
+  trees. `tools`: the agent tool surface `bohio mcp` serves (`Tools::new(link)`, `Tools::call`).
 - `fs::Fs`, `fs::Reader`, `fs::Writer`: stat, list, create, remove, rename, copy files on the host, and `hash` for digests computed there, and
   stream a file in either direction in chunks.
 - `shell::Shell`: an interactive shell on a terminal: type, read output, resize, kill.
@@ -33,7 +36,7 @@ so a theater provider, a command line and the host's own tests share one client.
 cargo add bohio-client --git https://github.com/Boriken-Dev/bohio
 ```
 
-The crate has no Cargo features.
+Cargo features: `zstd` (decode zstd) and `screen` (the compositor of a desktop watch); neither is on by default.
 
 ## Quick start
 
@@ -61,6 +64,8 @@ fn run_echo(link: &dyn Open) -> Result<Vec<u8>, Error> {
 | `Open` | opens one stream for a protocol; implemented over a link |
 | `Error` | a host error, a channel failure, a timeout or a closed stream |
 | `exec` | `Exec`, `Event` and `Completed` for `bohio-exec/1` |
+| `forward`, `socks` | local and remote forwards, `connect`, SOCKS5 |
+| `session`, `search`, `follow`, `tools` | detached sessions, host-side search, followed reads, the agent tools |
 
 ## Development
 

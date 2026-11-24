@@ -82,6 +82,7 @@ refuses the peer), and it is marked in `tools/list` once the host has been used.
 | `session_start`, `session_read`, `session_write`, `session_signal`, `session_list`, `session_end` | a program that outlives the link, read from an offset | `session` (and `exec` to start) |
 | `forward_local`, `forward_remote`, `forward_list`, `forward_close` | `ssh -L` and `-R` | `forward.connect` / `forward.listen` |
 | `gui_snapshot`, `gui_input`, `gui_watch` | look at and drive the host's desktop | `gui.view` / `gui.input` |
+| `power_status`, `media_status` | whether the system the host is for is on, and what its virtual-media slots hold; read only | `power` / `media` |
 
 ### Bounds, paging and binary content
 
