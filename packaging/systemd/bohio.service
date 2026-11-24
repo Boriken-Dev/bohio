@@ -45,6 +45,12 @@ StateDirectory=bohio
 StateDirectoryMode=0700
 ReadWritePaths=/var/lib/bohio
 
+# /run/bohio, owned by User and writable by it alone, is where the GUI helper socket goes when [gui] helper_accounts is
+# set (helper_endpoint = "pipe:///run/bohio/gui.sock"): any account may reach the directory, only this one may change
+# what is in it, and the node closes a connection from an account the file does not list. See bohio-gui-helper.service.
+RuntimeDirectory=bohio
+RuntimeDirectoryMode=0755
+
 # No privilege to gain, nothing to write but the data directory, and no view of home directories.
 NoNewPrivileges=true
 ProtectSystem=strict

@@ -1,0 +1,44 @@
+# The Bohio GUI helper as a systemd USER unit: it runs in a desktop user's own session and lends that session's
+# screen, keyboard and mouse to the node of the system service (bohio.service), which has no desktop of its own.
+#
+# Files only: nothing here is installed by the package. To use it, as the desktop user:
+#
+#   install -d ~/.config/systemd/user
+#   install -m 0644 packaging/systemd/bohio-gui-helper.service ~/.config/systemd/user/
+#   systemctl --user import-environment DISPLAY XAUTHORITY WAYLAND_DISPLAY XDG_SESSION_ID   # from the desktop session
+#   systemctl --user enable --now bohio-gui-helper
+#
+# The node's side, in the system file /etc/bohio/bohio.cfg (the lowest layer; these keys are read there alone):
+#
+#   [gui]
+#   enabled = true
+#   helper_accounts = ["alice"]                    # whose helper the node serves: a uid or a name in /etc/passwd
+#   helper_endpoint = "pipe:///run/bohio/gui.sock" # with RuntimeDirectory=bohio in bohio.service (mode 0755)
+#   node_account = "bohio"                         # whose node this helper trusts (the default on Unix)
+#
+# The helper refuses to serve any other account's socket (exit 1 naming both), and the node closes unread a
+# connection from any account not listed. The helper holds no key and reads no [peer.*] table; the person at this
+# desk may narrow what the node allows with [gui] in ~/.config/bohio/bohio.cfg (the stricter value wins).
+
+[Unit]
+Description=Bohio GUI helper (lends this session's desktop to the node)
+Documentation=https://boriken-dev.github.io/bohio/
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=exec
+ExecStart=/usr/local/bin/bohio gui-helper
+Restart=on-failure
+RestartSec=5
+
+# The helper writes nothing: it reads its configuration and talks to the node's socket.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+LockPersonality=true
+RestrictSUIDSGID=true
+UMask=0077
+
+[Install]
+WantedBy=graphical-session.target

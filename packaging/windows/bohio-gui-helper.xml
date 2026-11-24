@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The Bohio GUI helper as a Task Scheduler task that runs at every user's logon, in that user's own session: it lends the
+  session's screen, keyboard and mouse to the node of the Bohio Windows service (NT AUTHORITY\LocalService, session 0, no
+  desktop). A file only: nothing installs it. To use it, from an elevated prompt:
+
+    schtasks /create /tn "Bohio GUI helper" /xml packaging\windows\bohio-gui-helper.xml
+
+  (Task Scheduler reads this file as UTF-8 because of the declaration above; if an older Windows refuses it, save a UTF-16
+  copy.) The node's side is the system file's [gui] table (the lowest layer; these keys are read there alone):
+
+    [gui]
+    enabled = true
+    helper_accounts = ["S-1-5-21-..."]         # whose helper the node serves: SIDs or names
+    node_account = "NT AUTHORITY\LocalService" # the default: whose node the helper trusts
+
+  The node closes unread a connection from any account not listed, and the helper refuses a pipe whose owner is not the
+  node's account (exit 1, naming both). The task needs no elevation: it starts as the user who logged on, and the helper
+  holds no key and reads no [peer.*] table.
+-->
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Lends this session's desktop to the Bohio node, under the node's grants and this user's own [gui] policy.</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Users">
+      <GroupId>S-1-5-32-545</GroupId>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>true</Hidden>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>999</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Users">
+    <Exec>
+      <Command>conhost.exe</Command>
+      <Arguments>--headless "C:\Program Files\Bohio\bohio.exe" gui-helper</Arguments>
+    </Exec>
+  </Actions>
+</Task>

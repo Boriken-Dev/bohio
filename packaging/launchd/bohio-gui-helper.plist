@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The Bohio GUI helper as a LaunchAgent: it runs in the logged-in user's own session and lends that session's screen,
+  keyboard and mouse to the node of a LaunchDaemon (a system service, which has no window server session of its own).
+  Use bohio.plist instead when the node itself should run in the user's session.
+
+    install -m 0755 bohio /usr/local/bin/bohio
+    install -m 0644 packaging/launchd/bohio-gui-helper.plist ~/Library/LaunchAgents/dev.boriken.bohio-gui-helper.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.boriken.bohio-gui-helper.plist
+
+  Then, in System Settings, Privacy & Security, allow /usr/local/bin/bohio Screen Recording and Accessibility: the
+  grants belong to the program at that path. The node's bohio.cfg (the system file, whose lowest layer alone sets
+  these keys) lists the account and the socket the helper connects to:
+
+    [gui]
+    enabled = true
+    helper_accounts = ["alice"]
+    helper_endpoint = "pipe:///var/run/bohio/gui.sock"   # a directory only the node's account may write
+    node_account = "_bohio"                                # whose node this helper trusts
+
+  The helper refuses a socket served by any other account (exit 1), and holds no key.
+
+    launchctl bootout gui/$(id -u)/dev.boriken.bohio-gui-helper     # stop and unload
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.boriken.bohio-gui-helper</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/bohio</string>
+        <string>gui-helper</string>
+    </array>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+</dict>
+</plist>
