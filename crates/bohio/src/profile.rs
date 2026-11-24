@@ -5,6 +5,8 @@
 //! [`Profile`]'s; a client has the same names for what it asks (`bohio_client::profile`), and a client's profile and a
 //! host's need not match.
 
+#![forbid(unsafe_code)]
+
 use bohio_client::profile::Profile;
 
 use crate::config::NodeConfig;
