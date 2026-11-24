@@ -127,7 +127,6 @@ fn the_serial_library_loads_from_a_path_and_is_reported_with_its_digest() {
             .collect::<String>()
     );
     assert_eq!(library.digest.as_deref(), Some(want.as_str()));
-    assert!(library.unchecked.is_empty());
     if cfg!(feature = "serial") {
         // The node has `serial` built in, and a library never replaces a built-in provider.
         assert!(
@@ -248,14 +247,9 @@ mod owner {
         let library = entry(&report, &file);
         assert_eq!(library.state, LibraryState::Loaded, "{library:?}");
         assert!(!report.check_access);
-        assert!(!library.unchecked.is_empty(), "the waived problem is kept");
         let text = String::from_utf8(log.lock().expect("log").clone()).expect("text");
         assert!(
             text.contains("non-default: [providers] check_access is false"),
-            "{text}"
-        );
-        assert!(
-            text.contains("non-default: provider library") && text.contains("was not checked"),
             "{text}"
         );
     }

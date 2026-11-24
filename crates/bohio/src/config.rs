@@ -1939,10 +1939,10 @@ impl Default for SecretsConfig {
 pub struct ProvidersConfig {
     /// Library files, or directories whose libraries (`.so`, `.dll`, `.dylib`) are loaded, in the order written and, within a
     /// directory, by name. Only a library that declares a Bohío kind is mapped. Default empty: nothing is loaded and nothing
-    /// extra runs at start. A library runs as the node's own account, unchecked beyond its owner and who may write it.
+    /// extra runs at start. A library runs as the node's own account.
     pub paths: Vec<PathBuf>,
     /// Whether a library, or the directory that holds it, that another account owns or may write is refused. Default `true`.
-    /// `false` loads it and logs a `non-default:` line: whoever can write there chooses the code the node runs. Only the
+    /// `false` loads it without asking the file system and logs a `non-default:` line: whoever can write there chooses the code the node runs. Only the
     /// lowest layer sets it, as `[service] check_access`.
     pub check_access: bool,
 }

@@ -104,7 +104,7 @@ bytes go to standard output and the exit is `{"done": {"exit": {...}}}` on stand
 - `join`: the host's id as `paired`, the file written, and this side's own id as `peer`.
 - `hosts`: `{"hosts": [{name, endpoint, server, ca, cert_hash, fallback, jump}]}`, in name order.
 - `links`: `{"links": [...]}` as the node's local endpoint reports them.
-- `providers`: `{"check_access": bool, "libraries": [{"path", "state", "detail", "digest", "unchecked"}]}` as the node's local endpoint reports them.
+- `providers`: `{"check_access": bool, "libraries": [{"path", "state", "detail", "digest"}]}` as the node's local endpoint reports them.
 - `serve` streams `listening` (`endpoint`), `certificate` (`hash`, `endpoint`), `control` (`endpoint`), `host` (`id`),
   `dialing` (`endpoint`, `peer`) and, as each forward the node keeps comes up, goes down or fails, `kept` (`direction`
   `local` or `remote`, `state` `up`, `down` or `failed`, `spec`, `target`, `peer`, and `details` with the `address` of an `up`

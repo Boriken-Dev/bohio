@@ -240,7 +240,7 @@ and the session list show a peer only the sources it reaches (a name it may not 
   the code the node runs** (an account that can already edit `bohio.cfg` could name the library anyway, so this adds a way in only
   where the library path is writable by someone who cannot edit the configuration). By default a library or its directory that
   another account owns or may write is refused (`[providers] check_access`, only the lowest layer sets it). Setting it to `false`
-  loads them and the node logs `non-default:` lines at start and `bohio providers` prints them: **another account that can
+  loads them without checking, and the node logs a `non-default:` line at start that `bohio providers` prints too: **another account that can
   write there then chooses the code the node runs**, so use it only where the directory's write access is held some other way
   (a read-only mount, a file system whose owner you cannot check). The check covers the file and the directory that holds it, not
   every directory above; a path whose parents another account can rename is outside it. A file is checked and then mapped, so a

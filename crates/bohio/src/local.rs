@@ -410,7 +410,6 @@ fn providers(context: &Context, stream: &dyn LinkStream, _accepted: &Accepted) {
                 state: library.state.name().to_owned(),
                 detail: library.detail,
                 digest: library.digest,
-                unchecked: library.unchecked,
             })
             .collect(),
     };

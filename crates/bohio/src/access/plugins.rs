@@ -63,8 +63,6 @@ pub struct Library {
     pub detail: String,
     /// `sha256:` and the digest of the file's bytes, when it was read.
     pub digest: Option<String>,
-    /// What `check_access = false` waived for this library: each line names a path another account may change.
-    pub unchecked: Vec<String>,
 }
 
 /// What loading `[providers] paths` did.
@@ -110,7 +108,7 @@ pub(super) fn load(registry: &mut Registry, config: &ProvidersConfig) -> Report 
     }
     if !config.check_access {
         tracing::warn!(
-            "non-default: [providers] check_access is false: a library, and the directory that holds it, that another account owns or may write is loaded: whoever can write there chooses the code this node runs"
+            "non-default: [providers] check_access is false: who owns and who may write a provider library and its directory is not checked: whoever can write there chooses the code this node runs"
         );
     }
     let mut checked = ownership::Checked::new();
@@ -133,7 +131,6 @@ fn candidates(path: &Path, report: &mut Report) -> Vec<PathBuf> {
             state: LibraryState::Failed,
             detail: why,
             digest: None,
-            unchecked: Vec::new(),
         };
         log(&library);
         report.libraries.push(library);
@@ -182,17 +179,16 @@ fn load_one(
         state: LibraryState::Skipped,
         detail: String::new(),
         digest: None,
-        unchecked: Vec::new(),
     };
-    let problems = ownership::library_problems(file, checked);
-    if !problems.is_empty() {
-        let texts: Vec<String> = problems.into_iter().map(|problem| problem.text).collect();
-        if check_access {
+    // With the check off nothing is asked of the file system: the operator chose to trust the place.
+    if check_access {
+        let problems = ownership::library_problems(file, checked);
+        if !problems.is_empty() {
+            let texts: Vec<String> = problems.into_iter().map(|problem| problem.text).collect();
             library.state = LibraryState::Failed;
             library.detail = format!("refused: {}", texts.join("; "));
             return library;
         }
-        library.unchecked = texts;
     }
     let probed = match probe(file) {
         Ok(probed) => probed,
@@ -268,11 +264,5 @@ fn log(library: &Library) {
     match library.state {
         LibraryState::Loaded | LibraryState::Skipped => tracing::info!("{line}"),
         LibraryState::Failed => tracing::warn!("{line}"),
-    }
-    for text in &library.unchecked {
-        tracing::warn!(
-            "non-default: provider library {} was not checked: {text}",
-            library.path.display()
-        );
     }
 }

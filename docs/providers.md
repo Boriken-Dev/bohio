@@ -128,7 +128,7 @@ path = "/dev/ttyUSB0"
   built-in's (a library never replaces `native` or a built-in `serial`), and the library's report says so.
 - **The owner check is a default.** A library, or the directory that holds it, that another account owns or may write is
   **refused** (`failed`, `refused: ...`) while `[providers] check_access` is `true` (the default). Set it to `false` and the node
-  loads it anyway, logs `non-default: ...` at start, and the report names what was not checked. Only the lowest configuration
+  loads it without asking the file system, logs `non-default: ...` at start (and `bohio providers` prints it). Only the lowest configuration
   layer sets it, as `[service] check_access`. A path that names nothing, or an empty path, cannot work and is reported `failed`
   (an empty one is a configuration error).
 - **What a library may do.** It runs as the node's own account, inside the node's process, with no sandbox: a library is the

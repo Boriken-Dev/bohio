@@ -2836,9 +2836,6 @@ pub(super) fn providers(
             library.detail,
             library.digest.as_deref().unwrap_or("no digest")
         );
-        for text in &library.unchecked {
-            println!("non-default: not checked: {text}");
-        }
     }
     Ok(())
 }

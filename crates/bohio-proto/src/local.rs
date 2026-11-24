@@ -32,9 +32,6 @@ pub struct LibraryEntry {
     /// `sha256:` and the digest of the file's bytes, when it was read.
     #[serde(default)]
     pub digest: Option<String>,
-    /// What `[providers] check_access = false` waived for this library.
-    #[serde(default)]
-    pub unchecked: Vec<String>,
 }
 
 /// The reply of a [`PROVIDERS`] stream.
