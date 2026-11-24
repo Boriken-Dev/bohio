@@ -1143,3 +1143,233 @@ fn the_agentless_console_node_example_is_accepted() {
     assert_eq!(config.access.fs, bohio::config::Switch::None);
     assert!(config.source.contains_key("console"));
 }
+
+// Profiles: named defaults laid under the files.
+
+fn profile_example(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/profiles")
+        .join(format!("{name}.cfg"))
+}
+
+const MIB: u32 = 1024 * 1024;
+
+#[test]
+fn every_profile_loads_with_the_values_it_names() {
+    use bohio_client::profile::Profile;
+    let load = |name: &str| parse(&format!("[profile]\nname = \"{name}\"\n")).unwrap();
+
+    let default = load("default");
+    assert_eq!(default, Config::default());
+
+    let lan = load("lan");
+    assert_eq!(lan.filesystem.chunk_size, 256 * 1024);
+    assert_eq!(lan.link.bulk_window, Some(4 * MIB));
+    assert_eq!(lan.link.max_window, Some(8 * MIB));
+
+    let weak = load("weak-host");
+    assert_eq!(weak.hash.max_streams, 1);
+    assert_eq!(weak.walk.max_streams, 1);
+    assert_eq!(weak.filesystem.max_transfers, 4);
+    assert_eq!(weak.link.max_window, Some(MIB));
+    assert!(!weak.link.auto_window);
+    assert_eq!(weak.delta.max_signature_bytes, 8 * 1024 * 1024);
+    assert_eq!(weak.compression.max_level, 3);
+    assert_eq!(weak.compression.window_log_max, 20);
+    assert_eq!(weak.compression.default.algorithm.name(), "lz4");
+    assert_eq!(
+        weak.compression
+            .allowed
+            .iter()
+            .map(|codec| codec.name().to_owned())
+            .collect::<Vec<_>>(),
+        ["lz4", "zstd"]
+    );
+
+    let slow = load("slow-link");
+    assert_eq!(slow.compression.default.algorithm.name(), "zstd");
+    assert_eq!(slow.compression.default.level, Some(19));
+    assert_eq!(slow.compression.window_log_max, 27);
+    assert_eq!(slow.compression.prepare_max_bytes, 4 << 30);
+    assert_eq!(slow.link.bulk_window, Some(4 * MIB));
+    assert_eq!(slow.link.max_window, Some(16 * MIB));
+    assert!(slow.link.auto_window);
+    assert_eq!(slow.link.max_opens_per_minute, 6000);
+    assert_eq!(slow.filesystem.resume_ttl, Span(Duration::from_secs(3600)));
+
+    let fat = load("fat-link");
+    assert_eq!(fat.link.bulk_window, Some(8 * MIB));
+    assert_eq!(fat.link.max_window, None);
+    let mut rest = fat;
+    rest.link.bulk_window = None;
+    rest.profile = Config::default().profile;
+    assert_eq!(
+        rest,
+        Config::default(),
+        "fat-link sets bulk_window and nothing else"
+    );
+
+    // A node an embedding application starts takes the same table.
+    for profile in Profile::ALL {
+        let from_text = parse(&format!("[profile]\nname = \"{}\"\n", profile.name())).unwrap();
+        assert_eq!(
+            bohio::config::NodeConfig::with_profile(profile),
+            from_text.node(),
+            "{}",
+            profile.name()
+        );
+    }
+}
+
+#[test]
+fn a_key_the_file_sets_beats_the_profile_and_the_rest_stays() {
+    let config = parse(
+        "[profile]\nname = \"slow-link\"\n[link]\nbulk_window = 1048576\n[compression]\nwindow_log_max = 23\n",
+    )
+    .unwrap();
+    assert_eq!(config.link.bulk_window, Some(MIB));
+    assert_eq!(config.compression.window_log_max, 23);
+    // What the file did not set is the profile's.
+    assert_eq!(config.link.max_window, Some(16 * MIB));
+    assert_eq!(config.compression.default.level, Some(19));
+}
+
+#[test]
+fn the_highest_layer_names_the_profile_and_a_lower_layers_key_still_beats_it() {
+    use bohio::config::Origin;
+    let dir = tempfile::tempdir().unwrap();
+    let files = layers(
+        dir.path(),
+        &[
+            (
+                "system.cfg",
+                "[profile]\nname = \"lan\"\n[link]\nbulk_window = 2097152\n",
+            ),
+            ("user.cfg", "[profile]\nname = \"fat-link\"\n"),
+        ],
+    );
+    let layered = Layers::load(&files).unwrap();
+    assert_eq!(layered.profile.name(), "fat-link");
+    // The system layer set it: it wins over the profile, though the user layer chose the profile.
+    assert_eq!(layered.config.link.bulk_window, Some(2 * MIB));
+    // `lan` is not the profile in force: its keys do not apply.
+    assert_eq!(layered.config.filesystem.chunk_size, 64 * 1024);
+    assert!(
+        matches!(layered.origin("link.bulk_window"), Origin::File(label) if label.ends_with("system.cfg"))
+    );
+    assert_eq!(layered.origin("filesystem.chunk_size"), Origin::Default);
+}
+
+#[test]
+fn origins_say_file_profile_or_default() {
+    use bohio::config::Origin;
+    let layered = Layers::parse(
+        "[profile]\nname = \"slow-link\"\n[link]\nbulk_window = 1048576\n",
+        "bohio.cfg",
+    )
+    .unwrap();
+    assert_eq!(
+        layered.origin("link.bulk_window"),
+        Origin::File("bohio.cfg".to_owned())
+    );
+    assert_eq!(
+        layered.origin("link.max_window").to_string(),
+        "profile slow-link"
+    );
+    assert_eq!(layered.origin("link.window"), Origin::Default);
+    assert_eq!(layered.origin("link.window").to_string(), "default");
+    assert!(layered.sets("link.bulk_window"));
+    assert!(!layered.sets("link.max_window"));
+}
+
+#[test]
+fn an_unknown_profile_is_refused_naming_its_key_and_the_names() {
+    match parse("[profile]\nname = \"turbo\"\n").unwrap_err() {
+        ConfigError::Invalid { path, key, message } => {
+            assert_eq!(key, "profile.name");
+            assert_eq!(path, "bohio.cfg");
+            assert!(
+                message.contains("turbo") && message.contains("slow-link"),
+                "{message}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    // In a layer, the layer that names it is the one reported.
+    let dir = tempfile::tempdir().unwrap();
+    let files = layers(
+        dir.path(),
+        &[
+            ("system.cfg", "[profile]\nname = \"lan\"\n"),
+            ("user.cfg", "[profile]\nname = \"fast\"\n"),
+        ],
+    );
+    match Layers::load(&files).unwrap_err() {
+        ConfigError::Invalid { path, key, .. } => {
+            assert!(path.ends_with("user.cfg"), "{path}");
+            assert_eq!(key, "profile.name");
+        }
+        other => panic!("{other:?}"),
+    }
+    // A client profile is checked the same way.
+    match parse("[client]\nprofile = \"turbo\"\n").unwrap_err() {
+        ConfigError::Invalid { key, .. } => assert_eq!(key, "client.profile"),
+        other => panic!("{other:?}"),
+    }
+    assert!(parse("[client]\nprofile = \"slow-link\"\n").is_ok());
+}
+
+#[test]
+fn an_error_in_a_value_only_the_profile_supplied_names_the_profile() {
+    // slow-link's default compression is zstd; the file allows only lz4 and says nothing of the default.
+    match parse("[profile]\nname = \"slow-link\"\n[compression]\nallowed = [\"lz4\"]\n")
+        .unwrap_err()
+    {
+        ConfigError::Invalid { path, key, .. } => {
+            assert_eq!(key, "compression.default");
+            assert_eq!(path, "profile slow-link");
+        }
+        other => panic!("{other:?}"),
+    }
+    // The same conflict with a key the file does set names the file.
+    match parse("[profile]\nname = \"weak-host\"\n[link]\nwindow = 4194304\n").unwrap_err() {
+        ConfigError::Invalid { path, key, .. } => {
+            assert_eq!(key, "link.window");
+            assert_eq!(path, "bohio.cfg");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_profile_sets_no_peer_and_every_key_it_sets_is_one_config_check_prints() {
+    use bohio_client::profile::Profile;
+    let printed: Vec<&str> = Config::default()
+        .transfer_keys()
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect();
+    for profile in Profile::ALL {
+        let text = bohio::profile::table(profile);
+        let table: toml::Table = toml::from_str(text).unwrap();
+        assert!(!table.contains_key("peer"), "{}", profile.name());
+        for (section, keys) in &table {
+            for key in keys.as_table().unwrap().keys() {
+                let path = format!("{section}.{key}");
+                assert!(
+                    printed.contains(&path.as_str()),
+                    "{}: {path} is not printed by config check",
+                    profile.name()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_profile_example_files_load_under_their_own_profile() {
+    for name in ["lan", "weak-host", "slow-link", "fat-link"] {
+        let layered = Layers::load(&[profile_example(name)]).unwrap();
+        assert_eq!(layered.profile.name(), name);
+    }
+}

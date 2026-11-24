@@ -16,6 +16,7 @@ use bohio_client::hash::hash_many;
 use bohio_client::keep::{Backoff, Kept, Links, Reconnecting, Relink};
 use bohio_client::link::Settings;
 use bohio_client::parallel::{ParallelOptions, get_parallel, put_parallel, read_parallel};
+use bohio_client::profile::Profile;
 use bohio_client::shell::{Event as ShellEvent, Shell};
 use bohio_client::sync::{Compare, DeltaMode, Moved, SyncOptions};
 use bohio_client::{Error, Open};
@@ -65,6 +66,10 @@ pub(super) struct Client {
     /// The most bytes of a screen rectangle, and the most pixels of a frame, this run holds (`[gui] max_rect_bytes` and
     /// `max_snapshot_pixels`).
     pub(super) screen: (u64, u64),
+    /// The profile whose client defaults apply to what a flag leaves unset.
+    pub(super) profile: Profile,
+    /// Whether the configuration sets `[client] parallel_streams` itself, which then wins over the profile.
+    pub(super) streams_set: bool,
 }
 
 impl Client {
@@ -82,6 +87,14 @@ impl Client {
             input_queue: client.input_queue,
             poll: config.link.poll_interval.0.max(Duration::from_millis(1)),
             screen: (config.gui.max_rect_bytes, config.gui.max_snapshot_pixels),
+            profile: args.profile.unwrap_or_else(|| {
+                client
+                    .profile
+                    .as_deref()
+                    .and_then(Profile::parse)
+                    .unwrap_or_default()
+            }),
+            streams_set: false,
         }
     }
 }
@@ -260,7 +273,12 @@ fn direct_plan(args: &RemoteArgs, environment: &Environment) -> Result<Plan, Str
             "the host {endpoint} is reached through jump hosts: only tcp://, pipe:// and stdio:// endpoints are carried through another host"
         ));
     }
-    let settings = config.link.settings();
+    // The receive window of a bulk stream is the profile's unless the file sets it.
+    let mut link = config.link.clone();
+    if link.bulk_window.is_none() {
+        link.bulk_window = Client::new(config, args).profile.defaults().bulk_window;
+    }
+    let settings = link.settings();
     // TLS trust is for the endpoint this side dials itself: the first hop.
     let dialed = jumps.first().map_or(&endpoint, |jump| &jump.endpoint);
     let (ca, cert_hash) = match (
@@ -335,13 +353,14 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
     };
     let found = source(&args.config, environment)?.0;
     let settings = found.config().forward.client();
-    let client = Client::new(found.config(), args);
+    let mut client = Client::new(found.config(), args);
+    client.streams_set = found.layered.sets("client.parallel_streams");
     let spread = match &args.action {
         RemoteAction::Read(read) if !(read.follow || read.follow_name) => {
-            Spread::of(&read.parallel, found.config())
+            Spread::of(&read.parallel, found.config(), &client)
         }
-        RemoteAction::Put(put) => Spread::of(&put.parallel, found.config()),
-        RemoteAction::Get(get) => Spread::of(&get.parallel, found.config()),
+        RemoteAction::Put(put) => Spread::of(&put.parallel, found.config(), &client),
+        RemoteAction::Get(get) => Spread::of(&get.parallel, found.config(), &client),
         _ => None,
     };
     let more = match &spread {
@@ -391,7 +410,11 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
                     );
                 }
                 let mut options = spread.options(&client);
-                options.compression = wanted(read.compress.as_deref(), read.window_log)?;
+                options.compression = wanted_or(
+                    read.compress.as_deref(),
+                    read.window_log,
+                    client.profile.defaults().compression,
+                )?;
                 let links = spread.links(&link, &more);
                 let mut out = std::io::stdout().lock();
                 read_parallel(&links, &read.path, &mut out, &options)
@@ -399,8 +422,12 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
                 return Ok(done_status());
             }
             let mut request = bohio_proto::fs::ReadRequest::whole(read.path.clone());
-            request.compression = wanted(read.compress.as_deref(), read.window_log)?;
-            request.prepare = read.prepare;
+            request.compression = wanted_or(
+                read.compress.as_deref(),
+                read.window_log,
+                client.profile.defaults().compression,
+            )?;
+            request.prepare = read.prepare || prepare_by_size(&*link, &request, &client);
             // A prepared read is silent while the host compresses: the host's progress frames keep the wait alive.
             let reader =
                 Reader::start_with(&*link, &request, Some(client.reply), ReadOptions::default())
@@ -497,14 +524,20 @@ struct Spread {
 
 impl Spread {
     /// `None` when the file goes the ordinary way: one stream on one link.
-    fn of(args: &ParallelArgs, config: &crate::config::Config) -> Option<Self> {
+    fn of(args: &ParallelArgs, config: &crate::config::Config, run: &Client) -> Option<Self> {
         let client = &config.client;
         let links = args
             .links
             .map_or(client.parallel_links, |links| links as usize);
+        // A flag, then the file's own key, then the profile.
+        let default = if run.streams_set {
+            client.parallel_streams
+        } else {
+            run.profile.defaults().parallel
+        };
         let streams = args
             .parallel
-            .map_or(client.parallel_streams, |streams| streams as usize)
+            .map_or(default, |streams| streams as usize)
             .max(links);
         let range = args.range.unwrap_or(client.parallel_range);
         (streams > 1).then_some(Self {
@@ -516,7 +549,11 @@ impl Spread {
 
     /// A transfer that moves the whole file in ranges has no delta and no comparison.
     fn whole_file(&self, sync: &super::SyncArgs) -> Result<(), String> {
-        if sync.delta != super::DeltaChoice::Auto || sync.compare.is_some() {
+        if sync
+            .delta
+            .is_some_and(|choice| choice != super::DeltaChoice::Auto)
+            || sync.compare.is_some()
+        {
             return Err(
                 "--parallel moves the whole file in ranges: not with --delta or --compare"
                     .to_owned(),
@@ -1113,10 +1150,44 @@ fn forward_command(
     lost.map_or(Ok(ExitCode::SUCCESS), Err)
 }
 
+/// Whether the profile has a compressed read of this file prepared in full first: the profile names a size, the read is
+/// compressed, and the file is at least that large. A failed `stat` leaves the read as it was.
+fn prepare_by_size(
+    link: &dyn Open,
+    request: &bohio_proto::fs::ReadRequest,
+    client: &Client,
+) -> bool {
+    let Some(minimum) = client.profile.defaults().prepare_min else {
+        return false;
+    };
+    if !request
+        .compression
+        .as_ref()
+        .is_some_and(Compression::is_requested)
+    {
+        return false;
+    }
+    bohio_client::fs::Fs::connect(link)
+        .and_then(|fs| {
+            fs.with_timeout(Some(client.reply))
+                .stat(&request.path, true)
+        })
+        .is_ok_and(|meta| meta.size >= minimum)
+}
+
 /// The compression a flag asks for: `ALG[:LEVEL]` and the window, `None` when the flag is absent.
 fn wanted(flag: Option<&str>, window_log: Option<u32>) -> Result<Option<Compression>, String> {
+    wanted_or(flag, window_log, None)
+}
+
+/// As [`wanted`], and `fallback` (a profile's compression) when the flag is absent.
+fn wanted_or(
+    flag: Option<&str>,
+    window_log: Option<u32>,
+    fallback: Option<Compression>,
+) -> Result<Option<Compression>, String> {
     let Some(text) = flag else {
-        return Ok(None);
+        return Ok(fallback);
     };
     let mut compression =
         Compression::parse(text).map_err(|reason| format!("--compress: {reason}"))?;
@@ -1156,22 +1227,30 @@ fn sync_options(
     sends: bool,
     client: &Client,
 ) -> Result<SyncOptions, String> {
-    let compression = match wanted(args.compress.as_deref(), args.window_log)? {
+    let defaults = client.profile.defaults();
+    let compression = match wanted_or(
+        args.compress.as_deref(),
+        args.window_log,
+        defaults.compression,
+    )? {
         Some(compression) if compression.algorithm == Codec::None => None,
         Some(compression) if sends => Some(named(link, compression, client)?),
         other => other,
     };
     Ok(SyncOptions {
-        delta: match args.delta {
+        delta: args.delta.map_or(defaults.delta, |choice| match choice {
             super::DeltaChoice::Auto => DeltaMode::Auto,
             super::DeltaChoice::Always => DeltaMode::Always,
             super::DeltaChoice::Never => DeltaMode::Never,
-        },
-        compare: args.compare.map(|how| match how {
-            super::CompareChoice::Meta => Compare::Meta,
-            super::CompareChoice::Hash => Compare::Hash(Algorithm::Blake3),
-            super::CompareChoice::Blocks => Compare::Blocks,
         }),
+        compare: args
+            .compare
+            .map(|how| match how {
+                super::CompareChoice::Meta => Compare::Meta,
+                super::CompareChoice::Hash => Compare::Hash(Algorithm::Blake3),
+                super::CompareChoice::Blocks => Compare::Blocks,
+            })
+            .or(defaults.compare),
         compression,
         block_size: args.block_size,
         timeout: client.transfer,
@@ -1221,7 +1300,11 @@ fn write_command(
     } else if args.create {
         request.mode = WriteMode::Create;
     }
-    let compression = match wanted(args.compress.as_deref(), args.window_log)? {
+    let compression = match wanted_or(
+        args.compress.as_deref(),
+        args.window_log,
+        client.profile.defaults().compression,
+    )? {
         Some(compression) if compression.algorithm == Codec::None => None,
         Some(compression) => Some(named(link, compression, client)?),
         None => None,
@@ -1936,7 +2019,8 @@ fn sync_command(
     client: &Client,
 ) -> Result<ExitCode, String> {
     use bohio_client::sync::{Direction, Step, TreeOptions, sync_tree};
-    let compression = match wanted(args.compress.as_deref(), None)? {
+    let defaults = client.profile.defaults();
+    let compression = match wanted_or(args.compress.as_deref(), None, defaults.compression)? {
         Some(compression) if compression.algorithm == Codec::None => None,
         Some(compression) if args.direction == SyncDirection::Push => {
             Some(named(link, compression, client)?)
@@ -1954,11 +2038,15 @@ fn sync_command(
             SyncDirection::Push => Direction::Push,
             SyncDirection::Pull => Direction::Pull,
         },
-        compare: match args.compare {
-            super::CompareChoice::Meta => Compare::Meta,
-            super::CompareChoice::Hash => Compare::Hash(Algorithm::Blake3),
-            super::CompareChoice::Blocks => Compare::Blocks,
-        },
+        compare: args
+            .compare
+            .map(|how| match how {
+                super::CompareChoice::Meta => Compare::Meta,
+                super::CompareChoice::Hash => Compare::Hash(Algorithm::Blake3),
+                super::CompareChoice::Blocks => Compare::Blocks,
+            })
+            .or(defaults.compare)
+            .unwrap_or(Compare::Meta),
         delete: args.delete,
         dry_run: args.dry_run,
         bundle_max: args.bundle_max,

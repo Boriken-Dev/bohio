@@ -18,10 +18,11 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-use bohio::config::Layers;
+use bohio::config::{Layers, NodeConfig};
 use bohio::peer::Data;
 use bohio_client::dial::Endpoint;
 use bohio_client::link::Settings;
+use bohio_client::profile::Profile;
 use clap::{Args, Parser, Subcommand};
 use coqui_link::auth::{Proof, Trust};
 
@@ -84,6 +85,10 @@ struct Common {
     /// `link.window=4MiB`. Both sides' windows and frames must agree, so set them here; `link.bulk_window` is the receiver's own and may differ.
     #[arg(long = "set", value_name = "KEY=VALUE")]
     set: Vec<String>,
+    /// A profile (`lan`, `weak-host`, `slow-link`, `fat-link`): the host runs under it (`[profile] name`), and this side's
+    /// link bounds and compression request are the profile's. A `--set` key wins over it, as a file's key wins over a profile.
+    #[arg(long, value_name = "NAME")]
+    profile: Option<String>,
     /// The path between the two sides, as the result names it.
     #[arg(long, default_value = "lan")]
     link: String,
@@ -189,11 +194,34 @@ fn run(cli: Cli) -> Result<bool, String> {
 
 /// The `[link]` and `[filesystem]` keys of `--set`, as TOML for the host, this side's settings, and the one
 /// `bench.compress=ALG[:LEVEL]` key, which is the client's request in the compression scenarios.
-fn apply_sets(sets: &[String]) -> Result<(Sections, Settings, Option<String>), String> {
+fn apply_sets(
+    sets: &[String],
+    profile: Option<&str>,
+) -> Result<(Sections, Settings, Option<String>), String> {
     let mut host: Sections = BTreeMap::new();
     let mut settings = Settings::default();
     let mut compress = None;
     let mut max_window_set = false;
+    if let Some(name) = profile {
+        let named = Profile::parse(name).ok_or_else(|| {
+            format!(
+                "`{name}` is not a profile: the names are {}",
+                Profile::names()
+            )
+        })?;
+        host.entry("profile".to_owned())
+            .or_default()
+            .insert("name".to_owned(), format!("\"{}\"", named.name()));
+        let link = NodeConfig::with_profile(named).link;
+        max_window_set = link.max_window.is_some();
+        settings = link.settings();
+        compress = named.defaults().compression.map(|wanted| {
+            wanted.level.map_or_else(
+                || wanted.algorithm.name().to_owned(),
+                |level| format!("{}:{level}", wanted.algorithm.name()),
+            )
+        });
+    }
     for set in sets {
         let (key, value) = set
             .split_once('=')
@@ -365,7 +393,7 @@ fn run_all(runner: &mut Runner, names: &[String]) -> bool {
 
 fn local(args: &LocalArgs) -> Result<bool, String> {
     let common = &args.common;
-    let (extra, settings, compress) = apply_sets(&common.set)?;
+    let (extra, settings, compress) = apply_sets(&common.set, common.profile.as_deref())?;
     let bohio = common.bohio.clone().unwrap_or_else(|| sibling("bohio"));
     let helper = args.exec_helper.clone().unwrap_or_else(|| {
         sibling("bohio")
@@ -463,7 +491,7 @@ fn local(args: &LocalArgs) -> Result<bool, String> {
 
 fn remote(args: &RunArgs) -> Result<bool, String> {
     let common = &args.common;
-    let (extra, settings, compress) = apply_sets(&common.set)?;
+    let (extra, settings, compress) = apply_sets(&common.set, common.profile.as_deref())?;
     let bohio = common.bohio.clone().unwrap_or_else(|| sibling("bohio"));
     let proof = proof_of(&args.data_dir, &args.client_config, args.server.as_deref())?;
     let mut runner = Runner::new(Env {

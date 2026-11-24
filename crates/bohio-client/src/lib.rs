@@ -18,6 +18,7 @@ pub mod link;
 pub mod media;
 pub mod parallel;
 pub mod power;
+pub mod profile;
 pub mod range;
 pub mod relay;
 pub mod search;

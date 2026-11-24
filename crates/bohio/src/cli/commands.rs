@@ -155,6 +155,12 @@ fn config_check(args: &CheckArgs, environment: &Environment) -> Result<(), Strin
             "filesystem": config.filesystem.enabled,
             "execution": config.execution.enabled,
             "shell": config.shell.enabled,
+            "profile": found.layered.profile.name(),
+            "transfer": config.transfer_keys().into_iter().map(|(key, value)| serde_json::json!({
+                "key": key,
+                "value": value,
+                "source": found.layered.origin(key).to_string(),
+            })).collect::<Vec<_>>(),
         }));
         return Ok(());
     }
@@ -172,6 +178,10 @@ fn config_check(args: &CheckArgs, environment: &Environment) -> Result<(), Strin
     println!("filesystem: {}", enabled(config.filesystem.enabled));
     println!("execution: {}", enabled(config.execution.enabled));
     println!("shell: {}", enabled(config.shell.enabled));
+    println!("profile: {}", found.layered.profile.name());
+    for (key, value) in config.transfer_keys() {
+        println!("{key} = {value} ({})", found.layered.origin(key));
+    }
     Ok(())
 }
 

@@ -15,7 +15,7 @@ mod layers;
 pub use access::{AccessConfig, NATIVE, SourceTable, SourceTables, Switch};
 pub use gui::{ApprovalMode, GuiConfig, Indicator, LadderStep, WindowsCapture};
 pub use hosts::{Hop, HostConfig, Hosts};
-pub use layers::{Layered, Layers};
+pub use layers::{Layered, Layers, Origin};
 
 use std::ffi::OsString;
 use std::fmt;
@@ -133,6 +133,8 @@ impl core::error::Error for ConfigError {}
 pub struct Config {
     /// `[service]`.
     pub service: ServiceConfig,
+    /// `[profile]`: the named starting point of the transfer settings.
+    pub profile: ProfileConfig,
     /// `[[listen]]`: where the host accepts links.
     pub listen: Vec<ListenConfig>,
     /// `[link]`.
@@ -182,6 +184,26 @@ pub struct Config {
     pub peer: Peers,
     /// `[remote.<name>]`: hosts `bohio remote` and a jump list can name.
     pub remote: Hosts,
+}
+
+/// `[profile]`: the named defaults laid under every other key.
+///
+/// A profile is a starting point and never a constraint: a key a file sets wins over it, key by key (see
+/// [`crate::profile`]).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ProfileConfig {
+    /// One of `default`, `lan`, `weak-host`, `slow-link` or `fat-link`. The highest layer that sets it names the
+    /// profile; `default` is the built-in behaviour, which compresses nothing unless a client asks. Default `default`.
+    pub name: String,
+}
+
+impl Default for ProfileConfig {
+    fn default() -> Self {
+        Self {
+            name: bohio_client::profile::Profile::Default.name().to_owned(),
+        }
+    }
 }
 
 /// `[service]`: who the host is.
@@ -1605,6 +1627,11 @@ pub struct ClientConfig {
     /// and 8 MiB for `read`, which holds ranges in memory (at most two per stream). A smaller range balances a slow
     /// stream against a fast one and costs an open, a round trip, per range. Default `0`.
     pub parallel_range: u64,
+    /// The profile whose client defaults (compression, delta, comparison, streams, bulk window, when to prepare) apply
+    /// to what a flag of `bohio remote` leaves unset; `remote --profile` overrides it. One of `default`, `lan`,
+    /// `weak-host`, `slow-link` or `fat-link`. Unset: `default`. A key this file sets itself (`parallel_streams`,
+    /// `[link] bulk_window`) wins over the profile.
+    pub profile: Option<String>,
 }
 
 impl Default for ClientConfig {
@@ -1621,6 +1648,7 @@ impl Default for ClientConfig {
             parallel_streams: 1,
             parallel_links: 1,
             parallel_range: 0,
+            profile: None,
         }
     }
 }
@@ -1651,6 +1679,14 @@ impl ClientConfig {
         }
         if self.parallel_links == 0 {
             return Err(("client.parallel_links", "must be at least 1"));
+        }
+        if let Some(name) = &self.profile
+            && bohio_client::profile::Profile::parse(name).is_none()
+        {
+            return Err((
+                "client.profile",
+                "is not a profile: the names are default, lan, weak-host, slow-link and fat-link",
+            ));
         }
         Ok(())
     }

@@ -2753,3 +2753,107 @@ fn every_command_prints_json_that_docs_cli_json_describes() {
     assert_eq!(json_lines(&bad.stderr)[0]["error"]["code"], "failed");
     drop(target);
 }
+
+#[test]
+fn a_client_profile_sets_what_the_flags_leave_out() {
+    let world = World::new("");
+    let root = world.path("files");
+    std::fs::create_dir_all(&root).unwrap();
+    let host = world.serve("warn");
+    let client = approved(
+        &world,
+        "profiled",
+        &[
+            "--allow",
+            "fs.read,fs.write",
+            "--fs-root",
+            &root.to_string_lossy(),
+        ],
+    );
+    let text: String = (0..60_000)
+        .map(|n| format!("line {n}: the quick brown fox {} jumps\n", n % 17))
+        .collect();
+    let local = world.path("local.txt");
+    std::fs::write(&local, &text).unwrap();
+    let size = text.len() as u64;
+    let local_text = local.to_string_lossy().into_owned();
+    let theirs = |name: &str| root.join(name).to_string_lossy().into_owned();
+    let wire_of = |done: &Finished| {
+        assert_eq!(done.code, Some(0), "{}", done.stderr);
+        let (wire, total, _, _) = sent_line(&done.stdout);
+        assert_eq!(total, size, "{}", done.stdout);
+        wire
+    };
+
+    // Nothing asks for compression: the file travels whole.
+    let plain = remote(&client, &host, &["put", &local_text, &theirs("a.txt")]);
+    assert!(wire_of(&plain) >= size, "{}", plain.stdout);
+
+    // A weak machine's profile asks for lz4; the file shrinks.
+    let weak = remote(
+        &client,
+        &host,
+        &[
+            "--profile",
+            "weak-host",
+            "put",
+            &local_text,
+            &theirs("b.txt"),
+        ],
+    );
+    assert!(wire_of(&weak) * 2 < size, "{}", weak.stdout);
+    assert_eq!(std::fs::read_to_string(root.join("b.txt")).unwrap(), text);
+
+    // A flag beats the profile.
+    let flagged = remote(
+        &client,
+        &host,
+        &[
+            "--profile",
+            "weak-host",
+            "put",
+            "--compress",
+            "none",
+            &local_text,
+            &theirs("c.txt"),
+        ],
+    );
+    assert!(wire_of(&flagged) >= size, "{}", flagged.stdout);
+
+    // The profile in the client's own file applies without a flag, and `--profile default` puts it back.
+    let mut config = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&client.config)
+        .unwrap();
+    config
+        .write_all(b"\n[client]\nprofile = \"weak-host\"\n")
+        .unwrap();
+    drop(config);
+    let from_file = remote(&client, &host, &["put", &local_text, &theirs("d.txt")]);
+    assert!(wire_of(&from_file) * 2 < size, "{}", from_file.stdout);
+    let back = remote(
+        &client,
+        &host,
+        &["--profile", "default", "put", &local_text, &theirs("e.txt")],
+    );
+    assert!(wire_of(&back) >= size, "{}", back.stdout);
+
+    // The same for a get.
+    let pulled = world.path("pulled.txt");
+    let got = remote(
+        &client,
+        &host,
+        &["get", &theirs("a.txt"), &pulled.to_string_lossy()],
+    );
+    assert!(wire_of(&got) * 2 < size, "{}", got.stdout);
+    assert_eq!(std::fs::read_to_string(&pulled).unwrap(), text);
+
+    // A name that is no profile is refused before anything connects.
+    let unknown = remote(&client, &host, &["--profile", "turbo", "info"]);
+    assert_eq!(unknown.code, Some(2), "{}", unknown.stderr);
+    assert!(
+        unknown.stderr.contains("not a profile") && unknown.stderr.contains("slow-link"),
+        "{}",
+        unknown.stderr
+    );
+}

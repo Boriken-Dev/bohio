@@ -335,6 +335,16 @@ fn parse_span(text: &str) -> Result<std::time::Duration, String> {
         })
 }
 
+/// A profile name for what this run asks of the host (`parse_profile`).
+fn parse_profile(text: &str) -> Result<bohio_client::profile::Profile, String> {
+    bohio_client::profile::Profile::parse(text).ok_or_else(|| {
+        format!(
+            "`{text}` is not a profile: the names are {}",
+            bohio_client::profile::Profile::names()
+        )
+    })
+}
+
 /// `bohio remote`.
 #[derive(Debug, Args)]
 pub struct RemoteArgs {
@@ -400,6 +410,11 @@ pub struct RemoteArgs {
     /// `[client] transfer_timeout` (5m).
     #[arg(long, value_name = "TIME", value_parser = parse_span)]
     pub transfer_timeout: Option<std::time::Duration>,
+    /// The profile whose client defaults apply to what a flag leaves unset: `default`, `lan`, `weak-host`, `slow-link` or
+    /// `fat-link` (compression, delta, comparison, streams, receive window of a bulk stream, when a compressed read is
+    /// prepared first). A flag, and a key `bohio.cfg` sets itself, win over it. Default `[client] profile`.
+    #[arg(long, value_name = "NAME", value_parser = parse_profile)]
+    pub profile: Option<bohio_client::profile::Profile>,
     /// What to ask of it.
     #[command(subcommand)]
     pub action: RemoteAction,
@@ -830,9 +845,9 @@ pub struct ParallelArgs {
 /// The options `put` and `get` share.
 #[derive(Debug, Args)]
 pub struct SyncArgs {
-    /// Whether to send only what differs from the copy already at the destination.
-    #[arg(long, value_enum, default_value = "auto")]
-    pub delta: DeltaChoice,
+    /// Whether to send only what differs from the copy already at the destination. Default `auto` (the profile's).
+    #[arg(long, value_enum)]
+    pub delta: Option<DeltaChoice>,
     /// Move nothing when the two files are the same by this comparison.
     #[arg(long, value_enum)]
     pub compare: Option<CompareChoice>,
@@ -929,8 +944,9 @@ pub struct RemoteSyncArgs {
     #[arg(long)]
     pub dry_run: bool,
     /// How a file on both sides is told to be the same: `meta` (size and time), `hash` (blake3 of each side) or `blocks`.
-    #[arg(long, value_enum, default_value = "meta")]
-    pub compare: CompareChoice,
+    /// Default `meta`, or the profile's.
+    #[arg(long, value_enum)]
+    pub compare: Option<CompareChoice>,
     /// The largest file moved in a bundle, in bytes; larger ones go one by one, by delta against the old copy.
     #[arg(long, value_name = "BYTES", default_value_t = 1_048_576)]
     pub bundle_max: u64,

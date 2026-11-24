@@ -17,6 +17,7 @@ use toml::Value;
 
 use super::{Config, ConfigError, position};
 use crate::policy::Peers;
+use bohio_client::profile::Profile;
 
 /// A configuration read from its layers.
 #[derive(Debug, Clone, PartialEq)]
@@ -27,6 +28,60 @@ pub struct Layered {
     pub peers: Peers,
     /// The files read, lowest layer first.
     pub files: Vec<PathBuf>,
+    /// The profile `[profile] name` chose: the highest layer that sets it, else `default`.
+    pub profile: Profile,
+    /// What each layer is called in an error (its path, or the label `Layers::parse` was given), lowest first.
+    labels: Vec<String>,
+    /// Each layer's own value, lowest first.
+    values: Vec<Value>,
+    /// The profile's table of defaults, laid under every layer (empty for `default`).
+    defaults: Value,
+}
+
+/// Where the effective value of a key comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Origin {
+    /// A layer sets it: the layer's label (its path).
+    File(String),
+    /// No layer sets it and the profile does.
+    Profile(Profile),
+    /// Neither: the built-in default.
+    Default,
+}
+
+impl core::fmt::Display for Origin {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::File(label) => write!(f, "file {label}"),
+            Self::Profile(profile) => write!(f, "profile {}", profile.name()),
+            Self::Default => f.write_str("default"),
+        }
+    }
+}
+
+impl Layered {
+    /// Where the effective value of `key` (a dotted path such as `link.bulk_window`) comes from: the highest layer
+    /// that sets it, else the profile, else the built-in default.
+    #[must_use]
+    pub fn origin(&self, key: &str) -> Origin {
+        let segments: Vec<&str> = key.split('.').collect();
+        if let Some(at) = (0..self.values.len())
+            .rev()
+            .find(|index| has_path(&self.values[*index], &segments))
+        {
+            return Origin::File(self.labels[at].clone());
+        }
+        if has_path(&self.defaults, &segments) {
+            return Origin::Profile(self.profile);
+        }
+        Origin::Default
+    }
+
+    /// Whether some layer (not the profile) sets `key`, a dotted path.
+    #[must_use]
+    pub fn sets(&self, key: &str) -> bool {
+        matches!(self.origin(key), Origin::File(_))
+    }
 }
 
 /// Reading `bohio.cfg` layers.
@@ -37,6 +92,7 @@ pub struct Layers;
 const LOWEST_ONLY: [&str; 2] = ["check_access", "user_layer"];
 
 /// One layer as read.
+#[derive(Clone)]
 struct Input {
     label: String,
     bytes: Vec<u8>,
@@ -412,13 +468,37 @@ fn check_ids(peers: &Peers, inputs: &[Input], values: &[Value]) -> Result<(), Co
     Ok(())
 }
 
-/// The layers, checked each alone and then merged.
+/// The profile the layers name: the highest layer that sets `[profile] name`.
+fn named_profile(inputs: &[Input], values: &[Value]) -> Result<Profile, ConfigError> {
+    let at = setter(inputs, values, &["profile", "name"]);
+    let name = values[at]
+        .get("profile")
+        .and_then(|profile| profile.get("name"))
+        .and_then(Value::as_str);
+    let Some(name) = name else {
+        return Ok(Profile::Default);
+    };
+    Profile::parse(name).ok_or_else(|| ConfigError::Invalid {
+        path: inputs[at].label.clone(),
+        key: "profile.name".to_owned(),
+        message: format!(
+            "`{name}` is not a profile: the names are {}",
+            Profile::names()
+        ),
+    })
+}
+
+/// The layers, checked each alone and then merged over the profile's defaults.
 fn build(inputs: &[Input]) -> Result<Layered, ConfigError> {
     if inputs.is_empty() {
         return Ok(Layered {
             config: Config::default(),
             peers: Peers::default(),
             files: Vec::new(),
+            profile: Profile::Default,
+            labels: Vec::new(),
+            values: Vec::new(),
+            defaults: Value::Table(toml::Table::new()),
         });
     }
     let formats = formats();
@@ -428,12 +508,35 @@ fn build(inputs: &[Input]) -> Result<Layered, ConfigError> {
             .map_err(|error| layer_error(input, &error))?;
     }
     let values = values(&formats, inputs)?;
-    let config: Config = merged(&formats, inputs, &values)?;
+    let profile = named_profile(inputs, &values)?;
+    // The profile is the lowest layer under the files: its table is checked alone like any layer, and an error in
+    // a value only it supplied names it.
+    let text = crate::profile::table(profile);
+    let mut all_inputs = Vec::new();
+    let mut all_values = Vec::new();
+    let mut defaults = Value::Table(toml::Table::new());
+    if !text.is_empty() {
+        let layer = Input {
+            label: format!("profile {}", profile.name()),
+            bytes: text.as_bytes().to_vec(),
+        };
+        formats
+            .from_slice_typed::<Config>(&layer.bytes, Options::new().format("toml"))
+            .map_err(|error| layer_error(&layer, &error))?;
+        defaults = formats
+            .from_slice(&layer.bytes, Options::new().format("toml"))
+            .map_err(|error| layer_error(&layer, &error))?;
+        all_values.push(defaults.clone());
+        all_inputs.push(layer);
+    }
+    all_inputs.extend(inputs.iter().cloned());
+    all_values.extend(values.iter().cloned());
+    let config: Config = merged(&formats, &all_inputs, &all_values)?;
     if let Err(ConfigError::Invalid { key, message, .. }) = config.validate("") {
         let segments: Vec<&str> = key.split('.').collect();
-        let at = setter(inputs, &values, &segments);
+        let at = setter(&all_inputs, &all_values, &segments);
         return Err(ConfigError::Invalid {
-            path: inputs[at].label.clone(),
+            path: all_inputs[at].label.clone(),
             key,
             message,
         });
@@ -443,5 +546,9 @@ fn build(inputs: &[Input]) -> Result<Layered, ConfigError> {
         peers: config.peer.clone(),
         config,
         files: Vec::new(),
+        profile,
+        labels: inputs.iter().map(|input| input.label.clone()).collect(),
+        values,
+        defaults,
     })
 }

@@ -19,6 +19,7 @@ pub mod pair;
 pub mod peer;
 pub mod policy;
 pub mod power;
+pub mod profile;
 pub mod secret;
 pub mod session;
 pub mod shell;

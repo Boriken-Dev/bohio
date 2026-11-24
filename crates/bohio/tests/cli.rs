@@ -775,3 +775,83 @@ fn a_peer_with_no_table_is_not_found_to_revoke() {
     );
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+fn profile_example(name: &str) -> String {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/profiles")
+        .join(format!("{name}.cfg"))
+        .to_string_lossy()
+        .into_owned()
+}
+
+#[test]
+fn config_check_prints_every_transfer_key_with_where_its_value_comes_from() {
+    let output = bohio(&["config", "check", "--config", &profile_example("slow-link")]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let out = text(&output.stdout);
+    assert!(out.starts_with("ok: "), "{out}");
+    assert!(out.contains("profile: slow-link"), "{out}");
+    // A value the profile supplies, one the file sets, and one nothing sets.
+    assert!(
+        out.contains("link.bulk_window = 4194304 (profile slow-link)"),
+        "{out}"
+    );
+    assert!(
+        out.contains("compression.window_log_max = 27 (profile slow-link)"),
+        "{out}"
+    );
+    assert!(
+        out.contains("client.profile = \"slow-link\" (file "),
+        "{out}"
+    );
+    assert!(out.contains("link.window = 1048576 (default)"), "{out}");
+}
+
+#[test]
+fn config_check_json_lists_the_transfer_keys_as_objects() {
+    let output = bohio(&[
+        "config",
+        "check",
+        "--config",
+        &profile_example("fat-link"),
+        "--json",
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["profile"], "fat-link");
+    let keys = report["transfer"].as_array().expect("a list");
+    let bulk = keys
+        .iter()
+        .find(|entry| entry["key"] == "link.bulk_window")
+        .expect("bulk_window is listed");
+    assert_eq!(bulk["value"], "8388608");
+    assert_eq!(bulk["source"], "profile fat-link");
+}
+
+#[test]
+fn every_profile_example_passes_config_check_and_an_unknown_profile_does_not() {
+    for name in ["lan", "weak-host", "slow-link", "fat-link"] {
+        let output = bohio(&["config", "check", "--config", &profile_example(name)]);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{name}: {}",
+            text(&output.stderr)
+        );
+        assert!(
+            text(&output.stdout).contains(&format!("profile: {name}")),
+            "{name}"
+        );
+    }
+    let directory = scratch("check-profile");
+    let file = directory.join("bad.cfg");
+    std::fs::write(&file, "[profile]\nname = \"turbo\"\n").unwrap();
+    let output = bohio(&["config", "check", "--config", &file.to_string_lossy()]);
+    assert_eq!(output.status.code(), Some(1));
+    let err = text(&output.stderr);
+    assert!(
+        err.contains("profile.name") && err.contains("turbo"),
+        "{err}"
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
