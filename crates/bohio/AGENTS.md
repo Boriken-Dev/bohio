@@ -480,13 +480,14 @@ pub trait Presence: Send + Sync { fn engaged(&self, &Engagement); fn released(&s
 pub struct Engagement { pub peer: PeerId, pub session: String, pub controlling: bool }
 pub trait Notifier: Send + Sync { fn notify(&self, notice: &Notice, decide: Option<Decide>); }   // LogNotifier (default), DesktopNotifier (feature `notify`); Notice { title, body }
 pub fn serve(channel: Arc<dyn Channel>, metadata: &[u8], context: &Context<'_>) -> Result<Ended, ErrorBody>;   // `bohio-gui/1`; Ended: counts only
+pub fn serve_chosen(channel: &Arc<dyn Channel>, metadata: &[u8], context: &Context<'_>);   // a node's open: its own desktop, or a helper's (`Context.session` names the session served; `DEFAULT_SESSION` is the node's own)
 pub fn covers(grant: &Grant, metadata: &[u8]) -> bool;
 ```
 
 `[gui]` (`GuiConfig`; every key in `examples/bohio.cfg`): `enabled` `false`, `max_streams` `4`, `max_streams_per_peer` `2`, `snapshots_per_minute` `120`, `max_snapshot_pixels` `33554432`,
 `formats` `["png","jpeg","webp"]`, `jpeg_quality` `80`, `max_input_rate` `1000`, `max_batch_events` `256`, `max_text` `4096`, `max_batch_wait` `5s`, `input_when_locked` `false`, `settle_interval` `100ms`,
 `settle_quiet` `300ms`, `settle_timeout` `5s`, `settle_ignore_tiles` `1`, `clipboard_max_bytes` `1048576`, `chunk_size` `65536`, `poll_interval` `50ms`, `state_interval` `500ms`, `idle_timeout` `30m`,
-`indicator` `"notify"`, `indicator_linger` `30s`, `approval` `"none"`, `approval_timeout` `60s`, `approval_ttl` `15m`; the watch's `default_fps` `5`, `max_fps` `15`, `min_fps` `1`, `tile` `64`, `frames_in_flight` `2`,
+`indicator` `"notify"`, `indicator_linger` `30s`, `approval` `"none"`, `approval_timeout` `60s`, `approval_ttl` `15m`, `helper_accounts` empty, `helper_endpoint` and `node_account` unset (these three: lowest layer only), `max_helpers` `8`; the watch's `default_fps` `5`, `max_fps` `15`, `min_fps` `1`, `tile` `64`, `frames_in_flight` `2`,
 `lossless_max_bpp` `0.75` (a float: `GuiConfig` is not `Eq`), `refine_after` `1s`, `zstd_level` `3`, `watch_quality` `90`, `adapt` `true`, `adapt_ladder` `["85","70","50","50@0.75","40@0.5"]` (`LadderStep::parse`: `QUALITY[@SCALE]`),
 `adapt_window` `32`, `adapt_down_after` `3`, `adapt_up_after` `5`, `adapt_late` `1.5`, `adapt_early` `0.5`, `max_rate` unset (bytes a second), `max_rect_bytes` `33554432`; a zero count or time is an error naming the key.
 A `watch` (`gui/stream.rs`, `gui/adapt.rs`): the stream thread captures only while fewer than `frames_in_flight` updates are unacknowledged and at most `fps` times a second, compares the frame in `tile` tiles
@@ -496,6 +497,23 @@ every `state_interval`. Without feature `gui` a watch is `unsupported`. `example
 (`with_desktop` adds it as the source `app` and makes it the default desktop; the `native` source serves the platform desktop on Windows, via `[access] desktop`, and no other platform has a backend yet) and a peer whose grant holds what the request wants (`gui.clipboard` only beside `gui.view` or `gui.input`). Each request is decided by the grant
 as it is then; the stream ends `revoked` at the next `[link] recheck`. An engagement (one peer, one session) starts at its first stream and ends `indicator_linger` after its last, so many short streams make one notice.
 `bohio-gui-approve/1` is served on the local endpoint only (`LocalLink::gui_pending`, `gui_decide`; `bohio gui pending|allow|deny`).
+
+The per-user GUI helper (`bohio::gui::helper`, `bohio gui-helper`, `[gui] helper_accounts`, `helper_endpoint`, `node_account`, `max_helpers`; the first three are read from the lowest layer only): a node with no desktop of its own serves a
+desktop user's, which that user's helper lends over `bohio-gui-helper/1` on the helper endpoint (a mux with no proof: the account is the boundary).
+```rust
+pub struct HelperListener;   // Debug; bind(&GuiConfig, &PeerId) -> Result<Option<Self>, NodeError> (None when helper_accounts is empty; resolves each account; Unix: refuses a socket directory another account owns or may write; Windows: DACL SY, the node's SID, IU)
+impl HelperListener { pub const fn endpoint(&self) -> &Endpoint; }
+impl Node { pub fn serve_helpers(&self, &HelperListener, stop: &AtomicBool) -> io::Result<()>;   // closes unread a connection whose OsIdentity user is not a listed account (a missing answer refuses): GuiChange::Refused on the node's own id
+            pub fn serve_helper_channel<C: Channel>(&self, &C, account: &str, stop: Option<&AtomicBool>); }   // the account is the caller's check
+pub struct HelperSettings { pub endpoint: Endpoint, pub node_account: String, pub session: String, pub user: Option<String>, pub gui: GuiConfig /*the user's: narrowed by the node's, never widened*/, pub link: Settings }
+pub fn run(&HelperSettings, Arc<Sources>, stop: &AtomicBool) -> Result<(), HelperError>;   // checks who serves the endpoint BEFORE it sends (HelperError::NotTheNode names both), then serve_node
+pub fn serve_node<C: Channel>(&C, &HelperSettings, Arc<Sources>, stop: &AtomicBool);   // the caller has checked the node
+pub fn resolve_account(&str) -> Result<String, String>;   // a SID (Windows; names through Windows PowerShell) or a uid (Unix; names through /etc/passwd)
+pub fn admits(user: Option<&str>, accounts: &[String]) -> bool;   pub fn narrowed(&GuiConfig, &HelperPolicy) -> GuiConfig;
+```
+A request that names a helper's session (`ACCOUNT:NAME`), or none while the node's own desktop does not answer, is relayed by `gui::serve_chosen`; the node checks the grant, the slots, its approval and each input and clipboard frame, and the helper's engine
+(`Context.session` is the listed id) serves exactly what the node granted. `bohio gui-helper [--endpoint E | --node ID] [--node-account A] [--session NAME]` exits 1, naming both accounts, when another account serves the endpoint.
+`tests/gui_helper.rs` runs a node and a helper over a real pipe against the painted desktop; `tests/accounts.rs` has the real second-account cases (`BOHIO_TEST_OTHER_ACCOUNT`).
 
 ```rust
 // Windows only (`cfg(windows)`), `bohio::gui`: the screen of the interactive session this process runs in.

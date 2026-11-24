@@ -873,6 +873,24 @@ approve-input   = { decide: { id: uint, allow: bool } }
 
 A joiner on a listener sends one message first, `coqui-link/pairing/1`, which is neither a Noise first message (32 bytes) nor a WebCrypto one (JSON): the node reads the first message of every connection and runs a pairing on that marker and a proof on anything else.
 
+## The GUI helper: `bohio-gui-helper/1`
+
+A node that runs as a service has no desktop, and a per-user helper (`bohio gui-helper`) serves the desktop of the account that started it. The helper connects out to the node's helper endpoint (`[gui] helper_endpoint`, a `pipe://` one: on Windows by default `pipe://bohio-gui-` and the first 16 hex digits of the node's id, on Unix named in the file). Like the local control endpoint it is a mux without the proof or the seal, and who may connect is the boundary, decided from the operating system's answer about the connection and never from a message: the node closes unread a connection whose account is not in `[gui] helper_accounts`, and the helper exits without sending a byte unless the account that serves the endpoint is the node's (`--node-account`, `[gui] node_account`; the owner of the pipe object on Windows, the server's uid on Unix). The protocol is never served on a peer's link and is not offered in a peer's `link/1` document.
+
+```text
+helper-hello   = { session: text, ? user: opt<text>, ? state: state }        ; the open's metadata of the helper's first stream
+helper-policy  = { indicator_notify: bool, input_when_locked: bool, max_input_rate: uint, max_snapshot_pixels: uint,
+                   max_batch_events: uint, max_text: uint, clipboard_max_bytes: uint, max_fps: uint }
+helper-open    = { request: gui-request, peer: text, session: text, granted: [* ("view" / "input" / "clipboard")], policy: helper-policy }
+helper-change  = { started: { granted: [* want] } } / { ended: { snapshots: uint, frames: uint, input_events: uint,
+                   clipboard_reads: uint, clipboard_writes: uint, reason: text } } / "clipboard_read" / "clipboard_written"
+               / { refused: { reason: text } }
+helper-message = { state: { state: state } } / { event: { peer: text, change: helper-change } }
+```
+
+The helper opens `bohio-gui-helper/1` with a `helper-hello`; the node lists the session as the verified account, a colon and `session`, and keeps the stream open: the helper sends a `helper-message` `state` whenever its state changes and an `event` for each audit event of a stream it served (counts only), and the session ends when the stream closes. The node opens one `bohio-gui/1` stream on the same connection for each stream of a peer; its open is a `helper-open`, whose `granted` is what the node's grant for the peer allows of what the request asked and whose `policy` is the node's own bounds, which the helper narrows to and never widens. The stream then speaks `bohio-gui/1` unchanged, relayed by the node, which checks each input and clipboard frame against the peer's grant as it is when the frame arrives (a refusal is the engine's `request_error`) and ends the stream at `[link] recheck` when a permission it was opened with is gone. A helper that ends, or is replaced by another of the same session, ends its relayed streams with an `error` frame `unavailable` ("the session ended"). A request names the session by its listed id; without one the node's own desktop serves it when it has one, else the helper at the screen, else the only helper, else the open is `bad_request` listing the choices.
+
+
 ## Vectors
 
 `vectors/control.json`, `exec.json`, `shell.json`, `read.json`, `write.json`, `hash.json`, `walk.json`, `forward.json` (`bohio-connect/1`), `listen.json`, `accept.json`, `attach.json`, `search.json`, `gui.json`, `power.json` and `media.json` hold one entry per message; `vectors/delta.json` holds the [weak sums, a signature and a stream of steps](#deltas) in its own shape. Each file is:

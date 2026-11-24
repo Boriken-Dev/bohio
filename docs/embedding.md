@@ -109,6 +109,10 @@ let node = node.with_events(Arc::new(AuditTrail::new(db)));
 
 The event runs on the link's thread: an event sink that blocks holds up that link.
 
+## A helper for a node with no desktop
+
+A node an application runs as a service can serve a desktop user's screen through that user's helper. Bind `bohio::gui::helper::HelperListener::bind(&config.gui, &node.host())` (it is `None` unless `[gui] helper_accounts` names an account, and it resolves each name to a SID or a uid) and run `Node::serve_helpers(&listener, &stop)` on a thread; a connection whose operating-system account is not listed is closed unread, and a helper that connects is listed in `info.gui.sessions` as `ACCOUNT:NAME`. Streams reach it through the node's own `gui::serve_chosen`, which an embedder that calls `gui::serve` directly does not get: such an embedder serves its own `Desktop` as before. The helper side is `bohio::gui::helper::run(&HelperSettings, sources, &stop)`, which checks who serves the endpoint before it sends anything (`HelperError::NotTheNode`), or `serve_node` over a channel the application has already checked. `Context` of `gui::serve` gains `session`, the id a stream is served under.
+
 ## A local control endpoint
 
 `bohio::local::Local` and `Node::serve_local` give a running node the endpoint `bohio remote --via` and `bohio links` use, on a pipe this account alone may open. It lets whoever connects act with everything every peer grants this node, so serve it only there; `Node::serve_local_channel` checks nobody. [Security](security.md#embedding) lists what else the API leaves to the application.
