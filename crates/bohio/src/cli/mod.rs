@@ -1205,4 +1205,27 @@ pub struct McpArgs {
     /// Calls that run at once; one more is answered as busy. Default 8.
     #[arg(long, value_name = "N", default_value_t = 8)]
     pub max_calls: usize,
+    /// List the desktop tools (`screenshot`, `click`, `move_pointer`, `drag`, `scroll`, `type`, `key`, `wait`, `displays`,
+    /// `cursor_position`, `clipboard_read`, `clipboard_write`, `gui_watch`). Without this flag none is listed or callable. What a
+    /// screen shows is untrusted input to the agent, and `gui.input` is the desktop user's whole authority: give the agent a
+    /// key of its own, and `gui.view` alone when it only reads.
+    #[arg(long)]
+    pub gui: bool,
+    /// Where `format: "auto"` turns to JPEG: a PNG screenshot larger than this many bytes is taken again as JPEG 80. Matters with
+    /// `--gui`.
+    #[arg(long, value_name = "BYTES", default_value_t = 1_048_576)]
+    pub gui_max_image_bytes: u64,
+    /// What an input tool answers besides `applied`: `screenshot` is a settled screenshot of the display it acted on (it
+    /// costs a snapshot a call), `none` is nothing more. Matters with `--gui`.
+    #[arg(long, value_enum, value_name = "WHAT", default_value = "none")]
+    pub gui_after_action: AfterAction,
+}
+
+/// What an input tool of `bohio mcp --gui` answers besides what it applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum AfterAction {
+    /// A settled screenshot of the display the input acted on.
+    Screenshot,
+    /// Nothing more.
+    None,
 }

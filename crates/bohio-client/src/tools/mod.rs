@@ -34,6 +34,10 @@ mod screen;
 mod system;
 
 pub use registry::REGISTRY;
+pub use screen::{
+    CursorPosition, DisplayInfo, Displays, Done, Pointer, Screenshot, ScreenshotOptions,
+    ShotFormat, Space, Waited,
+};
 
 /// How big a call's answers may be: what a call gets when it names nothing, and the most it may ask for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,8 +100,20 @@ pub struct Settings {
     pub forward: ForwardSettings,
     /// How long a desktop call waits for an answer (the host may wait for its owner to allow the session). Default 120 s.
     pub gui_timeout: Duration,
-    /// The largest image a snapshot returns, in bytes; a larger one is lowered in quality, then refused. Default 4 MiB.
+    /// The largest image a screenshot returns, in bytes; a larger one is refused as `too_large`. Default 4 MiB.
     pub gui_max_image: u64,
+    /// Where `format: "auto"` turns to JPEG: a PNG screenshot larger than this many bytes is taken again as JPEG.
+    /// Default 1 MiB. A lower value spares the link, a higher one keeps exact pixels for longer.
+    pub gui_auto_limit: u64,
+    /// The JPEG quality of `auto` and of a `jpeg` screenshot that names none, 1 to 100. Default 80.
+    pub gui_jpeg_quality: u8,
+    /// The width a screenshot that names none fits, in pixels (the host scales down, never up). Default 1280.
+    pub gui_max_width: u32,
+    /// The height a screenshot that names none fits, in pixels. Default 800.
+    pub gui_max_height: u32,
+    /// Whether every input call answers with a settled screenshot of the display it acted on. Default false. It costs a
+    /// snapshot a call, and an input-only grant (no `gui.view`) gets the input and a `screenshot_error`.
+    pub gui_after_action: bool,
 }
 
 impl Default for Settings {
@@ -141,6 +157,11 @@ impl Default for Settings {
             forward: ForwardSettings::default(),
             gui_timeout: Duration::from_secs(120),
             gui_max_image: 4 * 1024 * 1024,
+            gui_auto_limit: 1024 * 1024,
+            gui_jpeg_quality: 80,
+            gui_max_width: 1280,
+            gui_max_height: 800,
+            gui_after_action: false,
         }
     }
 }
@@ -172,7 +193,8 @@ impl Cancel {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolError {
     /// A short name: the host's error code (`denied`, `not_found`, `changed`, ...) or one of this module's
-    /// (`bad_request`, `not_text`, `no_match`, `ambiguous`, `unavailable`, `unknown_tool`, `timeout`, `closed`, `link`).
+    /// (`bad_request`, `not_text`, `no_match`, `ambiguous`, `unavailable`, `unknown_tool`, `timeout`, `closed`, `link`, and for
+    /// the desktop `out_of_bounds`, `no_screenshot`, `stale_screenshot`).
     pub code: String,
     /// What happened, for the agent.
     pub message: String,
@@ -343,6 +365,16 @@ pub enum Effect {
     Runs,
 }
 
+impl ToolSpec {
+    /// Whether the tool looks at or drives the host's desktop. A server lists these only when its operator asks for them.
+    #[must_use]
+    pub fn is_gui(&self) -> bool {
+        self.needs
+            .iter()
+            .any(|need| matches!(need, Need::GuiView | Need::GuiInput | Need::GuiClipboard))
+    }
+}
+
 /// A tool's entry point: the arguments as JSON.
 pub type Runner = fn(&Tools, Value, &Cancel) -> Result<Output, ToolError>;
 
@@ -379,6 +411,7 @@ pub struct Tools {
     pub(crate) settings: Settings,
     pub(crate) forwards: Mutex<net::Held>,
     pub(crate) desktop: Mutex<Option<screen::Held>>,
+    pub(crate) shots: Mutex<screen::Shots>,
 }
 
 impl core::fmt::Debug for Tools {
@@ -427,6 +460,7 @@ impl Tools {
             settings,
             forwards: Mutex::new(net::Held::default()),
             desktop: Mutex::new(None),
+            shots: Mutex::new(screen::Shots::new()),
         })
     }
 

@@ -1,10 +1,17 @@
 //! A node that serves a synthetic desktop over TCP, for measuring a watch with the built `bohio` command from another
 //! machine: `gui_host --listen tcp://127.0.0.1:0 --peer sha256:... --scene motion --size 1920x1080 [--gui 'adapt = false']
-//! [--seconds N]`. It prints `id <peer id>` and `listening <endpoint>`, grants the peers it was given `gui.view`, and runs
-//! until it is killed or `--seconds` have passed. The `--gui` text is `[gui]` settings in TOML.
+//! [--allow view,input,clipboard] [--seconds N]`. It prints `id <peer id>` and `listening <endpoint>`, grants the peers it was
+//! given `gui.view` (or what `--allow` names), and runs until it is killed or `--seconds` have passed. The `--gui` text is
+//! `[gui]` settings in TOML.
+//!
+//! `--scene painted` serves the tests' painted desktop instead (two displays, 320 by 200 and 160 by 100, input that records
+//! and paints), and prints what it takes, one line each as it happens: `event <what>` for an input event
+//! (`click:leftx1@0:160,100`, `text:hi`, `key:s:click`) and `clipboard <text>` when the clipboard changes.
 
 #![forbid(unsafe_code)]
 
+#[path = "support/painted.rs"]
+mod painted;
 #[path = "support/synthetic.rs"]
 mod synthetic;
 
@@ -20,12 +27,14 @@ use bohio::node::{MemoryGrants, MemoryKeys, Node};
 use bohio::policy::{Grant, Permission};
 use coqui_link::auth::{Identity, Method};
 use coqui_peer::PeerId;
+use painted::Painted;
 use synthetic::{Scene, Synthetic};
 
 fn main() -> Result<(), String> {
     let mut listen = "tcp://127.0.0.1:0".to_owned();
     let mut peers = Vec::new();
-    let mut scene = Scene::Motion;
+    let mut scene = Some(Scene::Motion);
+    let mut allow = vec![Permission::GuiView];
     let (mut width, mut height) = (1920_u32, 1080_u32);
     let mut gui = GuiConfig::default();
     let mut seconds: Option<u64> = None;
@@ -36,7 +45,24 @@ fn main() -> Result<(), String> {
             "--listen" => listen = value()?,
             "--peer" => peers.push(value()?.parse::<PeerId>().map_err(|_| "a peer id")?),
             "--scene" => {
-                scene = Scene::named(&value()?).ok_or("--scene is text or motion")?;
+                let name = value()?;
+                scene = match name.as_str() {
+                    "painted" => None,
+                    other => Some(Scene::named(other).ok_or("--scene is text, motion or painted")?),
+                };
+            }
+            "--allow" => {
+                allow = value()?
+                    .split(',')
+                    .map(|name| match name.trim() {
+                        "view" => Ok(Permission::GuiView),
+                        "input" => Ok(Permission::GuiInput),
+                        "clipboard" => Ok(Permission::GuiClipboard),
+                        other => Err(format!(
+                            "--allow takes view, input and clipboard, not {other}"
+                        )),
+                    })
+                    .collect::<Result<_, _>>()?;
             }
             "--size" => {
                 let text = value()?;
@@ -62,12 +88,20 @@ fn main() -> Result<(), String> {
         keys.accept(*peer);
         grants.set(
             *peer,
-            Grant::allowing([Permission::Info, Permission::GuiView]),
+            Grant::allowing(std::iter::once(Permission::Info).chain(allow.iter().copied())),
         );
     }
-    let node = Node::new(config.clone(), identity, keys, grants)
-        .map_err(|error| error.to_string())?
-        .with_desktop(Arc::new(Synthetic::new(width, height, scene)));
+    let node =
+        Node::new(config.clone(), identity, keys, grants).map_err(|error| error.to_string())?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let node = match scene {
+        Some(scene) => node.with_desktop(Arc::new(Synthetic::new(width, height, scene))),
+        None => {
+            let desktop = Arc::new(Painted::new());
+            report(Arc::clone(&desktop), Arc::clone(&stop));
+            node.with_desktop(desktop)
+        }
+    };
     let entry = ListenConfig {
         endpoint: listen,
         ..ListenConfig::default()
@@ -79,7 +113,6 @@ fn main() -> Result<(), String> {
     std::io::stdout()
         .flush()
         .map_err(|error| error.to_string())?;
-    let stop = Arc::new(AtomicBool::new(false));
     if let Some(seconds) = seconds {
         let stop = Arc::clone(&stop);
         thread::spawn(move || {
@@ -89,4 +122,27 @@ fn main() -> Result<(), String> {
     }
     node.serve_listening(&listening, &stop)
         .map_err(|error| error.to_string())
+}
+
+/// Prints what the painted desktop takes as it takes it, until `stop` is set.
+fn report(desktop: Arc<Painted>, stop: Arc<AtomicBool>) {
+    thread::spawn(move || {
+        let (mut seen, mut clipboard) = (0, String::new());
+        while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+            let log = desktop.log();
+            let now = desktop.clipboard();
+            let mut out = std::io::stdout().lock();
+            for line in log.iter().skip(seen) {
+                let _ = writeln!(out, "event {line}");
+            }
+            seen = log.len();
+            if now != clipboard {
+                let _ = writeln!(out, "clipboard {now}");
+                clipboard = now;
+            }
+            let _ = out.flush();
+            drop(out);
+            thread::sleep(Duration::from_millis(10));
+        }
+    });
 }

@@ -289,9 +289,21 @@ fn initialize_answers_the_clients_revision_or_its_own_and_lists_tools_with_schem
         "get",
         "forward_local",
         "forward_remote",
-        "gui_snapshot",
     ] {
         assert!(names.contains(&wanted), "{wanted} is not listed: {names:?}");
+    }
+    for desktop in [
+        "screenshot",
+        "click",
+        "type",
+        "key",
+        "clipboard_read",
+        "gui_watch",
+    ] {
+        assert!(
+            !names.contains(&desktop),
+            "{desktop} is listed without --gui: {names:?}"
+        );
     }
     for tool in tools {
         let schema = &tool["inputSchema"];
