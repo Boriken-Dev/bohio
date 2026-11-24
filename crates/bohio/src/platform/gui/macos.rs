@@ -578,7 +578,8 @@ impl Desktop for MacosDesktop {
     }
 
     fn capabilities(&self) -> Capabilities {
-        let input = lock(&self.enigo).is_some() || self.with_enigo(|_| Ok(())).is_ok();
+        let made = lock(&self.enigo).is_some();
+        let input = made || self.with_enigo(|_| Ok(())).is_ok();
         Capabilities {
             backend: "macos".to_owned(),
             input,
