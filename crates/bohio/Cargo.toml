@@ -83,6 +83,11 @@ xxhash-rust.workspace = true
 rustix.workspace = true
 libc.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb.workspace = true
+xkeysym.workspace = true
+zbus.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 win32job.workspace = true
 windows-sys.workspace = true

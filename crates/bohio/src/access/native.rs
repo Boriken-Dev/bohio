@@ -55,9 +55,41 @@ pub struct NativeSettings {
     /// Default `500ms`.
     #[map(default = String::from("500ms"))]
     pub windows_clipboard_wait: String,
-    /// The most bytes of clipboard text the Windows desktop reads or writes. At least 1. Default `1048576`.
+    /// The most bytes of clipboard text the desktop reads or writes. At least 1. Default `1048576`.
     #[map(default = 1_048_576)]
     pub clipboard_max_bytes: u64,
+    /// The X display the Linux desktop serves (`:0`). The `bohio` command fills it from `DISPLAY` when the file leaves it
+    /// out; an embedding host sets it. Without one the node has no desktop on Linux.
+    pub x11_display: Option<String>,
+    /// Whether the session is a Wayland one: the command fills it with `WAYLAND_DISPLAY`'s value (or `wayland` for
+    /// `XDG_SESSION_TYPE`). Its X display is XWayland's, which holds only X11 windows, so the desktop is refused unless
+    /// `x11_in_wayland` is set.
+    pub x11_wayland: Option<String>,
+    /// Serve a Wayland session's X display all the same, its X11 windows only. Default `false`.
+    #[map(default = false)]
+    pub x11_in_wayland: bool,
+    /// The login session logind is asked about (`XDG_SESSION_ID`, filled in by the command); absent, this process's own.
+    pub x11_session: Option<String>,
+    /// The system bus's address, when it is not the standard one. A host without logind (or with a bus that does not
+    /// answer) has no lock detection: `info` says so and the lock state is unknown.
+    pub x11_system_bus: Option<String>,
+    /// How long logind may take to answer (`1s`). Not zero. Default `1s`.
+    #[map(default = String::from("1s"))]
+    pub x11_bus_wait: String,
+    /// How long the keyboard mapping stays changed around a character typed through a spare key (`20ms`): programs that
+    /// follow a mapping change need to see it. `0s` does not wait. Default `20ms`.
+    #[map(default = String::from("20ms"))]
+    pub x11_key_wait: String,
+    /// How long a clipboard read waits for the program that owns the selection (`500ms`). Default `500ms`.
+    #[map(default = String::from("500ms"))]
+    pub x11_clipboard_wait: String,
+    /// The selection that is the clipboard: `CLIPBOARD`, `PRIMARY` or any other name. Default `CLIPBOARD`.
+    #[map(default = String::from("CLIPBOARD"))]
+    pub x11_selection: String,
+    /// The most clicks of one button event and wheel notches of one scroll event on X11; more is `bad_request`. At least
+    /// 1. Default `1000`.
+    #[map(default = 1_000)]
+    pub x11_max_repeat: u64,
 }
 
 impl Default for NativeSettings {
@@ -70,6 +102,16 @@ impl Default for NativeSettings {
             windows_capture_idle: "10s".to_owned(),
             windows_clipboard_wait: "500ms".to_owned(),
             clipboard_max_bytes: 1_048_576,
+            x11_display: None,
+            x11_wayland: None,
+            x11_in_wayland: false,
+            x11_session: None,
+            x11_system_bus: None,
+            x11_bus_wait: "1s".to_owned(),
+            x11_key_wait: "20ms".to_owned(),
+            x11_clipboard_wait: "500ms".to_owned(),
+            x11_selection: "CLIPBOARD".to_owned(),
+            x11_max_repeat: 1_000,
         }
     }
 }
@@ -95,12 +137,51 @@ impl NativeSettings {
             ("windows_frame_wait", &self.windows_frame_wait),
             ("windows_capture_idle", &self.windows_capture_idle),
             ("windows_clipboard_wait", &self.windows_clipboard_wait),
+            ("x11_key_wait", &self.x11_key_wait),
+            ("x11_clipboard_wait", &self.x11_clipboard_wait),
         ] {
             if Span::parse(text).is_none() {
                 return Err(refuse(&format!("{key} is a time such as 250ms or 10s")));
             }
         }
+        if Span::parse(&self.x11_bus_wait).is_none_or(|span| span.0.is_zero()) {
+            return Err(refuse(
+                "x11_bus_wait is a time such as 1s, and not zero: logind would never be asked",
+            ));
+        }
+        if self.x11_max_repeat == 0 {
+            return Err(refuse("x11_max_repeat is 0: no click or notch is allowed"));
+        }
+        if self.x11_selection.is_empty() {
+            return Err(refuse(
+                "x11_selection is empty: name a selection such as CLIPBOARD",
+            ));
+        }
         Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn x11(&self) -> crate::gui::X11Settings {
+        let span = |text: &str| Span::parse(text).map_or(Duration::ZERO, |span| span.0);
+        crate::gui::X11Settings {
+            display: self
+                .x11_display
+                .clone()
+                .filter(|display| !display.is_empty()),
+            wayland: self
+                .x11_wayland
+                .as_ref()
+                .is_some_and(|word| !word.is_empty()),
+            in_wayland: self.x11_in_wayland,
+            session: self.x11_session.clone().filter(|id| !id.is_empty()),
+            system_bus: self.x11_system_bus.clone().filter(|bus| !bus.is_empty()),
+            bus_wait: span(&self.x11_bus_wait),
+            key_wait: span(&self.x11_key_wait),
+            clipboard_wait: span(&self.x11_clipboard_wait),
+            clipboard_max_bytes: usize::try_from(self.clipboard_max_bytes).unwrap_or(usize::MAX),
+            selection: self.x11_selection.clone(),
+            max_repeat: u32::try_from(self.x11_max_repeat).unwrap_or(u32::MAX),
+        }
     }
 
     #[cfg(windows)]
@@ -531,7 +612,18 @@ impl Native {
         })))
     }
 
-    #[cfg(not(windows))]
+    /// The platform's desktop, made once: its connection outlives one stream.
+    #[cfg(target_os = "linux")]
+    fn platform_desktop(&self) -> Option<Arc<DesktopOf>> {
+        let mut made = lock(&self.desktop);
+        Some(Arc::clone(made.get_or_insert_with(|| {
+            Arc::new(DesktopOf::new(Arc::new(crate::gui::X11Desktop::new(
+                self.settings.x11(),
+            ))))
+        })))
+    }
+
+    #[cfg(not(any(windows, target_os = "linux")))]
     fn platform_desktop(&self) -> Option<Arc<DesktopOf>> {
         let _ = &self.desktop;
         None

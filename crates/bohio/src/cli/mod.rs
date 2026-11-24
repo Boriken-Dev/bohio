@@ -1112,12 +1112,19 @@ pub fn capture_environment() -> Environment {
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
     };
+    let text = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
     Environment {
         windows: cfg!(windows),
         local_app_data: var("LOCALAPPDATA"),
         xdg_data_home: var("XDG_DATA_HOME"),
         home: var("HOME"),
         path: std::env::var_os("PATH"),
+        display: text("DISPLAY"),
+        wayland: text("WAYLAND_DISPLAY").or_else(|| {
+            (std::env::var("XDG_SESSION_TYPE").as_deref() == Ok("wayland"))
+                .then(|| "wayland".to_owned())
+        }),
+        session_id: text("XDG_SESSION_ID"),
     }
 }
 

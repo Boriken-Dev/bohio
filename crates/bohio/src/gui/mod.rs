@@ -56,6 +56,8 @@ mod stream {
 
 #[cfg(windows)]
 pub use crate::platform::gui::{WindowsDesktop, WindowsSettings};
+#[cfg(target_os = "linux")]
+pub use crate::platform::gui::{X11Desktop, X11Settings};
 pub use desktop::{Capabilities, Desktop, DesktopState, Frame, GuiError};
 #[cfg(feature = "notify")]
 pub use notify::DesktopNotifier;

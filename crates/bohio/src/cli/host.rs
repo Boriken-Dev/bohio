@@ -817,7 +817,34 @@ pub(super) fn node_settings(
         .compression
         .prepare_dir
         .get_or_insert_with(|| config.data_dir(environment).join("prepared"));
+    desktop_environment(&mut settings, environment);
     settings
+}
+
+/// The display and session the command was started in, as the `native` source's own settings: a key the file sets is the
+/// operator's, and the environment only fills what it leaves out (the library reads no environment variable).
+fn desktop_environment(settings: &mut crate::config::NodeConfig, environment: &Environment) {
+    let found = [
+        ("x11_display", environment.display.as_deref()),
+        ("x11_wayland", environment.wayland.as_deref()),
+        ("x11_session", environment.session_id.as_deref()),
+    ];
+    if found.iter().all(|(_, value)| value.is_none()) {
+        return;
+    }
+    let table = settings
+        .source
+        .entry(crate::config::NATIVE.to_owned())
+        .or_default();
+    for (key, value) in found {
+        if let Some(value) = value
+            && !table.settings.contains_key(key)
+        {
+            table
+                .settings
+                .insert(key.to_owned(), toml::Value::String(value.to_owned()));
+        }
+    }
 }
 
 /// Tells that a listener is bound (`listening ADDRESS`, or `pairing on ADDRESS` for `pair`), and the hash of the
@@ -928,6 +955,7 @@ fn say_paired(peer: &str) {
 #[cfg(test)]
 mod tests {
     use super::access::{Kind, Problem, decide};
+    use super::{Environment, desktop_environment};
 
     fn problem(kind: Kind) -> Problem {
         Problem {
@@ -950,5 +978,52 @@ mod tests {
     fn a_path_another_account_owns_is_refused_even_when_the_check_is_off() {
         assert!(decide(&[problem(Kind::Foreign)], false).is_err());
         assert!(decide(&[problem(Kind::Open), problem(Kind::Foreign)], false).is_err());
+    }
+
+    fn native(settings: &crate::config::NodeConfig) -> toml::Table {
+        settings
+            .source
+            .get(crate::config::NATIVE)
+            .map(|table| table.settings.clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn the_command_hands_the_display_to_the_native_source_and_the_file_wins() {
+        let environment = Environment {
+            display: Some(":7".to_owned()),
+            wayland: Some("wayland-0".to_owned()),
+            session_id: Some("c2".to_owned()),
+            ..Environment::default()
+        };
+        let mut settings = crate::config::NodeConfig::default();
+        desktop_environment(&mut settings, &environment);
+        let table = native(&settings);
+        assert_eq!(table["x11_display"].as_str(), Some(":7"));
+        assert_eq!(table["x11_wayland"].as_str(), Some("wayland-0"));
+        assert_eq!(table["x11_session"].as_str(), Some("c2"));
+
+        // A key the file sets is the operator's: the environment fills only what is left out.
+        let mut settings = crate::config::NodeConfig::default();
+        settings
+            .source
+            .entry(crate::config::NATIVE.to_owned())
+            .or_default()
+            .settings
+            .insert(
+                "x11_display".to_owned(),
+                toml::Value::String(":9".to_owned()),
+            );
+        desktop_environment(&mut settings, &environment);
+        let table = native(&settings);
+        assert_eq!(table["x11_display"].as_str(), Some(":9"));
+        assert_eq!(table["x11_session"].as_str(), Some("c2"));
+    }
+
+    #[test]
+    fn a_command_with_no_display_adds_no_source_table() {
+        let mut settings = crate::config::NodeConfig::default();
+        desktop_environment(&mut settings, &Environment::default());
+        assert!(settings.source.is_empty());
     }
 }

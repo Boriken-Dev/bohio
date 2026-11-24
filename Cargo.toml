@@ -103,6 +103,12 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 image-webp = "0.2"
 # The desktop notification that tells a person someone is viewing or controlling the screen (zbus on Linux, toasts on Windows, the system's on macOS).
 notify-rust = { version = "4.19", default-features = false, features = ["z"] }
+# The Linux desktop (`platform/gui/x11.rs`): the X11 protocol in Rust (no libxcb, so the static musl archive keeps it), with RandR for the monitors and XTest for input.
+x11rb = { version = "0.13", default-features = false, features = ["randr", "xtest"] }
+# Keysyms of characters, for typing text on an X11 display.
+xkeysym = "0.2"
+# The system bus for logind's `LockedHint` (`platform/gui/logind.rs`), driven with `zbus::block_on` on the backend's own thread.
+zbus = { version = "6", default-features = false, features = ["proxy", "default-rt"] }
 # Tests: scratch directories that remove themselves.
 tempfile = "3"
 # The provider kinds (guatiao): terminal, desktop, power and media sources. The family pins one guatiao revision.

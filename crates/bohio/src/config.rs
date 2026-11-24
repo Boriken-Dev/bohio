@@ -44,6 +44,12 @@ pub struct Environment {
     pub home: Option<PathBuf>,
     /// `PATH`: where programs and shells are looked for.
     pub path: Option<OsString>,
+    /// `DISPLAY` (Unix): the X display the desktop is served from.
+    pub display: Option<String>,
+    /// What says the session is a Wayland one: `WAYLAND_DISPLAY`, else `wayland` when `XDG_SESSION_TYPE` is that.
+    pub wayland: Option<String>,
+    /// `XDG_SESSION_ID` (Linux): the login session whose lock state is read.
+    pub session_id: Option<String>,
 }
 
 impl Environment {
