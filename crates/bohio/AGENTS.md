@@ -452,7 +452,7 @@ lists the sources of each capability, the first the default: `terminal` and `des
 `fs` and `exec` (`"native"` or `"none"`, read when the node is built: `"none"` makes the engine `unsupported`). `[source.native]` keys, all optional: `read_chunk` `16384`,
 `queue_chunks` `16`, `windows_capture` `"auto"`, `windows_frame_wait` `250ms`, `windows_capture_idle` `10s`, `windows_clipboard_wait` `500ms`, `clipboard_max_bytes` `1048576`, and for the Linux desktop `x11_display`, `x11_wayland` and `x11_session`
 (absent: the command fills them from `DISPLAY`, `WAYLAND_DISPLAY` or `XDG_SESSION_TYPE`, and `XDG_SESSION_ID`; `Environment::{display, wayland, session_id}`), `x11_in_wayland` `false`, `x11_system_bus` (absent), `x11_bus_wait` `1s`, `x11_key_wait` `20ms`,
-`x11_clipboard_wait` `500ms`, `x11_selection` `"CLIPBOARD"`, `x11_max_repeat` `1000`, for the Wayland desktop (feature `gui-wayland`; used when the session is Wayland and `x11_in_wayland` is not set) `wayland_persist` `"node"` (`none`, `node`, `always`),
+`x11_clipboard_wait` `500ms`, `x11_selection` `"CLIPBOARD"`, `x11_max_repeat` `1000`, `own_session` `"none"` (`none`, `x11`, `wayland`), `own_runtime_dir` (absent: `/run/user/UID`), for the Wayland desktop (feature `gui-wayland`; used when the session is Wayland and `x11_in_wayland` is not set) `wayland_persist` `"node"` (`none`, `node`, `always`),
 `wayland_restore_file` (absent: the command puts `gui-wayland-restore` in the data directory when `WAYLAND_DISPLAY` is set), `wayland_capture_wait` `5s` (not zero), `wayland_start_wait` `10s`, `wayland_retry` `30s`, `wayland_max_repeat` `1000`, and for the macOS desktop `macos_capture_wait` `10s` (not zero) and `macos_max_repeat` `1000`.
 `Node::with_sources(Sources)` replaces them (call it first); `Node::sources()` reaches them for a reload; `[gui] backend` and the `[gui] windows_*` keys moved here.
 
@@ -536,7 +536,8 @@ Linux only (`cfg(target_os = "linux")`), `bohio::gui`: the screen of an X displa
 ```rust
 pub struct X11Desktop;   // impl Desktop; `new(X11Settings)` connects at the first call (and again after a call that failed on the wire)
 pub struct X11Settings { pub display: Option<String>, pub wayland: bool, pub in_wayland: bool, pub session: Option<String>, pub system_bus: Option<String>,
-    pub bus_wait: Duration, pub key_wait: Duration, pub clipboard_wait: Duration, pub clipboard_max_bytes: usize, pub selection: String, pub max_repeat: u32 }   // Default; read once at start
+    pub bus_wait: Duration, pub key_wait: Duration, pub clipboard_wait: Duration, pub clipboard_max_bytes: usize, pub selection: String, pub max_repeat: u32,
+    pub headless: bool, pub refused: Option<String>, pub hint: Option<String> }   // Default; read once at start; headless: never locked, no logind; refused: every call is `unavailable` with it; hint: appended to a display that does not answer
 ```
 
 `X11Desktop` (`platform/gui/x11.rs`, `x11_clipboard.rs`, `logind.rs`; all safe code): displays are RandR 1.5 monitors (id from the monitor's name, lowercased: `rdp-0`; `display1` for a root with none; one is primary); `capture` is `GetImage`
@@ -547,6 +548,14 @@ root: buttons 1-3, wheel 4-7, back 8, forward 9; a key is looked up in the keybo
 `unavailable` before any connection is tried. The clipboard is a selection this desktop owns from a thread with a connection of its own (TARGETS, UTF8_STRING, TEXT, STRING); a read asks the owner over a connection made for it, and
 a transfer that needs INCR is `unavailable`. The pure rules (layout arithmetic, pixel formats, the keyboard plan, composing windows) are unit-tested without a server. `tests/gui_x11.rs` starts its own `Xvfb` (`-displayfd`), or uses
 `BOHIO_TEST_X11_DISPLAY`, and drives only the window `examples/gui_probe_x11.rs` makes; both need `BOHIO_TEST_GUI_LIVE=1`, and the probe is built first (`cargo build -p bohio --example gui_probe_x11`).
+
+A service account's own desktop (Linux; `platform/gui/own.rs`, safe code; `bohio::gui::{OwnSession, own_uid, own_runtime_dir, own_display, check_runtime_dir}`): `[source.native] own_session = "none" | "x11" | "wayland"` (default `none`) and `own_runtime_dir` (default `/run/user/UID`)
+make the node serve the display its account's user units run (`packaging/systemd/own-desktop/`: headless sway and a rootful Xwayland on `:UID`), whatever session the command was started in (the command's `DISPLAY` is not
+read). The uid is the process's own (`/proc/self`); `check_runtime_dir(dir, uid)` refuses, naming the path, a directory that is a link, not the uid's, or not mode 0700 (every call of the desktop is then `unavailable` with that
+text), an explicit `x11_display` wins over `:UID`, and `locked` is `false` with `lock_detection: false` (no lock screen). `wayland` serves the compositor through the portals (feature `gui-wayland`; the process needs
+`XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` of the account, which the system unit sets), and without the feature it is `unavailable` naming it. A display that does not answer is `unavailable` naming the display and the
+units to look at. `tests/gui_own_desktop.rs`: the refusals need no desktop; the live test needs `tools/own_desktop_units.sh run cargo test -p bohio --test gui_own_desktop` (the shipped user units installed under a name of their own in the running
+account's `~/.config/systemd/user`, removed afterwards; `verify` runs `systemd-analyze verify` on every unit).
 
 Linux with feature `gui-wayland`, `bohio::gui`: the screen of a Wayland session, through the desktop portals.
 

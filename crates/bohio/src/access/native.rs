@@ -114,6 +114,15 @@ pub struct NativeSettings {
     /// least 1. Default `1000`.
     #[map(default = 1_000)]
     pub wayland_max_repeat: u64,
+    /// The desktop a node run as a service account serves of its own (Linux): `none` (the session the command was started
+    /// in), `x11` (the account's user units run a headless compositor and an X server on display `:UID`; capture and
+    /// XTest input) or `wayland` (a compositor and the desktop portals; needs the `gui-wayland` feature). The runtime
+    /// directory (`own_runtime_dir`) must be the account's own and mode 0700, or the desktop is `unavailable` naming it;
+    /// an explicit `x11_display` still wins. Default `none`.
+    #[map(default = String::from("none"))]
+    pub own_session: String,
+    /// The runtime directory of the own session, when it is not `/run/user/UID`.
+    pub own_runtime_dir: Option<String>,
     /// How long the macOS desktop waits for ScreenCaptureKit to answer one capture (`10s`; not `0s`: it would never
     /// capture). Default `10s`.
     #[map(default = String::from("10s"))]
@@ -150,6 +159,8 @@ impl Default for NativeSettings {
             wayland_start_wait: "10s".to_owned(),
             wayland_retry: "30s".to_owned(),
             wayland_max_repeat: 1_000,
+            own_session: "none".to_owned(),
+            own_runtime_dir: None,
             macos_capture_wait: "10s".to_owned(),
             macos_max_repeat: 1_000,
         }
@@ -191,6 +202,14 @@ impl NativeSettings {
                 "x11_bus_wait is a time such as 1s, and not zero: logind would never be asked",
             ));
         }
+        if !["none", "wayland", "x11"].contains(&self.own_session.as_str()) {
+            return Err(refuse("own_session is none, wayland or x11"));
+        }
+        if self.own_session != "none" && !cfg!(target_os = "linux") {
+            return Err(refuse(
+                "own_session is for a Linux node: a service account's own desktop",
+            ));
+        }
         if !["none", "node", "always"].contains(&self.wayland_persist.as_str()) {
             return Err(refuse("wayland_persist is none, node or always"));
         }
@@ -225,8 +244,63 @@ impl NativeSettings {
         Ok(())
     }
 
+    /// The own session this node is set to serve, and the node's uid when its runtime directory is the account's, or the
+    /// refusal naming the directory.
+    #[cfg(target_os = "linux")]
+    fn own(&self) -> Option<(crate::gui::OwnSession, Result<u32, String>)> {
+        let kind = crate::gui::OwnSession::parse(&self.own_session)?;
+        let checked = crate::gui::own_uid()
+            .map_err(|error| {
+                format!("own_session: cannot tell which account this node runs as: {error}")
+            })
+            .and_then(|uid| {
+                let dir = self
+                    .own_runtime_dir
+                    .as_deref()
+                    .filter(|dir| !dir.is_empty())
+                    .map_or_else(|| crate::gui::own_runtime_dir(uid), PathBuf::from);
+                crate::gui::check_runtime_dir(&dir, uid)
+                    .map(|()| uid)
+                    .map_err(|reason| format!("own_session = \"{}\": {reason}", self.own_session))
+            });
+        Some((kind, checked))
+    }
+
     #[cfg(target_os = "linux")]
     fn x11(&self) -> crate::gui::X11Settings {
+        let mut settings = self.x11_plain();
+        let Some((kind, checked)) = self.own() else {
+            return settings;
+        };
+        // The own desktop is a compositor and a server no person sits at: not a login session, and no lock screen.
+        settings.wayland = false;
+        settings.headless = true;
+        match checked {
+            Err(reason) => {
+                settings.display = None;
+                settings.refused = Some(reason);
+            }
+            Ok(_) if kind == crate::gui::OwnSession::Wayland && !cfg!(feature = "gui-wayland") => {
+                settings.refused = Some(
+                    "own_session = \"wayland\" needs a build with the gui-wayland feature"
+                        .to_owned(),
+                );
+            }
+            Ok(uid) => {
+                if settings.display.is_none() {
+                    settings.display = Some(crate::gui::own_display(uid));
+                }
+                settings.hint = Some(format!(
+                    "this node's own desktop is not up: as the account with uid {uid} look at `systemctl --user status \
+                     bohio-desktop.target bohio-compositor.service bohio-xwayland.service`"
+                ));
+            }
+        }
+        settings
+    }
+
+    #[cfg(target_os = "linux")]
+    fn x11_plain(&self) -> crate::gui::X11Settings {
         let span = |text: &str| Span::parse(text).map_or(Duration::ZERO, |span| span.0);
         crate::gui::X11Settings {
             display: self
@@ -246,12 +320,16 @@ impl NativeSettings {
             clipboard_max_bytes: usize::try_from(self.clipboard_max_bytes).unwrap_or(usize::MAX),
             selection: self.x11_selection.clone(),
             max_repeat: u32::try_from(self.x11_max_repeat).unwrap_or(u32::MAX),
+            ..crate::gui::X11Settings::default()
         }
     }
 
     /// Whether this node's session is a Wayland one and the file does not ask for its X11 windows only.
     #[cfg(all(target_os = "linux", feature = "gui-wayland"))]
     fn serves_wayland(&self) -> bool {
+        if let Some((kind, checked)) = self.own() {
+            return kind == crate::gui::OwnSession::Wayland && checked.is_ok();
+        }
         !self.x11_in_wayland
             && self
                 .x11_wayland
@@ -275,6 +353,7 @@ impl NativeSettings {
             session: self.x11_session.clone().filter(|id| !id.is_empty()),
             system_bus: self.x11_system_bus.clone().filter(|bus| !bus.is_empty()),
             bus_wait: span(&self.x11_bus_wait),
+            headless: self.own_session != "none",
             max_repeat: u32::try_from(self.wayland_max_repeat).unwrap_or(u32::MAX),
         }
     }

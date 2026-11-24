@@ -106,6 +106,9 @@ pub struct WaylandSettings {
     pub system_bus: Option<String>,
     /// How long logind may take to answer.
     pub bus_wait: Duration,
+    /// A desktop of the node's own that no person sits at: it has no lock screen, so it is never locked and does not ask
+    /// logind.
+    pub headless: bool,
     /// The most clicks of one button event and wheel notches of one scroll event; more is `bad_request`.
     pub max_repeat: u32,
 }
@@ -121,6 +124,7 @@ impl Default for WaylandSettings {
             session: None,
             system_bus: None,
             bus_wait: Duration::from_secs(1),
+            headless: false,
             max_repeat: 1000,
         }
     }
@@ -1226,7 +1230,11 @@ impl Inner {
         DesktopState {
             user: None,
             active: true,
-            locked: self.logind.hints().map(|hints| hints.locked),
+            locked: if self.settings.headless {
+                Some(false)
+            } else {
+                self.logind.hints().map(|hints| hints.locked)
+            },
             displays: live.shown().into_iter().map(|each| each.display).collect(),
         }
     }
@@ -1399,7 +1407,7 @@ impl Desktop for WaylandDesktop {
             backend: "wayland".to_owned(),
             input,
             clipboard: false,
-            lock_detection: self.inner.logind.hints().is_some(),
+            lock_detection: !self.inner.settings.headless && self.inner.logind.hints().is_some(),
         }
     }
 }

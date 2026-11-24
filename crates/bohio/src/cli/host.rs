@@ -870,6 +870,16 @@ fn desktop_environment(settings: &mut crate::config::NodeConfig, environment: &E
     if found.iter().all(|(_, value)| value.is_none()) {
         return;
     }
+    // A node that serves its account's own desktop is in no session: its display is the one derived from its uid.
+    if settings
+        .source
+        .get(crate::config::NATIVE)
+        .and_then(|table| table.settings.get("own_session"))
+        .and_then(toml::Value::as_str)
+        .is_some_and(|kind| kind != "none")
+    {
+        return;
+    }
     let table = settings
         .source
         .entry(crate::config::NATIVE.to_owned())

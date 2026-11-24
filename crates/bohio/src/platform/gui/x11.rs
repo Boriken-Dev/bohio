@@ -64,6 +64,14 @@ pub struct X11Settings {
     pub clipboard_max_bytes: usize,
     /// The selection that is the clipboard: `CLIPBOARD`, or `PRIMARY`, or any other name.
     pub selection: String,
+    /// A desktop of the node's own that no person sits at: it has no lock screen, so it is never locked and does not ask
+    /// logind.
+    pub headless: bool,
+    /// Why this node cannot serve its display at all (the own session's runtime directory is refused): every call answers
+    /// `unavailable` with it.
+    pub refused: Option<String>,
+    /// What to add to the refusal of a display that does not answer: where an own desktop's units are looked at.
+    pub hint: Option<String>,
     /// The most clicks of one button event and wheel notches of one scroll event; more is `bad_request`.
     pub max_repeat: u32,
 }
@@ -80,6 +88,9 @@ impl Default for X11Settings {
             key_wait: Duration::from_millis(20),
             clipboard_wait: Duration::from_millis(500),
             clipboard_max_bytes: 1024 * 1024,
+            headless: false,
+            refused: None,
+            hint: None,
             selection: "CLIPBOARD".to_owned(),
             max_repeat: 1000,
         }
@@ -684,7 +695,12 @@ impl Link {
         };
         let (connection, number) = RustConnection::connect(Some(display)).map_err(|error| {
             GuiError::unavailable(format!(
-                "cannot connect to the X display {display}: {error}"
+                "cannot connect to the X display {display}: {error}{}",
+                settings
+                    .hint
+                    .as_deref()
+                    .map(|hint| format!(" ({hint})"))
+                    .unwrap_or_default()
             ))
         })?;
         let setup = connection.setup();
@@ -1030,6 +1046,9 @@ impl X11Desktop {
 
     /// Runs `f` on the connection, made first if there is none. A failure on the wire drops the connection.
     fn with_link<R>(&self, f: impl FnOnce(&Link) -> Result<R, GuiError>) -> Result<R, GuiError> {
+        if let Some(reason) = &self.settings.refused {
+            return Err(GuiError::unavailable(reason.clone()));
+        }
         if self.settings.wayland && !self.settings.in_wayland {
             return Err(GuiError::unavailable(WAYLAND_SESSION));
         }
@@ -1056,7 +1075,11 @@ impl X11Desktop {
             // The seat's notion of an active session does not apply to a display that a remote login or a nested server
             // serves: a display that answers is at the screen.
             active: true,
-            locked: self.logind.hints().map(|hints| hints.locked),
+            locked: if self.settings.headless {
+                Some(false)
+            } else {
+                self.logind.hints().map(|hints| hints.locked)
+            },
             displays: link.displays()?,
         })
     }
@@ -1154,7 +1177,7 @@ impl Desktop for X11Desktop {
             backend: "x11".to_owned(),
             input,
             clipboard: true,
-            lock_detection: self.logind.hints().is_some(),
+            lock_detection: !self.settings.headless && self.logind.hints().is_some(),
         }
     }
 }

@@ -29,6 +29,8 @@ mod logind;
 mod mac_rules;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "linux")]
+mod own;
 mod session;
 #[cfg(all(target_os = "linux", feature = "gui-wayland"))]
 mod wayland;
@@ -43,6 +45,10 @@ mod x11_clipboard;
 
 #[cfg(target_os = "macos")]
 pub use self::macos::{MacosDesktop, MacosSettings};
+#[cfg(target_os = "linux")]
+pub use self::own::{
+    OwnSession, check_runtime_dir, display as own_display, own_uid, runtime_dir as own_runtime_dir,
+};
 #[cfg(all(target_os = "linux", feature = "gui-wayland"))]
 pub use self::wayland::{Persist, WaylandDesktop, WaylandSettings};
 #[cfg(windows)]
