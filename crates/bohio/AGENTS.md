@@ -8,6 +8,7 @@ with the source at <https://github.com/Boriken-Dev/bohio>.
 | --- | --- | --- | --- |
 | `cli` | module `cli`, the `bohio` binary; `clap`, `tracing-subscriber`, `serde_`, `crossterm`, and `notify` | the command | on |
 | `gui` | snapshot encoding (`image`: PNG, JPEG; `image-webp`: lossless WebP), and a watch's tiles and rectangle encodings (`bohio-transfer/screen`); without it a snapshot and a watch are `unsupported` | `bohio-gui/1` | on |
+| `gui-wayland` | on Linux, `gui::{WaylandDesktop, WaylandSettings, Persist}`: a Wayland session through `xdg-desktop-portal` (`ashpd`, `pollster`) and a PipeWire stream (`pipewire`); it links the system libpipewire-0.3 (pkg-config, libclang), so glibc builds only, and it does nothing off Linux | a Wayland desktop | off |
 | `serial` | `bohio-provider-serial`: the `serial` terminal provider (`[source.NAME] provider = "serial"`), registered with the built-in providers | a serial console | on with `cli` |
 | `notify` | `gui::DesktopNotifier` (`notify-rust`) | the desktop notice of the presence indicator | on with `cli` |
 
@@ -451,7 +452,8 @@ lists the sources of each capability, the first the default: `terminal` and `des
 `fs` and `exec` (`"native"` or `"none"`, read when the node is built: `"none"` makes the engine `unsupported`). `[source.native]` keys, all optional: `read_chunk` `16384`,
 `queue_chunks` `16`, `windows_capture` `"auto"`, `windows_frame_wait` `250ms`, `windows_capture_idle` `10s`, `windows_clipboard_wait` `500ms`, `clipboard_max_bytes` `1048576`, and for the Linux desktop `x11_display`, `x11_wayland` and `x11_session`
 (absent: the command fills them from `DISPLAY`, `WAYLAND_DISPLAY` or `XDG_SESSION_TYPE`, and `XDG_SESSION_ID`; `Environment::{display, wayland, session_id}`), `x11_in_wayland` `false`, `x11_system_bus` (absent), `x11_bus_wait` `1s`, `x11_key_wait` `20ms`,
-`x11_clipboard_wait` `500ms`, `x11_selection` `"CLIPBOARD"`, `x11_max_repeat` `1000`, and for the macOS desktop `macos_capture_wait` `10s` (not zero) and `macos_max_repeat` `1000`.
+`x11_clipboard_wait` `500ms`, `x11_selection` `"CLIPBOARD"`, `x11_max_repeat` `1000`, for the Wayland desktop (feature `gui-wayland`; used when the session is Wayland and `x11_in_wayland` is not set) `wayland_persist` `"node"` (`none`, `node`, `always`),
+`wayland_restore_file` (absent: the command puts `gui-wayland-restore` in the data directory when `WAYLAND_DISPLAY` is set), `wayland_capture_wait` `5s` (not zero), `wayland_start_wait` `10s`, `wayland_retry` `30s`, `wayland_max_repeat` `1000`, and for the macOS desktop `macos_capture_wait` `10s` (not zero) and `macos_max_repeat` `1000`.
 `Node::with_sources(Sources)` replaces them (call it first); `Node::sources()` reaches them for a reload; `[gui] backend` and the `[gui] windows_*` keys moved here.
 
 ## Power, media, secrets and the console
@@ -545,6 +547,25 @@ root: buttons 1-3, wheel 4-7, back 8, forward 9; a key is looked up in the keybo
 `unavailable` before any connection is tried. The clipboard is a selection this desktop owns from a thread with a connection of its own (TARGETS, UTF8_STRING, TEXT, STRING); a read asks the owner over a connection made for it, and
 a transfer that needs INCR is `unavailable`. The pure rules (layout arithmetic, pixel formats, the keyboard plan, composing windows) are unit-tested without a server. `tests/gui_x11.rs` starts its own `Xvfb` (`-displayfd`), or uses
 `BOHIO_TEST_X11_DISPLAY`, and drives only the window `examples/gui_probe_x11.rs` makes; both need `BOHIO_TEST_GUI_LIVE=1`, and the probe is built first (`cargo build -p bohio --example gui_probe_x11`).
+
+Linux with feature `gui-wayland`, `bohio::gui`: the screen of a Wayland session, through the desktop portals.
+
+```rust
+pub struct WaylandDesktop;   // impl Desktop; `new(WaylandSettings)` asks the portal at the first call (and again after the session ends)
+pub struct WaylandSettings { pub persist: Persist, pub restore_file: Option<PathBuf>, pub capture_wait: Duration, pub start_wait: Duration, pub retry: Duration,
+    pub session: Option<String>, pub system_bus: Option<String>, pub bus_wait: Duration, pub max_repeat: u32 }   // Default: Node, none, 5s, 10s, 30s, none, none, 1s, 1000
+pub enum Persist { None, Node /* default */, Always }   // `parse("none" | "node" | "always")`
+```
+
+`WaylandDesktop` (`platform/gui/wayland.rs`, safe code; the `native` source builds it instead of `X11Desktop` when the session is Wayland and `x11_in_wayland` is not set): one RemoteDesktop session with ScreenCast monitor sources, or a
+ScreenCast session alone where the portal has no RemoteDesktop (`xdg-desktop-portal-wlr`), which is a view: `capabilities().input` is `false` and `input` is `unsupported`. The first call of any kind (`info` included) asks the portal, whose own
+dialog is the system's approval; a call waits `start_wait` for it and then reports `unavailable` while the session goes on starting, and a refused or failed start is reported for `retry` before the portal is asked again. One PipeWire
+stream for each monitor is read on a thread of its own and keeps the latest picture; a display is a monitor, its size the pixels the compositor negotiated and its scale that over the portal's logical size, and `capture` waits up to
+`capture_wait` for a monitor's first picture (a compositor may send one only when the screen changes: `xdg-desktop-portal-wlr` does, measured). Input is `notify_pointer_motion_absolute` (pixels divided by the scale, on the monitor's
+stream node), `notify_pointer_button` with evdev codes (`BTN_LEFT` 0x110 to `BTN_EXTRA` 0x114), `notify_pointer_axis_discrete` (positive scrolls down or right) and `notify_keyboard_keysym`; every event is planned before one is sent. The cursor
+is hidden in the pictures and `cursor` is the last point this desktop moved to; there is no clipboard (`unsupported`). With `persist = Always` the portal's restore token is kept in `restore_file` (`0600`). `tests/gui_wayland.rs` runs against a
+headless sway through `tools/wayland_headless.sh` (needs `sway`, `pipewire`, `wireplumber`, `xdg-desktop-portal`, `xdg-desktop-portal-wlr`; prints `SKIPPED` without `BOHIO_TEST_WAYLAND=1`):
+`tools/wayland_headless.sh cargo test -p bohio --features gui-wayland --test gui_wayland -- --test-threads=1`. The harness's `BOHIO_TEST_WAYLAND_POKE` repaints the background so the first picture exists.
 
 ```rust
 pub struct MacosDesktop;   // impl Desktop; `new(MacosSettings)` asks the system nothing until the first call

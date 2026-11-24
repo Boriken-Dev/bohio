@@ -42,6 +42,10 @@ cargo test --workspace --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 ```
 
+On Linux `--all-features` includes `gui-wayland`, which links the system libpipewire-0.3 (`pipewire-devel` or `libpipewire-0.3-dev`, and libclang);
+a machine without it builds the workspace with `--features cli,serial,gui,notify,zstd,zstdmt` instead (feature names of `crates/bohio`). The Wayland
+desktop's test runs inside `tools/wayland_headless.sh` (a headless sway with PipeWire and the portals): `tools/wayland_headless.sh cargo test -p bohio --features gui-wayland --test gui_wayland -- --test-threads=1`.
+
 ```bash
 python tools/build.py self check        # the copy equals the overlay's
 python tools/build.py sdk check --online # the lock agrees with the repository and with its publishers
