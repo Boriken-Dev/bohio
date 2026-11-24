@@ -445,7 +445,9 @@ pub struct Source<K: ?Sized>;   // name(), get(), is_current() (false once its t
 (`ConfigError::Invalid` naming `source.<name>.<key>`; an unknown provider lists the known ones; `native` needs no `provider` and takes no other). `[access]`
 lists the sources of each capability, the first the default: `terminal` and `desktop` (absent: `["native"]`; `[]` serves none), `power`, `media` (default none), and
 `fs` and `exec` (`"native"` or `"none"`, read when the node is built: `"none"` makes the engine `unsupported`). `[source.native]` keys, all optional: `read_chunk` `16384`,
-`queue_chunks` `16`, `windows_capture` `"auto"`, `windows_frame_wait` `250ms`, `windows_capture_idle` `10s`, `windows_clipboard_wait` `500ms`, `clipboard_max_bytes` `1048576`.
+`queue_chunks` `16`, `windows_capture` `"auto"`, `windows_frame_wait` `250ms`, `windows_capture_idle` `10s`, `windows_clipboard_wait` `500ms`, `clipboard_max_bytes` `1048576`, and for the Linux desktop `x11_display`, `x11_wayland` and `x11_session`
+(absent: the command fills them from `DISPLAY`, `WAYLAND_DISPLAY` or `XDG_SESSION_TYPE`, and `XDG_SESSION_ID`; `Environment::{display, wayland, session_id}`), `x11_in_wayland` `false`, `x11_system_bus` (absent), `x11_bus_wait` `1s`, `x11_key_wait` `20ms`,
+`x11_clipboard_wait` `500ms`, `x11_selection` `"CLIPBOARD"`, `x11_max_repeat` `1000`.
 `Node::with_sources(Sources)` replaces them (call it first); `Node::sources()` reaches them for a reload; `[gui] backend` and the `[gui] windows_*` keys moved here.
 
 ## Power, media, secrets and the console
@@ -504,6 +506,23 @@ GUI helper"). `capture` takes DXGI duplication (one per display, on a thread of 
 outside its display is `bad_request` and nothing is sent), sends one event's operations in one `SendInput`, and returns how many events were taken (none taken: `unavailable`, "input was blocked"). The pure rules live in
 `platform/gui/input.rs` (virtual-screen normalisation, the virtual-key table, text as strokes) and `session.rs` (what the session's answers mean, the clipboard text's CR LF encoding), tested on every platform.
 `tests/gui_windows.rs` makes its own window (`tests/support/gui_probe.ps1`) and drives only it, and only with `BOHIO_TEST_GUI_LIVE=1`.
+
+Linux only (`cfg(target_os = "linux")`), `bohio::gui`: the screen of an X display.
+
+```rust
+pub struct X11Desktop;   // impl Desktop; `new(X11Settings)` connects at the first call (and again after a call that failed on the wire)
+pub struct X11Settings { pub display: Option<String>, pub wayland: bool, pub in_wayland: bool, pub session: Option<String>, pub system_bus: Option<String>,
+    pub bus_wait: Duration, pub key_wait: Duration, pub clipboard_wait: Duration, pub clipboard_max_bytes: usize, pub selection: String, pub max_repeat: u32 }   // Default; read once at start
+```
+
+`X11Desktop` (`platform/gui/x11.rs`, `x11_clipboard.rs`, `logind.rs`; all safe code): displays are RandR 1.5 monitors (id from the monitor's name, lowercased: `rdp-0`; `display1` for a root with none; one is primary); `capture` is `GetImage`
+of the root at the monitor's offset converted from the visual's masks (16, 24 and 32 bits a pixel), and where the root answers `BadMatch` (XWayland's) the viewable top-level windows composed bottom to top over black; the
+pointer is reported by `cursor` and never drawn. `input` plans every event before it sends one (a point off its display or a repeat past `max_repeat` is `bad_request` and nothing is sent) and sends XTest `FakeInput` on the
+root: buttons 1-3, wheel 4-7, back 8, forward 9; a key is looked up in the keyboard mapping (its first symbol, or its second with shift pressed around it) and a symbol with no key is bound to the highest keycode that has none for
+`key_wait`, typed and unbound. `state.locked` is logind's `LockedHint` of `session` (else of this process's session): `None` and `lock_detection: false` when logind is not reachable. `wayland` without `in_wayland` is
+`unavailable` before any connection is tried. The clipboard is a selection this desktop owns from a thread with a connection of its own (TARGETS, UTF8_STRING, TEXT, STRING); a read asks the owner over a connection made for it, and
+a transfer that needs INCR is `unavailable`. The pure rules (layout arithmetic, pixel formats, the keyboard plan, composing windows) are unit-tested without a server. `tests/gui_x11.rs` starts its own `Xvfb` (`-displayfd`), or uses
+`BOHIO_TEST_X11_DISPLAY`, and drives only the window `examples/gui_probe_x11.rs` makes; both need `BOHIO_TEST_GUI_LIVE=1`, and the probe is built first (`cargo build -p bohio --example gui_probe_x11`).
 
 ## Capabilities (`bohio::info`)
 

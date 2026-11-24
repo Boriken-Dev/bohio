@@ -138,6 +138,8 @@ bohio remote tcp://host.example:7620 gui type "hello" && bohio remote tcp://host
 
 On Windows the node must run in the user's own session (a terminal, or a task that runs at logon), not as the service: a service is in session 0, which has no desktop, and says so in `gui info` (`available: false`). `bohio serve` with `[gui] enabled = true` then serves that session's displays (DXGI Desktop Duplication, with GDI where it cannot serve), keyboard, mouse and clipboard text; it refuses input and capture, and says why, while the lock screen or an elevation prompt has the screen.
 
+On Linux a node serves the X display it was started in (`DISPLAY`): each RandR monitor is a display, a snapshot is the root window's pixels, input is XTest, and `text` is typed whatever the keyboard layout. The lock state comes from logind (`LockedHint`); with no logind it is unknown and `gui info` says `lock_detection: false`. A Wayland session's X display is XWayland's, which holds only the X11 windows: it is refused unless `[source.native] x11_in_wayland = true`, and then a snapshot is those windows over black (WSLg's display is one). A Wayland session's own windows need the compositor's portals, which this backend does not use.
+
 [The protocol](protocol.md#desktop-bohio-gui1) has the wire and [Security](security.md#what-gui-access-gives-a-peer) what a view of the screen gives a peer. A host that already runs a VNC server is reached with `forward -L` under a `forward.connect` rule for it.
 ## Having a host listen for you
 
