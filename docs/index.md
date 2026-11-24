@@ -195,6 +195,7 @@ bohio remote tcp://host.example:7620 exec --pty --timeout-ms 60000 -- top    # a
 
 - [The protocol](protocol.md): the wire, for an implementer in any language, with test vectors.
 - [Security](security.md): what the service holds, what a peer is granted, where isolation stops, and the known limits.
+- [Profiles](profiles.md): named starting points for the transfer settings: a LAN, a weak host, a slow link, a long fast path.
 - [Embedding a node](embedding.md): running a node inside another application, from its own settings, key and peers.
 - [Using it from hostctl](hostctl.md): how a hostctl provider maps `run`, paths, shells and capability selection onto Bohío.
 - [The Rust API reference](https://boriken-dev.github.io/bohio/rust/): every public item of `bohio`, `bohio-client` and `bohio-proto`.

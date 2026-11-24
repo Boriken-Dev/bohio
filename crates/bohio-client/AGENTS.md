@@ -8,7 +8,7 @@ Cargo features: `zstd` (decode zstd), `screen` (the compositor of a watch: `bohi
 `coqui-transport-serial` (each a git revision, one copy), `url`, `socket2`, `serde`, `serde_json`, `tracing` and `thiserror`. Version
 `0.0.0-alpha.0`, not published.
 
-Imports: the root holds `Open` and `Error`. Public modules: `connect`, `control`, `dial`, `exec`, `forward`, `fs`, `gui`, `link`, `media`, `power`, `relay`, `shell`, `tools`. No `unsafe` code
+Imports: the root holds `Open` and `Error`. Public modules: `connect`, `control`, `dial`, `exec`, `forward`, `fs`, `gui`, `link`, `media`, `power`, `profile`, `relay`, `shell`, `tools`. No `unsafe` code
 (`#![forbid(unsafe_code)]`). The operations start no threads and do no I/O of their own: every call blocks on the channel it was given
 (only `connect` and `relay` start threads, and `connect` opens a socket).
 
@@ -242,6 +242,18 @@ pub struct WatchOptions { display, region, fps, encoding: Option<WatchEncoding>,
 ```
 
 `Error::Screen(String)` is an update that cannot be used (a rectangle outside the frame, bytes that do not decode, a size past the limits); the text never carries pixels. A request made during a watch (`snapshot`, `input`...) reads, applies and acknowledges the updates that arrive meanwhile.
+
+## Profiles (`bohio_client::profile`)
+
+```rust
+#[non_exhaustive] pub enum Profile { Default, Lan, WeakHost, SlowLink, FatLink }   // Copy, Default (= Default), Eq, Hash
+impl Profile { pub const ALL: [Self; 5]; pub const fn name(self) -> &'static str /*"default", "lan", "weak-host", "slow-link", "fat-link"*/;
+    pub fn parse(name: &str) -> Option<Self>; pub fn names() -> String /*comma-separated*/; pub fn defaults(self) -> ClientDefaults; }
+#[non_exhaustive] pub struct ClientDefaults { pub compression: Option<Compression>, pub delta: sync::DeltaMode, pub compare: Option<sync::Compare>, pub parallel: usize /*>= 1*/,
+    pub bulk_window: Option<u32>, pub prepare_min: Option<u64> }   // Default: nothing compressed, Auto, no comparison, 1, None, None
+```
+
+What a client asks for where the caller names nothing; never a limit. `lan`: two streams, a 4 MiB bulk window. `weak-host`: lz4, `Compare::Hash(Xxh128)`. `slow-link`: zstd level 19 with `window_log` 27, `Compare::Hash(Blake3)`, four streams, a 4 MiB bulk window, `prepare_min` 16 MiB (a compressed read of a file at least that large is prepared in full first). `fat-link`: an 8 MiB bulk window. `bulk_window` is for `link::Settings::bulk_window` (the receive window this side grants a bulk stream it receives); the caller applies each field where it chooses.
 
 ## Sync (`bohio_client::sync`)
 

@@ -18,6 +18,7 @@ nav:
   - The protocol: protocol.md
   - Machine-readable output: cli-json.md
   - Security: security.md
+  - Profiles: profiles.md
   - Embedding a node: embedding.md
   - Sources and providers: providers.md
   - Using it from hostctl: hostctl.md
