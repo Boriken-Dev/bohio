@@ -273,9 +273,9 @@ fn an_own_session_the_file_misspells_is_refused() {
         Arc::new(MemoryKeys::new()),
         Arc::new(MemoryGrants::new()),
     );
-    let error = refused
-        .err()
-        .expect("a node with a misspelled own_session is not built");
+    let Err(error) = refused else {
+        panic!("a node with a misspelled own_session is not built");
+    };
     assert!(error.to_string().contains("own_session"), "{error}");
 }
 
