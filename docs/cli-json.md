@@ -7,6 +7,10 @@ no other format switch.
 Exit statuses do not change with `--json`: `0` success, `1` the operation failed, `2` the invocation was wrong (and, for
 `search`, `1` for no match and `2` for something that could not be read; `which` is `1` when a name was not found).
 
+Two commands do not follow the flag yet: `remote power` and `remote media` print their text lines whatever `--json` says (a
+script reads their exit status), and `remote console` is a terminal, so its bytes are its payload. Everything else on this page
+does what it says.
+
 ## The three kinds of command
 
 | Kind | Standard output | Standard error |
