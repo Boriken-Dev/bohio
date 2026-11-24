@@ -90,6 +90,30 @@ pub struct NativeSettings {
     /// 1. Default `1000`.
     #[map(default = 1_000)]
     pub x11_max_repeat: u64,
+    /// Whether the Wayland desktop's portal remembers its approval: `none` (asked at every session), `node` (once for each
+    /// run of the node) or `always` (a restore token kept in `wayland_restore_file`, so a portal that honours it asks once
+    /// for good). Only a build with the `gui-wayland` feature has the backend. Default `node`.
+    #[map(default = String::from("node"))]
+    pub wayland_persist: String,
+    /// Where the Wayland desktop keeps the portal's restore token under `wayland_persist = "always"` (`0600`). The
+    /// `bohio` command fills it with `gui-wayland-restore` in the data directory when the file leaves it out.
+    pub wayland_restore_file: Option<String>,
+    /// How long a request waits for a monitor's first picture once the portal has started the session (`5s`; not `0s`).
+    /// Default `5s`.
+    #[map(default = String::from("5s"))]
+    pub wayland_capture_wait: String,
+    /// How long a request waits for the portal's dialog to be answered before it reports the dialog as pending (`10s`,
+    /// `0s` never waits; the session goes on starting). Default `10s`.
+    #[map(default = String::from("10s"))]
+    pub wayland_start_wait: String,
+    /// How long after a refused or failed start the portal is not asked again (`30s`, `0s` asks at every request). A peer
+    /// that may ask `info` can make the portal's dialog appear, so this is how often at most. Default `30s`.
+    #[map(default = String::from("30s"))]
+    pub wayland_retry: String,
+    /// The most clicks of one button event and wheel notches of one scroll event on Wayland; more is `bad_request`. At
+    /// least 1. Default `1000`.
+    #[map(default = 1_000)]
+    pub wayland_max_repeat: u64,
     /// How long the macOS desktop waits for ScreenCaptureKit to answer one capture (`10s`; not `0s`: it would never
     /// capture). Default `10s`.
     #[map(default = String::from("10s"))]
@@ -120,6 +144,12 @@ impl Default for NativeSettings {
             x11_clipboard_wait: "500ms".to_owned(),
             x11_selection: "CLIPBOARD".to_owned(),
             x11_max_repeat: 1_000,
+            wayland_persist: "node".to_owned(),
+            wayland_restore_file: None,
+            wayland_capture_wait: "5s".to_owned(),
+            wayland_start_wait: "10s".to_owned(),
+            wayland_retry: "30s".to_owned(),
+            wayland_max_repeat: 1_000,
             macos_capture_wait: "10s".to_owned(),
             macos_max_repeat: 1_000,
         }
@@ -149,6 +179,8 @@ impl NativeSettings {
             ("windows_clipboard_wait", &self.windows_clipboard_wait),
             ("x11_key_wait", &self.x11_key_wait),
             ("x11_clipboard_wait", &self.x11_clipboard_wait),
+            ("wayland_start_wait", &self.wayland_start_wait),
+            ("wayland_retry", &self.wayland_retry),
         ] {
             if Span::parse(text).is_none() {
                 return Err(refuse(&format!("{key} is a time such as 250ms or 10s")));
@@ -157,6 +189,19 @@ impl NativeSettings {
         if Span::parse(&self.x11_bus_wait).is_none_or(|span| span.0.is_zero()) {
             return Err(refuse(
                 "x11_bus_wait is a time such as 1s, and not zero: logind would never be asked",
+            ));
+        }
+        if !["none", "node", "always"].contains(&self.wayland_persist.as_str()) {
+            return Err(refuse("wayland_persist is none, node or always"));
+        }
+        if Span::parse(&self.wayland_capture_wait).is_none_or(|span| span.0.is_zero()) {
+            return Err(refuse(
+                "wayland_capture_wait is a time such as 5s, and not zero: a capture would never be waited for",
+            ));
+        }
+        if self.wayland_max_repeat == 0 {
+            return Err(refuse(
+                "wayland_max_repeat is 0: no click or notch is allowed",
             ));
         }
         if self.x11_max_repeat == 0 {
@@ -201,6 +246,36 @@ impl NativeSettings {
             clipboard_max_bytes: usize::try_from(self.clipboard_max_bytes).unwrap_or(usize::MAX),
             selection: self.x11_selection.clone(),
             max_repeat: u32::try_from(self.x11_max_repeat).unwrap_or(u32::MAX),
+        }
+    }
+
+    /// Whether this node's session is a Wayland one and the file does not ask for its X11 windows only.
+    #[cfg(all(target_os = "linux", feature = "gui-wayland"))]
+    fn serves_wayland(&self) -> bool {
+        !self.x11_in_wayland
+            && self
+                .x11_wayland
+                .as_ref()
+                .is_some_and(|word| !word.is_empty())
+    }
+
+    #[cfg(all(target_os = "linux", feature = "gui-wayland"))]
+    fn wayland(&self) -> crate::gui::WaylandSettings {
+        let span = |text: &str| Span::parse(text).map_or(Duration::ZERO, |span| span.0);
+        crate::gui::WaylandSettings {
+            persist: crate::gui::Persist::parse(&self.wayland_persist).unwrap_or_default(),
+            restore_file: self
+                .wayland_restore_file
+                .clone()
+                .filter(|path| !path.is_empty())
+                .map(std::path::PathBuf::from),
+            capture_wait: span(&self.wayland_capture_wait),
+            start_wait: span(&self.wayland_start_wait),
+            retry: span(&self.wayland_retry),
+            session: self.x11_session.clone().filter(|id| !id.is_empty()),
+            system_bus: self.x11_system_bus.clone().filter(|bus| !bus.is_empty()),
+            bus_wait: span(&self.x11_bus_wait),
+            max_repeat: u32::try_from(self.wayland_max_repeat).unwrap_or(u32::MAX),
         }
     }
 
@@ -647,6 +722,12 @@ impl Native {
     fn platform_desktop(&self) -> Option<Arc<DesktopOf>> {
         let mut made = lock(&self.desktop);
         Some(Arc::clone(made.get_or_insert_with(|| {
+            #[cfg(feature = "gui-wayland")]
+            if self.settings.serves_wayland() {
+                return Arc::new(DesktopOf::new(Arc::new(crate::gui::WaylandDesktop::new(
+                    self.settings.wayland(),
+                ))));
+            }
             Arc::new(DesktopOf::new(Arc::new(crate::gui::X11Desktop::new(
                 self.settings.x11(),
             ))))

@@ -57,6 +57,8 @@ mod stream {
 
 #[cfg(target_os = "macos")]
 pub use crate::platform::gui::{MacosDesktop, MacosSettings};
+#[cfg(all(target_os = "linux", feature = "gui-wayland"))]
+pub use crate::platform::gui::{Persist, WaylandDesktop, WaylandSettings};
 #[cfg(windows)]
 pub use crate::platform::gui::{WindowsDesktop, WindowsSettings};
 #[cfg(target_os = "linux")]

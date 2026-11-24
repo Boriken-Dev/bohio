@@ -36,6 +36,8 @@ serial = ["dep:bohio-provider-serial"]
 cli = ["serial", "dep:clap", "dep:tracing-subscriber", "dep:serde_json", "dep:crossterm", "dep:ctrlc", "dep:windows-service", "notify"]
 # Desktop access (`bohio-gui/1`): snapshot encoding (PNG, JPEG, lossless WebP), resizing, and the tiles and rectangle encodings of a watch. Without it a host has the engine and no image format, so a snapshot is `unsupported`.
 gui = ["dep:image", "dep:image-webp", "bohio-transfer/screen", "bohio-client/screen"]
+# The Linux Wayland desktop (`platform/gui/wayland.rs`): xdg-desktop-portal ScreenCast and RemoteDesktop and a PipeWire stream. It links the system libpipewire-0.3 (pkg-config, and libclang for the bindings), so it is for glibc builds, and it does nothing off Linux.
+gui-wayland = ["gui", "dep:ashpd", "dep:pipewire", "dep:pollster"]
 # The desktop notification of the GUI's presence notice (`DesktopNotifier`); without it a node logs the notice.
 notify = ["dep:notify-rust"]
 
@@ -87,6 +89,9 @@ libc.workspace = true
 x11rb.workspace = true
 xkeysym.workspace = true
 zbus.workspace = true
+ashpd = { workspace = true, optional = true }
+pipewire = { workspace = true, optional = true }
+pollster = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2.workspace = true

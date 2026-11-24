@@ -841,6 +841,21 @@ pub(super) fn node_settings(
         .prepare_dir
         .get_or_insert_with(|| config.data_dir(environment).join("prepared"));
     desktop_environment(&mut settings, environment);
+    if environment.wayland.is_some() {
+        // Where the portal's restore token is kept when `wayland_persist = "always"`.
+        let restore = config
+            .data_dir(environment)
+            .join("gui-wayland-restore")
+            .to_string_lossy()
+            .into_owned();
+        settings
+            .source
+            .entry(crate::config::NATIVE.to_owned())
+            .or_default()
+            .settings
+            .entry("wayland_restore_file".to_owned())
+            .or_insert(toml::Value::String(restore));
+    }
     settings
 }
 

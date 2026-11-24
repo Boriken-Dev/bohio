@@ -109,6 +109,10 @@ x11rb = { version = "0.13", default-features = false, features = ["randr", "xtes
 xkeysym = "0.2"
 # The system bus for logind's `LockedHint` (`platform/gui/logind.rs`), driven with `zbus::block_on` on the backend's own thread.
 zbus = { version = "6", default-features = false, features = ["proxy", "default-rt"] }
+# The Wayland desktop (`platform/gui/wayland.rs`, feature `gui-wayland`): the ScreenCast and RemoteDesktop portals over D-Bus on the async-io runtime (no Tokio), driven with `pollster`, and the PipeWire stream that carries the frames (it links the system libpipewire, so glibc builds only).
+ashpd = { version = "0.14", default-features = false, features = ["async-io", "screencast", "remote_desktop", "pipewire"] }
+pipewire = "0.10"
+pollster = "1"
 # The macOS desktop (`platform/gui/macos.rs`): ScreenCaptureKit and Core Graphics through the objc2 bindings (the `screencapturekit` crate needs a Swift bridge that builds only on the macOS 26 SDK), with `enigo` for CGEvent input and `arboard` for the pasteboard.
 objc2 = "0.6"
 block2 = "0.6"

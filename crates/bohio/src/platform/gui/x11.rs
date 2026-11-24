@@ -36,7 +36,8 @@ use crate::gui::{Capabilities, Desktop, DesktopState, Frame, GuiError};
 
 /// What a node says of a Wayland session when it is asked for the X display.
 pub(crate) const WAYLAND_SESSION: &str = "this is a Wayland session: an X11 connection reaches only the X11 windows in it. \
-     Serve those with x11_in_wayland = true in [source.native]";
+     This build has no Wayland backend (the gui-wayland feature); serve the X11 windows with x11_in_wayland = true in \
+     [source.native]";
 
 /// How the X11 backend runs; the `native` source builds it from `[source.native]` and the command's environment.
 #[derive(Debug, Clone)]
