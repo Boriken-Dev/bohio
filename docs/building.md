@@ -74,12 +74,32 @@ file and line.
 | `DEPS_DIR`, or `DEPS_GIT_URL` and `DEPS_REF` | a local deps checkout, or another place or commit to fetch it from; either is read file by file against `Cargo.lock` |
 | `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `EXTRA_CA_CERT` | the `sdk` stage's network; the certificate is trusted there and never reaches the image |
 | `CONTAINER_ENGINE`, `CONTAINER_PLATFORM` | `podman` (the default) or `docker`, and the engine's `--platform` |
+| `VSINSTALLDIR`, `VCTOOLSINSTALLDIR`, `WINDOWSSDKDIR`, `WINDOWSSDKVERSION`, `LIBCLANG_PATH`, `LLVM_DIR`, `SDK_HOME` | native builds only (below); the container build reports them and ignores them |
+| `MSVC_SPLAT_DIR` | a splat of the MSVC CRT and the Windows SDK for the release overlay's optional cross stage, which this Containerfile does not have |
 
 A build prints each key that differs from the lock first and records their names, never their values, as the image label
 `build.py.non-default`, beside `org.opencontainers.image.revision` and `build.py.deps-commit`. A value with credentials (a proxy
 with a password) reaches the engine through its environment, is on no command line and is printed with the user and password
 replaced. `python tools/build.py sdk check` holds the Containerfile's base images, toolchain, `rustup` version and hashes to
 the lock.
+
+### Native builds
+
+`sdk install` and `release build` read the native keys from the same `.env`, `.env.local`, environment and `--env KEY=VALUE`
+layers (and nothing else of those files), for a machine whose Visual Studio, Windows SDK or LLVM is not where the tools look:
+
+| Key | Names | Effect |
+| --- | --- | --- |
+| `VSINSTALLDIR`, `VCTOOLSINSTALLDIR` | the Visual Studio or Build Tools root and the MSVC toolset inside it | set for cargo; `sdk install` takes the root instead of asking vswhere |
+| `WINDOWSSDKDIR`, `WINDOWSSDKVERSION` | the Windows SDK root and the version of it to build against | set for cargo; the version must be installed under the root |
+| `LLVM_DIR`, `LIBCLANG_PATH` | an LLVM installation, and the directory of libclang | `LLVM_DIR`'s `bin` goes first on `PATH` and `sdk install` fetches no LLVM; `LIBCLANG_PATH` defaults to that `bin` when it holds libclang |
+| `SDK_HOME` | where `sdk install` puts the SDKs | after `--prefix`, before `$BUILD_SDK_HOME` |
+
+Each path is checked when it is read: a directory that is missing, or lacks what such a directory holds (`VC/`, `Include/` and
+`Lib/`, `bin/clang`, `libclang`), fails the command naming the key and the file it came from, before anything is installed or
+cargo starts. The keys only point at files on the machine: nothing of Microsoft's is copied into the repository, an image or
+the SDK prefix. `sdk install` writes the set keys into `env.sh` and `env.ps1`; `release build` prints each as
+`native: KEY=VALUE (where)`.
 
 ## Release builds
 
