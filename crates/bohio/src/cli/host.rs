@@ -279,6 +279,21 @@ pub(super) fn serve_endpoints(
     } else {
         None
     };
+    let helpers = match crate::gui::helper::HelperListener::bind(&config.gui, &server.host()) {
+        Ok(Some(helpers)) => {
+            if output::json() {
+                output::event(
+                    "helpers",
+                    serde_json::json!({ "endpoint": helpers.endpoint().to_string() }),
+                );
+            } else {
+                say!("helpers {}", helpers.endpoint());
+            }
+            Some(helpers)
+        }
+        Ok(None) => None,
+        Err(error) => return Err(error.to_string()),
+    };
     if output::json() {
         output::event(
             "host",
@@ -308,6 +323,14 @@ pub(super) fn serve_endpoints(
             scope.spawn(move || {
                 if let Err(error) = server.serve_local(local, stop) {
                     tracing::error!("the local control endpoint failed: {error}");
+                }
+            });
+        }
+        if let Some(helpers) = &helpers {
+            let server = &server;
+            scope.spawn(move || {
+                if let Err(error) = server.serve_helpers(helpers, stop) {
+                    tracing::error!("the helper endpoint failed: {error}");
                 }
             });
         }

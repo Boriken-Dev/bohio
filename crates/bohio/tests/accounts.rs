@@ -148,3 +148,142 @@ fn a_control_endpoint_another_account_serves_is_refused_before_anything_is_sent(
     assert_ne!(done.code, Some(0), "{}", done.stdout);
     assert!(done.stderr.contains("another account"), "{}", done.stderr);
 }
+
+fn socat_installed() -> bool {
+    Command::new("socat")
+        .arg("-V")
+        .stdout(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn my_uid() -> String {
+    let me = Command::new("id").arg("-u").output().expect("id runs");
+    String::from_utf8_lossy(&me.stdout).trim().to_owned()
+}
+
+/// A helper endpoint another account serves is refused by the helper before it sends anything: the helper was told to trust
+/// this account's node, and the account that answers is another.
+#[test]
+fn a_helper_refuses_a_socket_another_account_serves_and_sends_nothing() {
+    let Some(account) = other_account() else {
+        return;
+    };
+    if !socat_installed() {
+        println!("SKIPPED: socat is not installed");
+        return;
+    }
+    let dir = tempfile::tempdir().expect("a directory");
+    mode(dir.path(), 0o755);
+    let squat = dir.path().join("squat");
+    std::fs::create_dir(&squat).expect("a directory");
+    mode(&squat, 0o755);
+    let squat_text = squat.to_string_lossy().into_owned();
+    sudo(&["chown", &account, &squat_text]);
+    let socket = squat.join("gui.sock");
+    let heard = squat.join("heard");
+    let mut squatter = Command::new("sudo")
+        .args(["-n", "-u", &account, "timeout", "60", "socat", "-u"])
+        .arg(format!("UNIX-LISTEN:{},mode=777,fork", socket.display()))
+        .arg(format!("OPEN:{},creat,append", heard.display()))
+        .stdin(Stdio::null())
+        .spawn()
+        .expect("socat starts");
+    let until = Instant::now() + DEADLINE;
+    while !socket.exists() {
+        assert!(Instant::now() < until, "the squatter did not bind");
+        thread::sleep(Duration::from_millis(50));
+    }
+    let config = dir.path().join("helper.cfg");
+    std::fs::write(&config, "# nothing\n").expect("a config");
+    let mine = my_uid();
+    let done = run(&[
+        "gui-helper",
+        "--config",
+        &config.to_string_lossy(),
+        "--endpoint",
+        &format!("pipe://{}", socket.display()),
+        "--node-account",
+        &mine,
+    ]);
+    let _ = Command::new("kill")
+        .args(["-TERM", &squatter.id().to_string()])
+        .status();
+    let _ = squatter.wait();
+    sudo(&["chown", "-R", &mine, &squat_text]);
+    let bytes = std::fs::metadata(&heard).map_or(0, |meta| meta.len());
+    assert_eq!(
+        bytes, 0,
+        "the helper sent {bytes} bytes to another account's socket"
+    );
+    assert_eq!(done.code, Some(1), "{}", done.stderr);
+    assert!(done.stderr.contains(&mine), "{}", done.stderr);
+}
+
+/// How long a connection of `account` to `socket` stays open, up to `within`: `true` when the node closed it.
+fn closed_within(account: &str, socket: &Path, within: Duration) -> bool {
+    let mut client = Command::new("sudo")
+        .args(["-n", "-u", account, "timeout", "10", "socat", "-"])
+        .arg(format!("UNIX-CONNECT:{}", socket.display()))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("socat starts");
+    let until = Instant::now() + within;
+    let closed = loop {
+        if client.try_wait().expect("the client is asked").is_some() {
+            break true;
+        }
+        if Instant::now() >= until {
+            break false;
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+    // The client of another account ends by its own `timeout`; this side never signals a process it cannot own.
+    drop(client.stdin.take());
+    let _ = client.wait();
+    closed
+}
+
+/// The node serves a helper only for the accounts it lists: a real second account is closed unread when only this account is
+/// listed, and held when its own uid is.
+#[test]
+fn a_helper_connection_from_another_account_is_closed_unread_unless_it_is_listed() {
+    let Some(account) = other_account() else {
+        return;
+    };
+    if !socat_installed() {
+        println!("SKIPPED: socat is not installed");
+        return;
+    }
+    let dir = tempfile::tempdir().expect("a directory");
+    mode(dir.path(), 0o755);
+    let socket = dir.path().join("gui.sock");
+    let node = Node::new(dir.path(), "node");
+    let mine = my_uid();
+    for (listed, served) in [(mine, false), (account.clone(), true)] {
+        node.write(&format!(
+            "[gui]\nenabled = true\nhelper_accounts = [\"{listed}\"]\nhelper_endpoint = \"pipe://{}\"\n",
+            socket.display()
+        ));
+        let (mut serving, _) = node.serve(Some("tcp://127.0.0.1:0"), "warn");
+        let until = Instant::now() + DEADLINE;
+        while !socket.exists() {
+            assert!(
+                Instant::now() < until,
+                "the node did not bind its helper endpoint"
+            );
+            thread::sleep(Duration::from_millis(50));
+        }
+        let closed = closed_within(&account, &socket, Duration::from_millis(2500));
+        serving.kill();
+        assert_eq!(
+            closed,
+            !served,
+            "listed {listed}: the other account's connection was {}",
+            if closed { "closed unread" } else { "held" }
+        );
+        let _ = std::fs::remove_file(&socket);
+    }
+}

@@ -149,6 +149,19 @@ pub struct GuiConfig {
     pub approval_timeout: Span,
     /// How long a peer allowed on a session is not asked again. `0s` asks for every stream. Default `15m`.
     pub approval_ttl: Span,
+    /// The accounts whose per-user GUI helper this node serves (`bohio gui-helper`): Windows SIDs or names, Unix uids or
+    /// names. A connection to the helper endpoint from any other account is closed unread. Empty: no helper endpoint. Read
+    /// from the lowest layer only. Default empty.
+    pub helper_accounts: Vec<String>,
+    /// The `pipe://` endpoint helpers connect to. Windows default `pipe://bohio-gui-` and the first 16 hex digits of the
+    /// node id; Unix: required when `helper_accounts` is set (a socket directory only the node account may write). Read
+    /// from the lowest layer only.
+    pub helper_endpoint: Option<String>,
+    /// The most helper connections the node holds at once; one past it is closed unread. At least 1. Default `8`.
+    pub max_helpers: usize,
+    /// What `bohio gui-helper` accepts as the account that runs the node: a SID or name (Windows), a uid or name (Unix).
+    /// Default `NT AUTHORITY\LocalService` (`S-1-5-19`) on Windows and `bohio` on Unix. Read from the lowest layer only.
+    pub node_account: Option<String>,
 }
 
 impl Default for GuiConfig {
@@ -200,6 +213,10 @@ impl Default for GuiConfig {
             approval: ApprovalMode::None,
             approval_timeout: Span(Duration::from_secs(60)),
             approval_ttl: Span(Duration::from_secs(15 * 60)),
+            helper_accounts: Vec::new(),
+            helper_endpoint: None,
+            max_helpers: 8,
+            node_account: None,
         }
     }
 }
@@ -232,6 +249,7 @@ impl GuiConfig {
         for (key, zero) in [
             ("gui.max_streams", self.max_streams == 0),
             ("gui.max_streams_per_peer", self.max_streams_per_peer == 0),
+            ("gui.max_helpers", self.max_helpers == 0),
             ("gui.snapshots_per_minute", self.snapshots_per_minute == 0),
             ("gui.max_snapshot_pixels", self.max_snapshot_pixels == 0),
             ("gui.max_input_rate", self.max_input_rate == 0),
@@ -271,6 +289,19 @@ impl GuiConfig {
         }
         if self.formats.is_empty() {
             return Err(("gui.formats", "must name at least one format"));
+        }
+        if self
+            .helper_accounts
+            .iter()
+            .any(|account| account.trim().is_empty())
+        {
+            return Err(("gui.helper_accounts", "must not hold an empty account"));
+        }
+        if cfg!(unix) && !self.helper_accounts.is_empty() && self.helper_endpoint.is_none() {
+            return Err((
+                "gui.helper_endpoint",
+                "is required when gui.helper_accounts is set: name a pipe:// socket in a directory only the node's account may write",
+            ));
         }
         if !(1..=100).contains(&self.jpeg_quality) {
             return Err(("gui.jpeg_quality", "must be from 1 to 100"));

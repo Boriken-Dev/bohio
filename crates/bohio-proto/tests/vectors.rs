@@ -26,9 +26,10 @@ use bohio_proto::fs::{
 use bohio_proto::gui::{
     Ack, ApproveInput, ApproveOutput, Button, ButtonAction, ClipboardGet, ClipboardSet,
     ClipboardText, CursorFrame, Display, DisplayId, GuiInfo, GuiInput, GuiOutput, GuiRequest,
-    GuiSession, ImageFormat, ImageHeader, Input, InputDone, InputEvent, KeyAction, PendingRequest,
-    Point, Ready, Rect, RectEncoding, RequestError, Settle, SettleOptions, Settled, SettledFrame,
-    Snapshot, State, Unwatch, UpdateHeader, UpdateRect, Want, Watch, WatchEncoding,
+    GuiSession, HelperChange, HelperHello, HelperMessage, HelperOpen, HelperPolicy, ImageFormat,
+    ImageHeader, Input, InputDone, InputEvent, KeyAction, PendingRequest, Point, Ready, Rect,
+    RectEncoding, RequestError, Settle, SettleOptions, Settled, SettledFrame, Snapshot, State,
+    Unwatch, UpdateHeader, UpdateRect, Want, Watch, WatchEncoding,
 };
 use bohio_proto::hash::{
     Algorithm, BlockOptions, Digests, HashBlocks, HashDone, HashInput, HashItem, HashOutput,
@@ -2525,6 +2526,73 @@ fn gui_cases() -> Vec<Case> {
             "gui.ApproveInput",
             &ApproveInput::Decide { id: 7, allow: true },
         ),
+        message(
+            "helper_hello",
+            TO_CLIENT,
+            "message",
+            "gui.HelperHello",
+            &HelperHello {
+                session: "1".into(),
+                user: Some("jo".into()),
+                state: State {
+                    active: true,
+                    locked: Some(false),
+                    displays: vec![],
+                },
+            },
+        ),
+        message(
+            "helper_open",
+            TO_CLIENT,
+            "message",
+            "gui.HelperOpen",
+            &HelperOpen {
+                request: GuiRequest::new([Want::View, Want::Input]),
+                peer: "sha256:00".into(),
+                session: "1000:1".into(),
+                granted: vec![Want::View],
+                policy: HelperPolicy {
+                    indicator_notify: true,
+                    input_when_locked: false,
+                    max_input_rate: 1000,
+                    max_snapshot_pixels: 33_554_432,
+                    max_batch_events: 256,
+                    max_text: 4096,
+                    clipboard_max_bytes: 1_048_576,
+                    max_fps: 15,
+                },
+            },
+        ),
+        message(
+            "helper_state",
+            TO_HOST,
+            "message",
+            "gui.HelperMessage",
+            &HelperMessage::State {
+                state: State {
+                    active: false,
+                    locked: Some(true),
+                    displays: vec![],
+                },
+            },
+        ),
+        message(
+            "helper_event_ended",
+            TO_HOST,
+            "message",
+            "gui.HelperMessage",
+            &HelperMessage::Event {
+                peer: "sha256:00".into(),
+                change: HelperChange::Ended {
+                    snapshots: 2,
+                    frames: 0,
+                    input_events: 3,
+                    clipboard_reads: 0,
+                    clipboard_writes: 0,
+                    reason: "the stream ended".into(),
+                },
+            },
+        ),
         Case {
             name: "unknown_tag".into(),
             direction: TO_CLIENT,
@@ -2886,6 +2954,9 @@ fn check(entry: &Value) {
         "gui.Request" => check_message::<GuiRequest>(entry, &bytes),
         "gui.ApproveOutput" => check_message::<ApproveOutput>(entry, &bytes),
         "gui.ApproveInput" => check_message::<ApproveInput>(entry, &bytes),
+        "gui.HelperHello" => check_message::<HelperHello>(entry, &bytes),
+        "gui.HelperOpen" => check_message::<HelperOpen>(entry, &bytes),
+        "gui.HelperMessage" => check_message::<HelperMessage>(entry, &bytes),
         "gui.Output" => check_frame(entry, &bytes, GuiOutput::decode, |v| v.encode().unwrap()),
         "gui.Input" => check_frame(entry, &bytes, GuiInput::decode, |v| v.encode().unwrap()),
         "power.Request" => check_message::<bohio_proto::power::Request>(entry, &bytes),

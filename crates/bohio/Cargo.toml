@@ -122,6 +122,10 @@ name = "gui_presence"
 required-features = ["gui"]
 
 [[test]]
+name = "gui_helper"
+required-features = ["gui"]
+
+[[test]]
 name = "gui_stream"
 required-features = ["gui"]
 

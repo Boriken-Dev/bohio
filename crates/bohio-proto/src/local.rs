@@ -23,6 +23,10 @@ pub const PAIR: &str = "bohio-pair/1";
 /// Lists the desktop approvals a node waits for and takes the owner's decisions (`bohio-gui-approve/1`).
 pub const GUI_APPROVE: &str = "bohio-gui-approve/1";
 
+/// What a per-user GUI helper opens on its node, over the helper endpoint (never on a peer's link): its session, then its
+/// state and the audit events of the streams it serves. The node opens `bohio-gui/1` streams on the same connection.
+pub const GUI_HELPER: &str = "bohio-gui-helper/1";
+
 /// The metadata of a [`VIA`] open.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ViaRequest {

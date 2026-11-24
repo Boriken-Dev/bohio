@@ -8,6 +8,7 @@
 mod access;
 mod commands;
 mod gui;
+mod gui_helper;
 mod host;
 mod mcp;
 pub(crate) mod output;
@@ -85,6 +86,8 @@ pub enum Command {
     Hosts(HostsArgs),
     /// Answer a peer's request to look at or drive this screen, on the running node (`pending`, `allow`, `deny`).
     Gui(gui::GuiArgs),
+    /// Lend this user's desktop to the node of a service: the per-user helper, started at logon.
+    GuiHelper(gui_helper::GuiHelperArgs),
 }
 
 /// `bohio config`.

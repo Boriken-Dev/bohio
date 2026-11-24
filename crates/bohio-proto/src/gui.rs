@@ -1189,6 +1189,173 @@ impl ApproveInput {
     }
 }
 
+/// A helper's first message, the open metadata of its `bohio-gui-helper/1` stream: which session it serves. The node
+/// takes who the helper is from the connection (the operating system's answer), never from this.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HelperHello {
+    /// The helper's own name for its session (a Windows session number, an X display, a login session); the node
+    /// puts the verified account before it, so one account cannot name another's.
+    pub session: String,
+    /// The account's name for a person; informational.
+    #[serde(default)]
+    pub user: Option<String>,
+    /// The session's state at the start.
+    #[serde(default)]
+    pub state: State,
+}
+
+impl HelperHello {
+    /// Writes the hello as an open's metadata.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Encode`] when it cannot be written.
+    pub fn to_metadata(&self) -> Result<Vec<u8>, Error> {
+        encode(self)
+    }
+
+    /// Reads a hello from an open's metadata.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Decode`] when the bytes are not one.
+    pub fn from_metadata(metadata: &[u8]) -> Result<Self, Error> {
+        decode(metadata)
+    }
+}
+
+/// What the node tells a helper to apply on top of the user's own `[gui]` keys: each value is a bound the helper
+/// narrows to and never widens (the stricter of the two wins).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HelperPolicy {
+    /// The node's `[gui] indicator = "notify"`.
+    pub indicator_notify: bool,
+    /// The node's `[gui] input_when_locked`.
+    pub input_when_locked: bool,
+    /// The node's `[gui] max_input_rate`.
+    pub max_input_rate: u32,
+    /// The node's `[gui] max_snapshot_pixels`.
+    pub max_snapshot_pixels: u64,
+    /// The node's `[gui] max_batch_events`.
+    pub max_batch_events: u64,
+    /// The node's `[gui] max_text`.
+    pub max_text: u64,
+    /// The node's `[gui] clipboard_max_bytes`.
+    pub clipboard_max_bytes: u64,
+    /// The node's `[gui] max_fps`.
+    pub max_fps: u32,
+}
+
+/// The open metadata of the `bohio-gui/1` stream a node opens on a helper for a peer's stream: the peer's own request
+/// and what the node decided for it. The helper holds no key and reads no peer table, so this is all it knows of the
+/// peer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HelperOpen {
+    /// The peer's request, its `session` the one the node names the helper's session by.
+    pub request: GuiRequest,
+    /// The peer's id.
+    pub peer: String,
+    /// The session's name as the node lists it.
+    pub session: String,
+    /// What the node's grant for the peer allows of what the request asked: nothing else is served.
+    pub granted: Vec<Want>,
+    /// The node's own bounds.
+    pub policy: HelperPolicy,
+}
+
+impl HelperOpen {
+    /// Writes the open as metadata.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Encode`] when it cannot be written.
+    pub fn to_metadata(&self) -> Result<Vec<u8>, Error> {
+        encode(self)
+    }
+
+    /// Reads an open from metadata.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Decode`] when the bytes are not one.
+    pub fn from_metadata(metadata: &[u8]) -> Result<Self, Error> {
+        decode(metadata)
+    }
+}
+
+/// What a helper reports of a stream it served, for the node's audit: counts only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HelperChange {
+    /// A stream opened with what it may do.
+    Started {
+        /// What the stream may do.
+        granted: Vec<Want>,
+    },
+    /// A stream ended.
+    Ended {
+        /// Snapshots sent.
+        snapshots: u64,
+        /// Screen updates sent.
+        frames: u64,
+        /// Input events applied.
+        input_events: u64,
+        /// Clipboard reads.
+        clipboard_reads: u64,
+        /// Clipboard writes.
+        clipboard_writes: u64,
+        /// Why.
+        reason: String,
+    },
+    /// The clipboard was read.
+    ClipboardRead,
+    /// The clipboard was written.
+    ClipboardWritten,
+    /// An open was refused.
+    Refused {
+        /// Why, with no request content.
+        reason: String,
+    },
+}
+
+/// What a helper sends on its `bohio-gui-helper/1` stream after the hello.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HelperMessage {
+    /// The session's state changed (locked, switched away, a display changed).
+    State {
+        /// The state now.
+        state: State,
+    },
+    /// A served stream's audit event.
+    Event {
+        /// The peer the node named in the stream's open.
+        peer: String,
+        /// What happened.
+        change: HelperChange,
+    },
+}
+
+impl HelperMessage {
+    /// Writes the message.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Encode`] when it cannot be written.
+    pub fn encode(&self) -> Result<Vec<u8>, Error> {
+        encode(self)
+    }
+
+    /// Reads a message.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Decode`] when the bytes are not one.
+    pub fn decode(message: &[u8]) -> Result<Self, Error> {
+        decode(message)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -535,6 +535,91 @@
       }
     },
     {
+      "direction": "host_to_client",
+      "hex": "a36773657373696f6e61316475736572626a6f657374617465a366616374697665f5666c6f636b6564f468646973706c61797380",
+      "kind": "message",
+      "name": "helper_hello",
+      "type": "gui.HelperHello",
+      "value": {
+        "session": "1",
+        "state": {
+          "active": true,
+          "displays": [],
+          "locked": false
+        },
+        "user": "jo"
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "a56772657175657374a26773657373696f6ef66477616e7482647669657765696e7075746470656572697368613235363a30306773657373696f6e66313030303a31676772616e74656481647669657766706f6c696379a870696e64696361746f725f6e6f74696679f571696e7075745f7768656e5f6c6f636b6564f46e6d61785f696e7075745f726174651903e8736d61785f736e617073686f745f706978656c731a02000000706d61785f62617463685f6576656e7473190100686d61785f7465787419100073636c6970626f6172645f6d61785f62797465731a00100000676d61785f6670730f",
+      "kind": "message",
+      "name": "helper_open",
+      "type": "gui.HelperOpen",
+      "value": {
+        "granted": [
+          "view"
+        ],
+        "peer": "sha256:00",
+        "policy": {
+          "clipboard_max_bytes": 1048576,
+          "indicator_notify": true,
+          "input_when_locked": false,
+          "max_batch_events": 256,
+          "max_fps": 15,
+          "max_input_rate": 1000,
+          "max_snapshot_pixels": 33554432,
+          "max_text": 4096
+        },
+        "request": {
+          "session": null,
+          "want": [
+            "view",
+            "input"
+          ]
+        },
+        "session": "1000:1"
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a1657374617465a1657374617465a366616374697665f4666c6f636b6564f568646973706c61797380",
+      "kind": "message",
+      "name": "helper_state",
+      "type": "gui.HelperMessage",
+      "value": {
+        "state": {
+          "state": {
+            "active": false,
+            "displays": [],
+            "locked": true
+          }
+        }
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a1656576656e74a26470656572697368613235363a3030666368616e6765a165656e646564a669736e617073686f747302666672616d6573006c696e7075745f6576656e7473036f636c6970626f6172645f72656164730070636c6970626f6172645f7772697465730066726561736f6e707468652073747265616d20656e646564",
+      "kind": "message",
+      "name": "helper_event_ended",
+      "type": "gui.HelperMessage",
+      "value": {
+        "event": {
+          "change": {
+            "ended": {
+              "clipboard_reads": 0,
+              "clipboard_writes": 0,
+              "frames": 0,
+              "input_events": 3,
+              "reason": "the stream ended",
+              "snapshots": 2
+            }
+          },
+          "peer": "sha256:00"
+        }
+      }
+    },
+    {
       "decode_only": true,
       "direction": "host_to_client",
       "error": "tag",

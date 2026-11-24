@@ -14,6 +14,7 @@
 mod adapt;
 mod desktop;
 mod encode;
+pub mod helper;
 mod limits;
 #[cfg(feature = "notify")]
 mod notify;
@@ -106,6 +107,7 @@ pub struct GuiState {
     approvals: Arc<Approvals>,
     notifier: Arc<NotifierCell>,
     allowed: Mutex<HashMap<(String, String), Instant>>,
+    helpers: helper::Helpers,
 }
 
 impl core::fmt::Debug for GuiState {
@@ -115,7 +117,7 @@ impl core::fmt::Debug for GuiState {
 }
 
 /// The only desktop session a node serves today.
-const SESSION: &str = "default";
+pub const DEFAULT_SESSION: &str = "default";
 
 impl GuiState {
     /// The state of a node whose settings are `config`: no desktop yet, [`LocalPresence`] for its presence.
@@ -140,6 +142,7 @@ impl GuiState {
             approvals,
             notifier,
             allowed: Mutex::new(HashMap::new()),
+            helpers: helper::Helpers::new(config.max_helpers),
         })
     }
 
@@ -195,6 +198,28 @@ impl GuiState {
     /// What `info` says of the desktop to a peer with `grant`: the sessions only when it holds `gui.view` or
     /// `gui.input`. Asked at every `info`, never cached.
     pub fn info(&self, config: &GuiConfig, grant: &Grant) -> GuiInfo {
+        let mut info = self.in_process_info(config, grant);
+        if config.enabled
+            && (grant.allows(Permission::GuiView) || grant.allows(Permission::GuiInput))
+        {
+            let helpers = self.helpers.sessions();
+            if !helpers.is_empty() {
+                info.available = true;
+                info.reason = None;
+                info.sessions.extend(helpers);
+            }
+        }
+        info
+    }
+
+    /// Whether the node's own desktop answers now.
+    fn in_process_available(&self) -> bool {
+        self.sources.desktop(None).ok().is_some_and(|source| {
+            KindDesktop::open(source).is_ok_and(|desktop| self.call(|| desktop.state()).is_ok())
+        })
+    }
+
+    fn in_process_info(&self, config: &GuiConfig, grant: &Grant) -> GuiInfo {
         let formats: Vec<ImageFormat> = encode::available()
             .into_iter()
             .filter(|format| config.formats.contains(format))
@@ -236,7 +261,7 @@ impl GuiState {
                 info.available = true;
                 if grant.allows(Permission::GuiView) || grant.allows(Permission::GuiInput) {
                     info.sessions.push(GuiSession {
-                        id: SESSION.to_owned(),
+                        id: DEFAULT_SESSION.to_owned(),
                         user: state.user,
                         active: state.active,
                         locked: state.locked,
@@ -266,6 +291,9 @@ pub struct Context<'a> {
     pub peer: PeerId,
     /// Where the owner hears what happened.
     pub events: &'a dyn NodeEvents,
+    /// The session the stream serves, as a request names it: [`DEFAULT_SESSION`] for the node's own desktop, a helper's
+    /// listed id for a helper's.
+    pub session: &'a str,
 }
 
 /// What a stream did, for the owner's event and the caller's log. Counts only: never pixels, typed text, key names or
@@ -331,24 +359,60 @@ pub fn serve(
     metadata: &[u8],
     context: &Context<'_>,
 ) -> Result<Ended, ErrorBody> {
-    let poll = context.config.poll_interval.0;
     match open(&channel, metadata, context) {
         Ok(ended) => Ok(ended),
-        Err(error) => {
-            let frame = GuiOutput::Error(error.clone())
-                .encode()
-                .unwrap_or_else(|_| vec![0x05]);
-            let _ = send_waiting(channel.as_ref(), &frame, poll, poll);
-            context.events.event(&NodeEvent::Gui {
-                peer: context.peer,
-                session: SESSION.to_owned(),
-                change: GuiChange::Refused {
-                    reason: error.message.clone(),
-                },
-            });
-            Err(error)
+        Err(error) => Err(refuse(channel.as_ref(), error, context)),
+    }
+}
+
+/// As [`serve`], for a node: a request that names a helper's session goes to that helper, and so does one that names none when
+/// the node has no desktop of its own and a helper has (see [`helper`]); everything else is the node's own desktop. The stream
+/// is left open for the caller to close.
+pub fn serve_chosen(channel: &Arc<dyn Channel>, metadata: &[u8], context: &Context<'_>) {
+    match context.state.choose(context.config, metadata) {
+        helper::Chosen::InProcess => match serve(Arc::clone(channel), metadata, context) {
+            Ok(ended) => tracing::debug!(snapshots = ended.snapshots, "gui ended"),
+            Err(error) => tracing::info!(code = ?error.code, "gui refused"),
+        },
+        helper::Chosen::Helper(entry) => {
+            let relayed = Context {
+                session: &entry.id,
+                ..*context
+            };
+            match helper::serve_relayed(channel, &entry, metadata, &relayed) {
+                Ok(()) => tracing::debug!("gui ended"),
+                Err(error) => tracing::info!(code = ?error.code, "gui refused"),
+            }
+        }
+        helper::Chosen::Refuse(error) => {
+            let error = refuse(channel.as_ref(), error, context);
+            tracing::info!(code = ?error.code, "gui refused");
         }
     }
+}
+
+/// Sends `error` as the stream's last frame and tells the owner an open was refused.
+fn refuse(channel: &dyn Channel, error: ErrorBody, context: &Context<'_>) -> ErrorBody {
+    let poll = context.config.poll_interval.0;
+    let frame = GuiOutput::Error(error.clone())
+        .encode()
+        .unwrap_or_else(|_| vec![0x05]);
+    let _ = send_waiting(channel, &frame, poll, poll);
+    context.events.event(&NodeEvent::Gui {
+        peer: context.peer,
+        session: context.session.to_owned(),
+        change: GuiChange::Refused {
+            reason: error.message.clone(),
+        },
+    });
+    error
+}
+
+fn busy() -> ErrorBody {
+    ErrorBody::new(
+        ErrorCode::Busy,
+        "the host is serving as many desktop streams as it allows",
+    )
 }
 
 fn open(
@@ -378,16 +442,10 @@ fn open(
     if request
         .session
         .as_deref()
-        .is_some_and(|session| session != SESSION)
+        .is_some_and(|session| session != context.session)
     {
         return Err(ErrorBody::new(ErrorCode::NotFound, "no such session"));
     }
-    let busy = || {
-        ErrorBody::new(
-            ErrorCode::Busy,
-            "the host is serving as many desktop streams as it allows",
-        )
-    };
     let _slot = context.state.slots.acquire().ok_or_else(busy)?;
     let _mine = context
         .state
@@ -403,7 +461,7 @@ fn open(
     let _engaged = context
         .state
         .engagements
-        .enter(context.peer, SESSION, controlling);
+        .enter(context.peer, context.session, controlling);
     let mut stream = Stream {
         channel: channel.as_ref(),
         context,
@@ -416,7 +474,7 @@ fn open(
         watch: None,
     };
     let ready = GuiOutput::Ready(Ready {
-        session: SESSION.to_owned(),
+        session: context.session.to_owned(),
         granted: wants.clone(),
         state: state.wire(),
     });
@@ -428,14 +486,14 @@ fn open(
     }
     context.events.event(&NodeEvent::Gui {
         peer: context.peer,
-        session: SESSION.to_owned(),
+        session: context.session.to_owned(),
         change: GuiChange::Started { granted: wants },
     });
     stream.run();
     let ended = stream.counts;
     context.events.event(&NodeEvent::Gui {
         peer: context.peer,
-        session: SESSION.to_owned(),
+        session: context.session.to_owned(),
         change: GuiChange::Ended {
             snapshots: ended.snapshots,
             frames: ended.frames,
@@ -455,13 +513,13 @@ fn approve(channel: &dyn Channel, context: &Context<'_>, wants: &[Want]) -> Resu
         return Ok(());
     }
     let state = context.state;
-    if state.allowed_within(&context.peer, SESSION, config.approval_ttl.0) {
+    if state.allowed_within(&context.peer, context.session, config.approval_ttl.0) {
         return Ok(());
     }
     let cancelled = AtomicBool::new(false);
     let request = ApprovalRequest {
         peer: context.peer,
-        session: SESSION,
+        session: context.session,
         want: wants,
         since: SystemTime::now(),
         timeout: config.approval_timeout.0,
@@ -485,7 +543,7 @@ fn approve(channel: &dyn Channel, context: &Context<'_>, wants: &[Want]) -> Resu
     });
     match decision {
         Approval::Allow => {
-            state.remember(&context.peer, SESSION);
+            state.remember(&context.peer, context.session);
             Ok(())
         }
         Approval::Deny => Err(denied("not approved")),
@@ -924,7 +982,7 @@ impl Stream<'_> {
         self.counts.clipboard_reads += 1;
         self.context.events.event(&NodeEvent::Gui {
             peer: self.context.peer,
-            session: SESSION.to_owned(),
+            session: self.context.session.to_owned(),
             change: GuiChange::ClipboardRead,
         });
         let frame = GuiOutput::Clipboard(ClipboardText {
@@ -947,7 +1005,7 @@ impl Stream<'_> {
         self.counts.clipboard_writes += 1;
         self.context.events.event(&NodeEvent::Gui {
             peer: self.context.peer,
-            session: SESSION.to_owned(),
+            session: self.context.session.to_owned(),
             change: GuiChange::ClipboardWritten,
         });
         let frame = GuiOutput::Clipboard(ClipboardText {

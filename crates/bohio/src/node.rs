@@ -1278,14 +1278,12 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
             state: &shared.gui,
             peer,
             events: shared.events.as_ref(),
+            session: gui::DEFAULT_SESSION,
         };
         thread::scope(|scope| {
             let relay = relay(scope, stream, &shared.settings);
             let channel: Arc<dyn Channel> = relay.clone();
-            match gui::serve(channel, &accepted.metadata, &context) {
-                Ok(ended) => tracing::debug!(snapshots = ended.snapshots, "gui ended"),
-                Err(error) => tracing::info!(code = ?error.code, "gui refused"),
-            }
+            gui::serve_chosen(&channel, &accepted.metadata, &context);
             relay.close();
         });
         return;
@@ -1539,6 +1537,16 @@ impl Node {
     }
 
     /// What the local endpoint serves from: the links, the grants and the link settings.
+    /// What the helper endpoint needs: the desktop state, the link settings and where events go.
+    pub(crate) fn gui_parts(&self) -> GuiParts {
+        GuiParts {
+            state: Arc::clone(&self.gui),
+            settings: self.shared.settings,
+            events: Arc::clone(&self.events) as Arc<dyn NodeEvents>,
+            host: self.host,
+        }
+    }
+
     pub(crate) fn local_parts(&self) -> (Arc<Registry>, Arc<dyn Grants>, Settings) {
         (
             Arc::clone(&self.registry),
@@ -1546,4 +1554,12 @@ impl Node {
             self.shared.settings,
         )
     }
+}
+
+/// What [`Node::gui_parts`] hands the helper endpoint.
+pub(crate) struct GuiParts {
+    pub(crate) state: Arc<GuiState>,
+    pub(crate) settings: Settings,
+    pub(crate) events: Arc<dyn NodeEvents>,
+    pub(crate) host: PeerId,
 }
