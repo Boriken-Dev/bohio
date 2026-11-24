@@ -1,0 +1,40 @@
+{
+  "name": "latency-5a898491-wan",
+  "raw": {
+    "commit": "5a898491",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "os": "windows",
+    "arch": "aarch64",
+    "processor": "",
+    "transport": "tcp",
+    "link": "wan",
+    "settings": {},
+    "label": ""
+  },
+  "metrics": {
+    "open_close_x50_host_cpu_tcp_wan": {
+      "min_ms": 0.0,
+      "median_ms": 0.0,
+      "max_ms": 0.0,
+      "samples": 3
+    },
+    "open_close_x50_tcp_wan": {
+      "min_ms": 2.6008,
+      "median_ms": 3.007,
+      "max_ms": 3.109,
+      "samples": 3
+    },
+    "stat_x100_serial_host_cpu_tcp_wan": {
+      "min_ms": 78.0,
+      "median_ms": 172.0,
+      "max_ms": 203.0,
+      "samples": 3
+    },
+    "stat_x100_serial_tcp_wan": {
+      "min_ms": 27304.5792,
+      "median_ms": 28670.1546,
+      "max_ms": 29133.106600000003,
+      "samples": 3
+    }
+  }
+}

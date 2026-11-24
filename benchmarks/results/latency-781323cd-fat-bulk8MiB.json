@@ -1,0 +1,51 @@
+{
+  "name": "latency-781323cd-fat-bulk8MiB",
+  "raw": {
+    "commit": "781323cd",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "os": "windows",
+    "arch": "aarch64",
+    "processor": "",
+    "transport": "tcp",
+    "link": "fat",
+    "settings": {
+      "link.bulk_window": "8388608"
+    },
+    "label": "bulk_window_8MiB"
+  },
+  "metrics": {
+    "cpu_sha256_64MiB_tcp_fat": {
+      "min_ms": 178.6114,
+      "median_ms": 183.70839999999998,
+      "max_ms": 226.0241,
+      "samples": 3,
+      "bytes": 67108864
+    },
+    "read_64MiB_parallel4_host_cpu_tcp_fat": {
+      "min_ms": 672.0,
+      "median_ms": 797.0,
+      "max_ms": 922.0,
+      "samples": 3
+    },
+    "read_64MiB_parallel4_tcp_fat": {
+      "min_ms": 3228.3413,
+      "median_ms": 3230.6409,
+      "max_ms": 3244.5753,
+      "samples": 3,
+      "bytes": 67108864
+    },
+    "read_64MiB_warm_host_cpu_tcp_fat": {
+      "min_ms": 484.0,
+      "median_ms": 719.0,
+      "max_ms": 734.0,
+      "samples": 3
+    },
+    "read_64MiB_warm_tcp_fat": {
+      "min_ms": 2956.9278,
+      "median_ms": 2963.226,
+      "max_ms": 2963.9706,
+      "samples": 3,
+      "bytes": 67108864
+    }
+  }
+}

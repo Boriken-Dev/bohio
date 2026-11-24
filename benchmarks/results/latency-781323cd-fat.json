@@ -1,0 +1,75 @@
+{
+  "name": "latency-781323cd-fat",
+  "raw": {
+    "commit": "781323cd",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "os": "windows",
+    "arch": "aarch64",
+    "processor": "",
+    "transport": "tcp",
+    "link": "fat",
+    "settings": {},
+    "label": ""
+  },
+  "metrics": {
+    "cpu_sha256_64MiB_tcp_fat": {
+      "min_ms": 149.6202,
+      "median_ms": 153.416,
+      "max_ms": 161.0283,
+      "samples": 3,
+      "bytes": 67108864
+    },
+    "read_64MiB_parallel2_host_cpu_tcp_fat": {
+      "min_ms": 703.0,
+      "median_ms": 844.0,
+      "max_ms": 984.0,
+      "samples": 3
+    },
+    "read_64MiB_parallel2_tcp_fat": {
+      "min_ms": 9390.9148,
+      "median_ms": 9401.652900000001,
+      "max_ms": 9480.9223,
+      "samples": 3,
+      "bytes": 67108864
+    },
+    "read_64MiB_parallel4_host_cpu_tcp_fat": {
+      "min_ms": 704.0,
+      "median_ms": 718.0,
+      "max_ms": 734.0,
+      "samples": 3
+    },
+    "read_64MiB_parallel4_tcp_fat": {
+      "min_ms": 4878.1476,
+      "median_ms": 4909.9233,
+      "max_ms": 4925.9007,
+      "samples": 3,
+      "bytes": 67108864
+    },
+    "read_64MiB_parallel8_host_cpu_tcp_fat": {
+      "min_ms": 688.0,
+      "median_ms": 734.0,
+      "max_ms": 797.0,
+      "samples": 3
+    },
+    "read_64MiB_parallel8_tcp_fat": {
+      "min_ms": 3226.6938,
+      "median_ms": 3253.1117,
+      "max_ms": 3258.9627,
+      "samples": 3,
+      "bytes": 67108864
+    },
+    "read_64MiB_warm_host_cpu_tcp_fat": {
+      "min_ms": 750.0,
+      "median_ms": 782.0,
+      "max_ms": 828.0,
+      "samples": 3
+    },
+    "read_64MiB_warm_tcp_fat": {
+      "min_ms": 17719.2121,
+      "median_ms": 17912.3847,
+      "max_ms": 18002.543700000002,
+      "samples": 3,
+      "bytes": 67108864
+    }
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "name": "latency-781323cd-wan",
+  "raw": {
+    "commit": "781323cd",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "os": "windows",
+    "arch": "aarch64",
+    "processor": "",
+    "transport": "tcp",
+    "link": "wan",
+    "settings": {},
+    "label": ""
+  },
+  "metrics": {
+    "open_call_x50_host_cpu_tcp_wan": {
+      "min_ms": 110.0,
+      "median_ms": 203.0,
+      "max_ms": 234.0,
+      "samples": 3
+    },
+    "open_call_x50_tcp_wan": {
+      "min_ms": 13555.701799999999,
+      "median_ms": 14023.1162,
+      "max_ms": 14280.8396,
+      "samples": 3
+    },
+    "remote_read_5MiB_host_cpu_tcp_wan": {
+      "min_ms": 78.0,
+      "median_ms": 93.0,
+      "max_ms": 94.0,
+      "samples": 3
+    },
+    "remote_read_5MiB_tcp_wan": {
+      "min_ms": 2996.7475,
+      "median_ms": 3009.0,
+      "max_ms": 3135.9384999999997,
+      "samples": 3,
+      "bytes": 5242880
+    },
+    "remote_via_read_5MiB_host_cpu_tcp_wan": {
+      "min_ms": 63.0,
+      "median_ms": 94.0,
+      "max_ms": 125.0,
+      "samples": 3
+    },
+    "remote_via_read_5MiB_tcp_wan": {
+      "min_ms": 2763.0211,
+      "median_ms": 2799.3492,
+      "max_ms": 2833.5977,
+      "samples": 3,
+      "bytes": 5242880
+    },
+    "stat_x100_pipelined_host_cpu_tcp_wan": {
+      "min_ms": 0.0,
+      "median_ms": 16.0,
+      "max_ms": 93.0,
+      "samples": 3
+    },
+    "stat_x100_pipelined_tcp_wan": {
+      "min_ms": 276.9413,
+      "median_ms": 279.2209,
+      "max_ms": 284.5129,
+      "samples": 3
+    },
+    "stat_x100_serial_host_cpu_tcp_wan": {
+      "min_ms": 156.0,
+      "median_ms": 328.0,
+      "max_ms": 360.0,
+      "samples": 3
+    },
+    "stat_x100_serial_tcp_wan": {
+      "min_ms": 27547.9863,
+      "median_ms": 27793.3651,
+      "max_ms": 28757.5051,
+      "samples": 3
+    }
+  }
+}
