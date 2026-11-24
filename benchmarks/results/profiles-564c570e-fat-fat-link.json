@@ -1,0 +1,31 @@
+{
+  "name": "profiles-564c570e-fat-fat-link",
+  "raw": {
+    "commit": "564c570e",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "os": "windows",
+    "arch": "aarch64",
+    "processor": "",
+    "transport": "tcp",
+    "link": "fat",
+    "settings": {
+      "profile.name": "\"fat-link\""
+    },
+    "label": "profile_fat-link"
+  },
+  "metrics": {
+    "read_64MiB_warm_host_cpu_tcp_fat": {
+      "min_ms": 718.0,
+      "median_ms": 734.0,
+      "max_ms": 766.0,
+      "samples": 3
+    },
+    "read_64MiB_warm_tcp_fat": {
+      "min_ms": 2957.8329,
+      "median_ms": 2957.8572,
+      "max_ms": 2958.5257,
+      "samples": 3,
+      "bytes": 67108864
+    }
+  }
+}

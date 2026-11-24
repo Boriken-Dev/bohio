@@ -1,0 +1,31 @@
+{
+  "name": "profiles-564c570e-fat-default",
+  "raw": {
+    "commit": "564c570e",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "os": "windows",
+    "arch": "aarch64",
+    "processor": "",
+    "transport": "tcp",
+    "link": "fat",
+    "settings": {
+      "profile.name": "\"default\""
+    },
+    "label": "profile_default"
+  },
+  "metrics": {
+    "read_64MiB_warm_host_cpu_tcp_fat": {
+      "min_ms": 656.0,
+      "median_ms": 922.0,
+      "max_ms": 1047.0,
+      "samples": 3
+    },
+    "read_64MiB_warm_tcp_fat": {
+      "min_ms": 17749.3089,
+      "median_ms": 17777.7042,
+      "max_ms": 17981.9986,
+      "samples": 3,
+      "bytes": 67108864
+    }
+  }
+}

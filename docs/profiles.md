@@ -122,7 +122,7 @@ reader falls behind.
 
 | Profile | Link | Result |
 | --- | --- | --- |
-| `fat-link` | an in-process emulation of the `fat` path (133 ms each way, 200 Mbit/s), Windows ARM64, a loaded machine, 3 samples | a 64 MiB warm read took a median 17.9 s at the default settings and 3.0 s with `link.bulk_window` 8 MiB (`benchmarks/results/latency-781323cd-fat.json`, `latency-781323cd-fat-bulk8MiB.json`); the harness's own sanity check, not a measurement of record |
+| `fat-link` | an in-process emulation of the `fat` path (133 ms each way, 200 Mbit/s), Windows ARM64, a loaded machine, 3 samples | a 64 MiB warm read took a median 17.9 s at the default settings and 3.0 s with `link.bulk_window` 8 MiB (`benchmarks/results/latency-781323cd-fat.json`, `latency-781323cd-fat-bulk8MiB.json`); the harness's own sanity check, not a measurement of record. The same read with `bohio-bench local --profile fat-link` and with `--profile default`, one after the other on the same machine, took 3.0 s and 17.8 s (`benchmarks/results/profiles-564c570e-fat-fat-link.json`, `profiles-564c570e-fat-default.json`) |
 | `lan`, `weak-host`, `slow-link` | not yet measured on their links | the values are starting points; the bench workflow's runs of `lan`, `weak` and `slow`/`wan` are what will confirm or move them |
 
 `bohio-bench local ... --profile NAME` runs the host under the profile and takes this side's link bounds and compression
