@@ -105,43 +105,57 @@ render() {
     sed -e "s|@ACCOUNT@|$account|g" -e "s|@PREFIX@|$prefix|g" "$1"
 }
 
-# install_file SRC DST MODE OWNER GROUP: the source with the account and prefix filled in, unless DST already is that.
+# Everything that goes into the account's home is written by the account (runuser), never by root: the account owns those
+# directories and could have replaced one with a link, which a root `install` or `rm` would follow.
+
+# install_file SRC DST MODE OWNER: the source with the account and prefix filled in, unless DST already is that. Written by
+# OWNER when that is not root.
 install_file() {
     src=$1
     dst=$2
     mode=$3
     owner=$4
-    group=$5
     if [ -f "$dst" ] && render "$src" | cmp -s - "$dst"; then
         note "up to date: $dst"
         return 0
     fi
-    printf '  + install %s as %s (mode %s, %s:%s)\n' "$src" "$dst" "$mode" "$owner" "$group"
+    printf '  + install %s as %s (mode %s, by %s)\n' "$src" "$dst" "$mode" "$owner"
     if [ "$dry" -eq 1 ]; then
         return 0
     fi
-    rendered=$(mktemp)
-    render "$src" > "$rendered"
-    install -m "$mode" -o "$owner" -g "$group" "$rendered" "$dst"
-    rm -f "$rendered"
+    if [ "$owner" = root ]; then
+        rendered=$(mktemp)
+        render "$src" > "$rendered"
+        install -m "$mode" -o root -g root "$rendered" "$dst"
+        rm -f "$rendered"
+    else
+        render "$src" | runuser -u "$owner" -- sh -c 'cat > "$1.new" && chmod "$2" "$1.new" && mv -f "$1.new" "$1"' sh "$dst" "$mode"
+    fi
 }
 
-install_dir() {
-    mode=$1
-    owner=$2
-    shift 2
+# install_dirs DIR...: directories of the account's, mode 0700, made by the account.
+install_dirs() {
+    missing=
     for dir in "$@"; do
         if [ -d "$dir" ]; then
             note "exists: $dir"
         else
-            run install -d -m "$mode" -o "$owner" -g "$owner" "$dir"
+            missing="$missing $dir"
         fi
     done
+    [ -n "$missing" ] || return 0
+    # shellcheck disable=SC2086  # the names are validated words
+    run runuser -u "$account" -- sh -c 'umask 077 && mkdir -p "$@"' sh $missing
 }
 
+# remove_file PATH [as-account]
 remove_file() {
-    if [ -e "$1" ]; then
-        run rm -f "$1"
+    if [ -e "$1" ] || [ -L "$1" ]; then
+        if [ "${2:-}" = account ] && [ "$exists" -eq 1 ]; then
+            run runuser -u "$account" -- rm -f "$1"
+        else
+            run rm -f "$1"
+        fi
     else
         note "already gone: $1"
     fi
@@ -192,11 +206,11 @@ if [ "$uninstall" -eq 1 ]; then
 
     step "remove the user units and their configuration from $account_home/.config"
     for unit in $units $portal_units; do
-        remove_file "$user_units/$unit"
+        remove_file "$user_units/$unit" account
     done
-    remove_file "$desktop_dir/sway.conf"
-    remove_file "$account_home/.config/xdg-desktop-portal-wlr/config"
-    remove_file "$account_home/.config/xdg-desktop-portal/sway-portals.conf"
+    remove_file "$desktop_dir/sway.conf" account
+    remove_file "$account_home/.config/xdg-desktop-portal-wlr/config" account
+    remove_file "$account_home/.config/xdg-desktop-portal/sway-portals.conf" account
     if [ "$exists" -eq 1 ] && [ -d "/run/user/$uid" ]; then
         as_account systemctl --user daemon-reload
     fi
@@ -255,18 +269,18 @@ if [ "$dry" -eq 0 ]; then
 fi
 
 step "the user units in $user_units"
-install_dir 0700 "$account" "$account_home/.config" "$account_home/.config/systemd" "$user_units" "$desktop_dir"
+install_dirs "$account_home/.config" "$account_home/.config/systemd" "$user_units" "$desktop_dir"
 for unit in $units; do
-    install_file "$here/user/$unit" "$user_units/$unit" 0644 "$account" "$account"
+    install_file "$here/user/$unit" "$user_units/$unit" 0644 "$account"
 done
-install_file "$here/user/sway.conf" "$desktop_dir/sway.conf" 0644 "$account" "$account"
+install_file "$here/user/sway.conf" "$desktop_dir/sway.conf" 0644 "$account"
 if [ "$portal" -eq 1 ]; then
-    install_dir 0700 "$account" "$account_home/.config/xdg-desktop-portal-wlr" "$account_home/.config/xdg-desktop-portal"
+    install_dirs "$account_home/.config/xdg-desktop-portal-wlr" "$account_home/.config/xdg-desktop-portal"
     for unit in $portal_units; do
-        install_file "$here/user/$unit" "$user_units/$unit" 0644 "$account" "$account"
+        install_file "$here/user/$unit" "$user_units/$unit" 0644 "$account"
     done
-    install_file "$here/portal/xdg-desktop-portal-wlr.conf" "$account_home/.config/xdg-desktop-portal-wlr/config" 0644 "$account" "$account"
-    install_file "$here/portal/sway-portals.conf" "$account_home/.config/xdg-desktop-portal/sway-portals.conf" 0644 "$account" "$account"
+    install_file "$here/portal/xdg-desktop-portal-wlr.conf" "$account_home/.config/xdg-desktop-portal-wlr/config" 0644 "$account"
+    install_file "$here/portal/sway-portals.conf" "$account_home/.config/xdg-desktop-portal/sway-portals.conf" 0644 "$account"
 fi
 
 step "the user manager reads the units, and bohio-desktop.target is enabled and started"
@@ -301,11 +315,11 @@ if [ -f "$config" ]; then
     fi
 else
     run install -d -m 0755 "$(dirname "$config")"
-    install_file "$here/own-desktop.cfg" "$config" 0644 root root
+    install_file "$here/own-desktop.cfg" "$config" 0644 root
 fi
 
 step "the system unit $system_dir/bohio.service, enabled and started"
-install_file "$here/bohio.service" "$system_dir/bohio.service" 0644 root root
+install_file "$here/bohio.service" "$system_dir/bohio.service" 0644 root
 run systemctl daemon-reload
 run systemctl enable --now bohio.service
 
