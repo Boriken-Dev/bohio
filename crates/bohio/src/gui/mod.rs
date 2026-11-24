@@ -54,6 +54,8 @@ mod stream {
     }
 }
 
+#[cfg(target_os = "macos")]
+pub use crate::platform::gui::{MacosDesktop, MacosSettings};
 #[cfg(windows)]
 pub use crate::platform::gui::{WindowsDesktop, WindowsSettings};
 #[cfg(target_os = "linux")]

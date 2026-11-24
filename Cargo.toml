@@ -109,6 +109,15 @@ x11rb = { version = "0.13", default-features = false, features = ["randr", "xtes
 xkeysym = "0.2"
 # The system bus for logind's `LockedHint` (`platform/gui/logind.rs`), driven with `zbus::block_on` on the backend's own thread.
 zbus = { version = "6", default-features = false, features = ["proxy", "default-rt"] }
+# The macOS desktop (`platform/gui/macos.rs`): ScreenCaptureKit and Core Graphics through the objc2 bindings (the `screencapturekit` crate needs a Swift bridge that builds only on the macOS 26 SDK), with `enigo` for CGEvent input and `arboard` for the pasteboard.
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSError", "NSString", "NSObject"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFBase", "CFDictionary", "CFNumber", "CFString", "CFData"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "libc", "CGDirectDisplay", "CGDisplayConfiguration", "CGError", "CGEvent", "CGImage", "CGDataProvider", "CGSession", "CGWindow"] }
+objc2-screen-capture-kit = { version = "0.3", default-features = false, features = ["std", "block2", "SCScreenshotManager", "SCShareableContent", "SCStream", "objc2-core-foundation", "objc2-core-graphics", "objc2-core-media"] }
+enigo = { version = "0.6", default-features = false }
+arboard = { version = "3.7", default-features = false }
 # Tests: scratch directories that remove themselves.
 tempfile = "3"
 # The provider kinds (guatiao): terminal, desktop, power and media sources. The family pins one guatiao revision.

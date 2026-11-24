@@ -90,6 +90,14 @@ pub struct NativeSettings {
     /// 1. Default `1000`.
     #[map(default = 1_000)]
     pub x11_max_repeat: u64,
+    /// How long the macOS desktop waits for ScreenCaptureKit to answer one capture (`10s`; not `0s`: it would never
+    /// capture). Default `10s`.
+    #[map(default = String::from("10s"))]
+    pub macos_capture_wait: String,
+    /// The most clicks of one button event and wheel notches of one scroll event on macOS; more is `bad_request`. At
+    /// least 1. Default `1000`.
+    #[map(default = 1_000)]
+    pub macos_max_repeat: u64,
 }
 
 impl Default for NativeSettings {
@@ -112,6 +120,8 @@ impl Default for NativeSettings {
             x11_clipboard_wait: "500ms".to_owned(),
             x11_selection: "CLIPBOARD".to_owned(),
             x11_max_repeat: 1_000,
+            macos_capture_wait: "10s".to_owned(),
+            macos_max_repeat: 1_000,
         }
     }
 }
@@ -152,6 +162,16 @@ impl NativeSettings {
         if self.x11_max_repeat == 0 {
             return Err(refuse("x11_max_repeat is 0: no click or notch is allowed"));
         }
+        if Span::parse(&self.macos_capture_wait).is_none_or(|span| span.0.is_zero()) {
+            return Err(refuse(
+                "macos_capture_wait is a time such as 10s, and not zero: a capture would never be waited for",
+            ));
+        }
+        if self.macos_max_repeat == 0 {
+            return Err(refuse(
+                "macos_max_repeat is 0: no click or notch is allowed",
+            ));
+        }
         if self.x11_selection.is_empty() {
             return Err(refuse(
                 "x11_selection is empty: name a selection such as CLIPBOARD",
@@ -181,6 +201,16 @@ impl NativeSettings {
             clipboard_max_bytes: usize::try_from(self.clipboard_max_bytes).unwrap_or(usize::MAX),
             selection: self.x11_selection.clone(),
             max_repeat: u32::try_from(self.x11_max_repeat).unwrap_or(u32::MAX),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn macos(&self) -> crate::gui::MacosSettings {
+        crate::gui::MacosSettings {
+            capture_wait: Span::parse(&self.macos_capture_wait)
+                .map_or(Duration::ZERO, |span| span.0),
+            clipboard_max_bytes: usize::try_from(self.clipboard_max_bytes).unwrap_or(usize::MAX),
+            max_repeat: u32::try_from(self.macos_max_repeat).unwrap_or(u32::MAX),
         }
     }
 
@@ -623,7 +653,18 @@ impl Native {
         })))
     }
 
-    #[cfg(not(any(windows, target_os = "linux")))]
+    /// The platform's desktop, made once: its event source outlives one stream.
+    #[cfg(target_os = "macos")]
+    fn platform_desktop(&self) -> Option<Arc<DesktopOf>> {
+        let mut made = lock(&self.desktop);
+        Some(Arc::clone(made.get_or_insert_with(|| {
+            Arc::new(DesktopOf::new(Arc::new(crate::gui::MacosDesktop::new(
+                self.settings.macos(),
+            ))))
+        })))
+    }
+
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     fn platform_desktop(&self) -> Option<Arc<DesktopOf>> {
         let _ = &self.desktop;
         None

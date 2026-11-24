@@ -54,6 +54,24 @@ const ALLOWED: &[Allowed] = &[
         miri: "not reachable: every unsafe call is a COM or GDI call on the display adapter, which                Miri does not run; covered by tests/gui_windows.rs, which captures a probe window's                own region through DXGI and through GDI and compares it with the pixels it painted",
     },
     Allowed {
+        file: "crates/bohio/src/platform/gui/macos.rs",
+        reason: "the macOS desktop's capture and display list: ScreenCaptureKit's SCShareableContent, \
+                 SCContentFilter, SCStreamConfiguration and SCScreenshotManager (Objective-C methods \
+                 that objc2-screen-capture-kit declares as unsafe functions, called with completion \
+                 blocks), the pixels of a CGImage read through its data provider, the session \
+                 dictionary's values, and the active display list (a buffer the system fills). Ruled \
+                 out: the screencapturekit crate, the one safe binding, builds a Swift bridge and its \
+                 apple-metal dependency's bridge needs the macOS 26 SDK (measured: every version from \
+                 6.1.0 to 11.1.2 fails to build on Xcode 16.4 with `cannot find MTLTensorDescriptor`), \
+                 so a macOS 15 runner or box cannot build the node; xcap calls CGWindowListCreateImage, \
+                 deprecated since macOS 14; enigo and arboard capture nothing. Input and the pasteboard \
+                 are safe code over enigo and arboard",
+        miri: "not reachable: every unsafe call is an Objective-C or Core Graphics call, which Miri does \
+               not run; the display list, the key table, the session's meaning, the pixel layout and \
+               the point arithmetic are pure and tested on every platform (platform/gui/mac_rules.rs), \
+               and the calls are covered by tests/gui_macos.rs on macOS",
+    },
+    Allowed {
         file: "crates/bohio/src/platform/winfs.rs",
         reason: "Windows filesystem calls on a name inside a directory handle (NtCreateFile with \
                  RootDirectory and FILE_OPEN_REPARSE_POINT, then SetFileInformationByHandle with \
