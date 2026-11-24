@@ -2256,7 +2256,11 @@ impl NodeConfig {
         {
             return Err(invalid("providers.paths", "holds an empty path"));
         }
-        if let Err((key, message)) = crate::access::check(&self.source, &self.access) {
+        // A provider a library offers is known only once the library is mapped, which `Node::new` does before it builds the
+        // sources and refuses then, naming the same key: reading a configuration maps nothing.
+        if self.providers.paths.is_empty()
+            && let Err((key, message)) = crate::access::check(&self.source, &self.access)
+        {
             return Err(invalid(&key, &message));
         }
         if link.max_message <= self.gui.chunk_size {

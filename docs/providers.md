@@ -121,6 +121,10 @@ path = "/dev/ttyUSB0"
   and the kinds it declares), and a file that is not a guatiao library, or declares no Bohío kind, is **skipped** and never mapped.
   Paths are read once, at start; a reload of `bohio.cfg` builds sources again from the libraries already mapped and does not look
   at the paths.
+- **Reading the file maps nothing.** A `[source.<name>]` whose provider a library offers is known only once the library is
+  mapped, so with `[providers] paths` set `bohio config check` and the other readers of `bohio.cfg` do not check the `[source.*]`
+  and `[access]` tables; the node maps the libraries first and refuses a name or a setting nobody offers when it starts, naming
+  the same key (`source.<name>.provider`).
 - **One failure stops nothing else.** Each library is loaded alone. The node logs one line for each at start and
   `bohio providers` (on the node's local endpoint) prints the same: `loaded`, `skipped` or `failed`, the library's path, why or
   what it offers, and its SHA-256 (`bohio providers --json` for a script). A stale copy of a library beside a newer one

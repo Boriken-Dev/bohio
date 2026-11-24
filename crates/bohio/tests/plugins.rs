@@ -318,6 +318,24 @@ fn an_empty_path_and_a_layer_above_the_lowest_weakening_the_check_are_refused() 
     );
 }
 
+#[test]
+fn a_source_naming_a_provider_no_library_offers_is_refused_when_the_node_is_built() {
+    let dir = private_directory();
+    let text = format!(
+        "[providers]\npaths = [\"{}\"]\n[source.console]\nprovider = \"nothing_offers_this\"\n",
+        dir.path().display().to_string().replace('\\', "/")
+    );
+    // Reading the file maps nothing, so it cannot tell; building the node, which maps the libraries first, can.
+    let config = Config::from_toml(&text, "bohio.cfg").expect("the file reads");
+    let Err(error) = build(config.node()) else {
+        panic!("no provider of that name exists");
+    };
+    assert!(
+        error.to_string().contains("source.console.provider"),
+        "{error}"
+    );
+}
+
 #[cfg(all(unix, not(feature = "serial")))]
 mod console {
     use super::*;
