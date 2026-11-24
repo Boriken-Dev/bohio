@@ -85,12 +85,13 @@ impl Default for Report {
 
 /// Why this build cannot map a library, or `None` when it can.
 ///
-/// A statically linked musl executable has no dynamic loader to map one with.
+/// A statically linked musl executable has no dynamic loader to map one with (measured: `dlopen` answers `Dynamic loading not
+/// supported`).
 #[must_use]
 pub const fn unsupported() -> Option<&'static str> {
-    if cfg!(all(target_os = "linux", target_env = "musl")) {
+    if cfg!(all(target_env = "musl", target_feature = "crt-static")) {
         Some(
-            "this build is statically linked against musl, which cannot map a library: use the glibc archive to load providers",
+            "this build is statically linked against musl, whose loader answers `Dynamic loading not supported`: use a glibc build to load providers",
         )
     } else {
         None

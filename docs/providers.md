@@ -138,9 +138,11 @@ path = "/dev/ttyUSB0"
 - **What a library may do.** It runs as the node's own account, inside the node's process, with no sandbox: a library is the
   node's code. Loading is unpinned, so nothing says the file is the one you meant; `bohio providers` prints each digest so that
   you can compare it. `docs/security.md` has what that costs.
-- **Which builds can load.** The glibc and macOS and Windows builds map libraries. The static musl archives (Linux `x86_64` and
-  `aarch64`) cannot: a static executable has no dynamic loader, so `[providers] paths` there is a configuration error that says
-  so (`providers.paths`). Use a glibc build, or link the provider in.
+- **Which builds can load.** The glibc, macOS and Windows builds map libraries (measured on Windows ARM64 and Linux aarch64
+  glibc). A statically linked musl build, which is what the Linux release archives are, cannot: its `dlopen` answers `Dynamic
+  loading not supported` (measured with a static `aarch64-unknown-linux-musl` program against a gnu and a musl library), so
+  `[providers] paths` there is a configuration error that says so (`providers.paths`). Use a glibc build, or link the provider
+  in. A musl build that is not static was not measured and is not refused.
 - **Making one.** `providers/terminal/serial/plugin/` is a provider as a library in one line,
   `bohio_api::guatiao::providers!(bohio_provider_serial::Serial);` in a crate of type `cdylib` that depends on nothing else
   (the entry symbols it writes are `no_mangle`, so it does not take the workspace's `unsafe_code = "forbid"`). A node built with

@@ -175,7 +175,7 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[power] enabled`, `action_timeout`, `max_streams` | `false`, `60s`, `4` | whether power is served (a peer needs `power` too), how long an action may take before `timeout`, concurrent requests; not zero / at least 1 |
 | `[media] enabled`, `action_timeout`, `max_streams` | `false`, `60s`, `4` | as `[power]`, for virtual media (a peer needs `media`) |
 | `[secrets] max_bytes` | `65536` | the most bytes one secret reference may read; at least 1 |
-| `[providers] paths` | empty | provider libraries mapped at start: files, or directories of `.so`/`.dll`/`.dylib`; only a library that declares a Bohío kind (`bohio_terminal`, `bohio_desktop`, `bohio_power`, `bohio_media`) is mapped. Empty: nothing is read or loaded. A static musl build refuses a non-empty list (`providers.paths`); an empty path is refused |
+| `[providers] paths` | empty | provider libraries mapped at start: files, or directories of `.so`/`.dll`/`.dylib`; only a library that declares a Bohío kind (`bohio_terminal`, `bohio_desktop`, `bohio_power`, `bohio_media`) is mapped. Empty: nothing is read or loaded. A statically linked musl build refuses a non-empty list (`providers.paths`); an empty path is refused |
 | `[providers] check_access` | `true` | refuse a library, or the directory holding it, that another account owns or may write; `false` loads it and logs `non-default:`; only the lowest layer sets it |
 | `[sessions] queue_frames` | `16` | frames of a program's output that may wait before the session takes them; at least 1 |
 | `[shell] enabled` | `true` | whether shell sessions are opened |
