@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-# From Boriken-Dev/agent-overlays, overlays/release/repo/tools/build.py, at commit 975cac17c5c7b464125d0adf0330df1bb7e6eb35.
+# From Boriken-Dev/agent-overlays, overlays/release/repo/tools/build.py, at commit 0b362f0b558139264fe287f4308abcbf1a4ab017.
 # Copyright (c) 2026 Jose A.
 """One build tool for a repository: vendored crates, scans, SDK lock, offline and release builds.
 
@@ -14,6 +14,7 @@ configuration leaves out is off. Standard library only, Python 3.11.0 or later.
     build.py sdk ...              the SDK lock: lint, agree with the repository, install
     build.py offline plan         what an offline build of the repository needs, as JSON
     build.py release ...          release binaries, a universal macOS binary, container images
+    build.py container ...        build or test in a container from the deps branch, with .env overrides
     build.py flutter ...          plugin junctions and the pinned Flutter checkout
 
 Exit codes: 0 ok, 1 problems (one line each on stderr, prefixed `build.py:`), 2 usage.
@@ -33,6 +34,7 @@ import os
 import platform
 import posixpath
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -404,6 +406,8 @@ def surface(parser: argparse.ArgumentParser, depth: int = 0) -> list[str]:
 def help_command(ctx: Ctx, args: argparse.Namespace) -> int:
     if args.topic == "config":
         print(config_help())
+    elif args.topic == "env":
+        print(env_help())
     else:
         print(build_parser().format_help())
         print("\n".join(surface(build_parser())))
@@ -411,8 +415,8 @@ def help_command(ctx: Ctx, args: argparse.Namespace) -> int:
 
 
 def add_help(sub: argparse._SubParsersAction) -> None:
-    parser = sub.add_parser("help", help="the command surface, or `help config` for build.cfg")
-    parser.add_argument("topic", nargs="?", choices=("config",), help="config: every build.cfg key with its default")
+    parser = sub.add_parser("help", help="the command surface, `help config` for build.cfg, `help env` for the .env keys")
+    parser.add_argument("topic", nargs="?", choices=("config", "env"), help="config: every build.cfg key with its default; env: every key of .env, .env.local and --env")
     parser.set_defaults(run=help_command)
 
 
@@ -1582,6 +1586,19 @@ def ref_problems(ctx: Ctx, lock: Lock, commit: str) -> tuple[list[str], list[str
     return found, notes
 
 
+def dir_problems(ctx: Ctx, deps: Path, lock: Lock, deep: bool = True) -> tuple[list[str], list[str]]:
+    """What keeps a deps checkout from covering the lock: (problems, notes)."""
+    found = problems(lock, read_dir(deps / "crates", deep, Allow(ctx.cfg.deps.allow)), deep)
+    view = DirView(deps)
+    more, notes = manifest_problems(view.read(MANIFEST), lock)
+    found += more
+    for check in DEPS_CHECKS:
+        extra, extra_notes = check(ctx, view, lock)
+        found += extra
+        notes += extra_notes
+    return found, notes
+
+
 def lock_path_of(ctx: Ctx, args: argparse.Namespace) -> Path:
     ctx.pubspec_lock = getattr(args, "pubspec_lock", None)
     ctx.quick = bool(getattr(args, "quick", False))
@@ -1607,17 +1624,7 @@ def deps_check(ctx: Ctx, args: argparse.Namespace) -> int:
             raise Usage("--quick reads a checkout's metadata; --ref reads every file of a commit")
         found, notes = ref_problems(ctx, lock, args.ref)
     else:
-        deps = find_deps(ctx, args.deps)
-        allow = Allow(ctx.cfg.deps.allow)
-        deep = not args.quick
-        found = problems(lock, read_dir(deps / "crates", deep, allow), deep)
-        view = DirView(deps)
-        more, notes = manifest_problems(view.read(MANIFEST), lock)
-        found += more
-        for check in DEPS_CHECKS:
-            extra, extra_notes = check(ctx, view, lock)
-            found += extra
-            notes += extra_notes
+        found, notes = dir_problems(ctx, find_deps(ctx, args.deps), lock, not args.quick)
     for note in notes:
         print(f"note: {note}")
     if found:
@@ -3276,6 +3283,7 @@ SCHEMA["release"] = Key(
                 "context": Key("str", ".", "The build context, relative to the repository."),
                 "name": Key("str", "", "The image name; empty: the release name."),
                 "tool": Key("str", "", "`podman` or `docker`; empty: podman when found, else docker."),
+                "from_deps": Key("bool", False, "Build as `container build` does (the deps branch as a build context, the .env keys), for a Containerfile made from the template."),
                 "archs": Key("map", {}, "The architectures (amd64, arm64) and the runner that builds each."),
             },
         ),
@@ -3463,7 +3471,14 @@ def release_image(ctx: Ctx, args: argparse.Namespace) -> int:
     if tool not in ("podman", "docker"):
         raise Problem("neither podman nor docker is installed")
     tag = f"{image.name or release_name(ctx)}:{release_version(ctx)}-{args.arch}"
-    run_tool([tool, "build", "--platform", f"linux/{args.arch}", "-f", str(ctx.root / image.file), "-t", tag, str(ctx.root / image.context)])
+    if image.from_deps:
+        plan = container_plan(ctx, argparse.Namespace(env=[], tag=tag), "", os.environ, fetch=True, platform=f"linux/{args.arch}")
+        tool = plan.engine
+        if not shutil.which(tool):
+            raise Problem(f"{tool} is not installed")
+        run_tool(plan.command, {**os.environ, **plan.secrets}, ctx.root)
+    else:
+        run_tool([tool, "build", "--platform", f"linux/{args.arch}", "-f", str(ctx.root / image.file), "-t", tag, str(ctx.root / image.context)])
     dist = ctx.root / cfg.dist
     dist.mkdir(parents=True, exist_ok=True)
     out = dist / f"{release_name(ctx)}-{release_version(ctx)}-image-{args.arch}.tar"
@@ -3537,6 +3552,394 @@ def add_release(sub: argparse._SubParsersAction) -> None:
 
 
 SECTIONS.append(add_release)
+
+# --- container: builds from the deps branch, with .env overrides ---------------------------------------------------
+
+ENV_FILES = (".env", ".env.local")
+PINNED_IMAGE = re.compile(r"@sha256:[0-9a-f]{64}$")
+CREDENTIALS = re.compile(r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)[^/@\s]*@")
+
+
+class EnvKey(NamedTuple):
+    """One key of .env, .env.local, the process environment and --env.
+
+    `kind` is url, str, image, toolchain, version, sha256, flag, engine, dir or file. A key that is `by_name` goes to
+    the engine as `--build-arg KEY` with its value in the engine's environment, so the value is on no command line;
+    so does any URL value that carries credentials. A key that is not `arg` is read by build.py alone.
+    """
+
+    kind: str
+    doc: str
+    by_name: bool = False
+    arg: bool = True
+
+
+ENV_KEYS: dict[str, EnvKey] = {
+    "RUSTUP_DIST_SERVER": EnvKey("url", "Where rustup downloads toolchains from (rustup's own variable)."),
+    "RUSTUP_UPDATE_ROOT": EnvKey("url", "Where rustup downloads its own updates from (rustup's own variable)."),
+    "RUSTUP_INIT_BASE_URL": EnvKey("url", "Where rustup-init is fetched from, as BASE/VERSION/TRIPLE/rustup-init. The lock's hash is still checked."),
+    "APT_MIRROR": EnvKey("url", "The package archive the SDK stage reads when it must install python3 (Debian's main archive only)."),
+    "BASE_IMAGE": EnvKey("image", "The SDK stage's base image. Needs an @sha256: digest unless ALLOW_UNPINNED_IMAGE=1."),
+    "RUNTIME_IMAGE": EnvKey("image", "The runtime stage's base image. Needs an @sha256: digest unless ALLOW_UNPINNED_IMAGE=1."),
+    "ALLOW_UNPINNED_IMAGE": EnvKey("flag", "1 lets BASE_IMAGE and RUNTIME_IMAGE name an image without a digest; the run reports it.", arg=False),
+    "RUST_VERSION": EnvKey("toolchain", "The toolchain the SDK stage installs: an exact version or nightly-YYYY-MM-DD."),
+    "RUSTUP_VERSION": EnvKey("version", "The rustup-init version. Given with both RUSTUP_INIT_SHA256_* keys."),
+    "RUSTUP_INIT_SHA256_X86_64": EnvKey("sha256", "The hash of the x86_64 rustup-init at RUSTUP_VERSION."),
+    "RUSTUP_INIT_SHA256_AARCH64": EnvKey("sha256", "The hash of the aarch64 rustup-init at RUSTUP_VERSION."),
+    "DEPS_DIR": EnvKey("dir", "A local checkout of the deps branch, used as it is (and checked against Cargo.lock) instead of fetching one.", arg=False),
+    "DEPS_GIT_URL": EnvKey("str", "Where the deps commit is fetched from; default: the URL of the lock's deps row.", arg=False),
+    "DEPS_REF": EnvKey("str", "A deps commit or ref other than the lock's; it is checked against Cargo.lock and reported.", arg=False),
+    "HTTP_PROXY": EnvKey("url", "A proxy for the SDK stage's downloads (build argument only; the offline stages use none).", by_name=True),
+    "HTTPS_PROXY": EnvKey("url", "A proxy for the SDK stage's https downloads.", by_name=True),
+    "NO_PROXY": EnvKey("str", "Hosts the SDK stage reaches without the proxy."),
+    "EXTRA_CA_CERT": EnvKey("file", "A PEM file added to the SDK stage's trust store, never to the runtime image."),
+    "CONTAINER_ENGINE": EnvKey("engine", "podman or docker; default: [release.image] tool, else podman when found, else docker.", arg=False),
+    "CONTAINER_PLATFORM": EnvKey("str", "The engine's --platform, for example linux/arm64.", arg=False),
+}
+
+
+def hide_credentials(text: str) -> str:
+    """The text with the user and password of every URL in it replaced."""
+    return CREDENTIALS.sub(r"\g<scheme>***@", text)
+
+
+def scrub(text: str, url: str) -> str:
+    """The text without the user and password of the URL, also where git quotes them without the scheme."""
+    found = CREDENTIALS.match(url)
+    return text.replace(url[len(found["scheme"]) : found.end() - 1] + "@", "***@") if found else text
+
+
+def parse_env_text(text: str, name: str) -> tuple[list[tuple[int, str, str]], list[str]]:
+    """The (line, key, value) of an env file and one message for each line that is not KEY=VALUE.
+
+    No interpolation: a value is the text after `=`, without a matching pair of quotes or a ` #` comment.
+    """
+    rows: list[tuple[int, str, str]] = []
+    errors: list[str] = []
+    for number, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, eq, value = line.removeprefix("export ").lstrip().partition("=")
+        key, value = key.strip(), value.strip()
+        if not eq or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            errors.append(f"{name}:{number}: not KEY=VALUE")
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        else:
+            value = re.sub(r"\s+#.*$", "", value)
+        rows.append((number, key, value))
+    return rows, errors
+
+
+def read_env(ctx: Ctx, environ: Any, flags: list[str]) -> dict[str, tuple[str, str]]:
+    """{key: (value, where it came from)}: .env, then .env.local, then the process environment, then --env.
+
+    A later layer wins. An unknown key in a file or a flag is refused, naming it; the environment is
+    read for the known keys only. An empty value clears the key, which leaves the default.
+    """
+    values: dict[str, tuple[str, str]] = {}
+    errors: list[str] = []
+    for name in ENV_FILES:
+        path = ctx.root / name
+        if not path.is_file():
+            continue
+        rows, bad = parse_env_text(path.read_text(encoding="utf-8"), name)
+        errors += bad
+        for number, key, value in rows:
+            if key in ENV_KEYS:
+                values[key] = (value, name)
+            else:
+                errors.append(f"{name}:{number}: unknown key {key}; `build.py help env` lists the keys")
+    for key in ENV_KEYS:
+        if key in environ:
+            values[key] = (environ[key], "environment")
+    for flag in flags:
+        key, eq, value = flag.partition("=")
+        if eq and key in ENV_KEYS:
+            values[key] = (value, "--env")
+        elif eq:
+            errors.append(f"--env {key}: unknown key; `build.py help env` lists the keys")
+        else:
+            errors.append(f"--env {flag}: not KEY=VALUE")
+    if errors:
+        raise Problem("\n".join(errors))
+    return {key: pair for key, pair in values.items() if pair[0] != ""}
+
+
+def env_help() -> str:
+    lines = []
+    for key, spec in ENV_KEYS.items():
+        how = "build argument" if spec.arg else "read by build.py"
+        lines.append(f"  {key}  ({spec.kind}, {how}{', passed by name' if spec.by_name else ''})  {spec.doc}")
+    head = f"Keys of {', '.join(ENV_FILES)}, the process environment and --env KEY=VALUE; a later one wins, an empty value clears a key."
+    return "\n".join([head, *lines])
+
+
+def env_problems(values: dict[str, tuple[str, str]]) -> list[str]:
+    """What is wrong with the values themselves, each line naming the key and where it was set."""
+    found: list[str] = []
+    allowed = values.get("ALLOW_UNPINNED_IMAGE", ("", ""))[0] == "1"
+    for key, (value, source) in values.items():
+        kind, where = ENV_KEYS[key].kind, f"{key} ({source})"
+        if kind == "url" and "://" not in value:
+            found.append(f"{where}: not a URL")
+        elif kind == "sha256" and not HEX64.match(value):
+            found.append(f"{where}: not 64 lowercase hex characters")
+        elif kind == "version" and not re.fullmatch(r"\d+\.\d+\.\d+", value):
+            found.append(f"{where}: not an exact version (MAJOR.MINOR.PATCH): {value}")
+        elif kind == "toolchain" and not re.fullmatch(r"\d+\.\d+\.\d+|nightly-\d{4}-\d{2}-\d{2}", value):
+            found.append(f"{where}: not an exact version or nightly-YYYY-MM-DD: {value}")
+        elif kind == "flag" and value != "1":
+            found.append(f"{where}: must be 1, or left out")
+        elif kind == "engine" and value not in ("podman", "docker"):
+            found.append(f"{where}: must be podman or docker: {value}")
+        elif kind == "dir" and not Path(value).is_dir():
+            found.append(f"{where}: {value} is not a directory")
+        elif kind == "file" and not Path(value).is_file():
+            found.append(f"{where}: {value} is not a file")
+        elif kind == "image" and not PINNED_IMAGE.search(value) and not allowed:
+            found.append(f"{where}: {hide_credentials(value)} has no @sha256: digest; pin it, or set ALLOW_UNPINNED_IMAGE=1 and accept that the build is not reproducible")
+    if "DEPS_DIR" in values:
+        found += [f"DEPS_DIR and {other} are exclusive" for other in ("DEPS_GIT_URL", "DEPS_REF") if other in values]
+    versions = {"RUSTUP_VERSION", "RUSTUP_INIT_SHA256_X86_64", "RUSTUP_INIT_SHA256_AARCH64"}
+    given = versions & set(values)
+    if given and given != versions:
+        found.append(f"{', '.join(sorted(given))} given without {', '.join(sorted(versions - given))}: a rustup version and both its hashes go together")
+    return found
+
+
+SCHEMA["container"] = Key(
+    "table",
+    None,
+    "`container build|test`: a Containerfile that builds from the deps branch, with .env overrides.",
+    {
+        "file": Key("str", "", "The Containerfile, relative to the repository; empty: [release.image] file."),
+        "context": Key("str", "", "The build context, relative to the repository; empty: [release.image] context."),
+        "name": Key("str", "", "The image name; empty: [release.image] name, else the release name."),
+        "test_stage": Key("str", "test", "The stage `container test` builds."),
+        "deps_item": Key("str", "deps crates", "The lock row whose version is the deps commit and whose url is where it is fetched from."),
+        "rust_item": Key("str", "core rust", "The lock row whose first version is the default RUST_VERSION."),
+        "rustup_item": Key("str", "core rustup-init", "The lock rows that are the default RUSTUP_VERSION and, for linux-x64 and linux-arm64, the default hashes."),
+        "base_item": Key("str", "", "The lock row (url docker://NAME, a tag, a digest) of the SDK stage's base image: the default BASE_IMAGE; empty: not known."),
+        "runtime_item": Key("str", "", "The lock row of the runtime stage's base image: the default RUNTIME_IMAGE; empty: not known."),
+        "work_dir": Key("str", "target/container", "Where the deps clone and the empty CA directory go, relative to the repository."),
+    },
+)
+
+
+def lock_rows(items: list[Item], spec: str, plat: str = "") -> list[Item]:
+    group, name = split_item(spec)
+    return [i for i in items if i.group == group and i.name == name and (not plat or i.platform in (plat, "any"))]
+
+
+def container_defaults(ctx: Ctx, items: list[Item]) -> dict[str, str]:
+    """What each key's value is when nothing sets it, from the lock; keys the lock does not decide are left out."""
+    cfg = ctx.cfg.container
+    defaults: dict[str, str] = {}
+    rust = lock_rows(items, cfg.rust_item)
+    if rust:
+        defaults["RUST_VERSION"] = rust[0].version
+    rustup = lock_rows(items, cfg.rustup_item)
+    if rustup:
+        defaults["RUSTUP_VERSION"] = rustup[0].version
+    for key, plat in (("RUSTUP_INIT_SHA256_X86_64", "linux-x64"), ("RUSTUP_INIT_SHA256_AARCH64", "linux-arm64")):
+        rows = lock_rows(items, cfg.rustup_item, plat)
+        if rows:
+            defaults[key] = rows[0].sha256
+    for key, spec in (("BASE_IMAGE", cfg.base_item), ("RUNTIME_IMAGE", cfg.runtime_item)):
+        rows = lock_rows(items, spec) if spec else []
+        if rows and rows[0].url.startswith("docker://") and rows[0].sha256 != "-":
+            defaults[key] = f"{rows[0].url.removeprefix('docker://')}:{rows[0].version}@sha256:{rows[0].sha256}"
+    deps = lock_rows(items, cfg.deps_item)
+    if deps and deps[0].url != "-":
+        defaults["DEPS_GIT_URL"] = deps[0].url
+    return defaults
+
+
+def container_engine(ctx: Ctx, values: dict[str, tuple[str, str]]) -> str:
+    if "CONTAINER_ENGINE" in values:
+        return values["CONTAINER_ENGINE"][0]
+    return ctx.cfg.release.image.tool or next((t for t in ("podman", "docker") if shutil.which(t)), "podman")
+
+
+def head_of(path: Path) -> str:
+    return run_git("rev-parse", "HEAD", cwd=path) if git_ok("rev-parse", "--verify", "-q", "HEAD", cwd=path) else "unknown"
+
+
+def container_deps(ctx: Ctx, values: dict[str, tuple[str, str]], items: list[Item], fetch: bool, notes: list[str]) -> tuple[Path, str]:
+    """(the deps checkout the build copies crates/ from, its commit).
+
+    DEPS_DIR is used as it is. Otherwise the commit of the lock's deps row (or DEPS_REF) is fetched from that row's URL
+    (or DEPS_GIT_URL) into the work directory; `fetch` false only says where. A checkout other than the lock's commit is
+    read file by file against Cargo.lock; the lock's own commit is read by metadata, as `sdk check` covers it.
+    """
+    cfg = ctx.cfg.container
+    lock = read_lock(ctx.root / ctx.cfg.deps.cargo_lock)
+    if "DEPS_DIR" in values:
+        deps = Path(values["DEPS_DIR"][0]).resolve()
+        found, extra = dir_problems(ctx, deps, lock, True)
+        notes += extra
+        if found:
+            raise Problem("\n".join(f"DEPS_DIR ({values['DEPS_DIR'][1]}): {line}" for line in found))
+        return deps, head_of(deps)
+    rows = lock_rows(items, cfg.deps_item)
+    if len(rows) != 1:
+        raise Problem(f"{ctx.cfg.sdk.lock}: expected one `{cfg.deps_item}` row to name the deps commit, found {len(rows)}; or set DEPS_DIR")
+    url = values.get("DEPS_GIT_URL", (rows[0].url, ""))[0]
+    ref = values.get("DEPS_REF", (rows[0].version, ""))[0]
+    own = "DEPS_REF" not in values and "DEPS_GIT_URL" not in values
+    key = sha256((url + "\0" + ref).encode())[:12]
+    deps = ctx.root / cfg.work_dir / f"deps-{key}"
+    if not fetch:
+        if not own and HEX40.match(ref) and has_commit(ctx.root, ref):
+            found, extra = ref_problems(ctx, lock, ref)
+            notes += extra
+            if found:
+                raise Problem("\n".join(f"DEPS_REF: {line}" for line in found))
+        else:
+            notes.append(f"deps {ref[:12]} is fetched from {hide_credentials(url)} when the build runs; --print does not fetch it")
+        return deps, ref
+    deps.mkdir(parents=True, exist_ok=True)
+    try:
+        if not (deps / ".git").exists():
+            run_git("init", "-q", cwd=deps)
+        run_git("fetch", "-q", "--depth", "1", url, ref, cwd=deps)
+        run_git("-c", "core.autocrlf=false", "checkout", "-q", "--detach", "FETCH_HEAD", cwd=deps)
+    except Problem as problem:
+        raise Problem(hide_credentials(scrub(str(problem), url))) from None
+    commit = head_of(deps)
+    if HEX40.match(ref) and commit != ref:
+        raise Problem(f"{hide_credentials(url)}: fetching {ref} gave {commit}")
+    found, extra = dir_problems(ctx, deps, lock, not own)
+    notes += extra
+    if found:
+        raise Problem("\n".join(f"deps at {commit[:12]}: {line}" for line in found))
+    return deps, commit
+
+
+class ContainerPlan(NamedTuple):
+    engine: str
+    command: list[str]
+    secrets: dict[str, str]
+    non_default: list[tuple[str, str, str]]
+    deps: Path
+    commit: str
+    notes: list[str]
+
+
+def container_plan(ctx: Ctx, args: argparse.Namespace, stage: str, environ: Any, fetch: bool, platform: str = "") -> ContainerPlan:
+    """The engine command for one build and what is reported about it; `fetch` false runs and writes nothing.
+
+    `platform` is the engine's --platform and wins over CONTAINER_PLATFORM."""
+    cfg, image = ctx.cfg.container, ctx.cfg.release.image
+    file, context = cfg.file or image.file, cfg.context or image.context
+    if not file:
+        raise Problem("[container] file (or [release.image] file) is not set")
+    values = read_env(ctx, environ, args.env or [])
+    found = env_problems(values)
+    if found:
+        raise Problem("\n".join(found))
+    lock_file = ctx.root / ctx.cfg.sdk.lock
+    items = parse_lock_items(lock_file.read_text(encoding="utf-8"), lock_file.name) if lock_file.is_file() else []
+    defaults = container_defaults(ctx, items)
+    notes: list[str] = []
+    deps, commit = container_deps(ctx, values, items, fetch, notes)
+    non_default = [(key, hide_credentials(values[key][0]), values[key][1]) for key in ENV_KEYS if key in values and values[key][0] != defaults.get(key)]
+    for key in ("BASE_IMAGE", "RUNTIME_IMAGE"):
+        if key in values and not PINNED_IMAGE.search(values[key][0]):
+            notes.append(f"{key} has no digest (ALLOW_UNPINNED_IMAGE=1): the build is not reproducible")
+    ca_file = Path(values["EXTRA_CA_CERT"][0]).resolve() if "EXTRA_CA_CERT" in values else None
+    ca_dir = ca_file.parent if ca_file else ctx.root / cfg.work_dir / "ca-empty"
+    if ca_file is None and fetch:
+        ca_dir.mkdir(parents=True, exist_ok=True)
+    build_args: list[str] = []
+    secrets: dict[str, str] = {}
+    for key, spec in ENV_KEYS.items():
+        if key not in values or not spec.arg:
+            continue
+        value = ca_file.name if key == "EXTRA_CA_CERT" and ca_file else values[key][0]
+        if spec.by_name or CREDENTIALS.search(value):
+            build_args += ["--build-arg", key]
+            secrets[key] = value
+        else:
+            build_args += ["--build-arg", f"{key}={value}"]
+    labels = {"build.py.deps-commit": commit}
+    if git_ok("rev-parse", "--verify", "-q", "HEAD", cwd=ctx.root):
+        labels["org.opencontainers.image.revision"] = run_git("rev-parse", "HEAD", cwd=ctx.root)
+    if non_default:
+        labels["build.py.non-default"] = ",".join(key for key, _, _ in non_default)
+    engine = container_engine(ctx, values)
+    name = cfg.name or image.name or release_name(ctx)
+    tag = args.tag or f"{name + '-test' if stage == cfg.test_stage else name}:{release_version(ctx)}"
+    command = [engine, "build", "--file", str(ctx.root / file), *(["--target", stage] if stage else []), "--tag", tag]
+    if platform or "CONTAINER_PLATFORM" in values:
+        command += ["--platform", platform or values["CONTAINER_PLATFORM"][0]]
+    command += ["--build-context", f"deps={deps}", "--build-context", f"ca={ca_dir}", *build_args]
+    for label, text in labels.items():
+        command += ["--label", f"{label}={text}"]
+    command.append(str((ctx.root / context).resolve()))
+    return ContainerPlan(engine, command, secrets, non_default, deps, commit, notes)
+
+
+def container_run(ctx: Ctx, args: argparse.Namespace, stage: str) -> int:
+    plan = container_plan(ctx, args, stage, os.environ, fetch=not args.print)
+    if args.json:
+        report = {
+            "engine": plan.engine,
+            "command": plan.command,
+            "env": sorted(plan.secrets),
+            "non_default": [{"key": k, "value": v, "source": s} for k, v, s in plan.non_default],
+            "deps": {"dir": str(plan.deps), "commit": plan.commit},
+            "notes": plan.notes,
+        }
+        print(json.dumps(report, indent=2))
+    else:
+        for key, value, source in plan.non_default:
+            print(f"non-default: {key}={value} ({source})")
+        if not plan.non_default:
+            print("non-default: none")
+        for note in plan.notes:
+            print(f"note: {note}")
+        print(f"deps: {plan.deps} at {plan.commit}")
+        if args.print:
+            print(f"engine: {plan.engine}; passed by name through the environment: {', '.join(sorted(plan.secrets)) or 'none'}")
+            print(shlex.join(plan.command))
+    if args.print:
+        return 0
+    if not shutil.which(plan.engine):
+        raise Problem(f"{plan.engine} is not installed")
+    run_tool(plan.command, {**os.environ, **plan.secrets}, ctx.root)
+    return 0
+
+
+def container_build(ctx: Ctx, args: argparse.Namespace) -> int:
+    return container_run(ctx, args, args.target or "")
+
+
+def container_test(ctx: Ctx, args: argparse.Namespace) -> int:
+    return container_run(ctx, args, ctx.cfg.container.test_stage)
+
+
+def add_container(sub: argparse._SubParsersAction) -> None:
+    parser = sub.add_parser("container", help="build or test in a container: the deps branch is copied in, the build runs offline")
+    commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
+    for name, run, help_ in (
+        ("build", container_build, "build the Containerfile (or --target STAGE) with the deps branch as the `deps` build context"),
+        ("test", container_test, "build the test stage, which runs the workspace tests offline"),
+    ):
+        command = commands.add_parser(name, help=help_)
+        if name == "build":
+            command.add_argument("--target", metavar="STAGE", help="stop at this stage of the Containerfile (default: the last)")
+        command.add_argument("--tag", metavar="T", help="the image tag (default: NAME:VERSION, NAME-test:VERSION for the test stage)")
+        command.add_argument("--env", action="append", metavar="KEY=VALUE", help="set a key of `help env`; wins over the environment and the .env files")
+        command.add_argument("--print", action="store_true", help="print the effective settings and the engine command; fetch nothing and run nothing")
+        command.add_argument("--json", action="store_true", help="print the settings and the command as JSON")
+        command.set_defaults(run=run)
+
+
+SECTIONS.append(add_container)
 
 # --- the other copied tools: public_api.py and apk.py read their own tables of this file ---------------------------
 
