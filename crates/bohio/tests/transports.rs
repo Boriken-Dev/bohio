@@ -884,17 +884,26 @@ fn tls_accepted(attempt: &Finished) -> bool {
 fn wss_certificate_that_starts_later_is_refused_by_its_hash_until_it_starts() {
     // A certificate made just before the host starts, or a client whose clock is a minute behind: the
     // same hash is refused at first and taken once the client's clock reaches the certificate's start.
-    let certificates = Certificates::starting_in(Duration::from_secs(6));
+    // The start is far enough ahead that starting the host and the first client, which takes seconds on a loaded
+    // machine, still happens before it; the second attempt waits until the start has passed, by the clock.
+    const START: Duration = Duration::from_secs(30);
+    let made = std::time::Instant::now();
+    let certificates = Certificates::starting_in(START);
     let world = World::new(&certificates.listen("wss://127.0.0.1:0"));
     let (_host, bound) = world.serve_listed("warn");
     let early = world.remote(&["--cert-hash", &certificates.hash, &bound], &["info"]);
+    assert!(
+        made.elapsed() < START,
+        "the first attempt came after the certificate started, so it proves nothing"
+    );
     assert!(!tls_accepted(&early), "{}", early.stderr);
     assert!(
         early.stderr.contains("TLS certificate was refused"),
         "{}",
         early.stderr
     );
-    thread::sleep(Duration::from_secs(7));
+    // A certificate's times have a resolution of a second.
+    thread::sleep((START + Duration::from_secs(2)).saturating_sub(made.elapsed()));
     let later = world.remote(&["--cert-hash", &certificates.hash, &bound], &["info"]);
     assert!(tls_accepted(&later), "{}", later.stderr);
 }
