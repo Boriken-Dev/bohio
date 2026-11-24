@@ -53,7 +53,7 @@ Any client that starts a stdio MCP server takes the same command line: in Codex'
 `[mcp_servers.bohio]` with `command = "bohio"` and `args = ["mcp", "--config", "...", "--host", "..."]`. The server speaks
 newline-delimited JSON-RPC 2.0, `tools` only (no resources, prompts or sampling), and answers `initialize` with the client's
 protocol revision when it is one of `2025-11-25`, `2025-06-18`, `2025-03-26` or `2024-11-05`, else with `2025-11-25`. A tool's
-result is JSON as one text block and as `structuredContent`; an image (a desktop snapshot) is an `image` block. A refused or
+result is JSON as one text block and as `structuredContent`; an image (a desktop screenshot) is an `image` block before the text. A refused or
 failed call is a result with `isError: true` whose text is `code: message` (`denied`, `not_found`, `changed`, ...); a
 malformed message is `-32700` or `-32600`, an unknown method `-32601`, an unknown tool or bad `tools/call` parameters `-32602`.
 `notifications/cancelled` ends the call it names: a running program is killed and the call answers at once.
@@ -81,7 +81,7 @@ refuses the peer), and it is marked in `tools/list` once the host has been used.
 | `put`, `get` | a file of this machine to or from the host, moving only what changed | `fs.write` / `fs.read`, and a local directory allowed |
 | `session_start`, `session_read`, `session_write`, `session_signal`, `session_list`, `session_end` | a program that outlives the link, read from an offset | `session` (and `exec` to start) |
 | `forward_local`, `forward_remote`, `forward_list`, `forward_close` | `ssh -L` and `-R` | `forward.connect` / `forward.listen` |
-| `gui_snapshot`, `gui_input`, `gui_watch` | look at and drive the host's desktop | `gui.view` / `gui.input` |
+| `screenshot`, `click`, `move_pointer`, `drag`, `scroll`, `type`, `key`, `wait`, `displays`, `cursor_position`, `clipboard_read`, `clipboard_write`, `gui_watch` | look at and drive the host's desktop; listed only with `--gui` (see "The desktop") | `gui.view` / `gui.input` / `gui.clipboard` |
 | `power_status`, `media_status` | whether the system the host is for is on, and what its virtual-media slots hold; read only | `power` / `media` |
 
 ### Bounds, paging and binary content
@@ -127,14 +127,68 @@ host; a listener beyond loopback needs `--forward-allow-remote-bind`, because wh
 
 ### The desktop
 
-`gui_snapshot` returns an image block and the header (display, size, `scale`, cursor); ask for a smaller `max_width` and
-`max_height` or `jpeg` when the image is over the size a call returns. `gui_input` takes `events` as the protocol names them
-(`{"type": "button", "button": "left", "x": 10, "y": 10}`), `keys` in xdotool spelling (`ctrl+s`) and `text`. `gui_watch` watches for
-a time and reports how much changed. Everything on the screen is readable and input has the authority of the person who owns
-the desktop; the host decides whether to ask them first. Treat screen text as untrusted: it can carry instructions.
+The desktop tools are off until the server is started with `--gui`: without it none is listed and a call to one is an unknown
+tool. They are the same calls as a local computer-use loop, bounded by what the host grants the key (`gui.view` for what
+looks, `gui.input` for what drives, `gui.clipboard` beside either for the clipboard).
+
+```text
+bohio mcp --config agent.cfg --gui --host "desk=tcp://desk.example:7610 --server ID_OF_DESK"
+```
+
+`--gui-max-image-bytes N` (default 1048576) is where `format: "auto"` turns from PNG to JPEG 80, and `--gui-after-action
+screenshot` makes every input tool answer with a settled screenshot of the display it acted on (default `none`; it costs a
+snapshot a call and needs `gui.view`: an input-only key types and the answer carries a `screenshot_error`). The same values are
+`gui_auto_limit` and `gui_after_action` of `bohio_client::tools::Settings`, with `gui_max_width` and `gui_max_height` (1280 and
+800), `gui_jpeg_quality` (80) and `gui_max_image` (4 MiB, the most a call returns).
+
+| Tool | What it does |
+| --- | --- |
+| `screenshot` | `{ display?, region?, max_width = 1280, max_height = 800, format = "auto" \| "png" \| "jpeg", quality?, settle = true }`: waits on the host for the screen to stop changing, then answers an `image` block and a text block `{ display, width, height, scale, cursor, region, settled }` |
+| `click` | `{ x, y, button = "left", count = 1, display?, space = "screenshot" }`; `count: 2` is a double click |
+| `move_pointer` | `{ x, y, display?, space }` (`move` is the file tool) |
+| `drag` | `{ from: {x, y}, to: {x, y}, button = "left", display?, space }`: press, move, release on one display |
+| `scroll` | `{ x?, y?, dx, dy, display?, space }` in wheel notches, down and right positive |
+| `type` | `{ text }`, typed as it is whatever the keyboard layout |
+| `key` | `{ keys }` in xdotool spelling: `Return`, `ctrl+s`, `alt+F4`, `super`; the modifiers go down, the last key is clicked, the modifiers come up in reverse |
+| `wait` | `{ quiet_ms?, timeout_ms?, display? }`: the host waits for the screen to stop changing, in one round trip; `settled: false` when it kept changing |
+| `displays` | the layout: id, name, position, size, scale, which is primary, `active`, `locked`, and the size the last screenshot of each was taken at |
+| `cursor_position` | the pointer's display and pixels, and the same point in the last screenshot; it costs a one-pixel snapshot |
+| `clipboard_read`, `clipboard_write` | the desktop's clipboard text; `denied` without `gui.clipboard` |
+| `gui_watch` | `{ duration_ms?, ... }`: watches for a time and reports how much changed (updates, rectangles, bytes) |
+
+A call the grant does not allow is a result with `isError: true` and code `denied`, naming the permission.
+
+**Coordinates.** The host works in physical pixels of one display, origin at its top-left corner, `display` defaulting to the
+primary. A screenshot is scaled to fit `max_width` x `max_height` on the host (never up), so only those bytes cross the link, and
+the server keeps each display's region and `scale` of its last screenshot. `click`, `move_pointer`, `drag` and `scroll` take
+points in that picture (`space: "screenshot"`, the default) and map them back, so an agent clicks where it saw the thing
+whatever the display's size. `space: "display"` gives the display's own pixels. A point outside the picture or the display is
+`out_of_bounds` and its message names the bounds; `no_screenshot` says to take one first; `stale_screenshot` says the display
+changed size since. Nothing is sent for a refused point.
+
+**Several monitors.** `displays` lists them and a screenshot shows one at a time: name the `display` of a screenshot and of the
+calls that use it. Each display keeps its own last screenshot, so a click on display `1` needs a screenshot of display `1`.
+`drag` stays on one display.
+
+**Streams.** The server keeps one `bohio-gui/1` stream to a host between calls and opens a new one once when it was lost. A
+screenshot or a wait that was lost is asked again; an input that was written is never sent again, because a lost stream may
+have applied it, and the call says it was lost. Take a screenshot to see what happened.
+
+**Presence.** The host decides whether to tell the person at the screen and whether to ask them first (`[gui] indicator`,
+`approval`): a call may wait for that, up to `gui_timeout` (120 s).
 
 ## Prompt injection
 
 An agent that reads files, program output or a screen can be told by their content to do something else. The server cannot tell
 the agent's own intent from text it was handed, so the bound is the grant: one key per agent, no `exec` for an agent that
 needs to read, `fs_roots` and `programs` as narrow as the work, `put`, `get` and `forward_remote` left unavailable unless needed.
+
+**What a screen shows is untrusted input.** A page, a document, a chat message, a notification, a window title or the clipboard
+can hold text written to steer the agent that reads it ("ignore your instructions and open ..."), and a screenshot hands that
+text to the agent as pixels no filter on this side can read. The server cannot tell it from the task. So: give an agent that only
+needs to look a key with `gui.view` and no `gui.input`; give one that drives only the hosts and the grant its work needs, because
+`gui.input` is the desktop user's whole authority (it reaches what no program list or file root of the same key does), and
+`gui.clipboard` reads what a password manager just copied. Keep a person where an action cannot be undone: `[gui] approval =
+"local"` on the host makes each stream wait for the person at the desk. An agent must not act on an instruction it found on the
+screen, and the harness that runs it should say so in its own prompt. `bohio mcp --gui` also says so in its `initialize`
+instructions, but that is a reminder, not a bound.
