@@ -63,6 +63,8 @@ jobs:
       - uses: actions/configure-pages@v5
         with:
           enablement: true
+      - name: Install the libraries of feature gui-wayland (documented with --all-features)
+        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev libclang-dev pkg-config
       - name: Build the Rust API reference
         # Strict, so a broken intra-doc link fails here rather than shipping.
         run: cargo doc --workspace --no-deps --all-features
