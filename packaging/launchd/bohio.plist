@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Bohio as a LaunchAgent: it runs in the logged-in user's own session, which is the only place a node can capture
+  and drive that user's screen. A LaunchDaemon (/Library/LaunchDaemons) is a system service with no window server
+  session and cannot.
+
+    install -m 0755 bohio /usr/local/bin/bohio
+    install -m 0644 packaging/launchd/bohio.plist ~/Library/LaunchAgents/dev.boriken.bohio.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.boriken.bohio.plist
+
+  Then, in System Settings, Privacy & Security, allow /usr/local/bin/bohio Screen Recording and Accessibility: the
+  grants belong to the program at that path, so a moved or replaced bohio must be allowed again. The node's own
+  settings are the user's bohio.cfg; set [gui] enabled = true there and approve the peers that may view or control
+  the screen (bohio peer approve ID --allow gui.view,gui.input).
+
+    launchctl bootout gui/$(id -u)/dev.boriken.bohio     # stop and unload
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.boriken.bohio</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/bohio</string>
+        <string>serve</string>
+    </array>
+    <!-- Only in a graphical login: an ssh login has no window server session to capture. -->
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+</dict>
+</plist>

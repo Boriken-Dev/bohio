@@ -451,7 +451,7 @@ lists the sources of each capability, the first the default: `terminal` and `des
 `fs` and `exec` (`"native"` or `"none"`, read when the node is built: `"none"` makes the engine `unsupported`). `[source.native]` keys, all optional: `read_chunk` `16384`,
 `queue_chunks` `16`, `windows_capture` `"auto"`, `windows_frame_wait` `250ms`, `windows_capture_idle` `10s`, `windows_clipboard_wait` `500ms`, `clipboard_max_bytes` `1048576`, and for the Linux desktop `x11_display`, `x11_wayland` and `x11_session`
 (absent: the command fills them from `DISPLAY`, `WAYLAND_DISPLAY` or `XDG_SESSION_TYPE`, and `XDG_SESSION_ID`; `Environment::{display, wayland, session_id}`), `x11_in_wayland` `false`, `x11_system_bus` (absent), `x11_bus_wait` `1s`, `x11_key_wait` `20ms`,
-`x11_clipboard_wait` `500ms`, `x11_selection` `"CLIPBOARD"`, `x11_max_repeat` `1000`.
+`x11_clipboard_wait` `500ms`, `x11_selection` `"CLIPBOARD"`, `x11_max_repeat` `1000`, and for the macOS desktop `macos_capture_wait` `10s` (not zero) and `macos_max_repeat` `1000`.
 `Node::with_sources(Sources)` replaces them (call it first); `Node::sources()` reaches them for a reload; `[gui] backend` and the `[gui] windows_*` keys moved here.
 
 ## Power, media, secrets and the console
@@ -527,6 +527,21 @@ root: buttons 1-3, wheel 4-7, back 8, forward 9; a key is looked up in the keybo
 `unavailable` before any connection is tried. The clipboard is a selection this desktop owns from a thread with a connection of its own (TARGETS, UTF8_STRING, TEXT, STRING); a read asks the owner over a connection made for it, and
 a transfer that needs INCR is `unavailable`. The pure rules (layout arithmetic, pixel formats, the keyboard plan, composing windows) are unit-tested without a server. `tests/gui_x11.rs` starts its own `Xvfb` (`-displayfd`), or uses
 `BOHIO_TEST_X11_DISPLAY`, and drives only the window `examples/gui_probe_x11.rs` makes; both need `BOHIO_TEST_GUI_LIVE=1`, and the probe is built first (`cargo build -p bohio --example gui_probe_x11`).
+
+```rust
+pub struct MacosDesktop;   // impl Desktop; `new(MacosSettings)` asks the system nothing until the first call
+pub struct MacosSettings { pub capture_wait: Duration, pub clipboard_max_bytes: usize, pub max_repeat: u32 }   // Default (10 s, 1 MiB, 1000)
+```
+
+`MacosDesktop` (`platform/gui/macos.rs`, the unsafe file, and `mac_rules.rs`, the rules, pure and tested on every platform; macOS only): displays come from Core Graphics (id `display` and the `CGDirectDisplayID`; `x`, `y` are the
+display's place in the layout in points, `width`, `height` backing pixels, `scale` pixels a point; `CGDisplayIsMain` is the primary one). The session state is `CGSessionCopyCurrentDictionary` (`kCGSSessionOnConsoleKey`,
+`CGSSessionScreenIsLocked`); no dictionary (an ssh login, a LaunchDaemon, no one logged in at the screen) is `unavailable` with how to get a session. `capture` asks `CGPreflightScreenCaptureAccess` first (no prompt) and then
+ScreenCaptureKit's `SCScreenshotManager` for the whole display at its backing size, cut to the region in Rust; it needs macOS 14 (earlier is `unavailable`, not an `SCStream` fallback). `input` asks `enigo` (CGEvents at the
+HID tap) after enigo's Accessibility check, plans every event before posting one, and puts a pixel on the whole point that holds it (`pixel / scale` rounded down, plus the display's place); the event source is kept, so a held key
+stays held between requests. Both refusals say `System Settings, Privacy & Security`, the pane and the program's path, because a grant belongs to the program at its path. The clipboard is the general pasteboard through
+`arboard`. Keys of the closed list that a Mac lacks (`print_screen`, `menu`, `f21` to `f24`) are `unsupported`; `insert` is the Help key. The pointer is reported by `cursor`, never drawn. `tests/gui_macos.rs` runs its
+refusal tests wherever the suite runs (a missing grant or session is what they prove) and its live test, which builds `tests/support/gui_probe.swift` with `xcrun swiftc` and drives only that window, with
+`BOHIO_TEST_GUI_LIVE=1`; the live test prints `SKIPPED` with the system's reason when there is no session or no grant.
 
 ## Capabilities (`bohio::info`)
 
