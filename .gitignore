@@ -3,12 +3,16 @@
 !/.gitignore
 !/.gitattributes
 !/.github/
+!/.env.example
 
 # Agent config and personal overrides, at any depth.
 .agents
 CLAUDE*
 .claude
 *.local.*
+# Overrides of the container build: the committed list is .env.example.
+/.env
+/.env.local
 
 # Rust. A binary commits its lockfile.
 /target/
