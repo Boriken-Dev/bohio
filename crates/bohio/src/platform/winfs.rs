@@ -719,7 +719,10 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        Listing, Remove, create_dir, read_link, remove, remove_tree, rename, set_readonly, symlink,
+        AsRawHandle, DELETE, DeviceIoControl, FILE_CREATE, FILE_DIRECTORY_FILE,
+        FILE_WRITE_ATTRIBUTES, FSCTL_SET_REPARSE_POINT, IO_REPARSE_TAG_MOUNT_POINT, Listing, Open,
+        Remove, bytes_mut, create_dir, open_at, ptr, read_link, remove, remove_tree, rename,
+        set_readonly, symlink,
     };
 
     /// `FILE_FLAG_BACKUP_SEMANTICS`, which opening a directory needs.
@@ -734,13 +737,65 @@ mod tests {
         parent: std::fs::File,
     }
 
+    /// Makes the junction `link` to `target` without starting a process: a process started by a test
+    /// would inherit the sockets other tests of this binary hold open.
     fn junction(link: &Path, target: &Path) -> bool {
-        std::process::Command::new("cmd")
-            .args(["/C", "mklink", "/J"])
-            .arg(link)
-            .arg(target)
-            .output()
-            .is_ok_and(|out| out.status.success())
+        let made = (|| -> io::Result<()> {
+            let parent = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(BACKUP_SEMANTICS)
+                .open(link.parent().unwrap())?;
+            let name = link.file_name().unwrap();
+            let handle = open_at(
+                &parent,
+                name,
+                &Open {
+                    access: FILE_WRITE_ATTRIBUTES | DELETE,
+                    disposition: FILE_CREATE,
+                    kind: FILE_DIRECTORY_FILE,
+                },
+            )?;
+            let full = std::fs::canonicalize(target)?;
+            let full = full.to_string_lossy().replace(r"\\?\", "");
+            let substitute: Vec<u16> = format!(r"\??\{full}").encode_utf16().collect();
+            let sub_bytes = substitute.len() * 2;
+            let data_length = 8 + sub_bytes + 2 + 2;
+            let total = 8 + data_length;
+            let mut storage = vec![0_u64; total.div_ceil(8)];
+            {
+                let out = bytes_mut(&mut storage);
+                let mut put =
+                    |at: usize, value: &[u8]| out[at..at + value.len()].copy_from_slice(value);
+                put(0, &IO_REPARSE_TAG_MOUNT_POINT.to_le_bytes());
+                put(4, &u16::try_from(data_length).unwrap().to_le_bytes());
+                put(8, &0_u16.to_le_bytes());
+                put(10, &u16::try_from(sub_bytes).unwrap().to_le_bytes());
+                put(12, &u16::try_from(sub_bytes + 2).unwrap().to_le_bytes());
+                put(14, &0_u16.to_le_bytes());
+                for (index, unit) in substitute.iter().enumerate() {
+                    put(16 + index * 2, &unit.to_le_bytes());
+                }
+            }
+            let mut returned = 0_u32;
+            // SAFETY: the input is `total` bytes of `storage`; `handle` is open with write-attributes.
+            let done = unsafe {
+                DeviceIoControl(
+                    handle.as_raw_handle(),
+                    FSCTL_SET_REPARSE_POINT,
+                    storage.as_ptr().cast(),
+                    u32::try_from(total).unwrap(),
+                    ptr::null_mut(),
+                    0,
+                    &raw mut returned,
+                    ptr::null_mut(),
+                )
+            };
+            if done == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        })();
+        made.is_ok()
     }
 
     fn world() -> World {
