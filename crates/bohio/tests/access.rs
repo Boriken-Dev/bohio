@@ -63,6 +63,17 @@ fn a_refused_source_or_access_table_names_its_key() {
     let (key, _) = invalid("[source.native]\nwindows_capture = \"magic\"\n");
     assert_eq!(key, "source.native");
 
+    // The Linux desktop's keys are checked on every platform, so a file is the same wherever it is read.
+    for bad in [
+        "x11_max_repeat = 0",
+        "x11_bus_wait = \"0s\"",
+        "x11_key_wait = \"soon\"",
+        "x11_selection = \"\"",
+    ] {
+        let (key, _) = invalid(&format!("[source.native]\n{bad}\n"));
+        assert_eq!(key, "source.native", "{bad}");
+    }
+
     let (key, _) = invalid("[access]\nterminal = [\"ghost\"]\n");
     assert_eq!(key, "access.terminal");
     let (key, _) = invalid("[access]\npower = [\"native\"]\n");
@@ -70,7 +81,7 @@ fn a_refused_source_or_access_table_names_its_key() {
 
     // Nothing in the tables of today's node is refused.
     Config::from_toml(
-        "[source.native]\nread_chunk = 4096\nwindows_capture = \"gdi\"\n[access]\nterminal = [\"native\"]\nfs = \"none\"\n",
+        "[source.native]\nread_chunk = 4096\nwindows_capture = \"gdi\"\nx11_display = \":0\"\nx11_in_wayland = true\n[access]\nterminal = [\"native\"]\nfs = \"none\"\n",
         "bohio.cfg",
     )
     .expect("a valid configuration");
