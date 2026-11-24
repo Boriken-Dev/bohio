@@ -49,9 +49,10 @@ jobs:
       - run: cargo build -p bohio --example exec_helper --example gui_probe_x11
       - run: cargo test --workspace --all-features -- --nocapture
         env:
-          # The Windows and X11 desktop backends' live tests drive a window of their own (the X11 ones on an
-          # Xvfb they start); a runner with no interactive desktop prints SKIPPED with the reason.
-          BOHIO_TEST_GUI_LIVE: ${{ runner.os != 'macOS' && '1' || '' }}
+          # The desktop backends' live tests drive a window of their own (the X11 ones on an Xvfb they start); a
+          # runner with no interactive desktop, or on macOS without the Screen Recording and Accessibility grants,
+          # prints SKIPPED with the reason.
+          BOHIO_TEST_GUI_LIVE: "1"
       - name: The vectors are current
         # The vectors test rewrites a file that differs; a clean tree means they were current.
         shell: bash
