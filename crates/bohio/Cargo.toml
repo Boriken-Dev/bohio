@@ -25,15 +25,15 @@ required-features = ["cli"]
 doc = false
 
 [features]
-default = ["cli", "zstd", "gui"]
+default = ["cli", "serial", "zstd", "gui"]
 # Zstandard through the C library, for the compression of reads, writes and exec streams (it compiles C with `cc`). Without it `zstd` is not offered, and `lz4` and `deflate` remain.
 zstd = ["bohio-transfer/zstd", "bohio-client/zstd"]
 # zstd worker threads: `[compression] workers` above 0.
 zstdmt = ["zstd", "bohio-transfer/zstdmt"]
-# The serial console provider (`[source.NAME] provider = "serial"`): a terminal source over a serial line, registered with the built-in providers.
+# The serial console provider (`[source.NAME] provider = "serial"`): a terminal source over a serial line, registered with the built-in providers. In `default`, not in `cli`: a build without it can load the same provider as a library (`[providers] paths`).
 serial = ["dep:bohio-provider-serial"]
 # The `bohio` command: arguments, output and the diagnostics subscriber. An embedding host takes the library alone.
-cli = ["serial", "dep:clap", "dep:tracing-subscriber", "dep:serde_json", "dep:crossterm", "dep:ctrlc", "dep:windows-service", "notify"]
+cli = ["dep:clap", "dep:tracing-subscriber", "dep:serde_json", "dep:crossterm", "dep:ctrlc", "dep:windows-service", "notify"]
 # Desktop access (`bohio-gui/1`): snapshot encoding (PNG, JPEG, lossless WebP), resizing, and the tiles and rectangle encodings of a watch. Without it a host has the engine and no image format, so a snapshot is `unsupported`.
 gui = ["dep:image", "dep:image-webp", "bohio-transfer/screen", "bohio-client/screen"]
 # The Linux Wayland desktop (`platform/gui/wayland.rs`): xdg-desktop-portal ScreenCast and RemoteDesktop and a PipeWire stream. It links the system libpipewire-0.3 (pkg-config, and libclang for the bindings), so it is for glibc builds, and it does nothing off Linux.
@@ -116,6 +116,9 @@ tempfile.workspace = true
 rcgen.workspace = true
 time.workspace = true
 sha2.workspace = true
+# Built beside the test binary and never named in code: the library `tests/plugins.rs` loads.
+bohio-provider-serial-plugin.workspace = true
+bohio-test-plugin-other = { path = "tests/plugin_other" }
 image = { workspace = true, features = ["webp"] }
 
 [[test]]
@@ -177,4 +180,8 @@ required-features = ["cli"]
 
 [[test]]
 name = "power_media"
+required-features = ["cli"]
+
+[[test]]
+name = "plugins"
 required-features = ["cli"]

@@ -506,6 +506,8 @@ impl Node {
         // A source whose settings hold a secret reference waits for `Node::with_secrets`.
         sources.defer_secrets();
         sources.set_secret_limit(config.secrets.max_bytes);
+        // Libraries are mapped before the sources are built, so a `[source.<name>]` can name what they offer.
+        sources.load_libraries(&config.providers);
         sources
             .reconfigure(&config.source, &config.access)
             .map_err(|(key, message)| {

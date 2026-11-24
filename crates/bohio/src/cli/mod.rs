@@ -5,7 +5,6 @@
 
 #![forbid(unsafe_code)]
 
-mod access;
 mod commands;
 mod gui;
 mod gui_helper;
@@ -80,6 +79,8 @@ pub enum Command {
     Remote(RemoteArgs),
     /// List the links this node's running `bohio serve` holds, whichever side made each.
     Links(LinksArgs),
+    /// List the provider libraries this node's running `bohio serve` loaded at start (`[providers] paths`): each one loaded, skipped or failed, with its digest.
+    Providers(ProvidersArgs),
     /// Serve the agent tools over the Model Context Protocol on standard input and output: files, programs and sessions of the named hosts.
     Mcp(McpArgs),
     /// List the hosts named in `[remote]`: `bohio remote NAME ...` and a jump list take the name.
@@ -1178,6 +1179,14 @@ pub struct LinksArgs {
     /// How long to wait for each peer to say what it offers. Default `[client] links_wait` (5s).
     #[arg(long, value_name = "TIME")]
     pub wait: Option<String>,
+}
+
+/// `bohio providers`.
+#[derive(Debug, Args)]
+pub struct ProvidersArgs {
+    /// The configuration.
+    #[command(flatten)]
+    pub config: ConfigOption,
 }
 
 /// `bohio mcp`.

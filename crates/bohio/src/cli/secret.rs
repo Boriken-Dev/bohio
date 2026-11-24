@@ -79,7 +79,7 @@ fn only_the_owner(path: &Path) -> Result<(), SecretError> {
 
 #[cfg(windows)]
 fn only_the_owner(path: &Path) -> Result<(), SecretError> {
-    super::access::check(path, super::access::Guarded::DataDir)
+    crate::ownership::check(path, crate::ownership::Guarded::DataDir)
         .map_err(|_| SecretError::new("the secret file may be read or changed by other accounts"))
 }
 

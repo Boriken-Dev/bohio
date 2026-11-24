@@ -6,11 +6,12 @@ use std::process::ExitCode;
 use bohio_proto::info::Info;
 
 use super::{
-    CheckArgs, Command, ConfigAction, ConfigOption, HostsArgs, InfoArgs, access, gui, gui_helper,
-    host, mcp, output, remote, service,
+    CheckArgs, Command, ConfigAction, ConfigOption, HostsArgs, InfoArgs, gui, gui_helper, host,
+    mcp, output, remote, service,
 };
 use crate::config::{Config, Environment, Layered, Layers};
 use crate::info;
+use crate::ownership as access;
 use crate::peer::Data;
 
 /// Runs one command; the error is one line for standard error.
@@ -30,6 +31,7 @@ pub(super) fn run(command: &Command, environment: &Environment) -> Result<ExitCo
         Command::Service(args) => done(service::run(args, environment)),
         Command::Remote(args) => remote::run(args, environment),
         Command::Links(args) => done(remote::links(args, environment)),
+        Command::Providers(args) => done(remote::providers(args, environment)),
         Command::Hosts(args) => done(hosts_command(args, environment)),
         Command::Gui(args) => done(gui::approve(args, environment)),
         Command::GuiHelper(args) => done(gui_helper::run(args, environment)),

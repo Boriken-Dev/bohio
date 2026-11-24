@@ -2806,6 +2806,43 @@ pub(super) fn links(args: &super::LinksArgs, environment: &Environment) -> Resul
     Ok(())
 }
 
+/// `bohio providers`.
+pub(super) fn providers(
+    args: &super::ProvidersArgs,
+    environment: &Environment,
+) -> Result<(), String> {
+    let (endpoint, settings, server) = control_endpoint(&args.config, environment)?;
+    let local = crate::local::LocalLink::connect_to(&endpoint, &settings, server)
+        .map_err(|error| unreachable(&error))?;
+    let reply = local.providers().map_err(|error| explain(&error))?;
+    if output::json() {
+        println!(
+            "{}",
+            serde_json::to_string(&reply).map_err(|_| "the providers cannot be written")?
+        );
+        return Ok(());
+    }
+    if !reply.check_access {
+        println!("non-default: [providers] check_access is false");
+    }
+    if reply.libraries.is_empty() {
+        println!("no provider libraries (`[providers] paths` is empty)");
+    }
+    for library in &reply.libraries {
+        println!(
+            "{} {} {} ({})",
+            library.state,
+            library.path,
+            library.detail,
+            library.digest.as_deref().unwrap_or("no digest")
+        );
+        for text in &library.unchecked {
+            println!("non-default: not checked: {text}");
+        }
+    }
+    Ok(())
+}
+
 /// Makes the link to one host, as `bohio remote` would: what an MCP server calls the first time a host is used and again after
 /// the link was lost.
 pub(super) type Dialer = Box<dyn Fn() -> Result<Arc<dyn Open>, String> + Send + Sync>;

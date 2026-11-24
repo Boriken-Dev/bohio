@@ -240,6 +240,8 @@ fn only_the_listed_files_hold_unsafe_code() {
     let root = workspace();
     let mut files = Vec::new();
     rust_files(&root.join("crates"), &mut files);
+    // Provider crates and the libraries that wrap them hold no unsafe either.
+    rust_files(&root.join("providers"), &mut files);
     assert!(!files.is_empty(), "no source file was found");
     let this = Path::new(file!()).file_name().expect("a file name");
     let mut holding = Vec::new();

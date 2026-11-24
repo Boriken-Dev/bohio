@@ -15,6 +15,8 @@ pub mod listen;
 pub mod local;
 pub mod media;
 pub mod node;
+#[cfg_attr(not(feature = "cli"), allow(dead_code))]
+mod ownership;
 pub mod pair;
 pub mod peer;
 pub mod policy;

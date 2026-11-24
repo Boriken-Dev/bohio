@@ -12,7 +12,12 @@
 
 mod desktop;
 mod native;
+mod plugins;
 mod value;
+
+pub use plugins::{
+    Library, LibraryState, Report as ProvidersReport, unsupported as unsupported_libraries,
+};
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -202,6 +207,8 @@ pub struct Sources {
     deferring: AtomicBool,
     /// The configuration the sources were last built from, to build them again when a resolver arrives.
     last: Mutex<Option<(SourceTables, AccessConfig)>>,
+    /// What loading `[providers] paths` did.
+    libraries: Mutex<ProvidersReport>,
 }
 
 /// What a sensitive setting's reference is turned into when a source is built.
@@ -243,6 +250,7 @@ impl Sources {
             secrets: Mutex::new((Arc::new(NoSecrets), DEFAULT_SECRET_BYTES)),
             deferring: AtomicBool::new(false),
             last: Mutex::new(None),
+            libraries: Mutex::new(ProvidersReport::default()),
         }
     }
 
@@ -308,6 +316,31 @@ impl Sources {
             .register_local(name, describe)
             .map(drop)
             .map_err(|error| error.to_string())
+    }
+
+    /// Maps the provider libraries `config` names into the registry, so `[source.<name>]` can name their providers, and
+    /// remembers what became of each ([`Sources::libraries`]). Nothing loads when `paths` is empty. One library failing does
+    /// not stop the others, and a provider id a built-in already holds stays the built-in's.
+    ///
+    /// A library runs as this process's account once mapped, and stays mapped for as long as the registry lives.
+    pub fn load_libraries(&self, config: &crate::config::ProvidersConfig) -> ProvidersReport {
+        let mut registry = self.registry.lock().unwrap_or_else(PoisonError::into_inner);
+        let report = plugins::load(&mut registry, config);
+        drop(registry);
+        *self
+            .libraries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = report.clone();
+        report
+    }
+
+    /// What loading `[providers] paths` did, as the node started.
+    #[must_use]
+    pub fn libraries(&self) -> ProvidersReport {
+        self.libraries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// The sources `source` and `access` describe, with `native` always among them.
@@ -452,6 +485,16 @@ impl Sources {
             builtin_registry(),
         );
         *self.registry.lock().unwrap_or_else(PoisonError::into_inner) = registry;
+        let libraries = std::mem::take(
+            &mut *other
+                .libraries
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        *self
+            .libraries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = libraries;
         let last = other
             .last
             .lock()

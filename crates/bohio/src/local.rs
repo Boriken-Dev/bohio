@@ -4,7 +4,7 @@
 //! them is the node. [`Local`] is the endpoint it listens on (a pipe: a Windows named pipe or a Unix
 //! socket, this user alone by default); [`Node::serve_local`] serves two protocols there, never on a peer's
 //! link: [`bohio_proto::local::VIA`] carries a stream of any other protocol to a peer, and
-//! [`bohio_proto::local::LINKS`] lists the links, and [`bohio_proto::local::PAIR`] arms the node's pairing PIN. The mux on this endpoint is not sealed: who may connect is
+//! [`bohio_proto::local::LINKS`] lists the links, [`bohio_proto::local::PROVIDERS`] lists the provider libraries loaded at start, and [`bohio_proto::local::PAIR`] arms the node's pairing PIN. The mux on this endpoint is not sealed: who may connect is
 //! the boundary, as for the key file.
 //!
 //! [`Via`] is the client: an [`Open`] whose streams run on a node's link to one peer, so `info`, `exec`, `read`
@@ -25,8 +25,8 @@ use bohio_client::relay::relay;
 use bohio_client::{Error, Open};
 use bohio_proto::gui::{ApproveInput, ApproveOutput, PendingRequest};
 use bohio_proto::local::{
-    GUI_APPROVE, LINKS, LinkEntry, LinksReply, LinksRequest, PAIR, PairReply, PairRequest, VIA,
-    ViaRequest,
+    GUI_APPROVE, LINKS, LibraryEntry, LinkEntry, LinksReply, LinksRequest, PAIR, PROVIDERS,
+    PairReply, PairRequest, ProvidersReply, VIA, ViaRequest,
 };
 use coqui_link::link::{Accepted, Host, Options, Services, serve_with};
 use coqui_link::mux::{CloseReason, LinkStream, Mux, Side, StreamEnd, StreamLife};
@@ -124,6 +124,7 @@ struct Context {
     grants: Arc<dyn Grants>,
     settings: Settings,
     approvals: Arc<crate::gui::Approvals>,
+    sources: Arc<crate::access::Sources>,
 }
 
 /// The one local peer: it may open both local protocols.
@@ -135,6 +136,7 @@ impl PeerStore for Everything {
             PeerRecord::new(peer)
                 .granting(VIA)
                 .granting(LINKS)
+                .granting(PROVIDERS)
                 .granting(PAIR)
                 .granting(GUI_APPROVE),
         ))
@@ -181,6 +183,7 @@ impl Node {
             grants,
             settings,
             approvals: self.gui_approvals(),
+            sources: self.sources(),
         });
         channel.set_max_message(settings.max_frame.saturating_add(5));
         let _ = channel.set_pending(settings.read_ahead);
@@ -200,6 +203,15 @@ impl Node {
                     let context = Arc::clone(&context);
                     move |stream: &dyn LinkStream, accepted: &Accepted| {
                         links(&context, stream, accepted);
+                    }
+                }),
+            )
+            .with(
+                PROVIDERS,
+                Box::new({
+                    let context = Arc::clone(&context);
+                    move |stream: &dyn LinkStream, accepted: &Accepted| {
+                        providers(&context, stream, accepted);
                     }
                 }),
             )
@@ -381,6 +393,31 @@ fn links(context: &Context, stream: &dyn LinkStream, accepted: &Accepted) {
         return stream.close_with(CloseReason::Broken, "the links cannot be written");
     };
     let _ = stream.send(&reply);
+    let _ = stream.finish();
+    let _ = stream.receive(Some(context.settings.send_limit));
+}
+
+/// `bohio-providers/1`: the provider libraries the node loaded at start, answered once.
+fn providers(context: &Context, stream: &dyn LinkStream, _accepted: &Accepted) {
+    let report = context.sources.libraries();
+    let reply = ProvidersReply {
+        check_access: report.check_access,
+        libraries: report
+            .libraries
+            .into_iter()
+            .map(|library| LibraryEntry {
+                path: library.path.display().to_string(),
+                state: library.state.name().to_owned(),
+                detail: library.detail,
+                digest: library.digest,
+                unchecked: library.unchecked,
+            })
+            .collect(),
+    };
+    let Ok(message) = reply.encode() else {
+        return stream.close_with(CloseReason::Broken, "the providers cannot be written");
+    };
+    let _ = stream.send(&message);
     let _ = stream.finish();
     let _ = stream.receive(Some(context.settings.send_limit));
 }
@@ -676,6 +713,20 @@ impl LocalLink {
         let message = stream.receive(Some(until))?.ok_or(Error::Closed)?;
         stream.close();
         LinksReply::decode(&message).map_err(|error| Error::Link(error.to_string()))
+    }
+
+    /// The provider libraries the node loaded at start, and what became of each.
+    ///
+    /// # Errors
+    ///
+    /// The stream's failure, or [`Error::Link`] for a reply that is not one.
+    pub fn providers(&self) -> Result<ProvidersReply, Error> {
+        let stream = self.opener.open(PROVIDERS, &[])?;
+        let message = stream
+            .receive(Some(self.settings.proof_timeout))?
+            .ok_or(Error::Closed)?;
+        stream.close();
+        ProvidersReply::decode(&message).map_err(|error| Error::Link(error.to_string()))
     }
 }
 

@@ -302,6 +302,8 @@ dependencies = [
  "bohio-client",
  "bohio-proto",
  "bohio-provider-serial",
+ "bohio-provider-serial-plugin",
+ "bohio-test-plugin-other",
  "bohio-transfer",
  "cap-fs-ext",
  "cap-std",
@@ -423,6 +425,21 @@ dependencies = [
  "bohio-api",
  "coqui-transport",
  "coqui-transport-serial",
+]
+
+[[package]]
+name = "bohio-provider-serial-plugin"
+version = "0.0.0-alpha.0"
+dependencies = [
+ "bohio-api",
+ "bohio-provider-serial",
+]
+
+[[package]]
+name = "bohio-test-plugin-other"
+version = "0.0.0-alpha.0"
+dependencies = [
+ "guatiao",
 ]
 
 [[package]]

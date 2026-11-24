@@ -17,6 +17,56 @@ pub const VIA: &str = "bohio-via/1";
 /// Lists the node's links.
 pub const LINKS: &str = "bohio-links/1";
 
+/// Lists the provider libraries the node loaded at start (`[providers] paths`).
+pub const PROVIDERS: &str = "bohio-providers/1";
+
+/// One provider library, as the node's start found it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LibraryEntry {
+    /// The library file, or the configured path that named nothing.
+    pub path: String,
+    /// `loaded`, `skipped` or `failed`.
+    pub state: String,
+    /// Why, or what the library offers.
+    pub detail: String,
+    /// `sha256:` and the digest of the file's bytes, when it was read.
+    #[serde(default)]
+    pub digest: Option<String>,
+    /// What `[providers] check_access = false` waived for this library.
+    #[serde(default)]
+    pub unchecked: Vec<String>,
+}
+
+/// The reply of a [`PROVIDERS`] stream.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProvidersReply {
+    /// `[providers] check_access`: `false` is the non-default choice.
+    pub check_access: bool,
+    /// Each library, in the order the paths were written.
+    #[serde(default)]
+    pub libraries: Vec<LibraryEntry>,
+}
+
+impl ProvidersReply {
+    /// Writes the reply as one message.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Encode`] when the reply cannot be written.
+    pub fn encode(&self) -> Result<Vec<u8>, Error> {
+        encode(self)
+    }
+
+    /// Reads a reply from one message.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Decode`] when the bytes are not a reply.
+    pub fn decode(message: &[u8]) -> Result<Self, Error> {
+        decode(message)
+    }
+}
+
 /// Arms the node's one PIN for a peer to pair on any of the node's listeners.
 pub const PAIR: &str = "bohio-pair/1";
 

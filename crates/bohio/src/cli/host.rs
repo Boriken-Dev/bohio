@@ -15,7 +15,6 @@ use coqui_peer::pair::{CodeAlphabet, Pin};
 use coqui_peer::{KeyMaterial, PeerId};
 use coqui_transport::Channel;
 
-use super::access::{self, Guarded};
 use super::commands::{Found, found, source};
 use super::output;
 use super::remote::{certificate_refused, tls_trust};
@@ -31,6 +30,7 @@ use crate::link::{
 use crate::listen::Listening;
 use crate::local::{ANOTHER_ACCOUNT, Local, LocalLink, Server};
 use crate::node::{Endpoint, Node};
+use crate::ownership::{self as access, Guarded};
 use crate::peer::{self, Data, LayeredPeers};
 use crate::policy::{Grant, Permission};
 
@@ -1002,8 +1002,8 @@ fn say_paired(peer: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::access::{Kind, Problem, decide};
     use super::{Environment, desktop_environment};
+    use crate::ownership::{Kind, Problem, decide};
 
     fn problem(kind: Kind) -> Problem {
         Problem {

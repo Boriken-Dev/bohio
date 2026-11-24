@@ -5,24 +5,29 @@
 //! and holds its identity. On Windows the system location (`%ProgramData%`) lets every local user
 //! create files and folders by default, and a folder made there inherits that, so a host started from
 //! one would take a stranger's configuration, trusted keys or grants. Unix's system locations are
-//! the administrator's, and the user locations are private.
+//! the administrator's, and the user locations are private. The same check holds a provider library, which runs
+//! as the host's own account once it is mapped.
+
+#![forbid(unsafe_code)]
 
 use std::path::Path;
 
 /// What is checked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Guarded {
+pub(crate) enum Guarded {
     /// The configuration file: no other user may change it.
     Config,
+    /// A provider library or the directory that holds it: no other user may change it.
+    Library,
     /// The data directory: no other user may change it or read what is made in it.
     DataDir,
 }
 
-#[cfg(windows)]
 impl Guarded {
     const fn name(self) -> &'static str {
         match self {
             Self::Config => "the configuration file",
+            Self::Library => "the provider library",
             Self::DataDir => "the data directory",
         }
     }
@@ -30,7 +35,7 @@ impl Guarded {
 
 /// What is wrong with a path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Kind {
+pub(crate) enum Kind {
     /// Another account owns it: whoever that is made it, so nothing in it, `check_access` included, is the
     /// operator's.
     Foreign,
@@ -42,9 +47,9 @@ pub(super) enum Kind {
 
 /// Why a path is refused: its [`Kind`] and one line naming the path.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Problem {
-    pub(super) kind: Kind,
-    pub(super) text: String,
+pub(crate) struct Problem {
+    pub(crate) kind: Kind,
+    pub(crate) text: String,
 }
 
 impl Problem {
@@ -62,16 +67,17 @@ impl Problem {
 ///
 /// A [`Problem`] saying what is wrong and with which path, or why it could not be checked.
 #[cfg(unix)]
-pub(super) fn check(path: &Path, what: Guarded) -> Result<(), Problem> {
+pub(crate) fn check(path: &Path, what: Guarded) -> Result<(), Problem> {
     use std::os::unix::fs::MetadataExt;
-    if what != Guarded::Config {
+    if what == Guarded::DataDir {
         return Ok(());
     }
     let meta = std::fs::metadata(path).map_err(|error| {
         Problem::new(
             Kind::Unknown,
             format!(
-                "cannot check who may change the configuration {}: {error}",
+                "cannot check who may change {} {}: {error}",
+                what.name(),
                 path.display()
             ),
         )
@@ -81,7 +87,8 @@ pub(super) fn check(path: &Path, what: Guarded) -> Result<(), Problem> {
         return Err(Problem::new(
             Kind::Foreign,
             format!(
-                "the configuration {} is owned by another account: give it to the account that runs bohio, or to root",
+                "{} {} is owned by another account: give it to the account that runs bohio, or to root",
+                what.name(),
                 path.display()
             ),
         ));
@@ -90,7 +97,8 @@ pub(super) fn check(path: &Path, what: Guarded) -> Result<(), Problem> {
         return Err(Problem::new(
             Kind::Open,
             format!(
-                "the configuration {} can be changed by its group or by others: remove their write access",
+                "{} {} can be changed by its group or by others: remove their write access",
+                what.name(),
                 path.display()
             ),
         ));
@@ -104,7 +112,7 @@ pub(super) fn check(path: &Path, what: Guarded) -> Result<(), Problem> {
 ///
 /// Never.
 #[cfg(not(any(unix, windows)))]
-pub(super) fn check(_path: &Path, _what: Guarded) -> Result<(), Problem> {
+pub(crate) fn check(_path: &Path, _what: Guarded) -> Result<(), Problem> {
     Ok(())
 }
 
@@ -114,7 +122,7 @@ pub(super) fn check(_path: &Path, _what: Guarded) -> Result<(), Problem> {
 ///
 /// A [`Problem`] saying what is wrong and with which path, or why it could not be checked.
 #[cfg(windows)]
-pub(super) fn check(path: &Path, what: Guarded) -> Result<(), Problem> {
+pub(crate) fn check(path: &Path, what: Guarded) -> Result<(), Problem> {
     let listed = windows::list(path).map_err(|reason| {
         Problem::new(
             Kind::Unknown,
@@ -145,7 +153,7 @@ pub(super) fn check(path: &Path, what: Guarded) -> Result<(), Problem> {
 /// # Errors
 ///
 /// Every refused problem, joined into one line.
-pub(super) fn decide(problems: &[Problem], check_access: bool) -> Result<(), String> {
+pub(crate) fn decide(problems: &[Problem], check_access: bool) -> Result<(), String> {
     let (refused, waived): (Vec<&Problem>, Vec<&Problem>) = problems
         .iter()
         .partition(|problem| check_access || problem.kind == Kind::Foreign);
@@ -164,7 +172,7 @@ pub(super) fn decide(problems: &[Problem], check_access: bool) -> Result<(), Str
 }
 
 /// The problems of the layer file `file` and of the directory that holds it.
-pub(super) fn layer_problems(file: &Path) -> Vec<Problem> {
+pub(crate) fn layer_problems(file: &Path) -> Vec<Problem> {
     let mut problems = Vec::new();
     if let Err(problem) = check(file, Guarded::Config) {
         problems.push(problem);
@@ -173,6 +181,14 @@ pub(super) fn layer_problems(file: &Path) -> Vec<Problem> {
         problems.push(problem);
     }
     problems
+}
+
+/// The problems of the provider library `file` and of the directory that holds it.
+pub(crate) fn library_problems(file: &Path) -> Vec<Problem> {
+    [file.to_owned(), directory_of(file)]
+        .iter()
+        .filter_map(|path| check(path, Guarded::Library).err())
+        .collect()
 }
 
 /// The directory that holds `path`: its parent, or the current directory for a bare file name.
@@ -185,7 +201,7 @@ fn directory_of(path: &Path) -> std::path::PathBuf {
 /// Whether a layer `file` that does not exist yet may be read once it does: the nearest directory above it that
 /// exists must be one no other account may change, or another account could make the file and choose the
 /// peers. `Err` says why not.
-pub(super) fn may_appear(file: &Path) -> Result<(), Problem> {
+pub(crate) fn may_appear(file: &Path) -> Result<(), Problem> {
     let directory = directory_of(file);
     let existing = directory
         .ancestors()
@@ -301,7 +317,7 @@ mod windows {
             // An entry that applies only to children still reaches the files the host makes there.
             let on_object = propagation & INHERIT_ONLY == 0;
             let reaches = match what {
-                Guarded::Config => on_object && rights & CHANGE != 0,
+                Guarded::Config | Guarded::Library => on_object && rights & CHANGE != 0,
                 Guarded::DataDir => rights & (CHANGE | READ) != 0,
             };
             if reaches {

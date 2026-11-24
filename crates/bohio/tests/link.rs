@@ -2484,6 +2484,10 @@ fn every_command_prints_json_that_docs_cli_json_describes() {
     assert_eq!(hosts["hosts"][0]["name"], "demo");
     assert_eq!(hosts["hosts"][0]["endpoint"], "tcp://127.0.0.1:1");
     object(run(&["links", "--config", &config, "--json"]), "links");
+    object(
+        run(&["providers", "--config", &config, "--json"]),
+        "providers",
+    );
 
     // A peer that pairs, is approved and is revoked, as objects; the pairing as events.
     let joiner = world.client("joiner");

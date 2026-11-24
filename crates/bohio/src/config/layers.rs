@@ -91,6 +91,9 @@ pub struct Layers;
 /// The keys that govern layering and the access checks: the lowest layer alone sets them.
 const LOWEST_ONLY: [&str; 2] = ["check_access", "user_layer"];
 
+/// The `[providers]` key that weakens the check on a library: the lowest layer alone sets it, as `[service] check_access`.
+const PROVIDERS_LOWEST_ONLY: [&str; 1] = ["check_access"];
+
 /// The `[gui]` keys that say whose helper a node serves, and which account a helper trusts as the node: the lowest layer
 /// alone sets them, so a layer an account can write for itself cannot lend the desktop to another or name its own node.
 const GUI_LOWEST_ONLY: [&str; 3] = ["helper_accounts", "helper_endpoint", "node_account"];
@@ -260,6 +263,15 @@ fn values(formats: &Formats<Value>, inputs: &[Input]) -> Result<Vec<Value>, Conf
                     return Err(ConfigError::Invalid {
                         path: input.label.clone(),
                         key: format!("service.{key}"),
+                        message: "is read from the lowest layer only: remove it here".to_owned(),
+                    });
+                }
+            }
+            for key in PROVIDERS_LOWEST_ONLY {
+                if has_path(&value, &["providers", key]) {
+                    return Err(ConfigError::Invalid {
+                        path: input.label.clone(),
+                        key: format!("providers.{key}"),
                         message: "is read from the lowest layer only: remove it here".to_owned(),
                     });
                 }

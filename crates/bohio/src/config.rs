@@ -175,6 +175,8 @@ pub struct Config {
     pub media: MediaConfig,
     /// `[secrets]`.
     pub secrets: SecretsConfig,
+    /// `[providers]`: provider libraries loaded at start.
+    pub providers: ProvidersConfig,
     /// `[source.<name>]`: the sources of terminals, desktops, power and media, each a configured provider.
     pub source: SourceTables,
     /// `[access]`: which sources serve each capability.
@@ -1836,6 +1838,8 @@ pub struct NodeConfig {
     pub media: MediaConfig,
     /// `[secrets]`.
     pub secrets: SecretsConfig,
+    /// `[providers]`.
+    pub providers: ProvidersConfig,
     /// `[source.<name>]`.
     pub source: SourceTables,
     /// `[access]`.
@@ -1862,6 +1866,7 @@ impl Default for NodeConfig {
             power: PowerConfig::default(),
             media: MediaConfig::default(),
             secrets: SecretsConfig::default(),
+            providers: ProvidersConfig::default(),
             source: SourceTables::new(),
             access: AccessConfig::default(),
         }
@@ -1925,6 +1930,29 @@ pub struct SecretsConfig {
 impl Default for SecretsConfig {
     fn default() -> Self {
         Self { max_bytes: 65_536 }
+    }
+}
+
+/// `[providers]`: provider libraries mapped into the node at start. Nothing loads unless `paths` names something.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ProvidersConfig {
+    /// Library files, or directories whose libraries (`.so`, `.dll`, `.dylib`) are loaded, in the order written and, within a
+    /// directory, by name. Only a library that declares a Bohío kind is mapped. Default empty: nothing is loaded and nothing
+    /// extra runs at start. A library runs as the node's own account, unchecked beyond its owner and who may write it.
+    pub paths: Vec<PathBuf>,
+    /// Whether a library, or the directory that holds it, that another account owns or may write is refused. Default `true`.
+    /// `false` loads it and logs a `non-default:` line: whoever can write there chooses the code the node runs. Only the
+    /// lowest layer sets it, as `[service] check_access`.
+    pub check_access: bool,
+}
+
+impl Default for ProvidersConfig {
+    fn default() -> Self {
+        Self {
+            paths: Vec::new(),
+            check_access: true,
+        }
     }
 }
 
@@ -2215,6 +2243,19 @@ impl NodeConfig {
         if self.secrets.max_bytes == 0 {
             return Err(invalid("secrets.max_bytes", "must be at least 1"));
         }
+        if let Some(reason) = crate::access::unsupported_libraries()
+            && !self.providers.paths.is_empty()
+        {
+            return Err(invalid("providers.paths", reason));
+        }
+        if self
+            .providers
+            .paths
+            .iter()
+            .any(|path| path.as_os_str().is_empty())
+        {
+            return Err(invalid("providers.paths", "holds an empty path"));
+        }
         if let Err((key, message)) = crate::access::check(&self.source, &self.access) {
             return Err(invalid(&key, &message));
         }
@@ -2283,6 +2324,7 @@ impl Config {
             power: self.power.clone(),
             media: self.media.clone(),
             secrets: self.secrets.clone(),
+            providers: self.providers.clone(),
             source: self.source.clone(),
             access: self.access.clone(),
         }
