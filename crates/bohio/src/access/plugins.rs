@@ -113,9 +113,10 @@ pub(super) fn load(registry: &mut Registry, config: &ProvidersConfig) -> Report 
             "non-default: [providers] check_access is false: a library, and the directory that holds it, that another account owns or may write is loaded: whoever can write there chooses the code this node runs"
         );
     }
+    let mut checked = ownership::Checked::new();
     for path in &config.paths {
         for candidate in candidates(path, &mut report) {
-            let library = load_one(registry, &candidate, config.check_access);
+            let library = load_one(registry, &candidate, config.check_access, &mut checked);
             log(&library);
             report.libraries.push(library);
         }
@@ -170,7 +171,12 @@ fn has_library_extension(file: &Path) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case(wanted))
 }
 
-fn load_one(registry: &mut Registry, file: &Path, check_access: bool) -> Library {
+fn load_one(
+    registry: &mut Registry,
+    file: &Path,
+    check_access: bool,
+    checked: &mut ownership::Checked,
+) -> Library {
     let mut library = Library {
         path: file.to_owned(),
         state: LibraryState::Skipped,
@@ -178,7 +184,7 @@ fn load_one(registry: &mut Registry, file: &Path, check_access: bool) -> Library
         digest: None,
         unchecked: Vec::new(),
     };
-    let problems = ownership::library_problems(file);
+    let problems = ownership::library_problems(file, checked);
     if !problems.is_empty() {
         let texts: Vec<String> = problems.into_iter().map(|problem| problem.text).collect();
         if check_access {

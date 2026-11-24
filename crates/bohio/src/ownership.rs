@@ -183,11 +183,21 @@ pub(crate) fn layer_problems(file: &Path) -> Vec<Problem> {
     problems
 }
 
-/// The problems of the provider library `file` and of the directory that holds it.
-pub(crate) fn library_problems(file: &Path) -> Vec<Problem> {
-    [file.to_owned(), directory_of(file)]
-        .iter()
-        .filter_map(|path| check(path, Guarded::Library).err())
+/// What [`library_problems`] already found out about directories, so one that holds several libraries is checked once
+/// (on Windows a check starts a PowerShell).
+pub(crate) type Checked = std::collections::HashMap<std::path::PathBuf, Option<Problem>>;
+
+/// The problems of the provider library `file` and of the directory that holds it, `checked` remembering directories.
+pub(crate) fn library_problems(file: &Path, checked: &mut Checked) -> Vec<Problem> {
+    let directory = directory_of(file);
+    let held = checked
+        .entry(directory.clone())
+        .or_insert_with(|| check(&directory, Guarded::Library).err())
+        .clone();
+    check(file, Guarded::Library)
+        .err()
+        .into_iter()
+        .chain(held)
         .collect()
 }
 
