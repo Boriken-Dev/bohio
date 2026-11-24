@@ -1,0 +1,33 @@
+# The own desktop's compositor: sway on the headless backend (no GPU, no seat, no input device of the machine). It is
+# the screen the X server runs on; its output size is in sway.conf.
+#
+# It writes the name of its Wayland socket to a file in the runtime directory (sway.conf) for the X server's unit, and
+# is ready when that file is there. %t is the account's runtime directory and %E its configuration directory.
+
+[Unit]
+Description=Bohio own desktop: headless sway
+ConditionUser=@ACCOUNT@
+PartOf=bohio-desktop.target
+
+[Service]
+Type=simple
+# What the account's user manager holds of another session (a display of someone else's) is not this compositor's.
+UnsetEnvironment=WAYLAND_DISPLAY DISPLAY SWAYSOCK I3SOCK
+Environment=WLR_BACKENDS=headless
+Environment=WLR_LIBINPUT_NO_DEVICES=1
+Environment=WLR_RENDERER=pixman
+Environment=XDG_SESSION_TYPE=wayland
+Environment=XDG_CURRENT_DESKTOP=sway
+ExecStartPre=/bin/rm -f %t/bohio-wayland-display
+ExecStart=/usr/bin/sway --unsupported-gpu --config %E/bohio-desktop/sway.conf
+ExecStartPost=/bin/sh -c 'i=0; while [ ! -s "%t/bohio-wayland-display" ] && [ "$$i" -lt 100 ]; do sleep 0.1; i=$$((i + 1)); done; [ -s "%t/bohio-wayland-display" ]'
+ExecStopPost=/bin/rm -f %t/bohio-wayland-display
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=10
+
+# Nothing here needs more than the account already has.
+NoNewPrivileges=true
+LockPersonality=true
+RestrictSUIDSGID=true
+UMask=0077

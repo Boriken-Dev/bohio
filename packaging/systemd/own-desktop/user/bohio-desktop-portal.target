@@ -1,0 +1,17 @@
+# The own desktop's portals, for `[source.native] own_session = "wayland"`: PipeWire, WirePlumber and the desktop portals
+# (xdg-desktop-portal and its wlroots backend) on the compositor, so the node reaches the screen through the
+# ScreenCast portal. These are the distribution's own user units: a second PipeWire of our own would fight its socket
+# unit for pipewire-0. The wlroots portal has no RemoteDesktop, so this desktop is a view; `own_session = "x11"`
+# (bohio-desktop.target) is the one with input.
+#
+# Optional: install.sh enables it with --portal.
+
+[Unit]
+Description=Bohio own desktop portals (PipeWire, WirePlumber, xdg-desktop-portal)
+Documentation=https://boriken-dev.github.io/bohio/
+ConditionUser=@ACCOUNT@
+Requires=bohio-compositor.service bohio-portal-env.service pipewire.service wireplumber.service xdg-desktop-portal-wlr.service xdg-desktop-portal.service
+After=bohio-compositor.service bohio-portal-env.service pipewire.service wireplumber.service xdg-desktop-portal-wlr.service xdg-desktop-portal.service
+
+[Install]
+WantedBy=default.target

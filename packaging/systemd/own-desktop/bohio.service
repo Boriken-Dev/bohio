@@ -1,0 +1,76 @@
+# Bohio as a systemd service whose account has a desktop of its own: the variant of ../bohio.service that serves a
+# headless compositor and X server run by the account's user manager (the user units in user/), with nobody logged in.
+# install.sh does every step below; this file is the system unit it installs, with @ACCOUNT@ and @PREFIX@ filled in.
+#
+# By hand, as root (the same steps as install.sh, which also checks each one first):
+#   useradd --system --home-dir /var/lib/bohio --create-home --shell /usr/sbin/nologin bohio
+#   chmod 0700 /var/lib/bohio
+#   loginctl enable-linger bohio                      # the account's user manager starts at boot, /run/user/UID with it
+#   install -d -o bohio -g bohio -m 0700 /var/lib/bohio/.config /var/lib/bohio/.config/systemd /var/lib/bohio/.config/systemd/user /var/lib/bohio/.config/bohio-desktop
+#   install -o bohio -g bohio -m 0644 user/bohio-*.service user/bohio-*.target /var/lib/bohio/.config/systemd/user/   # @ACCOUNT@ -> bohio
+#   install -o bohio -g bohio -m 0644 user/sway.conf /var/lib/bohio/.config/bohio-desktop/sway.conf
+#   runuser -u bohio -- env XDG_RUNTIME_DIR=/run/user/$(id -u bohio) systemctl --user daemon-reload
+#   runuser -u bohio -- env XDG_RUNTIME_DIR=/run/user/$(id -u bohio) systemctl --user enable --now bohio-desktop.target
+#   install -m 0755 bohio /usr/local/bin/bohio
+#   install -d /etc/bohio && install -m 0644 own-desktop.cfg /etc/bohio/bohio.cfg   # then edit [[listen]]
+#   install -m 0644 bohio.service /etc/systemd/system/bohio.service                  # @ACCOUNT@ -> bohio, @PREFIX@ -> /usr/local
+#   systemctl daemon-reload && systemctl enable --now bohio
+#
+# The desktop is the account's: whoever holds gui.input through this node can run what the account can run, in the
+# account's own session (docs/security.md, "A service account's own desktop").
+#
+# Packages the user units run: sway and Xwayland (and, for own_session = "wayland", pipewire, wireplumber,
+# xdg-desktop-portal and xdg-desktop-portal-wlr).
+
+[Unit]
+Description=Bohio remote host runtime, with its own desktop
+Documentation=https://boriken-dev.github.io/bohio/
+After=network-online.target user@%U.service
+Wants=network-online.target user@%U.service
+
+[Service]
+Type=exec
+User=@ACCOUNT@
+Group=@ACCOUNT@
+Environment=XDG_DATA_HOME=/var/lib
+# What a Wayland node (own_session = "wayland") reads to find the account's session bus and PipeWire.
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+ExecStart=@PREFIX@/bin/bohio serve --config /etc/bohio/bohio.cfg
+Restart=on-failure
+RestartSec=2
+
+KillMode=control-group
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+# The node's data directory is the account's home: the identity, the keys waiting for approval, and the desktop's own
+# configuration under .config.
+StateDirectory=bohio
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/bohio
+
+# /run/user/UID is where the own desktop is: the node reads the directory (and, for Wayland, connects to the sockets in
+# it), so it is read-only here, not hidden (ProtectHome=true hides it).
+ProtectHome=read-only
+
+NoNewPrivileges=true
+ProtectSystem=strict
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,15 @@
+# A service account's own desktop: a headless compositor with an X server on it. The Bohio node (the system unit
+# bohio.service of this directory, running as the same account) serves it with `[source.native] own_session = "x11"`.
+#
+# A user unit of the service account: install.sh puts it in ~/.config/systemd/user and enables it, and lingering starts
+# it at boot with the account's user manager, with nobody logged in.
+
+[Unit]
+Description=Bohio own desktop (headless compositor and X server)
+Documentation=https://boriken-dev.github.io/bohio/
+ConditionUser=@ACCOUNT@
+Requires=bohio-compositor.service bohio-xwayland.service
+After=bohio-compositor.service bohio-xwayland.service
+
+[Install]
+WantedBy=default.target

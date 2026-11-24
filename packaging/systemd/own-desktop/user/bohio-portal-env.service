@@ -1,0 +1,15 @@
+# Gives the account's user manager what the portals read to find the compositor, once it is up, and takes it back when
+# the desktop stops (the user manager's environment is the account's own: nothing else of it is touched).
+
+[Unit]
+Description=Bohio own desktop: the compositor's name for the portals
+ConditionUser=@ACCOUNT@
+Requires=bohio-compositor.service
+After=bohio-compositor.service
+PartOf=bohio-desktop-portal.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+ExecStart=/bin/sh -c 'exec systemctl --user set-environment "WAYLAND_DISPLAY=$$(cat "%t/bohio-wayland-display")" XDG_CURRENT_DESKTOP=sway XDG_SESSION_TYPE=wayland'
+ExecStop=/usr/bin/systemctl --user unset-environment WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
