@@ -137,3 +137,8 @@ with no X display (Windows) fails each forwarded connection with the reason in t
 Tests: `tests/fake.rs` runs the provider against an in-process server (`tests/support/`, with an SFTP subsystem over the real file system; programs need `sh`);
 `tests/real_sshd.rs` starts a private no-root `sshd` on loopback (on Windows inside WSL `FedoraLinux-44`; `BOHIO_TEST_REQUIRE_SSHD=1` makes a missing one a
 failure instead of a skip). Both run `bohio_api::contract::files`.
+
+`crates/bohio/tests/ssh.rs` has an ignored measurement against a real machine from another site, `a_live_machine_serves_programs_and_files_through_the_ssh_source`
+(`BOHIO_TEST_LIVE_SSH=HOST,USER,REMOTE_DIR`, agent login, `BOHIO_TEST_LIVE_BYTES`): a node serves the machine to an in-process peer and prints the time of
+`true` and of one file going there and back. A real-server run is a measurement of one link, never a CI result. With `BOHIO_TEST_SSH_CLIENT=openssh`
+the real-sshd tests use the system's client (on Windows `icacls` first narrows the test key file, which `ssh.exe` insists on).

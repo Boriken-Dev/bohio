@@ -570,3 +570,93 @@ fn a_large_transfer_to_the_ssh_source_against_the_native_source() {
     }
     let _ = std::fs::remove_file(&local);
 }
+
+/// A node serving a real machine over SSH from another site: the program starts and a file goes there and back, timed. The
+/// host, account and directory are the environment's, so the repository names none: `BOHIO_TEST_LIVE_SSH` is
+/// `HOST,USER,REMOTE_DIR` (a directory the account may write, made and removed by the test), and the login is the agent's.
+/// `BOHIO_TEST_LIVE_BYTES` (default 4 MiB) sizes the file. The numbers are printed, and are a measurement of one link, not a
+/// result.
+#[test]
+#[ignore = "a measurement against a real machine; see the test's comment"]
+fn a_live_machine_serves_programs_and_files_through_the_ssh_source() {
+    let Ok(spec) = std::env::var("BOHIO_TEST_LIVE_SSH") else {
+        eprintln!("SKIPPED: BOHIO_TEST_LIVE_SSH (HOST,USER,REMOTE_DIR) is not set");
+        return;
+    };
+    let parts: Vec<&str> = spec.split(',').collect();
+    let [host, user, dir] = parts[..] else {
+        panic!("BOHIO_TEST_LIVE_SSH is HOST,USER,REMOTE_DIR");
+    };
+    let bytes: usize = std::env::var("BOHIO_TEST_LIVE_BYTES")
+        .ok()
+        .and_then(|text| text.parse().ok())
+        .unwrap_or(4 * 1024 * 1024);
+    let source = format!(
+        "[source.remote]\nprovider = \"ssh\"\nhost = \"{host}\"\nuser = \"{user}\"\nagent = true\nconnect_timeout = \"30s\"\noperation_timeout = \"120s\"\n"
+    );
+    let grant = Grant::allowing([
+        Permission::Info,
+        Permission::Exec,
+        Permission::FsRead,
+        Permission::FsWrite,
+    ])
+    .with_sources(["remote"])
+    .with_fs_roots([dir.to_owned()]);
+    let world = world(&source, grant);
+
+    let mut times = Vec::new();
+    for _ in 0..5 {
+        let mut request = Request::argv(["true"]);
+        request.source = Some("remote".to_owned());
+        let started = Instant::now();
+        let done = Exec::start(&world.link, &request)
+            .expect("the stream opens")
+            .wait(Some(WAIT))
+            .expect("the program ends");
+        assert_eq!(done.exit.code, Some(0));
+        times.push(started.elapsed());
+    }
+    times.sort();
+    eprintln!(
+        "live exec `true`: min {:?}, median {:?}, max {:?}",
+        times[0],
+        times[times.len() / 2],
+        times[times.len() - 1]
+    );
+
+    let remote = bohio_client::Sourced::new(&world.link, "remote");
+    let fs = bohio_client::fs::Fs::connect(&remote).expect("the control stream opens");
+    let work = format!("{dir}/live");
+    fs.mkdir(&work, true).expect("mkdir");
+    let here = tempfile::tempdir().unwrap();
+    let content: Vec<u8> = (0..bytes).map(|n| (n % 251) as u8).collect();
+    std::fs::write(here.path().join("up.bin"), &content).unwrap();
+    let started = Instant::now();
+    bohio_client::sync::put(
+        &remote,
+        &here.path().join("up.bin"),
+        &format!("{work}/up.bin"),
+        &bohio_client::sync::PutOptions::default(),
+    )
+    .expect("put");
+    let up = started.elapsed();
+    let started = Instant::now();
+    bohio_client::sync::get(
+        &remote,
+        &format!("{work}/up.bin"),
+        &here.path().join("down.bin"),
+        &bohio_client::sync::GetOptions::default(),
+    )
+    .expect("get");
+    let down = started.elapsed();
+    let same = std::fs::read(here.path().join("down.bin")).unwrap() == content;
+    fs.remove(&work, true).expect("remove");
+    #[allow(clippy::cast_precision_loss, reason = "a printed rate")]
+    let rate = |time: Duration| bytes as f64 / (1024.0 * 1024.0) / time.as_secs_f64();
+    eprintln!(
+        "live files, {bytes} bytes: put {up:?} ({:.2} MiB/s), get {down:?} ({:.2} MiB/s)",
+        rate(up),
+        rate(down)
+    );
+    assert!(same, "the file came back different");
+}
