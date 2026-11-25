@@ -584,7 +584,7 @@
     },
     {
       "name": "bohio_files",
-      "floor_hash": 1313677026,
+      "floor_hash": 3433662462,
       "object": false,
       "doc": "A source of directory trees.",
       "slots": [
@@ -613,12 +613,40 @@
             "kind": "bohio_directory"
           },
           "doc": "Opens the directory `path` (absolute, in the source's own syntax) as the handle names below it are resolved\nagainst.\n\n# Errors\n\nA [`failure`] (`not_found`, `denied`, `not_a_directory`...), or `GONE` when the source is unavailable."
+        },
+        {
+          "name": "rename_across",
+          "required": false,
+          "fallible": true,
+          "args": [
+            {
+              "name": "from_root",
+              "type": "str"
+            },
+            {
+              "name": "from",
+              "type": "str"
+            },
+            {
+              "name": "to_root",
+              "type": "str"
+            },
+            {
+              "name": "to",
+              "type": "str"
+            },
+            {
+              "name": "overwrite",
+              "type": "bool"
+            }
+          ],
+          "doc": "Renames `from` below the directory `from_root` to `to` below `to_root`, two directories of this source, in\none step. Only a source whose directories can share a file system (the node's own) offers it.\n\n# Errors\n\nA [`failure`] (`crosses_devices`, `unsupported`)."
         }
       ]
     },
     {
       "name": "bohio_directory",
-      "floor_hash": 1491948299,
+      "floor_hash": 4168229759,
       "object": true,
       "doc": "One open directory. A `relative` name is below it, with `.` for the directory itself; a `confined` source refuses\none that leaves it.",
       "slots": [
@@ -707,9 +735,13 @@
               "name": "mode",
               "type": "value",
               "pass": "borrowed"
+            },
+            {
+              "name": "parents",
+              "type": "bool"
             }
           ],
-          "doc": "Makes the directory `relative`, with `mode` where the system has modes.\n\n# Errors\n\nA [`failure`] (`exists`, `not_found` for a missing parent)."
+          "doc": "Makes the directory `relative`, with `mode` where the system has modes. With `parents` the missing\ndirectories above it are made too and one that exists is not a failure.\n\n# Errors\n\nA [`failure`] (`exists`, `not_found` for a missing parent)."
         },
         {
           "name": "remove_dir",

@@ -309,7 +309,10 @@ impl Open for Link {
                         .clone()
                         .unwrap_or_else(|| (*grant).clone()))
                 };
+                let sources = bohio::access::Sources::default();
+                let files_source = sources.files(None).expect("native files").arc();
                 let context = fs::Context {
+                    source: fs::FilesRef(&files_source),
                     grant: &grant,
                     config: &files,
                     hash: &hash,

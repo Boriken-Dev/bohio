@@ -1363,7 +1363,12 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
                 ErrorBody::new(ErrorCode::Internal, "the host cannot read its peer grants")
             })
         };
+        let files_source = shared
+            .sources
+            .files(None)
+            .map_or_else(|_| fs::absent(), |source| source.arc());
         let files = fs::Context {
+            source: fs::FilesRef(&files_source),
             grant: &grant,
             config: &config.filesystem,
             hash: &config.hash,

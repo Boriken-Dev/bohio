@@ -11,10 +11,9 @@ use std::time::{Duration, SystemTime};
 
 use bohio_proto::fs::WriteMode;
 use bohio_proto::{ErrorBody, ErrorCode};
-use cap_fs_ext::{DirExt, SystemTimeSpec};
-use cap_std::fs::{Dir, File, OpenOptions};
 
 use super::io_error;
+use super::vfs::{Dir, File, Metadata, OpenOptions};
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -56,7 +55,7 @@ fn resume_name(tag: &str, token: &str) -> OsString {
 
 /// Removes the kept temporary files of `parent` that nothing continued for `ttl`.
 fn sweep(parent: &Dir, ttl: Duration) {
-    let Ok(entries) = super::native::read_dir(parent, Path::new(".")) else {
+    let Ok(entries) = parent.read_dir(Path::new(".")) else {
         return;
     };
     for entry in entries.flatten() {
@@ -68,12 +67,12 @@ fn sweep(parent: &Dir, ttl: Duration) {
         let old = entry
             .metadata()
             .ok()
-            .filter(cap_std::fs::Metadata::is_file)
+            .filter(Metadata::is_file)
             .and_then(|meta| meta.modified().ok())
-            .and_then(|made| SystemTime::now().duration_since(made.into_std()).ok())
+            .and_then(|made| SystemTime::now().duration_since(made).ok())
             .is_some_and(|age| age >= ttl);
         if old {
-            let _ = super::native::remove_file_or_symlink(parent, Path::new(&name));
+            let _ = parent.remove_file_or_symlink(Path::new(&name));
         }
     }
 }
@@ -137,14 +136,8 @@ fn locate(
     }
     let parent_relative = relative.parent().filter(|p| !p.as_os_str().is_empty());
     if parents && let Some(parent_relative) = parent_relative {
-        super::native::create_dir(
-            root,
-            parent_relative,
-            true,
-            #[cfg(unix)]
-            None,
-        )
-        .map_err(|e| io_error(&e))?;
+        root.create_dir(parent_relative, true, None)
+            .map_err(|e| io_error(&e))?;
     }
     let parent = match parent_relative {
         Some(parent_relative) => root.open_dir(parent_relative),
@@ -245,7 +238,7 @@ impl Staged {
 
     fn open_temp_named(&mut self, file_mode: Option<u32>, temp: OsString) -> Result<(), ErrorBody> {
         let existing = self.parent.symlink_metadata(&self.name).ok();
-        if existing.as_ref().is_some_and(cap_std::fs::Metadata::is_dir) {
+        if existing.as_ref().is_some_and(Metadata::is_dir) {
             return Err(ErrorBody::new(
                 ErrorCode::BadRequest,
                 "the target is a directory",
@@ -254,13 +247,12 @@ impl Staged {
         let file = open_with(&self.parent, Path::new(&temp), create_new(file_mode))?;
         self.temp = Some(temp);
         // A replaced file keeps its mode unless the request names one, without the set-ID bits.
-        #[cfg(unix)]
-        if file_mode.is_none()
-            && let Some(existing) = existing.filter(cap_std::fs::Metadata::is_file)
+        if cfg!(unix)
+            && file_mode.is_none()
+            && let Some(existing) = existing.filter(Metadata::is_file)
+            && let Some(mode) = existing.mode()
         {
-            use cap_std::fs::PermissionsExt;
-            let mode = existing.permissions().mode() & 0o7777 & !super::ID_BITS;
-            let _ = file.set_permissions(cap_std::fs::Permissions::from_mode(mode));
+            let _ = file.set_mode(mode & 0o7777 & !super::ID_BITS);
         }
         self.file = Some(file);
         Ok(())
@@ -427,19 +419,14 @@ impl Staged {
                 .temp
                 .as_deref()
                 .map_or_else(|| Path::new(&self.name), Path::new);
-            let spec = SystemTimeSpec::Absolute(cap_std::time::SystemTime::from_std(modified));
             self.parent
-                .set_times(name, None, Some(spec))
+                .set_times(name, None, Some(modified))
                 .map_err(|e| io_error(&e))?;
         }
         if let Some(temp) = &self.temp {
-            super::native::rename_replacing(
-                &self.parent,
-                Path::new(temp),
-                &self.parent,
-                Path::new(&self.name),
-            )
-            .map_err(|e| io_error(&e))?;
+            self.parent
+                .rename(Path::new(temp), Path::new(&self.name), true)
+                .map_err(|e| io_error(&e))?;
         }
         self.committed = true;
         Ok(())
@@ -457,9 +444,9 @@ impl Drop for Staged {
             return;
         }
         if let Some(temp) = &self.temp {
-            let _ = super::native::remove_file_or_symlink(&self.parent, Path::new(temp));
+            let _ = self.parent.remove_file_or_symlink(Path::new(temp));
         } else if self.made && matches!(self.mode, WriteMode::Create) {
-            let _ = super::native::remove_file_or_symlink(&self.parent, Path::new(&self.name));
+            let _ = self.parent.remove_file_or_symlink(Path::new(&self.name));
         }
     }
 }
@@ -471,16 +458,13 @@ fn create_new(file_mode: Option<u32>) -> OpenOptions {
     options
 }
 
-#[cfg(unix)]
 fn apply_mode(options: &mut OpenOptions, file_mode: Option<u32>) {
-    use cap_std::fs::OpenOptionsExt;
-    if let Some(bits) = file_mode {
+    if cfg!(unix)
+        && let Some(bits) = file_mode
+    {
         options.mode(bits & 0o7777);
     }
 }
-
-#[cfg(not(unix))]
-fn apply_mode(_options: &mut OpenOptions, _file_mode: Option<u32>) {}
 
 fn open_with(
     parent: &Dir,

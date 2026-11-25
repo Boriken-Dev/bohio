@@ -41,9 +41,11 @@ pub mod word {
     pub const UNSUPPORTED: &str = "unsupported";
     /// Any other failure.
     pub const IO: &str = "io";
+    /// The two names are on different file systems and cannot be renamed in one step.
+    pub const CROSSES_DEVICES: &str = "crosses_devices";
 
     /// Every word, for a reader of a message.
-    pub const ALL: [&str; 10] = [
+    pub const ALL: [&str; 11] = [
         NOT_FOUND,
         DENIED,
         OUTSIDE,
@@ -54,6 +56,7 @@ pub mod word {
         INVALID,
         UNSUPPORTED,
         IO,
+        CROSSES_DEVICES,
     ];
 }
 
@@ -77,6 +80,58 @@ pub fn failure_kind(error: &ProviderError) -> Option<&'static str> {
     word::ALL.into_iter().find(|known| *known == head)
 }
 
+/// The [`std::io::ErrorKind`] a failure stands for, and the failure for an error: the two directions of one table, so
+/// a host and a source agree on what each word means.
+#[must_use]
+pub fn io_error(error: &ProviderError) -> std::io::Error {
+    use std::io::{Error, ErrorKind};
+    let text = error.message();
+    let detail = text.split_once(": ").map_or(text, |(_, rest)| rest);
+    match failure_kind(error) {
+        Some(word::NOT_FOUND) => Error::new(ErrorKind::NotFound, detail),
+        Some(word::DENIED) => Error::new(ErrorKind::PermissionDenied, detail),
+        Some(word::OUTSIDE) => Error::new(
+            ErrorKind::PermissionDenied,
+            "a path led outside of the filesystem",
+        ),
+        Some(word::EXISTS) => Error::new(ErrorKind::AlreadyExists, detail),
+        Some(word::NOT_A_DIRECTORY) => Error::new(ErrorKind::NotADirectory, detail),
+        Some(word::IS_A_DIRECTORY) => Error::new(ErrorKind::IsADirectory, detail),
+        Some(word::NOT_EMPTY) => Error::new(ErrorKind::DirectoryNotEmpty, detail),
+        Some(word::INVALID) => Error::new(ErrorKind::InvalidInput, detail),
+        Some(word::UNSUPPORTED) => Error::new(ErrorKind::Unsupported, detail),
+        Some(word::CROSSES_DEVICES) => Error::new(ErrorKind::CrossesDevices, detail),
+        _ if error.status == Status::GUATIAO_ERR_NOT_FOUND => Error::new(ErrorKind::NotFound, text),
+        _ if error.status == Status::GUATIAO_ERR_UNSUPPORTED => {
+            Error::new(ErrorKind::Unsupported, text)
+        }
+        _ => Error::other(text.to_owned()),
+    }
+}
+
+/// The failure that stands for an operating-system error: see [`io_error`].
+#[must_use]
+pub fn failure_of(error: &std::io::Error) -> ProviderError {
+    use std::io::ErrorKind;
+    let message = error.to_string();
+    let word = match error.kind() {
+        ErrorKind::NotFound => word::NOT_FOUND,
+        ErrorKind::PermissionDenied if message.contains("outside of the filesystem") => {
+            word::OUTSIDE
+        }
+        ErrorKind::PermissionDenied => word::DENIED,
+        ErrorKind::AlreadyExists => word::EXISTS,
+        ErrorKind::NotADirectory => word::NOT_A_DIRECTORY,
+        ErrorKind::IsADirectory => word::IS_A_DIRECTORY,
+        ErrorKind::DirectoryNotEmpty => word::NOT_EMPTY,
+        ErrorKind::InvalidInput | ErrorKind::InvalidFilename => word::INVALID,
+        ErrorKind::Unsupported => word::UNSUPPORTED,
+        ErrorKind::CrossesDevices => word::CROSSES_DEVICES,
+        _ => word::IO,
+    };
+    failure(word, &message)
+}
+
 /// A source of directory trees.
 #[guatiao::kind(name = "bohio_files")]
 pub trait FilesSource: Send + Sync {
@@ -94,6 +149,27 @@ pub trait FilesSource: Send + Sync {
     ///
     /// A [`failure`] (`not_found`, `denied`, `not_a_directory`...), or `GONE` when the source is unavailable.
     fn open_dir(&self, path: &str) -> Result<Object<dyn Directory>, ProviderError>;
+
+    /// Renames `from` below the directory `from_root` to `to` below `to_root`, two directories of this source, in
+    /// one step. Only a source whose directories can share a file system (the node's own) offers it.
+    ///
+    /// # Errors
+    ///
+    /// A [`failure`] (`crosses_devices`, `unsupported`).
+    fn rename_across(
+        &self,
+        from_root: &str,
+        from: &str,
+        to_root: &str,
+        to: &str,
+        overwrite: bool,
+    ) -> Result<(), ProviderError> {
+        let _ = (from_root, from, to_root, to, overwrite);
+        Err(failure(
+            word::UNSUPPORTED,
+            "this source renames only within one directory",
+        ))
+    }
 }
 
 /// One open directory. A `relative` name is below it, with `.` for the directory itself; a `confined` source refuses
@@ -132,12 +208,18 @@ pub trait Directory: Send + Sync {
         options: OpenModel,
     ) -> Result<Object<dyn File>, ProviderError>;
 
-    /// Makes the directory `relative`, with `mode` where the system has modes.
+    /// Makes the directory `relative`, with `mode` where the system has modes. With `parents` the missing
+    /// directories above it are made too and one that exists is not a failure.
     ///
     /// # Errors
     ///
     /// A [`failure`] (`exists`, `not_found` for a missing parent).
-    fn create_dir(&self, relative: &str, mode: Option<u32>) -> Result<(), ProviderError>;
+    fn create_dir(
+        &self,
+        relative: &str,
+        mode: Option<u32>,
+        parents: bool,
+    ) -> Result<(), ProviderError>;
 
     /// Removes the empty directory `relative`.
     ///

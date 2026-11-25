@@ -2,33 +2,37 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use bohio_api::FilesSource;
+use bohio_api::vocab::file_kind;
 use bohio_proto::fs::{Entry, FileKind, Listing, Metadata, Timestamp};
 use bohio_proto::{ErrorBody, ErrorCode};
-use cap_fs_ext::{DirExt, SystemTimeSpec};
-use cap_std::fs::{Dir, File};
 
-use super::native::{self, DirEntry};
 use super::path::{self, check_link_target};
+use super::vfs::{self, Dir, DirEntry, File};
 use super::{Context, io_error};
 
-/// The granted roots of one peer.
+/// The granted roots of one peer, and the source that holds them.
 pub(crate) struct Roots<'a> {
     roots: &'a [PathBuf],
+    files: Arc<dyn FilesSource>,
 }
 
 impl<'a> Roots<'a> {
-    pub(crate) const fn new(roots: &'a [PathBuf]) -> Self {
-        Self { roots }
+    pub(crate) fn new(roots: &'a [PathBuf], files: &Arc<dyn FilesSource>) -> Self {
+        Self {
+            roots,
+            files: Arc::clone(files),
+        }
     }
 
     /// The directory handle of the root `text` lies under, and the path below it.
     pub(crate) fn resolve(&self, text: &str) -> Result<(Dir, PathBuf), ErrorBody> {
         let located = path::locate(self.roots, text)?;
         let root = &self.roots[located.root];
-        let dir = Dir::open_ambient_dir(root, cap_std::ambient_authority())
-            .map_err(|error| io_error(&error))?;
+        let dir = Dir::open_root(&self.files, root).map_err(|error| io_error(&error))?;
         Ok((dir, located.relative))
     }
 
@@ -57,29 +61,10 @@ fn bad(message: &'static str) -> ErrorBody {
     ErrorBody::new(ErrorCode::BadRequest, message)
 }
 
-pub(crate) fn timestamp(time: cap_std::time::SystemTime) -> Timestamp {
-    let time = time.into_std();
-    match time.duration_since(UNIX_EPOCH) {
-        Ok(after) => Timestamp {
-            secs: i64::try_from(after.as_secs()).unwrap_or(i64::MAX),
-            nanos: after.subsec_nanos(),
-        },
-        Err(error) => {
-            let before = error.duration();
-            let nanos = before.subsec_nanos();
-            let whole = i64::try_from(before.as_secs()).unwrap_or(i64::MAX);
-            if nanos == 0 {
-                Timestamp {
-                    secs: -whole,
-                    nanos: 0,
-                }
-            } else {
-                Timestamp {
-                    secs: -whole - 1,
-                    nanos: 1_000_000_000 - nanos,
-                }
-            }
-        }
+fn stamp(time: bohio_api::model::TimeModel) -> Timestamp {
+    Timestamp {
+        secs: time.secs,
+        nanos: time.nanos,
     }
 }
 
@@ -97,50 +82,26 @@ pub(crate) fn system_time(stamp: Timestamp) -> Result<SystemTime, ErrorBody> {
     moved.ok_or_else(|| bad("the time is out of range"))
 }
 
-pub(crate) fn describe(meta: &cap_std::fs::Metadata) -> Metadata {
-    let kind = if meta.is_file() {
-        FileKind::File
-    } else if meta.is_dir() {
-        FileKind::Directory
-    } else if meta.is_symlink() {
-        FileKind::Symlink
-    } else {
-        FileKind::Other
+pub(crate) fn describe(meta: &vfs::Metadata) -> Metadata {
+    let stat = &meta.0;
+    let kind = match stat.kind.as_str() {
+        file_kind::FILE => FileKind::File,
+        file_kind::DIR => FileKind::Directory,
+        file_kind::SYMLINK => FileKind::Symlink,
+        _ => FileKind::Other,
     };
-    let permissions = meta.permissions();
-    #[cfg(unix)]
-    let mode = {
-        use cap_std::fs::PermissionsExt;
-        Some(permissions.mode() & 0o7777)
-    };
-    #[cfg(not(unix))]
-    let mode = None;
-    #[cfg(windows)]
-    let attributes = {
-        use cap_std::fs::MetadataExt;
-        Some(meta.file_attributes())
-    };
-    #[cfg(not(windows))]
-    let attributes = None;
-    #[cfg(unix)]
-    let (device, inode, links) = {
-        use cap_std::fs::MetadataExt;
-        (Some(meta.dev()), Some(meta.ino()), Some(meta.nlink()))
-    };
-    #[cfg(not(unix))]
-    let (device, inode, links) = (None, None, None);
     Metadata {
         kind,
-        size: meta.len(),
-        modified: meta.modified().ok().map(timestamp),
-        accessed: meta.accessed().ok().map(timestamp),
-        created: meta.created().ok().map(timestamp),
-        mode,
-        readonly: permissions.readonly(),
-        attributes,
-        device,
-        inode,
-        links,
+        size: stat.size,
+        modified: stat.modified.map(stamp),
+        accessed: stat.accessed.map(stamp),
+        created: stat.created.map(stamp),
+        mode: stat.mode,
+        readonly: stat.readonly,
+        attributes: stat.attributes,
+        device: stat.device.filter(|_| cfg!(unix)),
+        inode: stat.inode.filter(|_| cfg!(unix)),
+        links: stat.links.filter(|_| cfg!(unix)),
     }
 }
 
@@ -175,7 +136,9 @@ pub(crate) fn list(
         usize::try_from(wanted).unwrap_or(usize::MAX)
     });
     let page = page.clamp(1, context.config.list_page);
-    let read = native::read_dir(&dir, dot(&relative)).map_err(|error| io_error(&error))?;
+    let read = dir
+        .read_dir(dot(&relative))
+        .map_err(|error| io_error(&error))?;
 
     // Only the `page + 1` smallest names above `after` are kept, so a huge directory costs one
     // pass and a page of memory.
@@ -251,14 +214,8 @@ pub(crate) fn mkdir(
     if let Some(bits) = mode {
         super::check_mode(bits)?;
     }
-    native::create_dir(
-        &dir,
-        &relative,
-        parents,
-        #[cfg(unix)]
-        mode,
-    )
-    .map_err(|error| io_error(&error))
+    dir.create_dir(&relative, parents, mode)
+        .map_err(|error| io_error(&error))
 }
 
 pub(crate) fn remove(roots: &Roots<'_>, text: &str, recursive: bool) -> Result<(), ErrorBody> {
@@ -268,12 +225,12 @@ pub(crate) fn remove(roots: &Roots<'_>, text: &str, recursive: bool) -> Result<(
         .map_err(|error| io_error(&error))?;
     let removed = if meta.is_dir() {
         if recursive {
-            native::remove_dir_all(&dir, &relative)
+            dir.remove_dir_all(&relative)
         } else {
-            native::remove_dir(&dir, &relative)
+            dir.remove_dir(&relative)
         }
     } else {
-        native::remove_file_or_symlink(&dir, &relative)
+        dir.remove_file_or_symlink(&relative)
     };
     removed.map_err(|error| io_error(&error))
 }
@@ -286,7 +243,8 @@ pub(crate) fn rename(
 ) -> Result<(), ErrorBody> {
     let (from_dir, from_relative) = roots.resolve_entry(from)?;
     let (to_dir, to_relative) = roots.resolve_entry(to)?;
-    super::tree::rename_in(&from_dir, &from_relative, &to_dir, &to_relative, overwrite)
+    from_dir
+        .rename_to(&from_relative, &to_dir, &to_relative, overwrite)
         .map_err(|error| io_error(&error))
 }
 
@@ -294,10 +252,14 @@ pub(crate) fn symlink(roots: &Roots<'_>, target: &str, link: &str) -> Result<(),
     let (dir, relative) = roots.resolve_entry(link)?;
     let depth = relative.components().count().saturating_sub(1);
     check_link_target(target, depth)?;
+    make_link(&dir, &relative, target).map_err(|error| io_error(&error))
+}
+
+/// Makes `relative` a link to `target`, a Windows link to a directory when the target is one.
+pub(crate) fn make_link(dir: &Dir, relative: &Path, target: &str) -> std::io::Result<()> {
     #[cfg(not(windows))]
     {
-        dir.symlink(target, &relative)
-            .map_err(|error| io_error(&error))
+        dir.symlink(target, relative, false)
     }
     #[cfg(windows)]
     {
@@ -307,19 +269,12 @@ pub(crate) fn symlink(roots: &Roots<'_>, target: &str, link: &str) -> Result<(),
             |parent| parent.join(&native_text),
         );
         let to_directory = dir.metadata(&beside).is_ok_and(|meta| meta.is_dir());
-        native::symlink(&dir, &relative, native_text.as_ref(), to_directory)
-            .map_err(|error| io_error(&error))
+        dir.symlink(&native_text, relative, to_directory)
     }
 }
 pub(crate) fn readlink(roots: &Roots<'_>, text: &str) -> Result<String, ErrorBody> {
     let (dir, relative) = roots.resolve_entry(text)?;
-    let target = native::read_link(&dir, &relative).map_err(|error| io_error(&error))?;
-    target.into_os_string().into_string().map_err(|_| {
-        ErrorBody::new(
-            ErrorCode::Io,
-            "the link's text is not valid text and cannot be sent",
-        )
-    })
+    dir.read_link(&relative).map_err(|error| io_error(&error))
 }
 
 pub(crate) fn set_times(
@@ -329,13 +284,8 @@ pub(crate) fn set_times(
     modified: Option<Timestamp>,
 ) -> Result<(), ErrorBody> {
     let (dir, relative) = roots.resolve_entry(text)?;
-    let spec = |stamp: Option<Timestamp>| -> Result<Option<SystemTimeSpec>, ErrorBody> {
-        stamp
-            .map(|stamp| {
-                system_time(stamp)
-                    .map(|time| SystemTimeSpec::Absolute(cap_std::time::SystemTime::from_std(time)))
-            })
-            .transpose()
+    let spec = |stamp: Option<Timestamp>| -> Result<Option<SystemTime>, ErrorBody> {
+        stamp.map(system_time).transpose()
     };
     dir.set_times(&relative, spec(accessed)?, spec(modified)?)
         .map_err(|error| io_error(&error))
@@ -343,10 +293,9 @@ pub(crate) fn set_times(
 
 #[cfg(unix)]
 pub(crate) fn set_mode(roots: &Roots<'_>, text: &str, mode: u32) -> Result<(), ErrorBody> {
-    use cap_std::fs::{Permissions, PermissionsExt};
     super::check_mode(mode)?;
     let (dir, relative) = roots.resolve_entry(text)?;
-    dir.set_permissions(&relative, Permissions::from_mode(mode))
+    dir.set_mode(&relative, mode)
         .map_err(|error| io_error(&error))
 }
 
@@ -370,7 +319,8 @@ pub(crate) fn set_attributes(
     let Some(readonly) = readonly else {
         return Ok(());
     };
-    native::set_readonly(&dir, &relative, readonly).map_err(|error| io_error(&error))
+    dir.set_readonly(&relative, readonly)
+        .map_err(|error| io_error(&error))
 }
 
 #[cfg(not(windows))]
@@ -392,7 +342,7 @@ pub(crate) fn set_attributes(
 pub(crate) fn open_regular_in(
     dir: &Dir,
     relative: &Path,
-) -> Result<(File, cap_std::fs::Metadata), ErrorBody> {
+) -> Result<(File, vfs::Metadata), ErrorBody> {
     let before = dir.metadata(relative).map_err(|error| io_error(&error))?;
     if !before.is_file() {
         return Err(bad("the path is not a regular file"));
@@ -409,7 +359,12 @@ pub(crate) fn open_regular_in(
 pub(crate) fn open_regular(
     roots: &Roots<'_>,
     text: &str,
-) -> Result<(File, cap_std::fs::Metadata), ErrorBody> {
+) -> Result<(File, vfs::Metadata), ErrorBody> {
     let (dir, relative) = roots.resolve_entry(text)?;
     open_regular_in(&dir, &relative)
+}
+
+/// The wire's time for a moment.
+pub(crate) fn timestamp(time: SystemTime) -> Timestamp {
+    stamp(vfs::time_model(time))
 }

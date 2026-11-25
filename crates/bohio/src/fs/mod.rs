@@ -30,6 +30,16 @@
 //!   and a directory swapped for a junction cannot redirect it. The root itself is opened by its path
 //!   once per call, so what lies above a configured root is the administrator's to protect.
 //!
+//! # Through a files source
+//!
+//! The engines never name `cap-std`: a root is opened as a directory handle by the node's [`bohio_api::FilesSource`]
+//! (`native` by default), and [`vfs`] gives the engines its handles, files and attributes. What each guarantee above
+//! means is the source's: `native` keeps all of it inside its provider, and a source that resolves names by path says
+//! so (`describe` lacks `confined`). Within `native` one step is weaker than before: the attributes of a listed entry are
+//! asked by its name below the directory the listing was opened on, where they were read through the listing's own handle,
+//! so a directory on that path swapped for a link between the listing and the question can answer for another directory,
+//! still inside the root. A rename between two roots opens both roots by their paths in the provider, as each call did.
+//!
 //! On every system the host still trusts the roots' owner: a hard link made by another local user
 //! to a file outside a root exposes that file, and a bind mount or a Windows junction an
 //! administrator places inside a root is part of the root.
@@ -41,7 +51,7 @@ pub(crate) mod compress;
 mod delta;
 mod follow;
 mod hash;
-mod native;
+pub(crate) mod native;
 mod ops;
 mod path;
 mod prepare;
@@ -49,6 +59,7 @@ mod read;
 mod search;
 mod stage;
 mod tree;
+mod vfs;
 mod walk;
 mod write;
 
@@ -60,6 +71,24 @@ use crate::control::Current;
 use crate::limit::Slots;
 use crate::policy::{Grant, Permission};
 
+/// A reader of an image of the node: a regular file opened inside the roots, and its size.
+pub(crate) struct Confined {
+    file: vfs::File,
+    size: u64,
+}
+
+impl Confined {
+    /// The file's size when it was opened.
+    pub(crate) const fn size(&self) -> u64 {
+        self.size
+    }
+
+    /// Reads at `offset` into `dst`, and answers the bytes read.
+    pub(crate) fn read_at(&self, offset: u64, dst: &mut [u8]) -> std::io::Result<usize> {
+        self.file.read_at(offset, dst)
+    }
+}
+
 /// Opens the regular file `path` for reading inside `roots`, as a read of it would, and says its size: what a source that
 /// reads an image of the node is given.
 ///
@@ -68,11 +97,25 @@ use crate::policy::{Grant, Permission};
 /// `outside_root`, `not_found`, `denied` and the other refusals of a read's open.
 pub(crate) fn open_confined(
     roots: &[std::path::PathBuf],
+    files: &std::sync::Arc<dyn bohio_api::FilesSource>,
     path: &str,
-) -> Result<(std::fs::File, u64), bohio_proto::ErrorBody> {
-    let roots = ops::Roots::new(roots);
+) -> Result<Confined, bohio_proto::ErrorBody> {
+    let roots = ops::Roots::new(roots, files);
     let (file, meta) = ops::open_regular(&roots, path)?;
-    Ok((file.into_std(), meta.len()))
+    Ok(Confined {
+        size: meta.len(),
+        file,
+    })
+}
+
+/// The files source an engine reaches the file system through.
+#[derive(Clone, Copy)]
+pub struct FilesRef<'a>(pub &'a std::sync::Arc<dyn bohio_api::FilesSource>);
+
+impl core::fmt::Debug for FilesRef<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FilesRef").finish_non_exhaustive()
+    }
 }
 
 pub use hash::{HashContext, serve_hash};
@@ -100,6 +143,8 @@ pub struct Context<'a> {
     pub compression: &'a CompressionConfig,
     /// The peer's id as text: a prepared read is bound to the peer that made it.
     pub peer: &'a str,
+    /// The files source the roots are opened from.
+    pub source: FilesRef<'a>,
     /// The bound on concurrent transfers, shared by every stream.
     pub slots: &'a Slots,
     /// The bound on concurrent followed reads, shared by every stream.
@@ -141,7 +186,7 @@ pub fn call(context: &Context<'_>, call: &Call, budget: usize) -> Result<Reply, 
         }
     };
     authorize(context, needs)?;
-    let roots = Roots::new(context.grant.fs_roots());
+    let roots = Roots::new(context.grant.fs_roots(), context.source.0);
     Ok(match call {
         Call::Stat { path, follow } => Reply::Stat(Box::new(ops::stat(&roots, path, *follow)?)),
         Call::List { path, after, limit } => Reply::List(ops::list(
@@ -325,4 +370,31 @@ pub(crate) fn io_error(error: &std::io::Error) -> ErrorBody {
         _ => (ErrorCode::Io, "the operation failed"),
     };
     ErrorBody::new(code, message)
+}
+
+/// The source of a node that serves no files: every root is unavailable.
+#[must_use]
+pub fn absent() -> std::sync::Arc<dyn bohio_api::FilesSource> {
+    struct Absent;
+
+    impl bohio_api::FilesSource for Absent {
+        fn describe(
+            &self,
+        ) -> Result<bohio_api::SourceInfo, bohio_api::guatiao::library::ProviderError> {
+            Ok(bohio_api::SourceInfo::new("none", &[], &[])
+                .unavailable("this node serves no files"))
+        }
+
+        fn open_dir(
+            &self,
+            _path: &str,
+        ) -> Result<
+            bohio_api::guatiao::library::Object<dyn bohio_api::Directory>,
+            bohio_api::guatiao::library::ProviderError,
+        > {
+            Err(bohio_api::unavailable("this node serves no files"))
+        }
+    }
+
+    std::sync::Arc::new(Absent)
 }

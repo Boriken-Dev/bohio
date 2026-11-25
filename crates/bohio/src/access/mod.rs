@@ -12,6 +12,7 @@
 
 mod desktop;
 mod native;
+mod native_files;
 mod plugins;
 mod value;
 

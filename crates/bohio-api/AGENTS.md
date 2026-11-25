@@ -75,6 +75,43 @@ a missing program and a refused one apart. The kinds of files (`bohio_files`, `b
 A provider's status maps to the wire error a peer sees: `UNSUPPORTED` is `unsupported`, `NOT_FOUND` `not_found`, `BAD_VALUE`
 `bad_request`, `BUSY` `busy`, `GONE` `unavailable`, `INTERNAL` `io`.
 
+## Files kind (`bohio_api::files`)
+
+```rust
+#[guatiao::kind(name = "bohio_files")]   pub trait FilesSource: Send + Sync { fn describe(..); fn open_dir(&self, path: &str) -> Result<Object<dyn Directory>, _>;
+    fn rename_across(&self, from_root: &str, from: &str, to_root: &str, to: &str, overwrite: bool) -> Result<(), _> { unsupported } }
+#[guatiao::kind(object, name = "bohio_directory")]
+pub trait Directory: Send + Sync {   // a `relative` name is below the handle (`.` is it); a `confined` source refuses one that leaves it
+    fn open_dir(&self, relative: &str) -> Result<Object<dyn Directory>, _>;
+    fn stat(&self, relative: &str, follow: bool) -> Result<FileStat, _>;
+    fn read_dir(&self, relative: &str) -> Result<Object<dyn DirReader>, _>;
+    fn open_file(&self, relative: &str, options: OpenModel) -> Result<Object<dyn File>, _>;
+    fn create_dir(&self, relative: &str, mode: Option<u32>, parents: bool) -> Result<(), _>;
+    fn remove_dir(&self, relative: &str) -> Result<(), _>;  fn remove_dir_all(..);  fn remove_file(..);        // a file or a link
+    fn rename(&self, from: &str, to: &str, overwrite: bool) -> Result<(), _>;                                 // both below this handle
+    fn hard_link(&self, from: &str, to: &str) -> Result<(), _> { unsupported }
+    fn symlink(&self, target: &str, link: &str, to_directory: bool) -> Result<(), _>;  fn read_link(&self, relative: &str) -> Result<String, _>;
+    fn set_times(&self, relative: &str, accessed: Option<TimeModel>, modified: Option<TimeModel>) -> Result<(), _>;
+    fn set_mode(&self, relative: &str, mode: u32) -> Result<(), _>;  fn set_readonly(&self, relative: &str, readonly: bool) -> Result<(), _>;
+    fn statvfs(&self, relative: &str) -> Result<VfsStat, _> { unsupported }
+}
+#[guatiao::kind(object, name = "bohio_dir_reader")]  pub trait DirReader: Send + Sync { fn next(&self, max: u64) -> Result<Vec<DirEntryModel>, _>; }  // empty = the end
+#[guatiao::kind(object, name = "bohio_file")]
+pub trait File: Send + Sync { fn read_at(&self, offset: u64, dst: &mut [u8]) -> Result<u64, _>; fn write_at(&self, offset: u64, data: &[u8]) -> Result<u64, _>;
+    fn set_len(&self, len: u64) -> Result<(), _>; fn sync(&self) -> Result<(), _>; fn stat(&self) -> Result<FileStat, _>;
+    fn set_modified(&self, time: TimeModel) -> Result<(), _>; fn set_mode(&self, mode: u32) -> Result<(), _>; }
+```
+
+A failure starts its message with a word (`files::word`: `not_found`, `denied`, `outside_root`, `exists`, `not_a_directory`, `is_a_directory`,
+`not_empty`, `invalid`, `unsupported`, `io`, `crosses_devices`): `files::failure(word, text)` makes one, `files::failure_kind` reads it,
+`files::io_error` and `files::failure_of` turn it into and from a `std::io::Error` so a host and a source agree on what each word means.
+`OpenModel { read, write, create, create_new, truncate, append, mode }` (`append`: every write goes to the end, whatever its offset);
+`FileStat { kind, size, modified, accessed, created, mode, readonly, attributes, device, inode, links }` (`kind` is `file`, `dir`,
+`symlink` or `other`, `vocab::file_kind`); `DirEntryModel { name, stat, unnamed }` (`stat` is absent when the listing does not carry it;
+`unnamed` says the name is not text and the host skips it); `TimeModel { secs, nanos }`; `VfsStat`. Offers and lacks (`vocab::files`):
+`read`, `write`, `confined`, `symlink`, `hard_link`, `set_times`, `set_mode`, `set_readonly`, `statvfs`, `atomic_replace`, `sync`,
+`list_stats`, `posix_paths`. `contract::files(&dyn FilesSource, root, &ContractSettings)` works inside an empty directory the caller made.
+
 ## Models (`bohio_api::model`)
 
 All derive guatiao's `ToValue`, `FromValue` and `Schema`; an `Option` field is optional on the wire and a model grows by such fields.

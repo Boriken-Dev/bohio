@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use super::vfs::{self, Dir};
 use bohio_proto::fs::Metadata;
 use bohio_proto::hash::Algorithm;
 use bohio_proto::walk::{
@@ -15,7 +16,6 @@ use bohio_proto::walk::{
 use bohio_proto::{ErrorBody, ErrorCode, encode};
 use bohio_transfer::compress::{Encoder, Piece};
 use bohio_transfer::hash::Hasher;
-use cap_std::fs::Dir;
 use coqui_transport::{Channel, Failure};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
@@ -324,7 +324,7 @@ impl Walker<'_> {
             ..self.context.files
         };
         authorize(&files, &[Permission::FsRead])?;
-        let roots = Roots::new(grant.fs_roots());
+        let roots = Roots::new(grant.fs_roots(), files.source.0);
         let (dir, relative) = roots.resolve(text)?;
         if !self.room(root) {
             return Ok(());
@@ -398,14 +398,12 @@ impl Walker<'_> {
         dir: &Dir,
         relative: &std::path::Path,
         text: &str,
-        meta: &cap_std::fs::Metadata,
+        meta: &vfs::Metadata,
         root: u64,
     ) -> WalkEntry {
         let described: Metadata = ops::describe(meta);
         let target = if meta.is_symlink() {
-            super::native::read_link(dir, relative)
-                .ok()
-                .and_then(|target| target.into_os_string().into_string().ok())
+            dir.read_link(relative).ok()
         } else {
             None
         };
@@ -468,7 +466,7 @@ impl Walker<'_> {
         relative: &std::path::Path,
         text: &str,
         depth: u64,
-        meta: &cap_std::fs::Metadata,
+        meta: &vfs::Metadata,
         visited: &mut HashSet<(u64, u64)>,
     ) -> Option<Level> {
         let shown = if text.is_empty() { None } else { Some(text) };
@@ -513,7 +511,7 @@ impl Walker<'_> {
                 usize::try_from(max.saturating_sub(self.sent)).unwrap_or(usize::MAX)
             }
         };
-        let read = match super::native::read_dir(dir, relative) {
+        let read = match dir.read_dir(relative) {
             Ok(read) => read,
             Err(error) => {
                 self.item_error(root, shown, &io_error(&error));
@@ -545,7 +543,7 @@ impl Walker<'_> {
 }
 
 /// The device and inode of `meta`, where the host reports them.
-fn identity(meta: &cap_std::fs::Metadata) -> Option<(u64, u64)> {
+fn identity(meta: &vfs::Metadata) -> Option<(u64, u64)> {
     let described = ops::describe(meta);
     Some((described.device?, described.inode?))
 }

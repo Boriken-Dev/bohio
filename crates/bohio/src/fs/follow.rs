@@ -1,7 +1,7 @@
 //! `bohio-read/1` with `follow`: a file sent from where the read starts and then as it grows, until the client closes the
 //! stream (`tail -f`).
 
-use cap_std::fs::File;
+use super::vfs::{File, Metadata};
 use std::io::{Read, Seek, SeekFrom};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -24,22 +24,9 @@ fn bad(message: &'static str) -> ErrorBody {
 /// index on Windows (its creation time is no help there: a file made under a name just freed is given the old one's).
 type Identity = (Option<u64>, Option<u64>);
 
-#[cfg(unix)]
-fn identity(meta: &cap_std::fs::Metadata) -> Identity {
-    let described = ops::describe(meta);
-    (described.device, described.inode)
-}
-
-#[cfg(windows)]
-fn identity(meta: &cap_std::fs::Metadata) -> Identity {
-    use cap_fs_ext::MetadataExt;
-    // Made from an open file, as `open_regular` makes it: the handle is what knows these.
-    (Some(meta.dev()), Some(meta.ino()))
-}
-
-#[cfg(not(any(unix, windows)))]
-fn identity(_: &cap_std::fs::Metadata) -> Identity {
-    (None, None)
+fn identity(meta: &Metadata) -> Identity {
+    // Made from an open file, as `open_regular` makes it: on Windows the handle is what knows these.
+    (meta.0.device, meta.0.inode)
 }
 
 /// Serves a followed read: the header (with `follow` true), then data frames as bytes arrive, `truncated` frames when
@@ -91,7 +78,7 @@ pub(super) fn serve(
             "the host is running as many followed reads as it allows",
         )
     })?;
-    let roots = Roots::new(context.grant.fs_roots());
+    let roots = Roots::new(context.grant.fs_roots(), context.source.0);
     let (mut file, meta) = ops::open_regular(&roots, &request.path)?;
     let size = meta.len();
     let mut position = match follow.tail {
@@ -199,8 +186,8 @@ fn replacement(
     context: &Context<'_>,
     path: &str,
     tracked: &Identity,
-) -> Result<Option<(File, cap_std::fs::Metadata)>, ErrorBody> {
-    let roots = Roots::new(context.grant.fs_roots());
+) -> Result<Option<(File, Metadata)>, ErrorBody> {
+    let roots = Roots::new(context.grant.fs_roots(), context.source.0);
     let (file, meta) = match ops::open_regular(&roots, path) {
         Ok(found) => found,
         Err(body) if matches!(body.code, ErrorCode::NotFound | ErrorCode::BadRequest) => {
@@ -218,7 +205,7 @@ fn replacement(
         ..*context
     };
     authorize(&files, &[Permission::FsRead])?;
-    Roots::new(grant.fs_roots()).resolve_entry(path)?;
+    Roots::new(grant.fs_roots(), files.source.0).resolve_entry(path)?;
     Ok(Some((file, meta)))
 }
 

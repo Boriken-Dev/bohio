@@ -174,7 +174,7 @@ fn check_base_digests(base: &DeltaBase) -> Result<(), ErrorBody> {
 
 /// The target a delta write copies from, opened before anything is written.
 struct Base {
-    file: cap_std::fs::File,
+    file: super::vfs::File,
     length: u64,
     modified: Option<Timestamp>,
     block_size: u32,
@@ -212,7 +212,7 @@ fn open_checked(
     context: &Context<'_>,
     path: &str,
     wanted: &DeltaBase,
-) -> Result<(cap_std::fs::File, u64, Option<Timestamp>), ErrorBody> {
+) -> Result<(super::vfs::File, u64, Option<Timestamp>), ErrorBody> {
     let (dir, relative) = roots.resolve(path)?;
     let (mut file, meta) = ops::open_regular_in(&dir, &relative)?;
     let modified = meta.modified().ok().map(ops::timestamp);
@@ -284,7 +284,7 @@ fn run(
             "the host is running as many transfers as it allows",
         )
     })?;
-    let roots = Roots::new(context.grant.fs_roots());
+    let roots = Roots::new(context.grant.fs_roots(), context.source.0);
     let mut base = match &request.mode {
         WriteMode::Delta { block_size, base } => Some(open_base(
             &roots,

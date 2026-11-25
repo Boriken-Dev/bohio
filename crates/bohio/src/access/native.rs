@@ -19,7 +19,8 @@ use bohio_api::guatiao::library::{Object, ProviderError};
 use bohio_api::guatiao::{FromValue, Provider, Schema, Status, ToValue};
 use bohio_api::model::{Delivery, EnvVar, SourceInfo, TerminalExit, TerminalOpen};
 use bohio_api::{
-    DesktopSession, DesktopSource, ExecSource, Terminal, TerminalSource, unavailable, vocab,
+    DesktopSession, DesktopSource, ExecSource, FilesSource, Terminal, TerminalSource, unavailable,
+    vocab,
 };
 use bohio_proto::exec::Env;
 use bohio_proto::shell::ShellKind;
@@ -45,6 +46,9 @@ pub struct NativeSettings {
     /// without bound. At least 1. Default `16`.
     #[map(default = 16)]
     pub queue_chunks: u64,
+    /// Directory entries one read of a listing returns. At least 1. Default `256`.
+    #[map(default = 256)]
+    pub list_chunk: u64,
     /// How the Windows desktop captures: `auto` (DXGI, and GDI where DXGI cannot serve), `dxgi` or `gdi`. Default `auto`.
     #[map(default = String::from("auto"))]
     pub windows_capture: String,
@@ -143,6 +147,7 @@ impl Default for NativeSettings {
         Self {
             read_chunk: 16_384,
             queue_chunks: 16,
+            list_chunk: 256,
             windows_capture: "auto".to_owned(),
             windows_frame_wait: "250ms".to_owned(),
             windows_capture_idle: "10s".to_owned(),
@@ -182,6 +187,9 @@ impl NativeSettings {
         }
         if self.queue_chunks == 0 {
             return Err(refuse("queue_chunks is 0: output has nowhere to wait"));
+        }
+        if self.list_chunk == 0 {
+            return Err(refuse("list_chunk is 0: a listing never returns an entry"));
         }
         if self.clipboard_max_bytes == 0 {
             return Err(refuse("clipboard_max_bytes is 0: no clipboard text fits"));
@@ -401,6 +409,7 @@ fn capture(text: &str) -> Option<WindowsCapture> {
     TerminalSource,
     DesktopSource,
     ExecSource,
+    FilesSource,
     id = "native",
     name = "native",
     crate = ::bohio_api::guatiao,
@@ -420,6 +429,13 @@ impl TryFrom<NativeSettings> for Native {
             settings,
             desktop: Mutex::new(None),
         })
+    }
+}
+
+impl Native {
+    /// Entries one read of a listing returns.
+    pub(super) fn list_chunk(&self) -> u64 {
+        self.settings.list_chunk
     }
 }
 

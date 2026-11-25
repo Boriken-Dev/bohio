@@ -6,7 +6,6 @@
 
 #![forbid(unsafe_code)]
 
-use std::fs::File;
 use std::sync::Arc;
 
 use bohio_api::guatiao::Status;
@@ -46,25 +45,19 @@ fn refuse(code: ErrorCode, message: &str) -> ErrorBody {
     ErrorBody::new(code, message)
 }
 
-/// A file of the node, opened inside the peer's roots, read by offset.
-struct Confined {
-    file: File,
-    size: u64,
-}
+use crate::fs::Confined;
 
 impl BlockReader for Confined {
     fn size(&self) -> Result<u64, ProviderError> {
-        Ok(self.size)
+        Ok(Confined::size(self))
     }
 
     fn read_at(&self, offset: u64, dst: &mut [u8]) -> Result<u64, ProviderError> {
-        #[cfg(unix)]
-        let read = std::os::unix::fs::FileExt::read_at(&self.file, dst, offset);
-        #[cfg(windows)]
-        let read = std::os::windows::fs::FileExt::seek_read(&self.file, dst, offset);
-        read.map(|count| count as u64).map_err(|_| {
-            ProviderError::new(Status::GUATIAO_ERR_INTERNAL, "the image cannot be read")
-        })
+        Confined::read_at(self, offset, dst)
+            .map(|count| count as u64)
+            .map_err(|_| {
+                ProviderError::new(Status::GUATIAO_ERR_INTERNAL, "the image cannot be read")
+            })
     }
 }
 
@@ -155,11 +148,12 @@ fn run(request: &Request, context: &Context<'_>) -> Result<Slots, ErrorBody> {
                     "an image of the node needs fs.read as well",
                 ));
             }
-            let (file, size) = crate::fs::open_confined(context.grant.fs_roots(), path)?;
+            let files = context.sources.files(None)?.arc();
+            let confined = crate::fs::open_confined(context.grant.fs_roots(), &files, path)?;
             let name = std::path::Path::new(path)
                 .file_name()
                 .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
-            Some(Picked::Reader(Confined { file, size }, name))
+            Some(Picked::Reader(confined, name))
         }
         (Op::Insert, Some(Image::Url { url })) => Some(Picked::Url(url.clone())),
         (Op::Insert, Some(_)) => {
