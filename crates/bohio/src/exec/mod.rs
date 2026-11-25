@@ -277,20 +277,17 @@ struct Negotiated {
     decoder: Option<Decoder>,
 }
 
+/// A request that has started: what runs it, its input, the slot it holds and what compression was agreed.
+type Begun<'a> = (
+    Request,
+    Arc<Live>,
+    Option<InputPipe>,
+    crate::limit::Permit<'a>,
+    Negotiated,
+);
+
 /// Checks the request and starts the process, returning the slot it holds.
-fn start<'a>(
-    metadata: &[u8],
-    context: &Context<'a>,
-) -> Result<
-    (
-        Request,
-        Arc<Live>,
-        Option<InputPipe>,
-        crate::limit::Permit<'a>,
-        Negotiated,
-    ),
-    ErrorBody,
-> {
+fn start<'a>(metadata: &[u8], context: &Context<'a>) -> Result<Begun<'a>, ErrorBody> {
     let request = Request::from_metadata(metadata)
         .map_err(|_| ErrorBody::new(ErrorCode::BadRequest, "the request cannot be read"))?;
     if !context.config.enabled {

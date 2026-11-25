@@ -9,11 +9,14 @@
 //! comes back in the time it was given, and that nothing panics on an argument that is wrong but possible. A
 //! provider's own tests call them over an endpoint the test starts.
 
+mod exec;
+
 use std::time::{Duration, Instant};
 
 use guatiao::Status;
 use guatiao::library::ProviderError;
 
+pub use self::exec::exec;
 use crate::desktop::DesktopSource;
 use crate::media::MediaSource;
 use crate::model::{InputModel, SourceInfo, TerminalOpen};
