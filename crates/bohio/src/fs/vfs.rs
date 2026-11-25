@@ -237,6 +237,7 @@ impl Dir {
     }
 
     /// Sets or clears the read-only attribute of `relative`.
+    #[cfg(windows)]
     pub(crate) fn set_readonly(&self, relative: &Path, readonly: bool) -> io::Result<()> {
         self.handle
             .set_readonly(text(relative)?, readonly)

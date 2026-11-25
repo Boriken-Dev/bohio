@@ -58,6 +58,7 @@ Grant a peer `exec` and serve one request over an in-process channel:
 use std::sync::Arc;
 
 use bohio::config::{CompressionConfig, ExecutionConfig};
+use bohio::access::Sources;
 use bohio::exec::{self, Context};
 use bohio::limit::Slots;
 use bohio::{Grant, Permission};
@@ -74,7 +75,8 @@ let config = ExecutionConfig::default();
 let slots = Slots::new(config.max_processes);
 let path = std::env::var_os("PATH").unwrap_or_default();
 let compression = CompressionConfig::default();
-let context = Context { grant: &grant, config: &config, compression: &compression, slots: &slots, path: &path };
+let sources = Sources::default();
+let context = Context { grant: &grant, config: &config, compression: &compression, slots: &slots, path: &path, sources: &sources };
 
 // This peer lacks `exec`, so the request is refused.
 let metadata = Request::argv(["echo", "hi"]).to_metadata()?;
