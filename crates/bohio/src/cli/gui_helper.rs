@@ -9,6 +9,7 @@ use std::sync::atomic::AtomicBool;
 
 use bohio_client::dial::Endpoint;
 use clap::Args;
+use coqui_transport::Channel as _;
 
 use super::ConfigOption;
 use super::commands::found;
@@ -40,6 +41,11 @@ pub struct GuiHelperArgs {
     /// `DISPLAY`, else `main`.
     #[arg(long, value_name = "NAME")]
     pub session: Option<String>,
+    /// Serve the node over this process's standard input and output instead of an endpoint: the node started the helper through
+    /// a login (an ssh source), which is what authenticates it, so no account is checked. Nothing else may write to standard
+    /// output.
+    #[arg(long)]
+    pub stdio: bool,
 }
 
 /// The account of a node that was told nothing else.
@@ -60,6 +66,9 @@ fn first_set(names: &[&str]) -> Option<String> {
 pub(super) fn run(args: &GuiHelperArgs, environment: &Environment) -> Result<(), String> {
     let found = found(&args.config.config)?;
     let config = found.config();
+    if args.stdio {
+        return run_stdio(args, config, environment);
+    }
     let text = match (&args.endpoint, &config.gui.helper_endpoint, &args.node) {
         (Some(endpoint), _, _) | (None, Some(endpoint), _) => endpoint.clone(),
         (None, None, Some(node)) => {
@@ -99,5 +108,39 @@ pub(super) fn run(args: &GuiHelperArgs, environment: &Environment) -> Result<(),
     helper::run(&helper, Arc::new(sources), &AtomicBool::new(false))
         .map_err(|error| error.to_string())?;
     tracing::info!("the node closed the connection");
+    Ok(())
+}
+
+/// Serves the node on standard input and output.
+fn run_stdio(
+    args: &GuiHelperArgs,
+    config: &crate::config::Config,
+    environment: &Environment,
+) -> Result<(), String> {
+    let settings = node_settings(config, environment);
+    let sources = Sources::from_config(&settings.source, &settings.access)
+        .map_err(|(key, message)| format!("{key}: {message}"))?;
+    let session = args
+        .session
+        .clone()
+        .or_else(|| first_set(&["SESSIONNAME", "XDG_SESSION_ID", "DISPLAY"]))
+        .unwrap_or_else(|| "main".to_owned());
+    let helper = HelperSettings {
+        // Unused here: the connection is the process's own standard streams.
+        endpoint: Endpoint::parse("pipe://stdio").map_err(|error| error.to_string())?,
+        node_account: String::new(),
+        session,
+        user: first_set(&["USERNAME", "USER"]),
+        gui: config.gui.clone(),
+        link: config.link.settings(),
+    };
+    let channel = bohio_client::link::stdio(&helper.link).map_err(|error| error.to_string())?;
+    helper::serve_node(
+        &channel,
+        &helper,
+        Arc::new(sources),
+        &AtomicBool::new(false),
+    );
+    channel.close();
     Ok(())
 }

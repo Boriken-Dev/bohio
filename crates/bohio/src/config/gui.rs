@@ -162,6 +162,13 @@ pub struct GuiConfig {
     /// What `bohio gui-helper` accepts as the account that runs the node: a SID or name (Windows), a uid or name (Unix).
     /// Default `NT AUTHORITY\LocalService` (`S-1-5-19`) on Windows and `bohio` on Unix. Read from the lowest layer only.
     pub node_account: Option<String>,
+    /// Helpers that run on another machine, each `SOURCE=COMMAND`: the node starts COMMAND (`bohio gui-helper --stdio`) with
+    /// the exec source SOURCE (an ssh source) and serves that machine's desktop as a session of its own. What authenticates the
+    /// helper is the source's login, so the machine's account is the one the source logs in as. Read from the lowest layer
+    /// only. Default empty.
+    pub helper_exec: Vec<String>,
+    /// How long after a remote helper ends or fails to start the node starts it again. Not zero. Default `10s`.
+    pub helper_exec_retry: Span,
 }
 
 impl Default for GuiConfig {
@@ -217,6 +224,8 @@ impl Default for GuiConfig {
             helper_endpoint: None,
             max_helpers: 8,
             node_account: None,
+            helper_exec: Vec::new(),
+            helper_exec_retry: Span(Duration::from_secs(10)),
         }
     }
 }
@@ -250,6 +259,7 @@ impl GuiConfig {
             ("gui.max_streams", self.max_streams == 0),
             ("gui.max_streams_per_peer", self.max_streams_per_peer == 0),
             ("gui.max_helpers", self.max_helpers == 0),
+            ("gui.helper_exec_retry", self.helper_exec_retry.0.is_zero()),
             ("gui.snapshots_per_minute", self.snapshots_per_minute == 0),
             ("gui.max_snapshot_pixels", self.max_snapshot_pixels == 0),
             ("gui.max_input_rate", self.max_input_rate == 0),
@@ -296,6 +306,14 @@ impl GuiConfig {
             .any(|account| account.trim().is_empty())
         {
             return Err(("gui.helper_accounts", "must not hold an empty account"));
+        }
+        for text in &self.helper_exec {
+            if crate::gui::helper_exec::ExecHelper::parse(text).is_err() {
+                return Err((
+                    "gui.helper_exec",
+                    "must be SOURCE=COMMAND, a source name and the command line that starts the helper",
+                ));
+            }
         }
         if cfg!(unix) && !self.helper_accounts.is_empty() && self.helper_endpoint.is_none() {
             return Err((

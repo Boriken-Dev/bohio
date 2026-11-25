@@ -202,3 +202,7 @@ required-features = ["cli"]
 [[test]]
 name = "ssh"
 required-features = ["cli", "ssh"]
+
+[[test]]
+name = "gui_helper_exec"
+required-features = ["gui", "cli"]

@@ -312,6 +312,12 @@ pub(super) fn serve_endpoints(
             say!("dialing {endpoint} peer {id}");
         }
     }
+    let exec_helpers: Vec<_> = config
+        .gui
+        .helper_exec
+        .iter()
+        .filter_map(|text| crate::gui::helper_exec::ExecHelper::parse(text).ok())
+        .collect();
     tracing::info!(host = %server.host(), "serving");
     thread::scope(|scope| {
         let handles: Vec<_> = listeners
@@ -333,6 +339,11 @@ pub(super) fn serve_endpoints(
                     tracing::error!("the helper endpoint failed: {error}");
                 }
             });
+        }
+        if !exec_helpers.is_empty() {
+            let (server, exec_helpers) = (&server, &exec_helpers);
+            let retry = config.gui.helper_exec_retry.0;
+            scope.spawn(move || server.serve_exec_helpers(exec_helpers, retry, stop));
         }
         for (id, endpoint, dial) in &dials {
             let server = &server;
