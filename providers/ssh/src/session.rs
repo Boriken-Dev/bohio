@@ -139,19 +139,33 @@ impl Session {
                 format!("{}: the host refused {what}", link.target()),
             )
         };
-        let mut replies = 0;
+        // The host answers each request in order; `true` marks the X forwarding request, which may fail without ending
+        // the program (the host may not allow it).
+        let mut replies: Vec<bool> = Vec::new();
         let sent = async {
             if let Some((term, cols, rows)) = &open.pty {
                 channel
                     .request_pty(true, term.as_str(), *cols, *rows, 0, 0, &[])
                     .await?;
-                replies += 1;
+                replies.push(false);
+            }
+            if let Some(forward) = &link.forward {
+                channel
+                    .request_x11(
+                        true,
+                        false,
+                        crate::forward::PROTOCOL,
+                        forward.cookie_hex(),
+                        0,
+                    )
+                    .await?;
+                replies.push(true);
             }
             match &open.command {
                 Some(command) => channel.exec(true, command.as_str()).await?,
                 None => channel.request_shell(true).await?,
             }
-            replies += 1;
+            replies.push(false);
             Ok::<(), russh::Error>(())
         };
         match tokio::time::timeout(wait, sent).await {
@@ -170,12 +184,19 @@ impl Session {
         let (err_tx, err_rx) = mpsc::channel(queue);
         let merge = open.pty.is_some();
 
-        // The host answers each request in order; output may follow at once and is kept.
+        // Output may follow the answers at once and is kept.
         let answered = tokio::time::timeout(wait, async {
             let mut got = 0;
-            while got < replies {
+            while got < replies.len() {
                 match read.wait().await {
                     Some(ChannelMsg::Success) => got += 1,
+                    Some(ChannelMsg::Failure) if replies[got] => {
+                        tracing::warn!(
+                            "ssh source {}: the host refused X forwarding (it needs X11Forwarding yes and an xauth); the program runs without it",
+                            link.target()
+                        );
+                        got += 1;
+                    }
                     Some(ChannelMsg::Data { data }) => {
                         let _ = out_tx.send(data.to_vec()).await;
                     }

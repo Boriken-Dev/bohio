@@ -15,6 +15,9 @@ publish = false
 
 [dependencies]
 bohio-api.workspace = true
+bohio-x11.workspace = true
+getrandom.workspace = true
+x11rb.workspace = true
 russh.workspace = true
 russh-sftp.workspace = true
 tokio.workspace = true

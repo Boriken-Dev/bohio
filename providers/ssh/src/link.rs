@@ -19,6 +19,7 @@ use russh::{Channel, ChannelOpenFailure};
 use tokio::runtime::Runtime;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
+use crate::forward::Forward;
 use crate::settings::{HostKeyCheck, Settings, home};
 
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -76,6 +77,7 @@ pub(crate) struct HostKeys {
 pub(crate) struct Client {
     settings: Arc<Settings>,
     keys: Arc<HostKeys>,
+    forward: Option<Arc<Forward>>,
 }
 
 /// The SHA-256 of the public key blob, as `sha256:HEX`.
@@ -156,6 +158,34 @@ impl client::Handler for Client {
             }
         }
     }
+
+    async fn server_channel_open_x11(
+        &mut self,
+        channel: Channel<Msg>,
+        originator_address: &str,
+        originator_port: u32,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        // Without forwarding, or past its limit, the reply is dropped and the host is told no.
+        let Some(forward) = self.forward.clone() else {
+            return Ok(());
+        };
+        let Ok(permit) = Arc::clone(&forward.slots).try_acquire_owned() else {
+            tracing::warn!(
+                "ssh source: an X connection from {originator_address}:{originator_port} was refused: x11_max_connections are open"
+            );
+            return Ok(());
+        };
+        reply.accept().await;
+        tokio::spawn(async move {
+            if let Err(why) = forward.relay(channel).await {
+                tracing::warn!("ssh source: a forwarded X connection ended: {why}");
+            }
+            drop(permit);
+        });
+        Ok(())
+    }
 }
 
 /// One authenticated connection.
@@ -184,6 +214,8 @@ pub(crate) struct Link {
     keys: Arc<HostKeys>,
     state: tokio::sync::Mutex<State>,
     permits: Arc<Semaphore>,
+    /// What X forwarding needs; `None` when the source does not forward.
+    pub(crate) forward: Option<Arc<Forward>>,
 }
 
 /// A session channel, and the slot it holds in the source's `max_channels` until it is let go.
@@ -195,6 +227,7 @@ pub(crate) struct Slot {
 impl Link {
     pub(crate) fn new(settings: Settings, rt: Arc<Rt>) -> Arc<Self> {
         let permits = Arc::new(Semaphore::new(settings.max_channels));
+        let forward = Forward::new(&settings);
         Arc::new(Self {
             settings: Arc::new(settings),
             rt,
@@ -205,6 +238,7 @@ impl Link {
                 lost: false,
             }),
             permits,
+            forward,
         })
     }
 
@@ -342,6 +376,7 @@ impl Link {
         let handler = Client {
             settings: Arc::clone(&self.settings),
             keys: Arc::clone(&self.keys),
+            forward: self.forward.clone(),
         };
         *lock(&self.keys.refusal) = None;
         let timeout = settings.connect_timeout;

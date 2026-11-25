@@ -1,10 +1,17 @@
+| `x11_display` | none | the host's X display to serve as the desktop (`:0`); a number, never a host |
+| `x11_socket_dir` | `/tmp/.X11-unix` | where the host keeps its X sockets (`X<n>` in it) |
+| `xauth` | `xauth` | the program on the host that lists the display's cookie (`xauth list :N`); a host without it is served with no cookie |
+| `x11_forward` | `false` | programs this source starts open their windows on the node's own display (needs `X11Forwarding yes` and an `xauth` on the host); needs `x11_trusted` |
+| `x11_trusted` | `false` | forward as `ssh -Y` does; required by `x11_forward` because this build cannot ask the display for an untrusted authorization |
+| `x11_local_display` | the node's `DISPLAY` | the node's display forwarded windows go to: `:N` (its socket) or `HOST:N` (TCP port 6000+N) |
+| `x11_max_connections` | `64` | forwarded X connections open at once; one past it is refused; at least 1 |
 # `bohio-provider-ssh` — API header
 
-Header-file-style reference for the `bohio-provider-ssh` crate: the `ssh` provider of the `bohio_terminal`, `bohio_exec` and `bohio_files` kinds, with
+Header-file-style reference for the `bohio-provider-ssh` crate: the `ssh` provider of the `bohio_terminal`, `bohio_exec`, `bohio_files` and `bohio_desktop` kinds, with
 every setting and gotcha, so it can be configured and embedded without reading its source. Development documentation lives with the
 source at <https://github.com/Boriken-Dev/bohio>.
 
-No Cargo features. MSRV Rust 1.89. Depends on `bohio-api` (the kinds), `russh` (pure Rust over `ring`: no C toolchain, no `aws-lc`), `russh-sftp` (the files),
+No Cargo features. MSRV Rust 1.89. Depends on `bohio-api` (the kinds), `bohio-x11` (the X11 backend and the desktop types), `x11rb` (the display authority file), `getrandom` (the forwarding cookie), `russh` (pure Rust over `ring`: no C toolchain, no `aws-lc`), `russh-sftp` (the files),
 `tokio` (a small runtime for each source) and `tracing`. `#![forbid(unsafe_code)]`. Version `0.0.0-alpha.0`, not published.
 
 Imports: the root holds `Ssh` (the provider), `SshSettings` (its settings; `SshSettings::new(host)` has every default), `ID` (`"ssh"`) and
@@ -82,6 +89,22 @@ has no more) and are set both at once (the one left alone is read first); read-o
 tree on the client and never follows a link. A file reads ahead and writes behind by `sftp_in_flight` packets: a write's failure is told by
 the next call that can (`write_at`, `sync`, `set_len`, `stat`, `read_at`), and a file dropped with writes in flight waits for them before
 its handle is closed. A server without an `sftp` subsystem makes only the files unavailable, with that reason.
+
+## Desktop (X11)
+
+With `x11_display` set the source is a `bohio_desktop` source: each connection of the X backend (`bohio_x11::X11Desktop`, headless, no
+lock detection) is a `direct-streamlocal@openssh.com` channel to the display's socket, which does not count against `max_channels`
+(OpenSSH's `MaxSessions` counts sessions) and is joined to a loopback connection of the node that only the connection made for it can
+take (x11rb reads a socket). The cookie is `xauth list :N` run through an exec channel, asked once and again after a connection
+failed. `describe` says `lock_detection` is lacking; without `x11_display` the source is `unavailable` with that reason. A root that
+cannot be read (XWayland, WSLg) is composed from the viewable windows by the backend. A Wayland-only host has no display to name.
+
+With `x11_forward` every session (program or terminal) asks the host for X forwarding with a random cookie of the source; a host that
+refuses is logged and the program runs without it. The host's `x11` channels are accepted by the handler (russh's default accepts and
+drops them), the first request is read, its cookie compared with the source's and replaced with the one `x11rb`'s authority file lookup
+gives for `x11_local_display`, and the bytes are relayed until either side ends. Only `x11_trusted = true` is supported: the SECURITY
+extension's untrusted authorization has no binding in x11rb, so `x11_forward` without it is refused when the source is built. A node
+with no X display (Windows) fails each forwarded connection with the reason in the log.
 
 ## Gotchas
 

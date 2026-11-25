@@ -13,7 +13,9 @@
 
 mod agent;
 mod command;
+mod desktop;
 mod files;
+mod forward;
 mod link;
 mod session;
 mod settings;
@@ -23,7 +25,11 @@ use std::sync::Arc;
 use bohio_api::guatiao::library::{Object, ProviderError};
 use bohio_api::guatiao::{Provider, Status};
 use bohio_api::model::{Delivery, ExecStart, SourceInfo, TerminalExit, TerminalOpen};
-use bohio_api::{Directory, ExecSource, FilesSource, Process, Terminal, TerminalSource, vocab};
+use bohio_api::{
+    DesktopSession, DesktopSource, Directory, ExecSource, FilesSource, Process, Terminal,
+    TerminalSource, vocab,
+};
+use bohio_x11::source::DesktopOf;
 use russh::Sig;
 
 use crate::link::{Link, Rt, refuse};
@@ -39,6 +45,7 @@ pub const ID: &str = "ssh";
     TerminalSource,
     ExecSource,
     FilesSource,
+    DesktopSource,
     id = "ssh",
     name = "ssh",
     crate = ::bohio_api::guatiao,
@@ -47,6 +54,7 @@ pub const ID: &str = "ssh";
 pub struct Ssh {
     link: Option<Arc<Link>>,
     files: Option<crate::files::SftpFiles>,
+    desktop: Option<Arc<DesktopOf>>,
 }
 
 impl TryFrom<SshSettings> for Ssh {
@@ -59,8 +67,15 @@ impl TryFrom<SshSettings> for Ssh {
             tracing::warn!("non-default: ssh source {}: {line}", read.host);
         }
         let rt = Rt::new(read.worker_threads)?;
+        let display = read.x11_display;
         let link = Link::new(read, rt);
+        let desktop = display.map(|display| {
+            Arc::new(DesktopOf::new(Arc::new(crate::desktop::desktop(
+                &link, display,
+            ))))
+        });
         Ok(Self {
+            desktop,
             files: Some(crate::files::SftpFiles(crate::files::Files::new(
                 Arc::clone(&link),
             ))),
@@ -101,6 +116,47 @@ impl Ssh {
         match self.reach() {
             Ok(()) => info,
             Err(reason) => info.unavailable(&reason),
+        }
+    }
+}
+
+impl DesktopSource for Ssh {
+    fn describe(&self) -> Result<SourceInfo, ProviderError> {
+        let Some(desktop) = &self.desktop else {
+            return Ok(SourceInfo::new(
+                ID,
+                &[],
+                &[
+                    vocab::desktop::CAPTURE,
+                    vocab::desktop::INPUT,
+                    vocab::desktop::CLIPBOARD,
+                    vocab::desktop::LOCK_DETECTION,
+                    vocab::desktop::MULTI_DISPLAY,
+                ],
+            )
+            .unavailable("this source has no x11_display, so it serves no desktop"));
+        };
+        let mut info = desktop.describe()?;
+        ID.clone_into(&mut info.provider);
+        // The host's login session is not asked: a locked screen is not told.
+        if !info
+            .lacks
+            .iter()
+            .any(|word| word == vocab::desktop::LOCK_DETECTION)
+        {
+            info.offers
+                .retain(|word| word != vocab::desktop::LOCK_DETECTION);
+            info.lacks.push(vocab::desktop::LOCK_DETECTION.to_owned());
+        }
+        Ok(info)
+    }
+
+    fn open(&self) -> Result<Object<dyn DesktopSession>, ProviderError> {
+        match &self.desktop {
+            Some(desktop) => desktop.open(),
+            None => Err(bohio_api::unavailable(
+                "this source has no x11_display, so it serves no desktop",
+            )),
         }
     }
 }

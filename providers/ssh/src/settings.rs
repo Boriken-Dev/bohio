@@ -103,6 +103,33 @@ pub struct SshSettings {
     /// At least 1. Default `32768`.
     #[map(default = 32_768)]
     pub sftp_packet: u64,
+    /// The X display on the host to serve as the source's desktop (`:0`): the host's own X server, reached over a
+    /// channel to its socket, with the cookie `xauth` lists for it. Default none: the source has no desktop.
+    pub x11_display: Option<String>,
+    /// The directory of the host's X sockets (`X<n>` in it). Default `/tmp/.X11-unix`.
+    #[map(default = String::from("/tmp/.X11-unix"))]
+    #[schema(advanced)]
+    pub x11_socket_dir: String,
+    /// The program that lists the host's X cookie (`xauth list DISPLAY`); a host without it is served without a cookie.
+    /// Default `xauth`.
+    #[map(default = String::from("xauth"))]
+    #[schema(advanced)]
+    pub xauth: String,
+    /// Programs this source starts show their windows on the node's own desktop (the way `ssh -X` does): the host's X
+    /// connections come back over the channel to the node's display. Needs `X11Forwarding yes` and an `xauth` on the
+    /// host. Default `false`.
+    #[map(default = false)]
+    pub x11_forward: bool,
+    /// Forward as a trusted client (the way `ssh -Y` does): a program on the host can read and drive everything on the
+    /// node's display. Forwarding needs it: this build cannot ask the display for an untrusted authorization, so
+    /// `x11_forward` without it is refused. Default `false`.
+    #[map(default = false)]
+    pub x11_trusted: bool,
+    /// The node's own display that forwarded windows go to (`:0`). Default the node's `DISPLAY`.
+    pub x11_local_display: Option<String>,
+    /// The forwarded X connections open at once; one past it is refused. At least 1. Default `64`.
+    #[map(default = 64)]
+    pub x11_max_connections: u64,
 }
 
 /// A time: a number and `ms`, `s`, `m` or `h`; a bare number is seconds.
@@ -122,6 +149,19 @@ pub(crate) fn span(text: &str) -> Option<Duration> {
 
 fn refuse(message: String) -> ProviderError {
     ProviderError::new(Status::GUATIAO_ERR_BAD_VALUE, &message)
+}
+
+/// The number of a local X display name (`:0`, `:12.0`).
+pub(crate) fn display_number(key: &str, text: &str) -> Result<u32, ProviderError> {
+    text.trim()
+        .strip_prefix(':')
+        .map(|rest| rest.split('.').next().unwrap_or(rest))
+        .and_then(|number| number.parse().ok())
+        .ok_or_else(|| {
+            refuse(format!(
+                "{key} is not a display of the machine itself (`:0`): `{text}`"
+            ))
+        })
 }
 
 /// The settings once read and checked: durations parsed, paths expanded.
@@ -149,6 +189,12 @@ pub(crate) struct Settings {
     pub worker_threads: usize,
     pub sftp_in_flight: usize,
     pub sftp_packet: usize,
+    pub x11_display: Option<u32>,
+    pub x11_socket_dir: String,
+    pub xauth: String,
+    pub x11_forward: bool,
+    pub x11_local_display: Option<String>,
+    pub x11_max_connections: usize,
 }
 
 /// The account's home directory, from the environment.
@@ -196,6 +242,13 @@ impl SshSettings {
             worker_threads: 2,
             sftp_in_flight: 16,
             sftp_packet: 32_768,
+            x11_display: None,
+            x11_socket_dir: "/tmp/.X11-unix".to_owned(),
+            xauth: "xauth".to_owned(),
+            x11_forward: false,
+            x11_trusted: false,
+            x11_local_display: None,
+            x11_max_connections: 64,
         }
     }
 
@@ -268,6 +321,12 @@ impl SshSettings {
                     .find_map(|name| std::env::var(name).ok().filter(|value| !value.is_empty()))
             })
             .ok_or_else(|| refuse("user is not set and the node has no account name".to_owned()))?;
+        if self.x11_forward && !self.x11_trusted {
+            return Err(refuse(
+                "x11_forward needs x11_trusted = true: this build cannot ask the node's display for an untrusted authorization, so a forwarded program is a trusted one (see docs/security.md)"
+                    .to_owned(),
+            ));
+        }
         let keepalive = time("keepalive", &self.keepalive, true)?;
         Ok(Settings {
             host: self.host.trim().to_owned(),
@@ -292,6 +351,16 @@ impl SshSettings {
             worker_threads: count("worker_threads", self.worker_threads)?,
             sftp_in_flight: count("sftp_in_flight", self.sftp_in_flight)?,
             sftp_packet: count("sftp_packet", self.sftp_packet)?,
+            x11_display: self
+                .x11_display
+                .as_deref()
+                .map(|text| display_number("x11_display", text))
+                .transpose()?,
+            x11_socket_dir: self.x11_socket_dir.trim_end_matches('/').to_owned(),
+            xauth: self.xauth.clone(),
+            x11_forward: self.x11_forward,
+            x11_local_display: self.x11_local_display.clone(),
+            x11_max_connections: count("x11_max_connections", self.x11_max_connections)?,
         })
     }
 
@@ -307,6 +376,23 @@ impl SshSettings {
         if span(&self.keepalive).is_some_and(|keepalive| keepalive.is_zero()) {
             found.push(
                 "keepalive = 0s: a dead connection is found only when something is sent".to_owned(),
+            );
+        }
+        if self.x11_forward {
+            found.push(
+                "x11_forward = true: programs on the host open windows on the node's own display"
+                    .to_owned(),
+            );
+        }
+        if self.x11_trusted {
+            found.push(
+                "x11_trusted = true: a forwarded program can read and drive the node's whole display"
+                    .to_owned(),
+            );
+        }
+        if self.x11_display.is_some() {
+            found.push(
+                "x11_display is set: a peer holding the desktop sees and types at the host's X display".to_owned(),
             );
         }
         if self.max_channels > 8 {
@@ -331,5 +417,49 @@ mod tests {
         assert_eq!(span("2"), Some(Duration::from_secs(2)));
         assert_eq!(span("1h"), Some(Duration::from_secs(3600)));
         assert_eq!(span("soon"), None);
+    }
+}
+
+#[cfg(test)]
+mod x11_tests {
+    use super::{SshSettings, display_number};
+
+    #[test]
+    fn a_display_is_a_local_name() {
+        assert_eq!(display_number("k", ":0").unwrap(), 0);
+        assert_eq!(display_number("k", ":12.1").unwrap(), 12);
+        assert!(display_number("k", "host:0").is_err());
+        assert!(display_number("k", "0").is_err());
+        assert!(display_number("k", ":x").is_err());
+    }
+
+    #[test]
+    fn x_settings_default_off_and_forwarding_needs_trust() {
+        let mut settings = SshSettings::new("example.invalid");
+        let read = settings.read().unwrap();
+        assert!(read.x11_display.is_none() && !read.x11_forward);
+        assert!(settings.non_default().is_empty());
+
+        settings.x11_forward = true;
+        assert!(
+            settings
+                .read()
+                .unwrap_err()
+                .message()
+                .contains("x11_trusted")
+        );
+        settings.x11_trusted = true;
+        settings.x11_display = Some(":1".to_owned());
+        assert_eq!(settings.read().unwrap().x11_display, Some(1));
+        assert_eq!(settings.non_default().len(), 3);
+
+        settings.x11_max_connections = 0;
+        assert!(
+            settings
+                .read()
+                .unwrap_err()
+                .message()
+                .contains("x11_max_connections")
+        );
     }
 }
