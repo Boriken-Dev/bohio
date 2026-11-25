@@ -2843,8 +2843,10 @@ pub(super) fn providers(
     if !reply.check_access {
         println!("non-default: [providers] check_access is false");
     }
-    if reply.libraries.is_empty() {
-        println!("no provider libraries (`[providers] paths` is empty)");
+    if reply.libraries.is_empty() && reply.programs.is_empty() {
+        println!(
+            "no provider libraries or programs (`[providers] paths` and `[[providers.program]]` are empty)"
+        );
     }
     for library in &reply.libraries {
         println!(
@@ -2853,6 +2855,18 @@ pub(super) fn providers(
             library.path,
             library.detail,
             library.digest.as_deref().unwrap_or("no digest")
+        );
+    }
+    for program in &reply.programs {
+        println!(
+            "{} program {} {} {} ({}, {} restart{})",
+            program.state,
+            program.name,
+            program.path,
+            program.detail,
+            program.digest.as_deref().unwrap_or("no digest"),
+            program.restarts,
+            if program.restarts == 1 { "" } else { "s" }
         );
     }
     Ok(())

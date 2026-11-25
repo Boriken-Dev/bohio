@@ -50,6 +50,7 @@ bohio-provider-serial = { workspace = true, optional = true }
 bohio-provider-ssh = { workspace = true, optional = true }
 # The registry that holds the node's providers: the kinds crate brings guatiao without it.
 guatiao = { workspace = true, features = ["load"] }
+guatiao-source-remote.workspace = true
 bohio-proto.workspace = true
 bohio-client.workspace = true
 bohio-transfer.workspace = true

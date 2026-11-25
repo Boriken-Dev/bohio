@@ -34,6 +34,25 @@ pub struct LibraryEntry {
     pub digest: Option<String>,
 }
 
+/// One provider program (`[[providers.program]]`), as the node knows it when asked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProgramEntry {
+    /// The entry's name.
+    pub name: String,
+    /// The program file, as the entry named it.
+    pub path: String,
+    /// `running` or `failed`.
+    pub state: String,
+    /// Why, or what the program offers.
+    pub detail: String,
+    /// `sha256:` and the digest of the file's bytes, when it was read.
+    #[serde(default)]
+    pub digest: Option<String>,
+    /// Times it was started again after exiting.
+    #[serde(default)]
+    pub restarts: u32,
+}
+
 /// The reply of a [`PROVIDERS`] stream.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProvidersReply {
@@ -42,6 +61,9 @@ pub struct ProvidersReply {
     /// Each library, in the order the paths were written.
     #[serde(default)]
     pub libraries: Vec<LibraryEntry>,
+    /// Each provider program, in the order the entries were written.
+    #[serde(default)]
+    pub programs: Vec<ProgramEntry>,
 }
 
 impl ProvidersReply {

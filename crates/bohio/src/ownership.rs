@@ -19,6 +19,8 @@ pub(crate) enum Guarded {
     Config,
     /// A provider library or the directory that holds it: no other user may change it.
     Library,
+    /// A provider program or the directory that holds it: no other user may change it.
+    Program,
     /// The data directory: no other user may change it or read what is made in it.
     DataDir,
 }
@@ -28,6 +30,7 @@ impl Guarded {
         match self {
             Self::Config => "the configuration file",
             Self::Library => "the provider library",
+            Self::Program => "the provider program",
             Self::DataDir => "the data directory",
         }
     }
@@ -189,16 +192,21 @@ pub(crate) type Checked = std::collections::HashMap<std::path::PathBuf, Option<P
 
 /// The problems of the provider library `file` and of the directory that holds it, `checked` remembering directories.
 pub(crate) fn library_problems(file: &Path, checked: &mut Checked) -> Vec<Problem> {
+    held_problems(file, checked, Guarded::Library)
+}
+
+/// The problems of the provider program `file` and of the directory that holds it, `checked` remembering directories.
+pub(crate) fn program_problems(file: &Path, checked: &mut Checked) -> Vec<Problem> {
+    held_problems(file, checked, Guarded::Program)
+}
+
+fn held_problems(file: &Path, checked: &mut Checked, what: Guarded) -> Vec<Problem> {
     let directory = directory_of(file);
     let held = checked
         .entry(directory.clone())
-        .or_insert_with(|| check(&directory, Guarded::Library).err())
+        .or_insert_with(|| check(&directory, what).err())
         .clone();
-    check(file, Guarded::Library)
-        .err()
-        .into_iter()
-        .chain(held)
-        .collect()
+    check(file, what).err().into_iter().chain(held).collect()
 }
 
 /// The directory that holds `path`: its parent, or the current directory for a bare file name.
@@ -327,7 +335,9 @@ mod windows {
             // An entry that applies only to children still reaches the files the host makes there.
             let on_object = propagation & INHERIT_ONLY == 0;
             let reaches = match what {
-                Guarded::Config | Guarded::Library => on_object && rights & CHANGE != 0,
+                Guarded::Config | Guarded::Library | Guarded::Program => {
+                    on_object && rights & CHANGE != 0
+                }
                 Guarded::DataDir => rights & (CHANGE | READ) != 0,
             };
             if reaches {

@@ -77,6 +77,8 @@ pub struct Report {
     pub check_access: bool,
     /// One entry for each configured path that is a file or names nothing, and for each library file of a directory.
     pub libraries: Vec<Library>,
+    /// One entry for each `[[providers.program]]`, as it is when the report is asked for.
+    pub programs: Vec<super::Program>,
 }
 
 impl Default for Report {
@@ -84,6 +86,7 @@ impl Default for Report {
         Self {
             check_access: true,
             libraries: Vec::new(),
+            programs: Vec::new(),
         }
     }
 }
@@ -133,6 +136,7 @@ pub(super) fn load(registry: &mut Registry, config: &ProvidersConfig) -> Report 
     let mut report = Report {
         check_access: config.check_access,
         libraries: Vec::new(),
+        programs: Vec::new(),
     };
     if config.paths.is_empty() {
         return report;

@@ -1960,6 +1960,72 @@ pub struct ProvidersConfig {
     /// starts. Default `false`. `true` can leave the node's handler replaced, so its signal no longer does what the node
     /// meant: only the lowest layer sets it.
     pub allow_reserved_signal_handlers: bool,
+    /// `[[providers.program]]`: provider programs the node starts as children and talks to over their standard input and
+    /// output, in the order written. Each serves Bohío kinds as guatiao's remote protocol speaks them, so a program may be
+    /// written in any language and built any way (a `guatiao-remote-server --stdio` hosting libraries is one). Default
+    /// empty: nothing is started.
+    pub program: Vec<ProgramConfig>,
+}
+
+/// One `[[providers.program]]`: a provider that is a program of its own.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ProgramConfig {
+    /// What the entry is called in the log and in `bohio providers`; default `program-` and its place in the list, from 1.
+    /// Names are unique.
+    pub name: Option<String>,
+    /// The program and its arguments. The first is the program's file (a path: it is not looked for on `PATH`); at least one.
+    pub command: Vec<String>,
+    /// Variables added to the child's environment, over the node's own. Values are not logged.
+    pub env: std::collections::BTreeMap<String, String>,
+    /// The child's working directory; default the node's own.
+    pub cwd: Option<PathBuf>,
+    /// Times the program may be started again after it exits within `restart_window`; past it the entry stays `failed`.
+    /// Default `5`; `0` never starts it again.
+    pub restart_limit: u32,
+    /// The time `restart_limit` counts over. Default `1m`; not zero.
+    pub restart_window: Span,
+    /// The least time between a program exiting and the next start. Default `1s`.
+    pub restart_delay: Span,
+    /// How long a program has to leave on its own once the node closes its input, before it is ended. Default `500ms`.
+    pub stop_grace: Span,
+    /// How long one call may take before it is cancelled and fails. Default `30s`; `0` waits for good.
+    pub call_timeout: Span,
+    /// How long a program has to send its first message once it is started, before it is ended; the link's own handshake cannot be bounded over a child's pipes. Default `10s`; not zero.
+    pub start_timeout: Span,
+    /// Calls one program may have running at once; at least 1. Default `64`.
+    pub max_calls: usize,
+    /// The largest frame read from the program, in bytes; at least 1. Default `67108864`.
+    pub max_frame: usize,
+}
+
+impl Default for ProgramConfig {
+    fn default() -> Self {
+        Self {
+            name: None,
+            command: Vec::new(),
+            env: std::collections::BTreeMap::new(),
+            cwd: None,
+            restart_limit: 5,
+            restart_window: Span(Duration::from_secs(60)),
+            restart_delay: Span(Duration::from_secs(1)),
+            stop_grace: Span(Duration::from_millis(500)),
+            call_timeout: Span(Duration::from_secs(30)),
+            start_timeout: Span(Duration::from_secs(10)),
+            max_calls: 64,
+            max_frame: 64 << 20,
+        }
+    }
+}
+
+impl ProgramConfig {
+    /// The name the entry goes by: its own, or `program-N` for its place `index` (from 0) in the list.
+    #[must_use]
+    pub fn label(&self, index: usize) -> String {
+        self.name
+            .clone()
+            .unwrap_or_else(|| format!("program-{}", index + 1))
+    }
 }
 
 /// `[providers] dlopen`: which loader maps a provider library.
@@ -1995,7 +2061,62 @@ impl Default for ProvidersConfig {
             dlopen: DlopenChoice::Auto,
             ld_so: None,
             allow_reserved_signal_handlers: false,
+            program: Vec::new(),
         }
+    }
+}
+
+impl ProvidersConfig {
+    fn validate_programs(
+        &self,
+        invalid: &dyn Fn(&str, &str) -> ConfigError,
+    ) -> Result<(), ConfigError> {
+        let mut seen: Vec<String> = Vec::new();
+        for (index, program) in self.program.iter().enumerate() {
+            let at = |key: &str| format!("providers.program[{}].{key}", index + 1);
+            let name = program.label(index);
+            if name.is_empty() {
+                return Err(invalid(&at("name"), "is empty"));
+            }
+            if seen.contains(&name) {
+                return Err(invalid(&at("name"), "is used by another program"));
+            }
+            seen.push(name);
+            if program.command.first().is_none_or(String::is_empty) {
+                return Err(invalid(&at("command"), "must name the program to start"));
+            }
+            if program.command.iter().any(|word| word.contains('\0')) {
+                return Err(invalid(&at("command"), "holds a NUL character"));
+            }
+            if program.env.iter().any(|(key, value)| {
+                key.is_empty() || key.contains(['=', '\0']) || value.contains('\0')
+            }) {
+                return Err(invalid(
+                    &at("env"),
+                    "holds an empty name, or a `=` or NUL in one",
+                ));
+            }
+            if program
+                .cwd
+                .as_ref()
+                .is_some_and(|dir| dir.as_os_str().is_empty())
+            {
+                return Err(invalid(&at("cwd"), "is an empty path"));
+            }
+            if program.restart_limit > 0 && program.restart_window.0.is_zero() {
+                return Err(invalid(&at("restart_window"), "must not be zero"));
+            }
+            if program.start_timeout.0.is_zero() {
+                return Err(invalid(&at("start_timeout"), "must not be zero"));
+            }
+            if program.max_calls == 0 {
+                return Err(invalid(&at("max_calls"), "must be at least 1"));
+            }
+            if program.max_frame == 0 {
+                return Err(invalid(&at("max_frame"), "must be at least 1"));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -2302,9 +2423,11 @@ impl NodeConfig {
         {
             return Err(invalid("providers.ld_so", "is an empty path"));
         }
-        // A provider a library offers is known only once the library is mapped, which `Node::new` does before it builds the
-        // sources and refuses then, naming the same key: reading a configuration maps nothing.
+        self.providers.validate_programs(&invalid)?;
+        // A provider a library or a program offers is known only once it is mapped or started, which `Node::new` does before
+        // it builds the sources and refuses then, naming the same key: reading a configuration maps and starts nothing.
         if self.providers.paths.is_empty()
+            && self.providers.program.is_empty()
             && let Err((key, message)) = crate::access::check(&self.source, &self.access)
         {
             return Err(invalid(&key, &message));

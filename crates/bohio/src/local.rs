@@ -26,7 +26,7 @@ use bohio_client::{Error, Open};
 use bohio_proto::gui::{ApproveInput, ApproveOutput, PendingRequest};
 use bohio_proto::local::{
     GUI_APPROVE, LINKS, LibraryEntry, LinkEntry, LinksReply, LinksRequest, PAIR, PROVIDERS,
-    PairReply, PairRequest, ProvidersReply, VIA, ViaRequest,
+    PairReply, PairRequest, ProgramEntry, ProvidersReply, VIA, ViaRequest,
 };
 use cabuya::link::{Accepted, Host, Options, Services, serve_with};
 use cabuya::mux::{CloseReason, LinkStream, Mux, Side, StreamEnd, StreamLife};
@@ -410,6 +410,18 @@ fn providers(context: &Context, stream: &dyn LinkStream, _accepted: &Accepted) {
                 state: library.state.name().to_owned(),
                 detail: library.detail,
                 digest: library.digest,
+            })
+            .collect(),
+        programs: report
+            .programs
+            .into_iter()
+            .map(|program| ProgramEntry {
+                name: program.name,
+                path: program.path.display().to_string(),
+                state: program.state.name().to_owned(),
+                detail: program.detail,
+                digest: program.digest,
+                restarts: program.restarts,
             })
             .collect(),
     };

@@ -20,6 +20,8 @@ coqui-transport.workspace = true
 
 [dev-dependencies]
 bohio-api = { workspace = true, features = ["testing"] }
+# The example program (`examples/serial_program.rs`) serves the provider over its standard input and output.
+guatiao-source-remote.workspace = true
 
 [lints]
 workspace = true

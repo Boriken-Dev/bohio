@@ -14,9 +14,12 @@ mod desktop;
 mod native;
 mod native_files;
 mod plugins;
+mod programs;
 mod value;
 
 pub use plugins::{Library, LibraryState, Report as ProvidersReport};
+use programs::Programs;
+pub use programs::{Program, ProgramState};
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -222,6 +225,8 @@ pub struct Sources {
     last: Mutex<Option<(SourceTables, AccessConfig)>>,
     /// What loading `[providers] paths` did.
     libraries: Mutex<ProvidersReport>,
+    /// The provider programs `[[providers.program]]` named.
+    programs: Mutex<Arc<Programs>>,
 }
 
 /// What a sensitive setting's reference is turned into when a source is built.
@@ -264,6 +269,7 @@ impl Sources {
             deferring: AtomicBool::new(false),
             last: Mutex::new(None),
             libraries: Mutex::new(ProvidersReport::default()),
+            programs: Mutex::new(Arc::default()),
         }
     }
 
@@ -338,22 +344,86 @@ impl Sources {
     /// A library runs as this process's account once mapped, and stays mapped for as long as the registry lives.
     pub fn load_libraries(&self, config: &crate::config::ProvidersConfig) -> ProvidersReport {
         let mut registry = self.registry.lock().unwrap_or_else(PoisonError::into_inner);
-        let report = plugins::load(&mut registry, config);
+        let mut report = plugins::load(&mut registry, config);
+        let programs = Programs::start(&mut registry, config);
         drop(registry);
         *self
             .libraries
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = report.clone();
+        report.programs = programs.report();
+        *self.programs.lock().unwrap_or_else(PoisonError::into_inner) = Arc::new(programs);
         report
     }
 
     /// What loading `[providers] paths` did, as the node started.
     #[must_use]
     pub fn libraries(&self) -> ProvidersReport {
-        self.libraries
+        let mut report = self
+            .libraries
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+            .clone();
+        report.programs = self
+            .programs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .report();
+        report
+    }
+
+    /// Starts again the provider programs that exited and may be, and builds the sources that name what they offer anew,
+    /// since the instances of the old run answer `gone`. A lookup of a source asks for it first.
+    fn revive(&self) {
+        let programs = Arc::clone(&self.programs.lock().unwrap_or_else(PoisonError::into_inner));
+        if programs.is_empty() || !programs.wants_restart() {
+            return;
+        }
+        let Some(_one_at_a_time) = programs.begin_restart() else {
+            return;
+        };
+        let offered = {
+            let mut registry = self.registry.lock().unwrap_or_else(PoisonError::into_inner);
+            programs.restart(&mut registry)
+        };
+        if offered.is_empty() {
+            return;
+        }
+        let last = self
+            .last
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let Some((source, access)) = last else {
+            return;
+        };
+        let names: Vec<String> = source
+            .iter()
+            .filter(|(_, table)| {
+                table
+                    .provider
+                    .as_deref()
+                    .is_some_and(|provider| offered.iter().any(|id| id == provider))
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        if names.is_empty() {
+            return;
+        }
+        let (resolver, max) = {
+            let held = self.secrets.lock().unwrap_or_else(PoisonError::into_inner);
+            (Arc::clone(&held.0), held.1)
+        };
+        let mode = if self.deferring.load(Ordering::Acquire) {
+            Resolve::Defer
+        } else {
+            Resolve::With(resolver.as_ref(), max)
+        };
+        if let Err((key, message)) = self.apply(&source, &access, &mode, &names) {
+            tracing::warn!(
+                "a restarted provider program's sources could not be built again: {key} {message}"
+            );
+        }
     }
 
     /// The sources `source` and `access` describe, with `native` always among them.
@@ -387,7 +457,7 @@ impl Sources {
         } else {
             Resolve::With(resolver.as_ref(), max)
         };
-        self.apply(source, access, &mode)?;
+        self.apply(source, access, &mode, &[])?;
         *self.last.lock().unwrap_or_else(PoisonError::into_inner) =
             Some((source.clone(), access.clone()));
         Ok(())
@@ -399,6 +469,7 @@ impl Sources {
         source: &SourceTables,
         access: &AccessConfig,
         mode: &Resolve<'_>,
+        rebuild: &[String],
     ) -> Result<(), Refusal> {
         let registry = self.registry.lock().unwrap_or_else(PoisonError::into_inner);
         let old = self.state.read().unwrap_or_else(PoisonError::into_inner);
@@ -407,7 +478,7 @@ impl Sources {
         let mut tables = source.clone();
         tables.entry(NATIVE.to_owned()).or_default();
         for (name, table) in &tables {
-            if old.tables.get(name) == Some(table) {
+            if old.tables.get(name) == Some(table) && !rebuild.contains(name) {
                 // The same table: the same instances, and what runs on them goes on.
                 keep(&old.terminal, &mut fresh.terminal, name);
                 keep(&old.desktop, &mut fresh.desktop, name);
@@ -678,6 +749,7 @@ impl Sources {
     ///
     /// `unsupported` when the node serves no terminal, `not_found` for a name it has no terminal source of.
     pub fn terminal(&self, name: Option<&str>) -> Result<Source<dyn TerminalSource>, ErrorBody> {
+        self.revive();
         self.state_ref().terminal.pick(Capability::Terminal, name)
     }
 
@@ -687,6 +759,7 @@ impl Sources {
     ///
     /// As [`Sources::terminal`].
     pub fn desktop(&self, name: Option<&str>) -> Result<Source<dyn DesktopSource>, ErrorBody> {
+        self.revive();
         self.state_ref().desktop.pick(Capability::Desktop, name)
     }
 
@@ -696,6 +769,7 @@ impl Sources {
     ///
     /// As [`Sources::terminal`].
     pub fn power(&self, name: Option<&str>) -> Result<Source<dyn PowerSource>, ErrorBody> {
+        self.revive();
         self.state_ref().power.pick(Capability::Power, name)
     }
 
@@ -705,6 +779,7 @@ impl Sources {
     ///
     /// As [`Sources::terminal`].
     pub fn media(&self, name: Option<&str>) -> Result<Source<dyn MediaSource>, ErrorBody> {
+        self.revive();
         self.state_ref().media.pick(Capability::Media, name)
     }
 
@@ -728,6 +803,7 @@ impl Sources {
     ///
     /// As [`Sources::terminal`].
     pub fn exec(&self, name: Option<&str>) -> Result<Source<dyn ExecSource>, ErrorBody> {
+        self.revive();
         self.state_ref().exec.pick(Capability::Exec, name)
     }
 
@@ -737,6 +813,7 @@ impl Sources {
     ///
     /// As [`Sources::terminal`].
     pub fn files(&self, name: Option<&str>) -> Result<Source<dyn FilesSource>, ErrorBody> {
+        self.revive();
         self.state_ref().files.pick(Capability::Files, name)
     }
 
@@ -906,15 +983,32 @@ fn build(
                 }
             };
             if let Some(offer) = offer {
-                let Some(settings) = settings_of(name, &offer, table, mode)? else {
-                    // A secret this node cannot read yet: the source waits for its resolver.
-                    tracing::info!(source = name, "a source waits for a secret resolver");
-                    return Ok(false);
+                let instance: Arc<$trait> = if offer.builds_instances() {
+                    let Some(settings) = settings_of(name, &offer, table, mode)? else {
+                        // A secret this node cannot read yet: the source waits for its resolver.
+                        tracing::info!(source = name, "a source waits for a secret resolver");
+                        return Ok(false);
+                    };
+                    let instance = offer
+                        .instantiate(&settings)
+                        .map_err(|error| instantiate_refusal(name, &error))?;
+                    Arc::new(instance)
+                } else {
+                    // A provider a program serves (or a library with no `create`) is its one instance: it is configured where
+                    // it runs, so a setting named here has nowhere to go.
+                    if let Some(setting) = table.settings.keys().next() {
+                        return Err((
+                            key(setting),
+                            "is not a setting of this provider: it is one instance and takes none here; configure it where it runs".to_owned(),
+                        ));
+                    }
+                    offer.shared().ok_or_else(|| {
+                        (
+                            format!("source.{name}"),
+                            format!("provider `{id}` cannot be used as it stands"),
+                        )
+                    })?
                 };
-                let instance = offer
-                    .instantiate(&settings)
-                    .map_err(|error| instantiate_refusal(name, &error))?;
-                let instance: Arc<$trait> = Arc::new(instance);
                 into.$field
                     .by_name
                     .insert(name.to_owned(), Source::new(name, instance, false));
@@ -1021,7 +1115,7 @@ fn settings_of<K: ?Sized + bohio_api::guatiao::library::Kind>(
 ///
 /// As [`Sources::from_config`].
 pub fn check(source: &SourceTables, access: &AccessConfig) -> Result<(), Refusal> {
-    Sources::bare().apply(source, access, &Resolve::Shape)
+    Sources::bare().apply(source, access, &Resolve::Shape, &[])
 }
 
 /// A value for a provider that is its own configuration, for tests and embedders that build an instance by hand.

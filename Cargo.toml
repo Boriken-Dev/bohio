@@ -133,6 +133,8 @@ tempfile = "3"
 # The provider kinds (guatiao): terminal, desktop, power and media sources. The family pins one guatiao revision.
 guatiao = { git = "https://github.com/Boriken-Dev/guatiao", rev = "3163647ab70bc19bf24125d30e1dc1ee49b10f94", features = ["provider"] }
 guatiao-serde = { git = "https://github.com/Boriken-Dev/guatiao", rev = "3163647ab70bc19bf24125d30e1dc1ee49b10f94", default-features = false }
+# Providers as programs: a child's standard input and output carry guatiao's remote protocol; no transport feature (no TLS, no sockets).
+guatiao-source-remote = { git = "https://github.com/Boriken-Dev/guatiao", rev = "3163647ab70bc19bf24125d30e1dc1ee49b10f94", default-features = false }
 bohio-api = { path = "crates/bohio-api" }
 bohio-provider-serial = { path = "providers/terminal/serial" }
 bohio-provider-serial-plugin = { path = "providers/terminal/serial/plugin" }
