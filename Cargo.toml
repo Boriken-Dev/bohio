@@ -125,8 +125,8 @@ arboard = { version = "3.7", default-features = false }
 # Tests: scratch directories that remove themselves.
 tempfile = "3"
 # The provider kinds (guatiao): terminal, desktop, power and media sources. The family pins one guatiao revision.
-guatiao = { git = "https://github.com/Boriken-Dev/guatiao", rev = "e0136dcc9760ddd6dd8dc89fc4d41320eec6306e", features = ["provider"] }
-guatiao-serde = { git = "https://github.com/Boriken-Dev/guatiao", rev = "e0136dcc9760ddd6dd8dc89fc4d41320eec6306e", default-features = false }
+guatiao = { git = "https://github.com/Boriken-Dev/guatiao", rev = "3163647ab70bc19bf24125d30e1dc1ee49b10f94", features = ["provider"] }
+guatiao-serde = { git = "https://github.com/Boriken-Dev/guatiao", rev = "3163647ab70bc19bf24125d30e1dc1ee49b10f94", default-features = false }
 bohio-api = { path = "crates/bohio-api" }
 bohio-provider-serial = { path = "providers/terminal/serial" }
 bohio-provider-serial-plugin = { path = "providers/terminal/serial/plugin" }
