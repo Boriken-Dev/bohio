@@ -128,6 +128,7 @@ pub fn serve(
         done: AtomicBool::new(false),
         killed: AtomicBool::new(false),
         sending: AtomicUsize::new(0),
+        signalling: AtomicUsize::new(0),
     });
     let (request, live, input, _permit, negotiated) = match start(metadata, context) {
         Ok(started) => started,
@@ -227,6 +228,8 @@ struct Shared {
     killed: AtomicBool,
     /// Output pumps that hold a chunk the stream has not yet taken: they wait on the reader, not on a process.
     sending: AtomicUsize,
+    /// Signal requests being delivered: the exit is not sent before their answers, which the client reads first.
+    signalling: AtomicUsize,
 }
 
 impl Shared {
@@ -460,6 +463,14 @@ fn monitor(
     }
     let _ = control.process.kill();
 
+    // A signal that ended the process is answered before its exit.
+    let waited = Instant::now();
+    while shared.signalling.load(Ordering::Acquire) > 0
+        && !shared.gone.load(Ordering::Acquire)
+        && waited.elapsed() < drain
+    {
+        thread::sleep(shared.poll);
+    }
     let exit = Exit {
         code: ended.code,
         signal: ended.signal,
@@ -574,6 +585,7 @@ fn receive_frames(
 
 /// Delivers `signal` to the process and tells the client whether it arrived.
 fn deliver(shared: &Shared, control: &Live, signal: Signal) {
+    shared.signalling.fetch_add(1, Ordering::AcqRel);
     let delivery = control
         .process
         .signal(signal.name())
@@ -590,6 +602,7 @@ fn deliver(shared: &Shared, control: &Live, signal: Signal) {
         delivered: delivery.delivered,
         message: delivery.message,
     })));
+    shared.signalling.fetch_sub(1, Ordering::AcqRel);
 }
 
 /// Ends the process and tells the client why: its input could not be taken.

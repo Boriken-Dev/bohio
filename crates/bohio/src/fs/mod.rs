@@ -33,7 +33,7 @@
 //! # Through a files source
 //!
 //! The engines never name `cap-std`: a root is opened as a directory handle by the node's [`bohio_api::FilesSource`]
-//! (`native` by default), and [`vfs`] gives the engines its handles, files and attributes. What each guarantee above
+//! (`native` by default), and `vfs` gives the engines its handles, files and attributes. What each guarantee above
 //! means is the source's: `native` keeps all of it inside its provider, and a source that resolves names by path says
 //! so (`describe` lacks `confined`). Within `native` one step is weaker than before: the attributes of a listed entry are
 //! asked by its name below the directory the listing was opened on, where they were read through the listing's own handle,
