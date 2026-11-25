@@ -10,11 +10,16 @@ thing a source gives is one of four **capabilities**, each a [guatiao](https://g
 | desktop | `bohio_desktop` (`DesktopSource`) | a screen with input: the node's own, a VNC or RDP server, a BMC's KVM |
 | power | `bohio_power` (`PowerSource`) | the system's power: a BMC, a hypervisor, a smart switch |
 | media | `bohio_media` (`MediaSource`) | virtual media: an image the system boots or installs from |
+| fs | `bohio_files` (`FilesSource`) | a directory tree: the node's own file system, or one reached over a protocol |
 
 `native` is this node's own terminal and screen. It is a provider of the same kinds as any other, registered the same way, so
-nothing a node can do is reachable only because it is built in. Files and processes are engines over the operating system,
-selectable `native` or `none` (`[access] fs`, `exec`) and reported the same way by `info`; they become kinds when a second
-provider is planned.
+nothing a node can do is reachable only because it is built in. Files are a capability too: the filesystem engines (read,
+write, list, walk, search, hash, delta, bundle, follow, move, copy) reach files only through `FilesSource`, and `native` is its
+first provider. `[access] fs` lists the file sources (the first is the default; `"native"` and `"none"` keep their meaning).
+A source opens a root as a directory handle and every name below it is resolved against that handle; `native` keeps the
+operating system's directory-handle safety inside the provider (`describe` offers `confined`), and a source that resolves names
+by path each call says so by lacking it. `[source.native] list_chunk` (`256`) is how many directory entries one read of a
+listing returns.
 
 A node serves **one system**: several sources of a capability are alternative paths to it (a serial port and serial-over-LAN
 to the same machine). A node in front of many systems is several nodes.
