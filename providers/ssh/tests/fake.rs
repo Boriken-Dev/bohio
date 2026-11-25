@@ -98,8 +98,7 @@ fn shell_path(path: &std::path::Path) -> String {
 fn first_error(source: &Ssh) -> String {
     source
         .start(argv(&["true"]))
-        .err()
-        .expect("the connection should be refused")
+        .expect_err("the connection should be refused")
         .message()
         .to_string()
 }
@@ -187,7 +186,7 @@ fn a_shell_script_runs_on_the_host() {
         ..ExecStart::default()
     };
     cmd.stdin = false;
-    let error = source.start(cmd).err().expect("cmd is refused");
+    let error = source.start(cmd).expect_err("cmd is refused");
     assert!(error.message().contains("cmd"), "{}", error.message());
 }
 
@@ -544,8 +543,7 @@ fn channels_past_max_channels_wait_and_then_are_busy_naming_the_setting() {
     let started = Instant::now();
     let error = source
         .start(argv(&["true"]))
-        .err()
-        .expect("a third is refused");
+        .expect_err("a third is refused");
     assert!(
         error.message().contains("max_channels"),
         "{}",
@@ -582,8 +580,7 @@ fn a_server_that_refuses_a_channel_is_busy_naming_max_channels() {
     let first = source.start(argv(&["sleep", "300"])).unwrap();
     let error = source
         .start(argv(&["true"]))
-        .err()
-        .expect("the server refuses the second");
+        .expect_err("the server refuses the second");
     let message = error.message().to_string();
     assert!(
         message.contains("MaxSessions") && message.contains("max_channels"),

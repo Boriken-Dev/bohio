@@ -96,7 +96,7 @@ impl Sshd {
         let key_dir = tempfile::tempdir().unwrap();
         let client = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
         client
-            .write_openssh_file(&key_dir.path().join("client_key"), LineEnding::LF)
+            .write_openssh_file(key_dir.path().join("client_key"), LineEnding::LF)
             .unwrap();
         let authorized = client.public_key().to_openssh().unwrap();
         assert!(!authorized.contains('\''));
@@ -465,8 +465,7 @@ fn the_default_check_and_known_hosts_work_against_a_real_host_key() {
             argv: vec!["true".to_owned()],
             ..ExecStart::default()
         })
-        .err()
-        .expect("an unknown host is refused");
+        .expect_err("an unknown host is refused");
     assert!(error.message().contains(&server.pin), "{}", error.message());
 
     // The real key as ssh-keygen wrote it is in known_hosts: accepted.
@@ -488,8 +487,7 @@ fn the_channel_limit_stays_below_the_servers_and_a_higher_one_is_the_servers_ref
             argv: vec!["true".to_owned()],
             ..ExecStart::default()
         })
-        .err()
-        .expect("the fourth session is refused");
+        .expect_err("the fourth session is refused");
     let message = error.message().to_string();
     assert!(
         message.contains("MaxSessions") && message.contains("max_channels"),

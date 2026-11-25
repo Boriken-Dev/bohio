@@ -115,7 +115,7 @@ impl FakeSsh {
             None => PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap(),
         };
         client
-            .write_openssh_file(&dir.path().join("client_key"), LineEnding::LF)
+            .write_openssh_file(dir.path().join("client_key"), LineEnding::LF)
             .unwrap();
         let host_key = PrivateKey::random(&mut rand::rng(), host_algorithm).unwrap();
         let seen = Arc::new(Mutex::new(Seen::default()));
