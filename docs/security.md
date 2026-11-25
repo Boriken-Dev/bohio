@@ -245,6 +245,12 @@ and the session list show a peer only the sources it reaches (a name it may not 
   list, roots) are decided on the node, but the machine's own permissions are the only limit behind them. The node holds the means to log in
   (an agent's signing, a key file, a password), so every peer that reaches the source acts as that account; give a source to a peer as you
   would give it that account. Under a program list the program is the one the host finds at that name on the account's `PATH`, not the node's.
+- **`client = "openssh"` hands the login to the system's ssh program.** The source runs `ssh` as the node's account with the account's
+  own `ssh_config`, agent and known hosts, in batch mode: the host key is checked by ssh (`strict` is `StrictHostKeyChecking=yes`,
+  `tofu` is `accept-new`, `off` is `no` with no known_hosts file), a `host_key` pin is refused because ssh cannot check one, and
+  `ssh_args` are the operator's own options. A `ProxyCommand` or `LocalCommand` in the account's configuration, or in `ssh_args`, runs
+  as the node's account whenever a session starts: the configuration is as trusted as the source. A program the node starts under
+  this client cannot be signalled (only killed by ending the ssh process), and a terminal's interrupt is the control byte.
 - **Host-key checking weakens only by choice.** `host_key_check` is `strict` by default (the key is pinned by `host_key`, or is in
   `known_hosts`); `tofu` trusts the first key a host with no entry presents and holds it for the life of the source, so an attacker present at
   first contact is trusted; `off` accepts any key, so anyone on the path can pose as the host and be given every command, input and secret
