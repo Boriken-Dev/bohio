@@ -25,6 +25,7 @@ pub(super) struct Launch {
     argv: Option<Vec<String>>,
     script: Option<String>,
     shell: Option<String>,
+    source: Option<String>,
     cwd: Option<String>,
     #[serde(default)]
     env: BTreeMap<String, String>,
@@ -172,6 +173,7 @@ impl Tools {
             }
         };
         request.cwd.clone_from(&program.cwd);
+        request.source.clone_from(&program.source);
         request.env = Self::env_of(program);
         Ok(request)
     }
@@ -184,6 +186,11 @@ impl Tools {
                 return Err(ToolError::bad("give exactly one of `argv` or `script`"));
             }
         };
+        if program.source.is_some() {
+            return Err(ToolError::bad(
+                "`source` names an exec source: a terminal (`pty`) starts on the host's default terminal source",
+            ));
+        }
         let mut request = ShellRequest::argv(argv);
         request.cwd.clone_from(&program.cwd);
         request.env = Self::env_of(program);

@@ -33,6 +33,7 @@ fn launch() -> Value {
         ),
         "script": text("text for a shell to run (give this or `argv`)"),
         "shell": text("the shell for `script`: sh, bash, zsh, cmd, powershell or pwsh; default the host's first"),
+        "source": text("the exec source of the host that runs it (see `info`); default the host's own"),
         "cwd": text("the working directory on the host"),
         "env": json!({"type": "object", "additionalProperties": {"type": "string"}, "description": "variables to set"}),
         "env_remove": list_of(&json!({"type": "string"}), "variables to remove"),

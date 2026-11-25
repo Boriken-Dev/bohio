@@ -853,6 +853,10 @@ fn builtin_registry() -> Registry {
     registry
         .register_local("bohio-serial", bohio_provider_serial::library)
         .expect("the serial provider registers");
+    #[cfg(feature = "ssh")]
+    registry
+        .register_local("bohio-ssh", bohio_provider_ssh::library)
+        .expect("the ssh provider registers");
     registry
 }
 

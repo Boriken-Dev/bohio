@@ -2198,6 +2198,7 @@ fn exec_command(
     }
     let mut request = Request::argv(args.argv.iter().cloned());
     request.session = wanted_session(&args.session);
+    request.source.clone_from(&args.source);
     request.cwd.clone_from(&args.cwd);
     request.timeout_ms = args.timeout_ms;
     for pair in &args.env {

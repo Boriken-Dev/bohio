@@ -719,6 +719,9 @@ pub struct RemoteExecArgs {
     /// Send this process's standard input to the program.
     #[arg(long)]
     pub stdin: bool,
+    /// The exec source that runs it (an `ssh` source runs it on that machine); the host's default one when absent.
+    #[arg(long, value_name = "NAME", conflicts_with = "pty")]
+    pub source: Option<String>,
     /// Compress the program's output and the input this sends: `ALG` or `ALG:LEVEL`, where ALG is zstd, lz4,
     /// deflate, none or auto (the host's default). The host clamps the level to its caps.
     #[arg(long, value_name = "ALG[:LEVEL]", conflicts_with = "pty")]

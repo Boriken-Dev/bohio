@@ -25,13 +25,15 @@ required-features = ["cli"]
 doc = false
 
 [features]
-default = ["cli", "serial", "zstd", "gui"]
+default = ["cli", "serial", "ssh", "zstd", "gui"]
 # Zstandard through the C library, for the compression of reads, writes and exec streams (it compiles C with `cc`). Without it `zstd` is not offered, and `lz4` and `deflate` remain.
 zstd = ["bohio-transfer/zstd", "bohio-client/zstd"]
 # zstd worker threads: `[compression] workers` above 0.
 zstdmt = ["zstd", "bohio-transfer/zstdmt"]
 # The serial console provider (`[source.NAME] provider = "serial"`): a terminal source over a serial line, registered with the built-in providers. In `default`, not in `cli`: a build without it can load the same provider as a library (`[providers] paths`).
 serial = ["dep:bohio-provider-serial"]
+# The ssh provider (`[source.NAME] provider = "ssh"`): a machine reached over SSH as terminal and exec sources, registered with the built-in providers. In `default`, not in `cli`: a build without it can load the same provider as a library (`[providers] paths`).
+ssh = ["dep:bohio-provider-ssh"]
 # The `bohio` command: arguments, output and the diagnostics subscriber. An embedding host takes the library alone.
 cli = ["dep:clap", "dep:tracing-subscriber", "dep:serde_json", "dep:crossterm", "dep:ctrlc", "dep:windows-service", "notify"]
 # Desktop access (`bohio-gui/1`): snapshot encoding (PNG, JPEG, lossless WebP), resizing, and the tiles and rectangle encodings of a watch. Without it a host has the engine and no image format, so a snapshot is `unsupported`.
@@ -44,6 +46,7 @@ notify = ["dep:notify-rust"]
 [dependencies]
 bohio-api.workspace = true
 bohio-provider-serial = { workspace = true, optional = true }
+bohio-provider-ssh = { workspace = true, optional = true }
 # The registry that holds the node's providers: the kinds crate brings guatiao without it.
 guatiao = { workspace = true, features = ["load"] }
 bohio-proto.workspace = true
@@ -113,6 +116,11 @@ windows-service = { workspace = true, optional = true }
 bohio-api = { workspace = true, features = ["testing"] }
 ctrlc.workspace = true
 tempfile.workspace = true
+# The in-process SSH server `tests/ssh.rs` runs a source against (the provider's own test support).
+russh.workspace = true
+tokio = { workspace = true, features = ["process"] }
+rand = { version = "0.10", default-features = false, features = ["std", "std_rng", "thread_rng"] }
+bohio-provider-ssh.workspace = true
 rcgen.workspace = true
 time.workspace = true
 sha2.workspace = true
@@ -188,3 +196,7 @@ required-features = ["cli"]
 [[test]]
 name = "plugins"
 required-features = ["cli"]
+
+[[test]]
+name = "ssh"
+required-features = ["cli", "ssh"]
