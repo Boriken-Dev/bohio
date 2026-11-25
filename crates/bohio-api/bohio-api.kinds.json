@@ -443,6 +443,574 @@
           "doc": "Reads at `offset` into `dst` and answers the bytes read; fewer than `dst` only at the end.\n\n# Errors\n\n`INTERNAL` for an I/O failure."
         }
       ]
+    },
+    {
+      "name": "bohio_exec",
+      "floor_hash": 3687812134,
+      "object": false,
+      "doc": "A source of processes.",
+      "slots": [
+        {
+          "name": "describe",
+          "required": true,
+          "fallible": true,
+          "args": [],
+          "answer": {
+            "type": "value"
+          },
+          "doc": "What this source is and can do now; asked at every `info`, never cached by the host.\n\n# Errors\n\nOnly a source that cannot even describe itself."
+        },
+        {
+          "name": "start",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "request",
+              "type": "value",
+              "pass": "borrowed"
+            }
+          ],
+          "answer": {
+            "type": "object",
+            "kind": "bohio_exec_process"
+          },
+          "doc": "Starts a program in a tree of its own. The host has already decided the grant.\n\n# Errors\n\n`NOT_FOUND` (the program or the working directory), `BAD_VALUE` (a request the source cannot serve), `GONE`\n(the source is unavailable), `BUSY` (the source is running as many programs as it may)."
+        }
+      ]
+    },
+    {
+      "name": "bohio_exec_process",
+      "floor_hash": 3762830037,
+      "object": true,
+      "doc": "One running program. Every method takes `&self`: the host reads both outputs, writes the input and watches the\nexit from threads of its own.",
+      "slots": [
+        {
+          "name": "read",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "stream",
+              "type": "u8"
+            },
+            {
+              "name": "dst",
+              "type": "bytes_mut"
+            },
+            {
+              "name": "wait_ms",
+              "type": "u64"
+            }
+          ],
+          "answer": {
+            "type": "i64"
+          },
+          "doc": "Reads `stream` ([`STDOUT`] or [`STDERR`]) into `dst`, waiting up to `wait_ms` for some. Answers the bytes\nread; `0` when none came in time; `-1` when that stream has ended and nothing more will come. A source that\nmerges the two answers everything on [`STDOUT`] and ends [`STDERR`] at once.\n\n# Errors\n\n`GONE` when the source went away."
+        },
+        {
+          "name": "write",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "data",
+              "type": "bytes"
+            }
+          ],
+          "answer": {
+            "type": "u64"
+          },
+          "doc": "Writes `data` to standard input. Answers the bytes taken, all of them unless the input has been closed.\n\n# Errors\n\n`GONE` when the input is closed or the source went away."
+        },
+        {
+          "name": "close_input",
+          "required": true,
+          "fallible": true,
+          "args": [],
+          "doc": "Ends standard input.\n\n# Errors\n\n`GONE` when the source went away."
+        },
+        {
+          "name": "wait",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "wait_ms",
+              "type": "u64"
+            }
+          ],
+          "answer": {
+            "type": "value"
+          },
+          "doc": "How the program ended, waiting up to `wait_ms` for it; `None` while it runs.\n\n# Errors\n\n`GONE` when the source went away."
+        },
+        {
+          "name": "kill",
+          "required": true,
+          "fallible": true,
+          "args": [],
+          "answer": {
+            "type": "value"
+          },
+          "doc": "Ends the program and everything it started, and answers how it ended. Calling it again answers the same.\n\n# Errors\n\nAnything the source cannot end."
+        },
+        {
+          "name": "pid",
+          "required": false,
+          "fallible": true,
+          "args": [],
+          "answer": {
+            "type": "value"
+          },
+          "doc": "The program's process id where it runs, when there is one.\n\n# Errors\n\nNever, by default."
+        },
+        {
+          "name": "signal",
+          "required": false,
+          "fallible": true,
+          "args": [
+            {
+              "name": "name",
+              "type": "str"
+            }
+          ],
+          "answer": {
+            "type": "value"
+          },
+          "doc": "Delivers a signal by name (`interrupt`, `terminate`, `kill`, `hangup`, `quit`, `user1`, `user2`).\n\n# Errors\n\n`UNSUPPORTED` when the source cannot signal (it lacks `signals`)."
+        }
+      ]
+    },
+    {
+      "name": "bohio_files",
+      "floor_hash": 1313677026,
+      "object": false,
+      "doc": "A source of directory trees.",
+      "slots": [
+        {
+          "name": "describe",
+          "required": true,
+          "fallible": true,
+          "args": [],
+          "answer": {
+            "type": "value"
+          },
+          "doc": "What this source is and can do now; asked at every `info`, never cached by the host.\n\n# Errors\n\nOnly a source that cannot even describe itself."
+        },
+        {
+          "name": "open_dir",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "path",
+              "type": "str"
+            }
+          ],
+          "answer": {
+            "type": "object",
+            "kind": "bohio_directory"
+          },
+          "doc": "Opens the directory `path` (absolute, in the source's own syntax) as the handle names below it are resolved\nagainst.\n\n# Errors\n\nA [`failure`] (`not_found`, `denied`, `not_a_directory`...), or `GONE` when the source is unavailable."
+        }
+      ]
+    },
+    {
+      "name": "bohio_directory",
+      "floor_hash": 1491948299,
+      "object": true,
+      "doc": "One open directory. A `relative` name is below it, with `.` for the directory itself; a `confined` source refuses\none that leaves it.",
+      "slots": [
+        {
+          "name": "open_dir",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "relative",
+              "type": "str"
+            }
+          ],
+          "answer": {
+            "type": "object",
+            "kind": "bohio_directory"
+          },
+          "doc": "A handle for the directory `relative`.\n\n# Errors\n\nA [`failure`]."
+        },
+        {
+          "name": "stat",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "relative",
+              "type": "str"
+            },
+            {
+              "name": "follow",
+              "type": "bool"
+            }
+          ],
+          "answer": {
+            "type": "value"
+          },
+          "doc": "The attributes of `relative`; a symbolic link is followed only when `follow`.\n\n# Errors\n\nA [`failure`]."
+        },
+        {
+          "name": "read_dir",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "relative",
+              "type": "str"
+            }
+          ],
+          "answer": {
+            "type": "object",
+            "kind": "bohio_dir_reader"
+          },
+          "doc": "Starts listing the directory `relative`.\n\n# Errors\n\nA [`failure`]."
+        },
+        {
+          "name": "open_file",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "relative",
+              "type": "str"
+            },
+            {
+              "name": "options",
+              "type": "value",
+              "pass": "borrowed"
+            }
+          ],
+          "answer": {
+            "type": "object",
+            "kind": "bohio_file"
+          },
+          "doc": "Opens the file `relative` as `options` say.\n\n# Errors\n\nA [`failure`]."
+        },
+        {
+          "name": "create_dir",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "relative",
+              "type": "str"
+            },
+            {
+              "name": "mode",
+              "type": "value",
+              "pass": "borrowed"
+            }
+          ],
+          "doc": "Makes the directory `relative`, with `mode` where the system has modes.\n\n# Errors\n\nA [`failure`] (`exists`, `not_found` for a missing parent)."
+        },
+        {
+          "name": "remove_dir",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "relative",
+              "type": "str"
+            }
+          ],
+          "doc": "Removes the empty directory `relative`.\n\n# Errors\n\nA [`failure`] (`not_empty`)."
+        },
+        {
+          "name": "remove_dir_all",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "relative",
+              "type": "str"
+            }
+          ],
+          "doc": "Removes the directory `relative` and everything in it, without following a link.\n\n# Errors\n\nA [`failure`]."
+        },
+        {
+          "name": "remove_file",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "relative",
+              "type": "str"
+            }
+          ],
+          "doc": "Removes the file or symbolic link `relative`.\n\n# Errors\n\nA [`failure`]."
+        },
+        {
+          "name": "rename",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "from",
+              "type": "str"
+            },
+            {
+              "name": "to",
+              "type": "str"
+            },
+            {
+              "name": "overwrite",
+              "type": "bool"
+            }
+          ],
+          "doc": "Renames `from` to `to`, both below this directory. With `overwrite` an existing `to` is replaced in one\nstep; without it an existing `to` is `exists`.\n\n# Errors\n\nA [`failure`] (`exists`; `unsupported` when `overwrite` cannot be done in one step and the source lacks\n`atomic_replace`)."
+        },
+        {
+          "name": "hard_link",
+          "required": false,
+          "fallible": true,
+          "args": [
+            {
+              "name": "from",
+              "type": "str"
+            },
+            {
+              "name": "to",
+              "type": "str"
+            }
+          ],
+          "doc": "Makes `to` another name of the file `from`.\n\n# Errors\n\nA [`failure`] (`unsupported` for a source that lacks `hard_link`)."
+        },
+        {
+          "name": "symlink",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "target",
+              "type": "str"
+            },
+            {
+              "name": "link",
+              "type": "str"
+            },
+            {
+              "name": "to_directory",
+              "type": "bool"
+            }
+          ],
+          "doc": "Makes the symbolic link `link` to `target` (text, as the link holds it); `to_directory` says a Windows link\nis to a directory.\n\n# Errors\n\nA [`failure`]."
+        },
+        {
+          "name": "read_link",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "relative",
+              "type": "str"
+            }
+          ],
+          "answer": {
+            "type": "text"
+          },
+          "doc": "The text of the symbolic link `relative`.\n\n# Errors\n\nA [`failure`]."
+        },
+        {
+          "name": "set_times",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "relative",
+              "type": "str"
+            },
+            {
+              "name": "accessed",
+              "type": "value",
+              "pass": "borrowed"
+            },
+            {
+              "name": "modified",
+              "type": "value",
+              "pass": "borrowed"
+            }
+          ],
+          "doc": "Sets the times of `relative`; an absent one is left alone.\n\n# Errors\n\nA [`failure`]."
+        },
+        {
+          "name": "set_mode",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "relative",
+              "type": "str"
+            },
+            {
+              "name": "mode",
+              "type": "u32"
+            }
+          ],
+          "doc": "Sets the permission bits of `relative`.\n\n# Errors\n\nA [`failure`] (`unsupported` where the system has no modes)."
+        },
+        {
+          "name": "set_readonly",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "relative",
+              "type": "str"
+            },
+            {
+              "name": "readonly",
+              "type": "bool"
+            }
+          ],
+          "doc": "Sets or clears the read-only attribute of `relative`.\n\n# Errors\n\nA [`failure`]."
+        },
+        {
+          "name": "statvfs",
+          "required": false,
+          "fallible": true,
+          "args": [
+            {
+              "name": "relative",
+              "type": "str"
+            }
+          ],
+          "answer": {
+            "type": "value"
+          },
+          "doc": "The space of the file system `relative` is on.\n\n# Errors\n\n`UNSUPPORTED` when the source cannot tell (it lacks `statvfs`)."
+        }
+      ]
+    },
+    {
+      "name": "bohio_dir_reader",
+      "floor_hash": 3339468807,
+      "object": true,
+      "doc": "A listing in progress.",
+      "slots": [
+        {
+          "name": "next",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "max",
+              "type": "u64"
+            }
+          ],
+          "answer": {
+            "type": "value"
+          },
+          "doc": "The next entries, at most `max` of them, in no order. An empty answer is the end.\n\n# Errors\n\nA [`failure`]."
+        }
+      ]
+    },
+    {
+      "name": "bohio_file",
+      "floor_hash": 316669372,
+      "object": true,
+      "doc": "An open file. Reads and writes carry their offset, so one handle serves threads that read different places.",
+      "slots": [
+        {
+          "name": "read_at",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "offset",
+              "type": "u64"
+            },
+            {
+              "name": "dst",
+              "type": "bytes_mut"
+            }
+          ],
+          "answer": {
+            "type": "u64"
+          },
+          "doc": "Reads at `offset` into `dst` and answers the bytes read; fewer than `dst` only at the end, `0` at it.\n\n# Errors\n\nA [`failure`]."
+        },
+        {
+          "name": "write_at",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "offset",
+              "type": "u64"
+            },
+            {
+              "name": "data",
+              "type": "bytes"
+            }
+          ],
+          "answer": {
+            "type": "u64"
+          },
+          "doc": "Writes `data` at `offset` and answers the bytes written, all of them unless the file system is full.\n\n# Errors\n\nA [`failure`]."
+        },
+        {
+          "name": "set_len",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "len",
+              "type": "u64"
+            }
+          ],
+          "doc": "Sets the file's length, cutting it or extending it with zeros.\n\n# Errors\n\nA [`failure`]."
+        },
+        {
+          "name": "sync",
+          "required": true,
+          "fallible": true,
+          "args": [],
+          "doc": "Waits until what was written is on the medium, when the source can say so.\n\n# Errors\n\nA [`failure`]; `unsupported` for a source that lacks `sync`."
+        },
+        {
+          "name": "stat",
+          "required": true,
+          "fallible": true,
+          "args": [],
+          "answer": {
+            "type": "value"
+          },
+          "doc": "The file's attributes.\n\n# Errors\n\nA [`failure`]."
+        },
+        {
+          "name": "set_modified",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "time",
+              "type": "value",
+              "pass": "borrowed"
+            }
+          ],
+          "doc": "Sets the file's modification time.\n\n# Errors\n\nA [`failure`]."
+        },
+        {
+          "name": "set_mode",
+          "required": true,
+          "fallible": true,
+          "args": [
+            {
+              "name": "mode",
+              "type": "u32"
+            }
+          ],
+          "doc": "Sets the file's permission bits.\n\n# Errors\n\nA [`failure`] (`unsupported` where the system has no modes)."
+        }
+      ]
     }
   ]
 }

@@ -93,3 +93,69 @@ pub mod power_state {
     /// The source cannot tell.
     pub const UNKNOWN: &str = "unknown";
 }
+
+/// What an exec source offers and lacks.
+pub mod exec {
+    /// Starts a program from an argument vector.
+    pub const START: &str = "start";
+    /// Standard input.
+    pub const STDIN: &str = "stdin";
+    /// Standard error apart from standard output.
+    pub const STDERR: &str = "stderr";
+    /// Signals reach the program.
+    pub const SIGNALS: &str = "signals";
+    /// A shell kind runs a script.
+    pub const SHELL: &str = "shell";
+    /// A working directory.
+    pub const CWD: &str = "cwd";
+    /// Changes to the environment, and starting from an empty one.
+    pub const ENV: &str = "env";
+    /// A listed program is the one found at that name on the host's `PATH`.
+    pub const LISTED: &str = "listed";
+    /// Everything the program started ends with it.
+    pub const KILL_TREE: &str = "kill_tree";
+    /// The program's end carries an exit status.
+    pub const EXIT_STATUS: &str = "exit_status";
+}
+
+/// What a files source offers and lacks.
+pub mod files {
+    /// Read a file.
+    pub const READ: &str = "read";
+    /// Write a file.
+    pub const WRITE: &str = "write";
+    /// A name cannot leave the directory it is resolved against, whatever links lie on the way.
+    pub const CONFINED: &str = "confined";
+    /// Symbolic links.
+    pub const SYMLINK: &str = "symlink";
+    /// Hard links.
+    pub const HARD_LINK: &str = "hard_link";
+    /// Times can be set.
+    pub const SET_TIMES: &str = "set_times";
+    /// Permission bits can be set.
+    pub const SET_MODE: &str = "set_mode";
+    /// The read-only attribute can be set.
+    pub const SET_READONLY: &str = "set_readonly";
+    /// The space of a file system.
+    pub const STATVFS: &str = "statvfs";
+    /// A rename replaces its target in one step.
+    pub const ATOMIC_REPLACE: &str = "atomic_replace";
+    /// A written file can be flushed to the medium.
+    pub const SYNC: &str = "sync";
+    /// A listing carries each entry's attributes.
+    pub const LIST_STATS: &str = "list_stats";
+    /// Names are POSIX paths (`/` separators, one root); a source without this word names in the node's own syntax.
+    pub const POSIX_PATHS: &str = "posix_paths";
+}
+
+/// The `kind` of a [`crate::model::FileStat`].
+pub mod file_kind {
+    /// A regular file.
+    pub const FILE: &str = "file";
+    /// A directory.
+    pub const DIR: &str = "dir";
+    /// A symbolic link.
+    pub const SYMLINK: &str = "symlink";
+    /// Anything else.
+    pub const OTHER: &str = "other";
+}

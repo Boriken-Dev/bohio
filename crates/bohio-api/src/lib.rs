@@ -23,6 +23,8 @@ pub use guatiao;
 
 pub mod contract;
 pub mod desktop;
+pub mod exec;
+pub mod files;
 pub mod media;
 pub mod model;
 pub mod power;
@@ -33,10 +35,13 @@ pub mod testing;
 pub mod vocab;
 
 pub use desktop::{DesktopSession, DesktopSource};
+pub use exec::{ExecSource, Process};
+pub use files::{DirReader, Directory, File, FilesSource};
 pub use media::{BlockReader, MediaSource};
 pub use model::{
-    Delivery, DisplayModel, EnvVar, FrameHeader, InputModel, MediaSlot, PowerState, ProgramSpec,
-    RectModel, SourceInfo, StateModel, TerminalExit, TerminalOpen,
+    Delivery, DirEntryModel, DisplayModel, EnvVar, ExecStart, FileStat, FrameHeader, InputModel,
+    MediaSlot, OpenModel, PowerState, ProgramSpec, RectModel, SourceInfo, StateModel, TerminalExit,
+    TerminalOpen, TimeModel, VfsStat,
 };
 pub use power::PowerSource;
 pub use terminal::{Terminal, TerminalSource};

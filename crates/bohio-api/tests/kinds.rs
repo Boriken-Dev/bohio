@@ -14,6 +14,8 @@
 use std::path::PathBuf;
 
 use bohio_api::desktop::{DesktopSessionVtable, DesktopSourceVtable};
+use bohio_api::exec::{ExecSourceVtable, ProcessVtable};
+use bohio_api::files::{DirReaderVtable, DirectoryVtable, FileVtable, FilesSourceVtable};
 use bohio_api::guatiao::Alloc;
 use bohio_api::media::{BlockReaderVtable, MediaSourceVtable};
 use bohio_api::power::PowerSourceVtable;
@@ -22,7 +24,7 @@ use guatiao_serde::Presentation;
 use guatiao_serde::text::json;
 
 /// The floor hash of each kind: FNV-1a over every slot's signature.
-const HASHES: [(&str, u32); 7] = [
+const HASHES: [(&str, u32); 13] = [
     ("terminal", 4_168_119_332),
     ("terminal_session", 1_879_845_119),
     ("desktop", 1_612_473_616),
@@ -30,9 +32,15 @@ const HASHES: [(&str, u32); 7] = [
     ("power", 3_362_560_333),
     ("media", 240_719_559),
     ("block_reader", 3_458_871_641),
+    ("exec", 3687812134),
+    ("exec_process", 3762830037),
+    ("files", 1313677026),
+    ("directory", 1491948299),
+    ("dir_reader", 3339468807),
+    ("file", 316669372),
 ];
 
-fn actual() -> [(&'static str, u32); 7] {
+fn actual() -> [(&'static str, u32); 13] {
     [
         ("terminal", TerminalSourceVtable::FLOOR_HASH),
         ("terminal_session", TerminalVtable::FLOOR_HASH),
@@ -41,6 +49,12 @@ fn actual() -> [(&'static str, u32); 7] {
         ("power", PowerSourceVtable::FLOOR_HASH),
         ("media", MediaSourceVtable::FLOOR_HASH),
         ("block_reader", BlockReaderVtable::FLOOR_HASH),
+        ("exec", ExecSourceVtable::FLOOR_HASH),
+        ("exec_process", ProcessVtable::FLOOR_HASH),
+        ("files", FilesSourceVtable::FLOOR_HASH),
+        ("directory", DirectoryVtable::FLOOR_HASH),
+        ("dir_reader", DirReaderVtable::FLOOR_HASH),
+        ("file", FileVtable::FLOOR_HASH),
     ]
 }
 
@@ -53,6 +67,12 @@ fn rendered() -> String {
         PowerSourceVtable::description(),
         MediaSourceVtable::description(),
         BlockReaderVtable::description(),
+        ExecSourceVtable::description(),
+        ProcessVtable::description(),
+        FilesSourceVtable::description(),
+        DirectoryVtable::description(),
+        DirReaderVtable::description(),
+        FileVtable::description(),
     ];
     let document = format!("{{\"kinds\":[{}]}}", kinds.join(","));
     let value = json::from_str(&document, Alloc::rust(), Presentation::new())

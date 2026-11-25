@@ -281,3 +281,130 @@ pub struct MediaSlot {
     /// Size of the inserted image in bytes, when known.
     pub size: Option<u64>,
 }
+
+/// What an exec source is asked to start. The host has decided the grant: a program list, the environment a peer
+/// may change and whether a script may run are checked before a source sees this.
+#[derive(ToValue, FromValue, Schema, Debug, Clone, Default, PartialEq, Eq)]
+#[map(crate = ::guatiao)]
+pub struct ExecStart {
+    /// The program and its arguments, never run through a shell. Empty when `script` is set.
+    #[map(default)]
+    pub argv: Vec<String>,
+    /// A shell kind (`sh`, `bash`, `zsh`, `powershell`, `pwsh`, `cmd`) that runs `script`; the source finds the shell.
+    pub shell: Option<String>,
+    /// The script `shell` runs.
+    pub script: Option<String>,
+    /// The working directory, in the source's own syntax.
+    pub cwd: Option<String>,
+    /// Start from an empty environment.
+    #[map(default)]
+    pub clear_env: bool,
+    /// Changes to the environment, in order.
+    #[map(default)]
+    pub env: Vec<EnvVar>,
+    /// Whether standard input is a pipe; otherwise it is empty.
+    #[map(default)]
+    pub stdin: bool,
+    /// The host's own `PATH`, where a listed program is looked for.
+    pub path: Option<String>,
+    /// The grant lists programs: `argv[0]` is the one found at that name on `path`, never what the request's
+    /// environment would find.
+    #[map(default)]
+    pub listed: bool,
+    /// What happens to the program's tree if the host dies without ending it: `kill`, `term` or `leave`. Absent is `kill`.
+    pub on_host_death: Option<String>,
+}
+
+/// A moment, as seconds and nanoseconds from the Unix epoch (a time before it has negative seconds and nanoseconds
+/// counted forward).
+#[derive(ToValue, FromValue, Schema, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[map(crate = ::guatiao)]
+pub struct TimeModel {
+    /// Whole seconds.
+    pub secs: i64,
+    /// Nanoseconds after `secs`, below one billion.
+    pub nanos: u32,
+}
+
+/// What a file is, as the source reports it. The fields a system does not have are absent.
+#[derive(ToValue, FromValue, Schema, Debug, Clone, Default, PartialEq, Eq)]
+#[map(crate = ::guatiao)]
+pub struct FileStat {
+    /// `file`, `dir`, `symlink` or `other` ([`crate::vocab::file_kind`]).
+    pub kind: String,
+    /// Size in bytes.
+    #[map(default)]
+    pub size: u64,
+    /// Last modified.
+    pub modified: Option<TimeModel>,
+    /// Last accessed.
+    pub accessed: Option<TimeModel>,
+    /// Created.
+    pub created: Option<TimeModel>,
+    /// Permission bits.
+    pub mode: Option<u32>,
+    /// The read-only attribute.
+    #[map(default)]
+    pub readonly: bool,
+    /// Windows file attributes.
+    pub attributes: Option<u32>,
+    /// The device the file is on.
+    pub device: Option<u64>,
+    /// The file's number on it.
+    pub inode: Option<u64>,
+    /// Names the file has.
+    pub links: Option<u64>,
+}
+
+/// One entry of a listing.
+#[derive(ToValue, FromValue, Schema, Debug, Clone, Default, PartialEq, Eq)]
+#[map(crate = ::guatiao)]
+pub struct DirEntryModel {
+    /// The name, without a directory.
+    pub name: String,
+    /// What the entry is (a link is not followed), when the listing carried it; absent, the host asks.
+    pub stat: Option<FileStat>,
+}
+
+/// How a file is opened.
+#[derive(ToValue, FromValue, Schema, Debug, Clone, Default, PartialEq, Eq)]
+#[map(crate = ::guatiao)]
+pub struct OpenModel {
+    /// Read.
+    #[map(default)]
+    pub read: bool,
+    /// Write.
+    #[map(default)]
+    pub write: bool,
+    /// Make the file when it is not there.
+    #[map(default)]
+    pub create: bool,
+    /// Make the file and fail with `exists` when it is there.
+    #[map(default)]
+    pub create_new: bool,
+    /// Cut the file to nothing.
+    #[map(default)]
+    pub truncate: bool,
+    /// Permission bits of a file made, where the system has them.
+    pub mode: Option<u32>,
+}
+
+/// The space of a file system.
+#[derive(ToValue, FromValue, Schema, Debug, Clone, Default, PartialEq, Eq)]
+#[map(crate = ::guatiao)]
+pub struct VfsStat {
+    /// Bytes in a block.
+    pub block_size: u64,
+    /// Blocks.
+    pub blocks: u64,
+    /// Free blocks.
+    pub blocks_free: u64,
+    /// Free blocks for an unprivileged account.
+    pub blocks_avail: u64,
+    /// Files the system can hold, when it counts them.
+    pub files: Option<u64>,
+    /// Files it can still make.
+    pub files_free: Option<u64>,
+    /// The longest name, when known.
+    pub name_max: Option<u64>,
+}
