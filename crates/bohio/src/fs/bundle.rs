@@ -185,7 +185,7 @@ fn read_item(
         ..*job.context
     };
     authorize(&files, &[Permission::FsRead])?;
-    let roots = Roots::new(grant.fs_roots(), files.source.0);
+    let roots = Roots::new(grant.fs_roots(), files.source);
     let (mut file, meta) = ops::open_regular(&roots, &item.path)?;
     let size = meta.len();
     if item.offset > size {
@@ -456,7 +456,7 @@ fn open_target(
         }
     }
     let hasher = hasher_for(&files, &computed)?;
-    let roots = Roots::new(grant.fs_roots(), files.source.0);
+    let roots = Roots::new(grant.fs_roots(), files.source);
     let (dir, relative) = roots.resolve(&item.path)?;
     let staged = Staged::open(&dir, &relative, &item.mode, item.parents, item.file_mode)?;
     Ok(Target {

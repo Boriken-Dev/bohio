@@ -312,7 +312,7 @@ impl Open for Link {
                 let sources = bohio::access::Sources::default();
                 let files_source = sources.files(None).expect("native files").arc();
                 let context = fs::Context {
-                    source: fs::FilesRef(&files_source),
+                    source: fs::FilesRef::of(&files_source),
                     grant: &grant,
                     config: &files,
                     hash: &hash,
@@ -328,6 +328,7 @@ impl Open for Link {
                         let context = control::Context {
                             gui: None,
                             access: None,
+                            files: None,
                             filesystem: context,
                             info: &info,
                             current: None,

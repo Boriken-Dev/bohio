@@ -148,6 +148,59 @@ fn parse(text: &str, names_checked: bool) -> Result<Parsed, ErrorBody> {
 /// `bad_request` for an empty path, a NUL, a Windows device, stream or drive-relative form;
 /// `outside_root` for a path that leaves every root.
 pub(crate) fn locate(roots: &[PathBuf], text: &str) -> Result<Located, ErrorBody> {
+    locate_in(roots, text, Syntax::Host)
+}
+
+/// How the names of a source are written: as this system writes them, or as POSIX does (`/` separates, one root, names
+/// compare as they are). A Windows node serving a Linux machine names its files in the second.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Syntax {
+    /// This system's own paths.
+    Host,
+    /// POSIX paths.
+    Posix,
+}
+
+/// The parts of a POSIX path: rooted or not, and its names, with `.` and empty parts dropped and `..` folded.
+fn parse_posix(text: &str) -> Result<Parsed, ErrorBody> {
+    let mut parsed = Parsed {
+        prefix: None,
+        rooted: text.starts_with('/'),
+        names: Vec::new(),
+    };
+    for part in text.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                if parsed.names.pop().is_none() {
+                    return Err(outside_root());
+                }
+            }
+            name => parsed.names.push(OsString::from(name)),
+        }
+    }
+    Ok(parsed)
+}
+
+/// As [`locate`], for names written in `syntax`.
+///
+/// # Errors
+///
+/// As [`locate`].
+pub(crate) fn locate_in(
+    roots: &[PathBuf],
+    text: &str,
+    syntax: Syntax,
+) -> Result<Located, ErrorBody> {
+    let posix = syntax == Syntax::Posix;
+    let parse = |text: &str, checked: bool| {
+        if posix {
+            parse_posix(text)
+        } else {
+            parse(text, checked)
+        }
+    };
+    let same = |a: &OsStr, b: &OsStr| if posix { a == b } else { same(a, b) };
     if text.is_empty() {
         return Err(bad("the path is empty"));
     }
@@ -374,5 +427,77 @@ mod tests {
         ] {
             assert_eq!(code(locate(&list, text)), ErrorCode::BadRequest, "{text}");
         }
+    }
+}
+
+#[cfg(test)]
+mod posix_tests {
+    use super::*;
+
+    fn roots(list: &[&str]) -> Vec<PathBuf> {
+        list.iter().map(PathBuf::from).collect()
+    }
+
+    #[test]
+    fn a_posix_path_is_split_from_its_root_whatever_this_system_is() {
+        let list = roots(&["/srv/data", "/srv/data/deep"]);
+        let found = locate_in(&list, "/srv/data/a//b/./c", Syntax::Posix).unwrap();
+        assert_eq!(
+            (found.root, found.relative),
+            (0, PathBuf::from_iter(["a", "b", "c"]))
+        );
+        assert_eq!(
+            locate_in(&list, "/srv/data/deep/x", Syntax::Posix)
+                .unwrap()
+                .root,
+            1
+        );
+        assert_eq!(
+            locate_in(&roots(&["/srv/data"]), "/srv/data", Syntax::Posix)
+                .unwrap()
+                .relative,
+            PathBuf::new()
+        );
+    }
+
+    #[test]
+    fn a_posix_path_outside_every_root_or_leaving_its_start_is_refused() {
+        let list = roots(&["/srv/data"]);
+        for text in [
+            "/srv/database/x",
+            "/etc/passwd",
+            "/srv/data/../etc",
+            "../x",
+            "a/../../x",
+        ] {
+            let error = locate_in(&list, text, Syntax::Posix).expect_err(text);
+            assert_eq!(error.code, ErrorCode::OutsideRoot, "{text}");
+        }
+        assert_eq!(
+            locate_in(&list, "", Syntax::Posix).expect_err("empty").code,
+            ErrorCode::BadRequest
+        );
+    }
+
+    #[test]
+    fn posix_names_compare_as_they_are_and_a_drive_is_just_a_name() {
+        let list = roots(&["/Srv/Data"]);
+        assert!(locate_in(&list, "/srv/data/x", Syntax::Posix).is_err());
+        assert!(locate_in(&list, "/Srv/Data/x", Syntax::Posix).is_ok());
+        // `/c/Users` is a directory below the root `/c`, not a drive.
+        let found = locate_in(&roots(&["/c"]), "/c/Users/x", Syntax::Posix).unwrap();
+        assert_eq!(found.relative, PathBuf::from_iter(["Users", "x"]));
+        // A name a Windows system refuses is a name here.
+        assert!(locate_in(&roots(&["/c"]), "/c/CON:x/y", Syntax::Posix).is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_host_syntax_reads_a_drive_and_the_posix_one_does_not() {
+        let list = roots(&[r"C:\data"]);
+        assert!(locate_in(&list, r"C:\data\x", Syntax::Host).is_ok());
+        // In POSIX a backslash is part of a name, so this is one relative name below the first root.
+        let found = locate_in(&list, r"C:\data\x", Syntax::Posix).unwrap();
+        assert_eq!(found.relative.components().count(), 1);
     }
 }

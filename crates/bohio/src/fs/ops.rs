@@ -18,19 +18,21 @@ use super::{Context, io_error};
 pub(crate) struct Roots<'a> {
     roots: &'a [PathBuf],
     files: Arc<dyn FilesSource>,
+    syntax: path::Syntax,
 }
 
 impl<'a> Roots<'a> {
-    pub(crate) fn new(roots: &'a [PathBuf], files: &Arc<dyn FilesSource>) -> Self {
+    pub(crate) fn new(roots: &'a [PathBuf], files: super::FilesRef<'_>) -> Self {
         Self {
             roots,
-            files: Arc::clone(files),
+            files: Arc::clone(files.source),
+            syntax: files.syntax(),
         }
     }
 
     /// The directory handle of the root `text` lies under, and the path below it.
     pub(crate) fn resolve(&self, text: &str) -> Result<(Dir, PathBuf), ErrorBody> {
-        let located = path::locate(self.roots, text)?;
+        let located = path::locate_in(self.roots, text, self.syntax)?;
         let root = &self.roots[located.root];
         let dir = Dir::open_root(&self.files, root).map_err(|error| io_error(&error))?;
         Ok((dir, located.relative))

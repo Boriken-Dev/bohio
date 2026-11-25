@@ -200,7 +200,7 @@ impl Server {
             .iter()
             .filter(|spec| self.offered(spec) && !self.served_nowhere(spec))
             .map(|spec| {
-                let mut schema = (spec.schema)();
+                let mut schema = spec.full_schema();
                 if let Some(properties) =
                     schema.get_mut("properties").and_then(Value::as_object_mut)
                 {

@@ -324,7 +324,7 @@ impl Walker<'_> {
             ..self.context.files
         };
         authorize(&files, &[Permission::FsRead])?;
-        let roots = Roots::new(grant.fs_roots(), files.source.0);
+        let roots = Roots::new(grant.fs_roots(), files.source);
         let (dir, relative) = roots.resolve(text)?;
         if !self.room(root) {
             return Ok(());

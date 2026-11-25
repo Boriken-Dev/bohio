@@ -29,6 +29,8 @@ pub struct Context<'a> {
     pub gui: Option<GuiProbe<'a>>,
     /// What `info` says of the sources to a peer with a given grant, asked at every `info`; none is reported when absent.
     pub access: Option<AccessProbe<'a>>,
+    /// Which files source a call names; the stream's own (`filesystem.source`) serves every call when absent.
+    pub files: Option<FilesProbe<'a>>,
     /// The node's sessions and the peer asking, for `sessions` and `end_session`; they are `unsupported` when absent.
     pub sessions: Option<SessionsView<'a>>,
     /// The host's own `PATH`, where `which` looks; `which` is `unsupported` when absent.
@@ -57,6 +59,16 @@ pub struct AccessProbe<'a>(pub &'a dyn Fn(&Grant) -> bohio_proto::info::AccessIn
 impl core::fmt::Debug for AccessProbe<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("AccessProbe")
+    }
+}
+
+/// The files source a call names, for a grant as it is now: the default source when the call names none.
+#[derive(Clone, Copy)]
+pub struct FilesProbe<'a>(pub &'a dyn Fn(&Grant, Option<&str>) -> fs::Picked);
+
+impl core::fmt::Debug for FilesProbe<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("FilesProbe")
     }
 }
 
@@ -100,7 +112,7 @@ pub fn serve(channel: &Arc<dyn Channel>, context: &Context<'_>) -> u64 {
         let response = match decode::<Request>(&frame) {
             Ok(request) => {
                 let id = request.id;
-                match answer(context, &request.call, limit) {
+                match answer(context, &request.call, request.source.as_deref(), limit) {
                     Ok(reply) => Response::ok(id, reply),
                     Err(error) => Response::failed(id, error),
                 }
@@ -123,13 +135,22 @@ pub fn serve(channel: &Arc<dyn Channel>, context: &Context<'_>) -> u64 {
     }
 }
 
-fn answer(context: &Context<'_>, call: &Call, limit: usize) -> Result<Reply, ErrorBody> {
-    let Some(current) = context.current else {
-        return answer_with(context, context.filesystem, call, limit);
+fn answer(
+    context: &Context<'_>,
+    call: &Call,
+    source: Option<&str>,
+    limit: usize,
+) -> Result<Reply, ErrorBody> {
+    let grant = match context.current {
+        Some(current) => (current.0)()?,
+        None => context.filesystem.grant.clone(),
     };
-    let grant = (current.0)()?;
+    let picked = context.files.map(|probe| (probe.0)(&grant, source));
     let filesystem = fs::Context {
         grant: &grant,
+        source: picked
+            .as_ref()
+            .map_or(context.filesystem.source, fs::Picked::by_ref),
         ..context.filesystem
     };
     answer_with(context, filesystem, call, limit)

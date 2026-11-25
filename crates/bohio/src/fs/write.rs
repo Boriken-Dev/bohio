@@ -284,7 +284,7 @@ fn run(
             "the host is running as many transfers as it allows",
         )
     })?;
-    let roots = Roots::new(context.grant.fs_roots(), context.source.0);
+    let roots = Roots::new(context.grant.fs_roots(), context.source);
     let mut base = match &request.mode {
         WriteMode::Delta { block_size, base } => Some(open_base(
             &roots,

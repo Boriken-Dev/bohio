@@ -78,7 +78,7 @@ fn world(source_toml: &str, grant: Grant) -> World {
                 terminal: Some(vec!["native".to_owned(), "remote".to_owned()]),
                 desktop: Some(Vec::new()),
                 exec: Some(vec!["native".to_owned(), "remote".to_owned()]),
-                fs: Some(Vec::new()),
+                fs: Some(vec!["native".to_owned(), "remote".to_owned()]),
                 ..AccessConfig::default()
             },
         )
@@ -290,4 +290,283 @@ fn a_peer_not_granted_the_source_cannot_run_a_program_on_it() {
         "{refused:?}"
     );
     assert!(server.seen.lock().unwrap().commands.is_empty());
+}
+
+/// A directory as the machine's shell names it, and so as the files source of a POSIX path does (`/c/...` for a drive).
+fn posix(path: &std::path::Path) -> String {
+    let text = path.to_string_lossy().replace('\\', "/");
+    match text.split_once(":/") {
+        Some((drive, rest)) if drive.len() == 1 => {
+            format!("/{}/{rest}", drive.to_ascii_lowercase())
+        }
+        _ => text,
+    }
+}
+
+fn files_granted(root: &str) -> Grant {
+    Grant::allowing([Permission::Info, Permission::FsRead, Permission::FsWrite])
+        .with_sources(["remote"])
+        .with_fs_roots([root.to_owned()])
+}
+
+#[test]
+fn a_peer_reads_and_changes_the_machines_files_through_the_ssh_source() {
+    let server = FakeSsh::start();
+    let machine = tempfile::tempdir().unwrap();
+    let root = posix(machine.path());
+    let world = world(&source_toml(&server, ""), files_granted(&root));
+    let remote = bohio_client::Sourced::new(&world.link, "remote");
+    let fs = bohio_client::fs::Fs::connect(&remote).expect("the control stream opens");
+
+    fs.mkdir(&format!("{root}/work"), false).expect("mkdir");
+    assert!(machine.path().join("work").is_dir(), "the machine has it");
+
+    // A file goes up with a transfer and comes back the same.
+    let here = tempfile::tempdir().unwrap();
+    let content: Vec<u8> = (0..300_000_u32).map(|n| (n % 251) as u8).collect();
+    std::fs::write(here.path().join("up.bin"), &content).unwrap();
+    bohio_client::sync::put(
+        &remote,
+        &here.path().join("up.bin"),
+        &format!("{root}/work/up.bin"),
+        &bohio_client::sync::PutOptions::default(),
+    )
+    .expect("put");
+    assert_eq!(
+        std::fs::read(machine.path().join("work/up.bin")).unwrap(),
+        content
+    );
+    let stat = fs.stat(&format!("{root}/work/up.bin"), true).expect("stat");
+    assert_eq!(stat.size, content.len() as u64);
+
+    let listed = fs.list_all(&format!("{root}/work")).expect("list");
+    assert_eq!(
+        listed
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>(),
+        ["up.bin"]
+    );
+
+    fs.rename(
+        &format!("{root}/work/up.bin"),
+        &format!("{root}/work/moved.bin"),
+        false,
+    )
+    .expect("rename");
+    bohio_client::sync::get(
+        &remote,
+        &format!("{root}/work/moved.bin"),
+        &here.path().join("down.bin"),
+        &bohio_client::sync::GetOptions::default(),
+    )
+    .expect("get");
+    assert_eq!(
+        std::fs::read(here.path().join("down.bin")).unwrap(),
+        content
+    );
+
+    // A read stream and a hash name the source as well.
+    let reader = bohio_client::fs::Reader::start(
+        &remote,
+        &bohio_proto::fs::ReadRequest::whole(format!("{root}/work/moved.bin")),
+        Some(WAIT),
+    )
+    .expect("read");
+    assert_eq!(reader.read_to_end(Some(WAIT)).expect("bytes"), content);
+
+    fs.remove(&format!("{root}/work"), true).expect("remove");
+    assert!(!machine.path().join("work").exists());
+}
+
+#[test]
+fn a_peer_is_held_to_its_roots_on_the_machine_and_to_the_sources_it_holds() {
+    let server = FakeSsh::start();
+    let machine = tempfile::tempdir().unwrap();
+    std::fs::create_dir(machine.path().join("inside")).unwrap();
+    std::fs::create_dir(machine.path().join("outside")).unwrap();
+    let granted_root = posix(&machine.path().join("inside"));
+    let world = world(&source_toml(&server, ""), files_granted(&granted_root));
+    let remote = bohio_client::Sourced::new(&world.link, "remote");
+    let fs = bohio_client::fs::Fs::connect(&remote).unwrap();
+    fs.stat(&granted_root, true).expect("inside the root");
+    for path in [
+        posix(&machine.path().join("outside")),
+        format!("{granted_root}/../outside"),
+        "/etc/passwd".to_owned(),
+    ] {
+        match fs.stat(&path, true) {
+            Err(Error::Remote(body)) => assert_eq!(body.code, ErrorCode::OutsideRoot, "{path}"),
+            other => panic!("{path}: expected outside_root, got {other:?}"),
+        }
+    }
+
+    // Without the source in its grant the peer is refused, and the machine is not touched.
+    let world = self::world(
+        &source_toml(&server, ""),
+        Grant::allowing([Permission::Info, Permission::FsRead, Permission::FsWrite])
+            .with_fs_roots([granted_root.clone()]),
+    );
+    let remote = bohio_client::Sourced::new(&world.link, "remote");
+    let fs = bohio_client::fs::Fs::connect(&remote).unwrap();
+    match fs.mkdir(&format!("{granted_root}/made"), false) {
+        Err(Error::Remote(body)) => assert_eq!(body.code, ErrorCode::Denied),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    assert!(!machine.path().join("inside/made").exists());
+}
+
+#[test]
+fn info_lists_the_files_source_with_what_it_lacks() {
+    let server = FakeSsh::start();
+    let machine = tempfile::tempdir().unwrap();
+    let world = world(
+        &source_toml(&server, ""),
+        files_granted(&posix(machine.path())),
+    );
+    let info = Control::open(&world.link)
+        .unwrap()
+        .info(Some(WAIT))
+        .unwrap();
+    let remote = info
+        .access
+        .fs
+        .iter()
+        .find(|entry| entry.name == "remote")
+        .expect("listed");
+    assert!(remote.available, "{remote:?}");
+    assert!(remote.lacks.iter().any(|word| word == "confined"));
+    assert!(remote.offers.iter().any(|word| word == "posix_paths"));
+}
+
+/// A measurement, not a check: a file goes through a node to the `native` source and to an ssh source of a real server on
+/// this machine, alternately, and the time of each is printed. It needs `BOHIO_BENCH_SSH` (`PORT,USER,IDENTITY,PIN,SERVER_DIR`)
+/// and `BOHIO_BENCH_DIR` (a directory of this machine), and runs with `-- --ignored --nocapture`.
+#[test]
+#[ignore = "a measurement against a real server; see the test's comment"]
+fn a_large_transfer_to_the_ssh_source_against_the_native_source() {
+    let (Ok(spec), Ok(dir)) = (
+        std::env::var("BOHIO_BENCH_SSH"),
+        std::env::var("BOHIO_BENCH_DIR"),
+    ) else {
+        panic!("BOHIO_BENCH_SSH and BOHIO_BENCH_DIR are not set");
+    };
+    let parts: Vec<&str> = spec.split(',').collect();
+    let [port, user, identity, pin, server_dir] = parts[..] else {
+        panic!("BOHIO_BENCH_SSH is PORT,USER,IDENTITY,PIN,SERVER_DIR");
+    };
+    let bytes: u64 = std::env::var("BOHIO_BENCH_BYTES")
+        .ok()
+        .and_then(|text| text.parse().ok())
+        .unwrap_or(1024 * 1024 * 1024);
+    let runs: usize = std::env::var("BOHIO_BENCH_RUNS")
+        .ok()
+        .and_then(|text| text.parse().ok())
+        .unwrap_or(3);
+    let native_dir = format!("{dir}/native");
+    let ssh_dir = format!("{server_dir}/scratch");
+    std::fs::create_dir_all(&native_dir).unwrap();
+    let source = format!(
+        "[source.remote]\nprovider = \"ssh\"\nhost = \"127.0.0.1\"\nport = {port}\nuser = \"{user}\"\nidentity = {identity:?}\nhost_key = \"{pin}\"\nagent = false\n"
+    );
+    let granted = || {
+        Grant::allowing([Permission::Info, Permission::FsRead, Permission::FsWrite])
+            .with_sources(["remote"])
+            .with_fs_roots([native_dir.clone(), ssh_dir.clone()])
+    };
+    let local = format!("{dir}/source.bin");
+    {
+        use std::io::Write as _;
+        let mut file = std::io::BufWriter::new(std::fs::File::create(&local).unwrap());
+        let mut block = vec![0_u8; 1024 * 1024];
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut written = 0_u64;
+        while written < bytes {
+            for chunk in block.chunks_mut(8) {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                let word = state.to_le_bytes();
+                chunk.copy_from_slice(&word[..chunk.len()]);
+            }
+            let take = usize::try_from((bytes - written).min(block.len() as u64)).unwrap();
+            file.write_all(&block[..take]).unwrap();
+            written += take as u64;
+        }
+        file.flush().unwrap();
+    }
+    let mib = |seconds: f64| bytes as f64 / 1_048_576.0 / seconds;
+    let median = |mut times: Vec<f64>| {
+        times.sort_by(f64::total_cmp);
+        (times[times.len() / 2], times[0], times[times.len() - 1])
+    };
+    for (label, extra) in [
+        ("sftp default", ""),
+        (
+            "sftp tuned (64 in flight, 128 KiB)",
+            "sftp_in_flight = 64\nsftp_packet = 131072\n",
+        ),
+    ] {
+        let world = world(&format!("{source}{extra}"), granted());
+        let ssh = bohio_client::Sourced::new(&world.link, "remote");
+        let mut native_up = Vec::new();
+        let mut ssh_up = Vec::new();
+        let mut native_down = Vec::new();
+        let mut ssh_down = Vec::new();
+        for _ in 0..runs {
+            for (name, link, target, up, down) in [
+                (
+                    "native",
+                    &world.link as &dyn bohio_client::Open,
+                    format!("{native_dir}/x.bin"),
+                    &mut native_up,
+                    &mut native_down,
+                ),
+                (
+                    "ssh",
+                    &ssh as &dyn bohio_client::Open,
+                    format!("{ssh_dir}/x.bin"),
+                    &mut ssh_up,
+                    &mut ssh_down,
+                ),
+            ] {
+                let began = Instant::now();
+                bohio_client::sync::put(
+                    link,
+                    std::path::Path::new(&local),
+                    &target,
+                    &bohio_client::sync::PutOptions::default(),
+                )
+                .unwrap_or_else(|error| panic!("{name} put: {error:?}"));
+                up.push(began.elapsed().as_secs_f64());
+                let back = format!("{dir}/back.bin");
+                let began = Instant::now();
+                bohio_client::sync::get(
+                    link,
+                    &target,
+                    std::path::Path::new(&back),
+                    &bohio_client::sync::GetOptions::default(),
+                )
+                .unwrap_or_else(|error| panic!("{name} get: {error:?}"));
+                down.push(began.elapsed().as_secs_f64());
+                assert_eq!(std::fs::metadata(&back).unwrap().len(), bytes);
+                let _ = std::fs::remove_file(&back);
+                let _ = std::fs::remove_file(&target);
+            }
+        }
+        for (name, what, times) in [
+            ("native", "put", native_up),
+            ("ssh", "put", ssh_up),
+            ("native", "get", native_down),
+            ("ssh", "get", ssh_down),
+        ] {
+            let (mid, low, high) = median(times);
+            println!(
+                "bench [{label}] {name} {what} {} MiB: median {mid:.2}s ({:.0} MiB/s), best {low:.2}s, worst {high:.2}s over {runs}",
+                bytes / 1_048_576,
+                mib(mid)
+            );
+        }
+    }
+    let _ = std::fs::remove_file(&local);
 }

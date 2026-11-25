@@ -78,7 +78,7 @@ pub(super) fn serve(
             "the host is running as many followed reads as it allows",
         )
     })?;
-    let roots = Roots::new(context.grant.fs_roots(), context.source.0);
+    let roots = Roots::new(context.grant.fs_roots(), context.source);
     let (mut file, meta) = ops::open_regular(&roots, &request.path)?;
     let size = meta.len();
     let mut position = match follow.tail {
@@ -187,7 +187,7 @@ fn replacement(
     path: &str,
     tracked: &Identity,
 ) -> Result<Option<(File, Metadata)>, ErrorBody> {
-    let roots = Roots::new(context.grant.fs_roots(), context.source.0);
+    let roots = Roots::new(context.grant.fs_roots(), context.source);
     let (file, meta) = match ops::open_regular(&roots, path) {
         Ok(found) => found,
         Err(body) if matches!(body.code, ErrorCode::NotFound | ErrorCode::BadRequest) => {
@@ -205,7 +205,7 @@ fn replacement(
         ..*context
     };
     authorize(&files, &[Permission::FsRead])?;
-    Roots::new(grant.fs_roots(), files.source.0).resolve_entry(path)?;
+    Roots::new(grant.fs_roots(), files.source).resolve_entry(path)?;
     Ok(Some((file, meta)))
 }
 

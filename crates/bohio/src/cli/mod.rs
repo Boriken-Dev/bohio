@@ -499,6 +499,9 @@ pub struct RemoteWhichArgs {
 /// `bohio remote ... search`.
 #[derive(Debug, Args)]
 pub struct RemoteSearchArgs {
+    /// The files source of the host that serves it (see `info`); the host's default one when absent.
+    #[command(flatten)]
+    pub files: FilesSourceArg,
     /// The pattern: a regular expression (linear-time, so none can run away), or text with `-F`.
     pub pattern: String,
     /// The directories (or files) to search, in the host's own path text. The host's first root when absent.
@@ -536,6 +539,9 @@ pub struct RemoteSearchArgs {
 /// `bohio remote ... glob`.
 #[derive(Debug, Args)]
 pub struct RemoteGlobArgs {
+    /// The files source of the host that serves it (see `info`); the host's default one when absent.
+    #[command(flatten)]
+    pub files: FilesSourceArg,
     /// The glob: a path below each root, or a name, matched as `**/*.rs` is.
     pub glob: String,
     /// The directories to look in, in the host's own path text. The host's first root when absent.
@@ -704,6 +710,14 @@ fn parse_signal(text: &str) -> Result<bohio_proto::signal::Signal, String> {
     })
 }
 
+/// The files source a command names.
+#[derive(Debug, Args)]
+pub struct FilesSourceArg {
+    /// The files source of the host to use (an `ssh` source serves another machine's files); its default one when absent.
+    #[arg(long = "source", value_name = "NAME")]
+    pub source: Option<String>,
+}
+
 /// `bohio remote ... exec`.
 #[derive(Debug, Args)]
 pub struct RemoteExecArgs {
@@ -747,6 +761,9 @@ pub struct RemoteExecArgs {
 /// `bohio remote ... read`.
 #[derive(Debug, Args)]
 pub struct RemoteReadArgs {
+    /// The files source of the host that serves it (see `info`); the host's default one when absent.
+    #[command(flatten)]
+    pub files: FilesSourceArg,
     /// The file, in the host's own path text.
     pub path: String,
     /// Have the host compress what it sends: `ALG` or `ALG:LEVEL`, where ALG is zstd, lz4, deflate, none or auto (the
@@ -783,6 +800,9 @@ pub struct RemoteReadArgs {
 /// `bohio remote ... write`.
 #[derive(Debug, Args)]
 pub struct RemoteWriteArgs {
+    /// The files source of the host that serves it (see `info`); the host's default one when absent.
+    #[command(flatten)]
+    pub files: FilesSourceArg,
     /// The file, in the host's own path text.
     pub path: String,
     /// Compress what is sent: `ALG` or `ALG:LEVEL`, where ALG is zstd, lz4, deflate or auto (the host's default,
@@ -872,6 +892,9 @@ pub struct SyncArgs {
 /// `bohio remote ... put`.
 #[derive(Debug, Args)]
 pub struct RemotePutArgs {
+    /// The files source of the host that serves it (see `info`); the host's default one when absent.
+    #[command(flatten)]
+    pub files: FilesSourceArg,
     /// The local file.
     pub local: PathBuf,
     /// The file on the host, in the host's own path text.
@@ -887,6 +910,9 @@ pub struct RemotePutArgs {
 /// `bohio remote ... get`.
 #[derive(Debug, Args)]
 pub struct RemoteGetArgs {
+    /// The files source of the host that serves it (see `info`); the host's default one when absent.
+    #[command(flatten)]
+    pub files: FilesSourceArg,
     /// The file on the host, in the host's own path text.
     pub remote: String,
     /// The local file.
@@ -902,6 +928,9 @@ pub struct RemoteGetArgs {
 /// `bohio remote ... walk`.
 #[derive(Debug, Args)]
 pub struct RemoteWalkArgs {
+    /// The files source of the host that serves it (see `info`); the host's default one when absent.
+    #[command(flatten)]
+    pub files: FilesSourceArg,
     /// The directories (or files) to list, in the host's own path text.
     #[arg(required = true, value_name = "PATH")]
     pub paths: Vec<String>,
@@ -937,6 +966,9 @@ pub enum SyncDirection {
 /// `bohio remote ... sync`.
 #[derive(Debug, Args)]
 pub struct RemoteSyncArgs {
+    /// The files source of the host that serves it (see `info`); the host's default one when absent.
+    #[command(flatten)]
+    pub files: FilesSourceArg,
     /// Which way to copy.
     #[arg(value_enum)]
     pub direction: SyncDirection,
@@ -971,6 +1003,9 @@ pub struct RemoteSyncArgs {
 /// `bohio remote ... hash`.
 #[derive(Debug, Args)]
 pub struct RemoteHashArgs {
+    /// The files source of the host that serves it (see `info`); the host's default one when absent.
+    #[command(flatten)]
+    pub files: FilesSourceArg,
     /// A digest to compute: md5, sha1, sha256, sha384, sha512, blake3, xxh3, xxh128, xxh64 or crc32c (repeat for
     /// several, computed in one pass). Default sha256.
     #[arg(long, value_name = "NAME")]

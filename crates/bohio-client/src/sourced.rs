@@ -11,10 +11,23 @@ use crate::{Error, Open, OpenOptions, connect};
 
 /// `link`, with the files source `name` on every filesystem stream and every control call that opens through it. The
 /// host's default source serves a request that names none.
-#[derive(Debug)]
 pub struct Sourced<'a> {
-    link: &'a dyn Open,
+    link: Held<'a>,
     name: String,
+}
+
+enum Held<'a> {
+    Borrowed(&'a dyn Open),
+    Owned(std::sync::Arc<dyn Open>),
+}
+
+impl Held<'_> {
+    fn get(&self) -> &dyn Open {
+        match self {
+            Self::Borrowed(link) => *link,
+            Self::Owned(link) => link.as_ref(),
+        }
+    }
 }
 
 impl core::fmt::Debug for dyn Open + '_ {
@@ -28,7 +41,16 @@ impl<'a> Sourced<'a> {
     #[must_use]
     pub fn new(link: &'a dyn Open, name: impl Into<String>) -> Self {
         Self {
-            link,
+            link: Held::Borrowed(link),
+            name: name.into(),
+        }
+    }
+
+    /// As [`Sourced::new`], for a link that is shared.
+    #[must_use]
+    pub fn shared(link: std::sync::Arc<dyn Open>, name: impl Into<String>) -> Sourced<'static> {
+        Sourced {
+            link: Held::Owned(link),
             name: name.into(),
         }
     }
@@ -74,7 +96,9 @@ impl<'a> Sourced<'a> {
 
 impl Open for Sourced<'_> {
     fn open(&self, protocol: &str, metadata: &[u8]) -> Result<Box<dyn LinkStream>, Error> {
-        self.link.open(protocol, &self.named(protocol, metadata)?)
+        self.link
+            .get()
+            .open(protocol, &self.named(protocol, metadata)?)
     }
 
     fn open_with(
@@ -84,15 +108,16 @@ impl Open for Sourced<'_> {
         options: &OpenOptions,
     ) -> Result<Box<dyn LinkStream>, Error> {
         self.link
+            .get()
             .open_with(protocol, &self.named(protocol, metadata)?, options)
     }
 
     fn bulk_window(&self) -> Option<u32> {
-        self.link.bulk_window()
+        self.link.get().bulk_window()
     }
 
     fn is_up(&self) -> bool {
-        self.link.is_up()
+        self.link.get().is_up()
     }
 
     fn open_cause(
@@ -101,11 +126,12 @@ impl Open for Sourced<'_> {
         metadata: &[u8],
     ) -> Result<(Box<dyn LinkStream>, connect::Cause), Error> {
         self.link
+            .get()
             .open_cause(protocol, &self.named(protocol, metadata)?)
     }
 
     fn relink_wait(&self) -> Option<std::time::Duration> {
-        self.link.relink_wait()
+        self.link.get().relink_wait()
     }
 
     fn files_source(&self) -> Option<&str> {

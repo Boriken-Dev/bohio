@@ -395,6 +395,34 @@ pub struct ToolSpec {
     pub run: Runner,
 }
 
+impl ToolSpec {
+    /// Whether the tool works on the host's files, and so can name the files source that serves them.
+    fn names_files_source(&self) -> bool {
+        self.needs
+            .iter()
+            .any(|need| matches!(need, Need::FsRead | Need::FsWrite))
+    }
+
+    /// The JSON Schema of its arguments, with the `source` every file tool takes: the files source of the host that
+    /// serves the call (an `ssh` source serves another machine's files); the host's default one when absent.
+    #[must_use]
+    pub fn full_schema(&self) -> Value {
+        let mut schema = (self.schema)();
+        if self.names_files_source()
+            && let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut)
+        {
+            properties.insert(
+                "source".to_owned(),
+                serde_json::json!({
+                    "type": "string",
+                    "description": "the files source of the host that serves the call (see `info`); default the host's own"
+                }),
+            );
+        }
+        schema
+    }
+}
+
 /// Whether a tool can run for this peer on this host.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Availability {
@@ -575,11 +603,41 @@ impl Tools {
         if let Availability::Unavailable(reason) = self.availability(spec) {
             return Err(ToolError::new("unavailable", reason));
         }
-        let arguments = match arguments {
+        let mut arguments = match arguments {
             Value::Null => Value::Object(Map::new()),
             other => other,
         };
-        (spec.run)(self, arguments, cancel).map_err(|mut error| {
+        // A file tool may name the files source that serves it: the call then runs over a link that asks for it.
+        let named = if spec.names_files_source() {
+            arguments
+                .as_object_mut()
+                .and_then(|object| object.remove("source"))
+        } else {
+            None
+        };
+        let named = match named {
+            None | Some(Value::Null) => None,
+            Some(Value::String(name)) => Some(name),
+            Some(_) => {
+                return Err(ToolError::bad("`source` is the name of a files source"));
+            }
+        };
+        let sourced;
+        let tools = match named {
+            Some(name) => {
+                sourced = Self {
+                    link: Arc::new(crate::Sourced::shared(Arc::clone(&self.link), name)),
+                    info: self.info.clone(),
+                    settings: self.settings.clone(),
+                    forwards: Mutex::default(),
+                    desktop: Mutex::new(None),
+                    shots: Mutex::default(),
+                };
+                &sourced
+            }
+            None => self,
+        };
+        (spec.run)(tools, arguments, cancel).map_err(|mut error| {
             if error.code == "denied" {
                 let needs: Vec<&str> = spec.needs.iter().map(|need| need.name()).collect();
                 error.message = format!("{}; `{name}` needs: {}", error.message, needs.join(", "));

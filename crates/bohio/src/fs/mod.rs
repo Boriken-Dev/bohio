@@ -100,7 +100,7 @@ pub(crate) fn open_confined(
     files: &std::sync::Arc<dyn bohio_api::FilesSource>,
     path: &str,
 ) -> Result<Confined, bohio_proto::ErrorBody> {
-    let roots = ops::Roots::new(roots, files);
+    let roots = ops::Roots::new(roots, FilesRef::of(files));
     let (file, meta) = ops::open_regular(&roots, path)?;
     Ok(Confined {
         size: meta.len(),
@@ -108,9 +108,116 @@ pub(crate) fn open_confined(
     })
 }
 
-/// The files source an engine reaches the file system through.
+/// The files source an engine reaches the file system through, how its names are written, and why a request may not use
+/// it.
 #[derive(Clone, Copy)]
-pub struct FilesRef<'a>(pub &'a std::sync::Arc<dyn bohio_api::FilesSource>);
+pub struct FilesRef<'a> {
+    /// The source.
+    pub source: &'a std::sync::Arc<dyn bohio_api::FilesSource>,
+    /// Whether the source names its files as POSIX does (`posix_paths` in its `describe`), whatever this node's own
+    /// syntax is.
+    pub posix: bool,
+    /// Why this request may not use the source (it is not the peer's, or there is none of that name): every operation
+    /// starts by answering it.
+    pub refused: Option<&'a ErrorBody>,
+}
+
+impl<'a> FilesRef<'a> {
+    /// `source`, named in this node's own syntax and usable.
+    #[must_use]
+    pub const fn of(source: &'a std::sync::Arc<dyn bohio_api::FilesSource>) -> Self {
+        Self {
+            source,
+            posix: false,
+            refused: None,
+        }
+    }
+
+    pub(crate) const fn syntax(&self) -> path::Syntax {
+        if self.posix {
+            path::Syntax::Posix
+        } else {
+            path::Syntax::Host
+        }
+    }
+}
+
+/// The source a request names: the peer's way to a files source other than the default one.
+
+pub struct Picked {
+    /// The source, or one that serves nothing when the request may not use it.
+    pub source: std::sync::Arc<dyn bohio_api::FilesSource>,
+    /// Whether it names its files as POSIX does.
+    pub posix: bool,
+    /// Why the request may not use it.
+    pub refused: Option<ErrorBody>,
+}
+
+impl Picked {
+    /// The reference the engines take.
+    #[must_use]
+    pub fn by_ref(&self) -> FilesRef<'_> {
+        FilesRef {
+            source: &self.source,
+            posix: self.posix,
+            refused: self.refused.as_ref(),
+        }
+    }
+}
+
+/// The name of the files source a stream's open asks for, when it names one.
+#[must_use]
+pub fn requested_source(protocol: &str, metadata: &[u8]) -> Option<String> {
+    use bohio_proto::protocol;
+    match protocol {
+        protocol::READ => bohio_proto::fs::ReadRequest::from_metadata(metadata)
+            .ok()
+            .and_then(|request| request.source),
+        protocol::WRITE => bohio_proto::fs::WriteRequest::from_metadata(metadata)
+            .ok()
+            .and_then(|request| request.source),
+        protocol::HASH => bohio_proto::hash::HashRequest::from_metadata(metadata)
+            .ok()
+            .and_then(|request| request.source),
+        protocol::WALK => bohio_proto::walk::WalkRequest::from_metadata(metadata)
+            .ok()
+            .and_then(|request| request.source),
+        protocol::SEARCH => bohio_proto::search::SearchRequest::from_metadata(metadata)
+            .ok()
+            .and_then(|request| request.source),
+        _ => None,
+    }
+}
+
+/// The files source `name` of `sources` (the default one when `None`) for a request of `grant`.
+#[must_use]
+pub fn pick(sources: &crate::access::Sources, grant: &Grant, name: Option<&str>) -> Picked {
+    let refused = |error: ErrorBody| Picked {
+        source: absent(),
+        posix: false,
+        refused: Some(error),
+    };
+    let source = match sources.files(name) {
+        Ok(source) => source,
+        Err(error) => return refused(error),
+    };
+    if !sources.permits(grant, source.name()) {
+        return refused(ErrorBody::new(
+            ErrorCode::Denied,
+            "this peer may not use that files source",
+        ));
+    }
+    let posix = source.get().describe().is_ok_and(|info| {
+        info.offers
+            .iter()
+            .any(|word| word == bohio_api::vocab::files::POSIX_PATHS)
+    });
+    Picked {
+        source: source.arc(),
+        posix,
+        refused: None,
+    }
+}
 
 impl core::fmt::Debug for FilesRef<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -186,7 +293,7 @@ pub fn call(context: &Context<'_>, call: &Call, budget: usize) -> Result<Reply, 
         }
     };
     authorize(context, needs)?;
-    let roots = Roots::new(context.grant.fs_roots(), context.source.0);
+    let roots = Roots::new(context.grant.fs_roots(), context.source);
     Ok(match call {
         Call::Stat { path, follow } => Reply::Stat(Box::new(ops::stat(&roots, path, *follow)?)),
         Call::List { path, after, limit } => Reply::List(ops::list(
@@ -292,9 +399,13 @@ pub(crate) fn covers_write(grant: &Grant, metadata: &[u8]) -> bool {
 /// Whether `text` lies under a root of `grant` by its words: a path that does not parse is the
 /// engine's to refuse, and one that leaves every root, or a grant with no root, is not covered.
 fn under_a_root(grant: &Grant, text: &str) -> bool {
-    !grant.fs_roots().is_empty()
-        && path::locate(grant.fs_roots(), text)
+    // Which source the request names decides the syntax; the stream's own engine decides with it, so this check
+    // (made again while the stream runs) holds the path to the roots in either.
+    let under = |syntax| {
+        path::locate_in(grant.fs_roots(), text, syntax)
             .map_or_else(|error| error.code != ErrorCode::OutsideRoot, |_| true)
+    };
+    !grant.fs_roots().is_empty() && (under(path::Syntax::Host) || under(path::Syntax::Posix))
 }
 
 /// The set-user-ID and set-group-ID bits: a file carrying one runs as its owner or group, the service's
@@ -339,6 +450,9 @@ pub(crate) fn authorize(context: &Context<'_>, needs: &[Permission]) -> Result<(
             ErrorCode::Denied,
             "this peer has no filesystem root",
         ));
+    }
+    if let Some(refused) = context.source.refused {
+        return Err(refused.clone());
     }
     Ok(())
 }
@@ -397,4 +511,10 @@ pub fn absent() -> std::sync::Arc<dyn bohio_api::FilesSource> {
     }
 
     std::sync::Arc::new(Absent)
+}
+
+impl core::fmt::Debug for Picked {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Picked").finish_non_exhaustive()
+    }
 }

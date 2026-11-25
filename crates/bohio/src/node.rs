@@ -1363,12 +1363,13 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
                 ErrorBody::new(ErrorCode::Internal, "the host cannot read its peer grants")
             })
         };
-        let files_source = shared
-            .sources
-            .files(None)
-            .map_or_else(|_| fs::absent(), |source| source.arc());
+        let picked = fs::pick(
+            &shared.sources,
+            &grant,
+            fs::requested_source(accepted.protocol.as_str(), metadata).as_deref(),
+        );
         let files = fs::Context {
-            source: fs::FilesRef(&files_source),
+            source: picked.by_ref(),
             grant: &grant,
             config: &config.filesystem,
             hash: &config.hash,
@@ -1508,6 +1509,8 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
             protocol::CONTROL => {
                 let probe = |grant: &Grant| shared.gui.info(&config.gui, grant);
                 let access = |grant: &Grant| shared.sources.info(grant);
+                let named =
+                    |grant: &Grant, name: Option<&str>| fs::pick(&shared.sources, grant, name);
                 let context = control::Context {
                     filesystem: files,
                     info: &shared.info,
@@ -1515,6 +1518,7 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
                     gui: Some(control::GuiProbe(&probe)),
                     path: Some(shared.path.as_os_str()),
                     access: Some(control::AccessProbe(&access)),
+                    files: Some(control::FilesProbe(&named)),
                     sessions: Some(control::SessionsView {
                         registry: &shared.detached,
                         peer: &peer,

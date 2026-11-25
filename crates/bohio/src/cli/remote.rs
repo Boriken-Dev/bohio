@@ -344,6 +344,23 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
         None => direct_plan(args, environment)?,
     };
     let link: Arc<dyn Open> = plan.dial()?;
+    // A command that names a files source asks the host for that one on every file stream and call.
+    let named = match &args.action {
+        RemoteAction::Read(a) => a.files.source.as_deref(),
+        RemoteAction::Write(a) => a.files.source.as_deref(),
+        RemoteAction::Hash(a) => a.files.source.as_deref(),
+        RemoteAction::Put(a) => a.files.source.as_deref(),
+        RemoteAction::Get(a) => a.files.source.as_deref(),
+        RemoteAction::Walk(a) => a.files.source.as_deref(),
+        RemoteAction::Glob(a) => a.files.source.as_deref(),
+        RemoteAction::Search(a) => a.files.source.as_deref(),
+        RemoteAction::Sync(a) => a.files.source.as_deref(),
+        _ => None,
+    };
+    let link: Arc<dyn Open> = match named {
+        Some(name) => Arc::new(bohio_client::Sourced::shared(link, name)),
+        None => link,
+    };
     // A command that stays up makes the link again when it ends, unless `--once`.
     let persist = match &args.action {
         RemoteAction::Connect(connect) => Some(&connect.persist),

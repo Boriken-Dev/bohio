@@ -39,9 +39,16 @@ impl core::fmt::Debug for Dir {
 }
 
 /// The text of a path handed to a source: names are text, in the node's own separators.
-fn text(path: &Path) -> io::Result<&str> {
-    path.to_str()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "a name is not text"))
+fn text(path: &Path) -> io::Result<std::borrow::Cow<'_, str>> {
+    let text = path
+        .to_str()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "a name is not text"))?;
+    // Every source takes `/`, and a source of another system takes nothing else.
+    Ok(if cfg!(windows) && text.contains('\\') {
+        std::borrow::Cow::Owned(text.replace('\\', "/"))
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    })
 }
 
 fn dot(path: &Path) -> &Path {
@@ -59,7 +66,8 @@ fn failed(error: &ProviderError) -> io::Error {
 impl Dir {
     /// Opens the root `path` of `files`.
     pub(crate) fn open_root(files: &Arc<dyn FilesSource>, path: &Path) -> io::Result<Self> {
-        let root = text(path)?;
+        let root = &*text(path)?;
+        let root: &str = &root;
         let handle = files.open_dir(root).map_err(|error| failed(&error))?;
         Ok(Self {
             handle: Arc::new(handle),
@@ -74,7 +82,7 @@ impl Dir {
     pub(crate) fn open_dir(&self, relative: &Path) -> io::Result<Self> {
         let handle = self
             .handle
-            .open_dir(text(dot(relative))?)
+            .open_dir(&*text(dot(relative))?)
             .map_err(|error| failed(&error))?;
         Ok(Self {
             handle: Arc::new(handle),
@@ -99,7 +107,7 @@ impl Dir {
 
     fn stat(&self, relative: &Path, follow: bool) -> io::Result<Metadata> {
         self.handle
-            .stat(text(dot(relative))?, follow)
+            .stat(&*text(dot(relative))?, follow)
             .map(Metadata)
             .map_err(|error| failed(&error))
     }
@@ -109,7 +117,7 @@ impl Dir {
         let relative = dot(relative);
         let reader = self
             .handle
-            .read_dir(text(relative)?)
+            .read_dir(&*text(relative)?)
             .map_err(|error| failed(&error))?;
         Ok(ReadDir {
             reader,
@@ -129,7 +137,7 @@ impl Dir {
     pub(crate) fn open_with(&self, relative: &Path, options: &OpenOptions) -> io::Result<File> {
         let handle = self
             .handle
-            .open_file(text(relative)?, options.0.clone())
+            .open_file(&*text(relative)?, options.0.clone())
             .map_err(|error| failed(&error))?;
         Ok(File {
             handle,
@@ -145,35 +153,35 @@ impl Dir {
         mode: Option<u32>,
     ) -> io::Result<()> {
         self.handle
-            .create_dir(text(relative)?, mode, parents)
+            .create_dir(&*text(relative)?, mode, parents)
             .map_err(|error| failed(&error))
     }
 
     /// Removes the empty directory `relative`.
     pub(crate) fn remove_dir(&self, relative: &Path) -> io::Result<()> {
         self.handle
-            .remove_dir(text(relative)?)
+            .remove_dir(&*text(relative)?)
             .map_err(|error| failed(&error))
     }
 
     /// Removes the directory `relative` and what it holds.
     pub(crate) fn remove_dir_all(&self, relative: &Path) -> io::Result<()> {
         self.handle
-            .remove_dir_all(text(relative)?)
+            .remove_dir_all(&*text(relative)?)
             .map_err(|error| failed(&error))
     }
 
     /// Removes the file or link `relative`.
     pub(crate) fn remove_file_or_symlink(&self, relative: &Path) -> io::Result<()> {
         self.handle
-            .remove_file(text(relative)?)
+            .remove_file(&*text(relative)?)
             .map_err(|error| failed(&error))
     }
 
     /// Renames `from` to `to`, both below this directory.
     pub(crate) fn rename(&self, from: &Path, to: &Path, overwrite: bool) -> io::Result<()> {
         self.handle
-            .rename(text(from)?, text(to)?, overwrite)
+            .rename(&*text(from)?, &*text(to)?, overwrite)
             .map_err(|error| failed(&error))
     }
 
@@ -192,7 +200,13 @@ impl Dir {
             }
             (Some(here), Some(there)) if Arc::ptr_eq(&here.files, &there.files) => here
                 .files
-                .rename_across(&here.root, text(from)?, &there.root, text(to)?, overwrite)
+                .rename_across(
+                    &here.root,
+                    &*text(from)?,
+                    &there.root,
+                    &*text(to)?,
+                    overwrite,
+                )
                 .map_err(|error| failed(&error)),
             _ if Arc::ptr_eq(&self.handle, &to_dir.handle) => self.rename(from, to, overwrite),
             _ => Err(io::ErrorKind::CrossesDevices.into()),
@@ -202,14 +216,14 @@ impl Dir {
     /// Makes `link` a symbolic link to `target`; `to_directory` marks a link to a directory where that matters.
     pub(crate) fn symlink(&self, target: &str, link: &Path, to_directory: bool) -> io::Result<()> {
         self.handle
-            .symlink(target, text(link)?, to_directory)
+            .symlink(target, &*text(link)?, to_directory)
             .map_err(|error| failed(&error))
     }
 
     /// The text of the link `relative`.
     pub(crate) fn read_link(&self, relative: &Path) -> io::Result<String> {
         self.handle
-            .read_link(text(relative)?)
+            .read_link(&*text(relative)?)
             .map_err(|error| failed(&error))
     }
 
@@ -222,7 +236,7 @@ impl Dir {
     ) -> io::Result<()> {
         self.handle
             .set_times(
-                text(relative)?,
+                &*text(relative)?,
                 accessed.map(time_model),
                 modified.map(time_model),
             )
@@ -232,7 +246,7 @@ impl Dir {
     /// Sets the permission bits of `relative`.
     pub(crate) fn set_mode(&self, relative: &Path, mode: u32) -> io::Result<()> {
         self.handle
-            .set_mode(text(relative)?, mode)
+            .set_mode(&*text(relative)?, mode)
             .map_err(|error| failed(&error))
     }
 
@@ -240,7 +254,7 @@ impl Dir {
     #[cfg(windows)]
     pub(crate) fn set_readonly(&self, relative: &Path, readonly: bool) -> io::Result<()> {
         self.handle
-            .set_readonly(text(relative)?, readonly)
+            .set_readonly(&*text(relative)?, readonly)
             .map_err(|error| failed(&error))
     }
 }
