@@ -295,15 +295,13 @@ impl Sftp {
             Ok(_) => Ok(()),
             Err(error) => {
                 // A name that is not a directory is told as missing by some servers and as a failure by others.
-                if let Ok(attrs) = self.lstat(path).await {
-                    if !is_dir(&attrs) {
-                        return Err(failure(word::NOT_A_DIRECTORY, "not a directory").into());
-                    }
+                if let Ok(attrs) = self.lstat(path).await
+                    && !is_dir(&attrs)
+                {
+                    return Err(failure(word::NOT_A_DIRECTORY, "not a directory").into());
                 }
-                if status_of(&error) == Some(StatusCode::Failure) {
-                    if self.has_entries(path).await {
-                        return Err(failure(word::NOT_EMPTY, "the directory is not empty").into());
-                    }
+                if status_of(&error) == Some(StatusCode::Failure) && self.has_entries(path).await {
+                    return Err(failure(word::NOT_EMPTY, "the directory is not empty").into());
                 }
                 Err(error.into())
             }
@@ -345,11 +343,7 @@ impl Sftp {
 
     /// The directory's entries without `.` and `..`, read to the end.
     async fn entries(&self, path: &str) -> Res<Vec<(String, FileAttributes)>> {
-        let handle = self
-            .raw
-            .opendir(path)
-            .await
-            .map_err(|error| Fail::from(error))?;
+        let handle = self.raw.opendir(path).await.map_err(Fail::from)?;
         let mut all = Vec::new();
         loop {
             match self.raw.readdir(handle.handle.clone()).await {
@@ -627,16 +621,16 @@ impl Directory for SftpDir {
             match sftp.raw.open(path.as_str(), flags, attrs).await {
                 Ok(handle) => Ok((sftp, handle.handle)),
                 Err(error) => {
-                    if status_of(&error) == Some(StatusCode::Failure) {
-                        if let Ok(found) = sftp.lstat(&path).await {
-                            return Err(if is_dir(&found) {
-                                failure(word::IS_A_DIRECTORY, "a directory").into()
-                            } else if options.create_new {
-                                failure(word::EXISTS, "the name exists").into()
-                            } else {
-                                Fail::from(error)
-                            });
-                        }
+                    if status_of(&error) == Some(StatusCode::Failure)
+                        && let Ok(found) = sftp.lstat(&path).await
+                    {
+                        return Err(if is_dir(&found) {
+                            failure(word::IS_A_DIRECTORY, "a directory").into()
+                        } else if options.create_new {
+                            failure(word::EXISTS, "the name exists").into()
+                        } else {
+                            Fail::from(error)
+                        });
                     }
                     Err(error.into())
                 }
@@ -1031,14 +1025,15 @@ impl File for SftpFile {
         if !state.writing.is_empty() || state.failed.is_some() {
             self.flush(&mut state)?;
         }
-        if let Some((from, bytes)) = &state.ahead {
-            if offset >= *from && offset < *from + bytes.len() as u64 {
-                let start = usize::try_from(offset - *from).unwrap_or(usize::MAX);
-                let count = dst.len().min(bytes.len() - start);
-                dst[..count].copy_from_slice(&bytes[start..start + count]);
-                state.next_read = offset + count as u64;
-                return Ok(count as u64);
-            }
+        if let Some((from, bytes)) = &state.ahead
+            && offset >= *from
+            && offset < *from + bytes.len() as u64
+        {
+            let start = usize::try_from(offset - *from).unwrap_or(usize::MAX);
+            let count = dst.len().min(bytes.len() - start);
+            dst[..count].copy_from_slice(&bytes[start..start + count]);
+            state.next_read = offset + count as u64;
+            return Ok(count as u64);
         }
         let sequential = offset == state.next_read;
         let ahead = self.files.settings().sftp_in_flight * self.packet();
@@ -1051,7 +1046,7 @@ impl File for SftpFile {
         let count = dst.len().min(got.len());
         dst[..count].copy_from_slice(&got[..count]);
         state.next_read = offset + count as u64;
-        state.ahead = (got.len() > count).then(|| (offset, got));
+        state.ahead = (got.len() > count).then_some((offset, got));
         Ok(count as u64)
     }
 
@@ -1066,23 +1061,23 @@ impl File for SftpFile {
         let wait = self.files.settings().operation_timeout;
         let mut at = offset;
         for chunk in data.chunks(packet) {
-            if state.writing.len() >= window {
-                if let Some(oldest) = state.writing.pop_front() {
-                    let done = self
-                        .files
-                        .link
-                        .rt
-                        .block_on(async { tokio::time::timeout(wait, oldest).await });
-                    match done {
-                        Ok(Ok(_)) => {}
-                        Ok(Err(error)) => {
-                            let error = Fail::from(error).error;
-                            let _ = self.flush(&mut state);
-                            return Err(error);
-                        }
-                        Err(_) => {
-                            return Err(unavailable("sftp: the host did not answer in time"));
-                        }
+            if state.writing.len() >= window
+                && let Some(oldest) = state.writing.pop_front()
+            {
+                let done = self
+                    .files
+                    .link
+                    .rt
+                    .block_on(async { tokio::time::timeout(wait, oldest).await });
+                match done {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(error)) => {
+                        let error = Fail::from(error).error;
+                        let _ = self.flush(&mut state);
+                        return Err(error);
+                    }
+                    Err(_) => {
+                        return Err(unavailable("sftp: the host did not answer in time"));
                     }
                 }
             }

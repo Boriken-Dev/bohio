@@ -5,7 +5,7 @@
 
 mod sftp;
 
-pub use sftp::{Advertise, native};
+pub use sftp::Advertise;
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;

@@ -143,7 +143,6 @@ impl<'a> FilesRef<'a> {
 }
 
 /// The source a request names: the peer's way to a files source other than the default one.
-
 pub struct Picked {
     /// The source, or one that serves nothing when the request may not use it.
     pub source: std::sync::Arc<dyn bohio_api::FilesSource>,

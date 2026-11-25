@@ -147,6 +147,7 @@ fn parse(text: &str, names_checked: bool) -> Result<Parsed, ErrorBody> {
 ///
 /// `bad_request` for an empty path, a NUL, a Windows device, stream or drive-relative form;
 /// `outside_root` for a path that leaves every root.
+#[cfg(test)]
 pub(crate) fn locate(roots: &[PathBuf], text: &str) -> Result<Located, ErrorBody> {
     locate_in(roots, text, Syntax::Host)
 }

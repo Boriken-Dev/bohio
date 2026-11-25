@@ -231,16 +231,14 @@ impl russh_sftp::server::Handler for Sftp {
         }
         let existed = path.exists();
         let file = options.open(&path).map_err(|e| code_of(&e))?;
-        if !existed {
-            if let Some(mode) = attrs.permissions {
-                let _ = self.apply(
-                    &path,
-                    &FileAttributes {
-                        permissions: Some(mode),
-                        ..FileAttributes::default()
-                    },
-                );
-            }
+        if !existed && let Some(mode) = attrs.permissions {
+            let _ = self.apply(
+                &path,
+                &FileAttributes {
+                    permissions: Some(mode),
+                    ..FileAttributes::default()
+                },
+            );
         }
         let handle = self.open_handle("h", Open::File(file));
         Ok(Handle {

@@ -864,7 +864,7 @@ fn names_that_leave_a_directory_are_refused_before_they_reach_the_host() {
     let (_dir, root) = scratch_root();
     let directory = open_root(&source, &root);
     for name in ["../x", "a/../../x", "/etc/passwd"] {
-        let error = directory.stat(name, true).err().expect("refused");
+        let error = directory.stat(name, true).expect_err("refused");
         assert_eq!(
             bohio_api::files::failure_kind(&error),
             Some("outside_root"),
