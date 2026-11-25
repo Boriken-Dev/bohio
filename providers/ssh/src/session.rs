@@ -209,14 +209,16 @@ impl Session {
         let remote = Arc::new(Remote::default());
         let stop = Arc::new(tokio::sync::Notify::new());
         tokio::spawn(pump(
-            Arc::clone(&stop),
             read,
-            out_tx,
-            err_tx,
-            merge,
-            Arc::clone(&remote),
-            link.settings.exit_grace,
-            permit,
+            Pump {
+                stop: Arc::clone(&stop),
+                out: out_tx,
+                err: err_tx,
+                merge,
+                remote: Arc::clone(&remote),
+                grace: link.settings.exit_grace,
+                _permit: permit,
+            },
         ));
         Ok(Self {
             link: Arc::clone(link),
@@ -369,18 +371,29 @@ impl Drop for Session {
     }
 }
 
-/// Moves a channel's output to the queues and records how the program ended. Holds the channel's slot until the channel
-/// is over.
-async fn pump(
+/// What the task that reads a channel holds.
+struct Pump {
     stop: Arc<tokio::sync::Notify>,
-    mut read: ChannelReadHalf,
     out: Sender<Vec<u8>>,
     err: Sender<Vec<u8>>,
     merge: bool,
     remote: Arc<Remote>,
     grace: Duration,
     _permit: OwnedSemaphorePermit,
-) {
+}
+
+/// Moves a channel's output to the queues and records how the program ended. Holds the channel's slot until the channel
+/// is over.
+async fn pump(mut read: ChannelReadHalf, ends: Pump) {
+    let Pump {
+        stop,
+        out,
+        err,
+        merge,
+        remote,
+        grace,
+        _permit,
+    } = ends;
     let mut exited: Option<tokio::time::Instant> = None;
     loop {
         let waiting = async {
