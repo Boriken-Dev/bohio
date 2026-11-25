@@ -1,0 +1,147 @@
+# guatiao/crates/guatiao-source-remote at 3163647ab70bc19bf24125d30e1dc1ee49b10f94, with what it inherits written out.
+bin = [{ name = "guatiao-remote-server", path = "src/bin/guatiao-remote-server.rs" }]
+example = [{ name = "datagram_echo", required-features = ["webtransport"] }]
+[package]
+name = "guatiao-source-remote"
+description = "guatiao providers called across a process, a machine or a network: a source any host adds, a server exposing a registry, and one framed protocol over every transport"
+version = "0.0.0-alpha.1"
+edition = "2024"
+rust-version = "1.89"
+repository = "https://github.com/Boriken-Dev/guatiao"
+publish = true
+license = "MPL-2.0"
+readme = "README.md"
+exclude = [".*", "*.local.*", "public-api.txt"]
+[package.metadata]
+[package.metadata.docs]
+[package.metadata.docs.rs]
+all-features = true
+[lib]
+name = "guatiao_source_remote"
+path = "src/lib.rs"
+crate-type = ["rlib", "cdylib"]
+[features]
+default = []
+tcp = ["dep:hmac", "dep:sha2", "dep:getrandom", "dep:coqui-net-acl", "dep:windows-sys"]
+tls = ["tcp", "dep:coqui-peer", "dep:coqui-peer-tls", "dep:rustls"]
+platform-roots = ["tls", "coqui-peer-tls/platform-roots"]
+quic = ["tls", "dep:quinn", "dep:tokio"]
+local = ["dep:interprocess", "dep:windows-sys"]
+shm = ["local", "dep:memmap2"]
+rdma = ["tcp", "dep:libloading", "dep:libc"]
+ws = ["tcp", "dep:coqui-web-channel", "coqui-web-channel/websocket", "dep:url", "dep:coqui-peer"]
+webtransport = ["tls", "dep:coqui-web-channel", "coqui-web-channel/webtransport", "dep:url"]
+[dependencies]
+[dependencies.guatiao]
+path = "../guatiao"
+version = "=0.0.0-alpha.1"
+features = ["load"]
+[dependencies.guatiao-libffi]
+path = "../guatiao-libffi"
+version = "=0.0.0-alpha.1"
+[dependencies.guatiao-bridge]
+path = "../guatiao-bridge"
+version = "=0.0.0-alpha.1"
+features = ["json", "yaml"]
+[dependencies.guatiao-serde]
+path = "../guatiao-serde"
+version = "=0.0.0-alpha.1"
+default-features = false
+features = ["json", "toml", "yaml"]
+[dependencies.anycfg]
+git = "https://github.com/jose-pr/anycfg-rs"
+rev = "bf71f7097a550037972a0651e8bd35747b8dcd11"
+[dependencies.hmac]
+version = "0.12"
+optional = true
+[dependencies.sha2]
+version = "0.10"
+optional = true
+[dependencies.getrandom]
+version = "0.3"
+optional = true
+[dependencies.coqui-net-acl]
+version = "=0.0.0-alpha.0"
+optional = true
+features = ["serde"]
+[dependencies.coqui-peer]
+version = "=0.0.0-alpha.1"
+optional = true
+[dependencies.coqui-peer-tls]
+version = "=0.0.0-alpha.1"
+optional = true
+features = ["generate", "serde", "acl"]
+[dependencies.rustls]
+version = "0.23"
+optional = true
+default-features = false
+features = ["std"]
+[dependencies.quinn]
+version = "0.11.12"
+optional = true
+default-features = false
+features = ["runtime-tokio", "rustls-ring"]
+[dependencies.tokio]
+version = "1.47"
+optional = true
+default-features = false
+features = ["rt-multi-thread", "time", "net"]
+[dependencies.memmap2]
+version = "0.9"
+optional = true
+[dependencies.coqui-web-channel]
+git = "https://github.com/Boriken-Dev/coqui-web-channel.git"
+rev = "0b5b05c9af3417f6b13edc0fc7d9c86c02a63eca"
+optional = true
+[dependencies.url]
+version = "2.5"
+optional = true
+[target]
+[target."cfg(windows)"]
+[target."cfg(windows)".dependencies]
+[target."cfg(windows)".dependencies.interprocess]
+version = "2"
+optional = true
+default-features = false
+[target."cfg(windows)".dependencies.windows-sys]
+version = "0.61"
+optional = true
+features = ["Win32_Foundation", "Win32_System_IO"]
+[target."cfg(target_os = \"linux\")"]
+[target."cfg(target_os = \"linux\")".dependencies]
+[target."cfg(target_os = \"linux\")".dependencies.libloading]
+version = "0.8"
+optional = true
+[target."cfg(target_os = \"linux\")".dependencies.libc]
+version = "0.2"
+optional = true
+[dev-dependencies]
+serde_json = "1"
+coqui-peer = "=0.0.0-alpha.1"
+rcgen = "0.14"
+socket2 = "0.6"
+[dev-dependencies.guatiao]
+path = "../guatiao"
+features = ["provider", "load"]
+[dev-dependencies.greeter_kind]
+path = "../../examples/greeter_kind"
+[dev-dependencies.coqui-peer-tls]
+version = "=0.0.0-alpha.1"
+features = ["generate"]
+[dev-dependencies.rustls]
+version = "0.23"
+default-features = false
+features = ["std", "ring"]
+[dev-dependencies.quinn]
+version = "0.11.12"
+default-features = false
+features = ["runtime-tokio", "rustls-ring"]
+[dev-dependencies.tokio]
+version = "1.47"
+default-features = false
+features = ["rt-multi-thread", "time", "net"]
+[lints]
+[lints.clippy]
+std_instead_of_core = "warn"
+std_instead_of_alloc = "warn"
+alloc_instead_of_core = "warn"
