@@ -10,11 +10,13 @@ thing a source gives is one of four **capabilities**, each a [guatiao](https://g
 | desktop | `bohio_desktop` (`DesktopSource`) | a screen with input: the node's own, a VNC or RDP server, a BMC's KVM |
 | power | `bohio_power` (`PowerSource`) | the system's power: a BMC, a hypervisor, a smart switch |
 | media | `bohio_media` (`MediaSource`) | virtual media: an image the system boots or installs from |
+| exec | `bohio_exec` (`ExecSource`) | processes: the node's own operating system, and later a machine reached over SSH |
 
 `native` is this node's own terminal and screen. It is a provider of the same kinds as any other, registered the same way, so
-nothing a node can do is reachable only because it is built in. Files and processes are engines over the operating system,
-selectable `native` or `none` (`[access] fs`, `exec`) and reported the same way by `info`; they become kinds when a second
-provider is planned.
+nothing a node can do is reachable only because it is built in. Processes are a capability like the others: `native` is the
+first `exec` source, `[access] exec` lists the sources (`"native"` and `"none"` keep their meaning) and a request names one with
+`source` (the default exec source when it names none). Files are still an engine over the operating system, selectable
+`native` or `none` (`[access] fs`), and become a kind with the next provider.
 
 A node serves **one system**: several sources of a capability are alternative paths to it (a serial port and serial-over-LAN
 to the same machine). A node in front of many systems is several nodes.
@@ -26,7 +28,7 @@ to the same machine). A node in front of many systems is several nodes.
 terminal = ["console", "native"]   # the first is the default
 desktop = []                       # this node serves no desktop
 fs = "none"                        # files are not served at all
-exec = "none"
+exec = "none"                      # or a list of sources: ["native"]
 
 [source.console]
 provider = "serial"
