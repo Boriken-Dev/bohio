@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use bohio_api::model::{ExecStart, ProgramSpec, TerminalExit, TerminalOpen};
-use bohio_api::{ExecSource, Process, Terminal, TerminalSource};
+use bohio_api::{ExecSource, Process, TerminalSource};
 
 /// Makes every server of this process its own: the tests run side by side.
 static STARTED: AtomicU64 = AtomicU64::new(0);
