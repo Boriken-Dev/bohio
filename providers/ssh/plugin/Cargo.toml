@@ -1,0 +1,27 @@
+[package]
+name = "bohio-provider-ssh-plugin"
+description = "The ssh provider of Bohío as a library a node loads at run time ([providers] paths)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["bohio", "ssh", "plugin"]
+categories = ["network-programming"]
+exclude = [".*", "*.local.*"]
+# Its git dependencies are unpublished: released once they are.
+publish = false
+
+# Nothing links this crate: it is only the file `bohio` maps.
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+bohio-api.workspace = true
+bohio-provider-ssh.workspace = true
+
+# Not the workspace's lints: the entry symbols `providers!` writes are `no_mangle`, which `unsafe_code = "forbid"` refuses.
+# This crate holds one macro call and no `unsafe` of its own.
+[lints.rust]
+missing_docs = "warn"

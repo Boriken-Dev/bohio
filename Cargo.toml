@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/bohio/tests/plugin_other", "crates/bohio-api", "providers/terminal/serial", "providers/terminal/serial/plugin", "crates/bohio-proto", "crates/bohio-transfer", "crates/bohio-client", "crates/bohio", "crates/bohio-bench"]
+members = ["crates/bohio/tests/plugin_other", "crates/bohio-api", "providers/terminal/serial", "providers/terminal/serial/plugin", "providers/ssh", "providers/ssh/plugin", "crates/bohio-proto", "crates/bohio-transfer", "crates/bohio-client", "crates/bohio", "crates/bohio-bench"]
 
 [workspace.package]
 version = "0.0.0-alpha.0"
@@ -122,6 +122,10 @@ objc2-core-graphics = { version = "0.3", default-features = false, features = ["
 objc2-screen-capture-kit = { version = "0.3", default-features = false, features = ["std", "block2", "SCScreenshotManager", "SCShareableContent", "SCStream", "objc2-core-foundation", "objc2-core-graphics", "objc2-core-media"] }
 enigo = { version = "0.6", default-features = false }
 arboard = { version = "3.7", default-features = false }
+# The SSH client of the `ssh` provider: pure Rust over ring (no C toolchain), the agent and key-file logins, known_hosts.
+russh = { version = "0.65", default-features = false, features = ["ring", "rsa"] }
+# The runtime the `ssh` provider drives russh with, one small pool for each source; the rest of the node is threads.
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "net", "io-util", "sync", "time"] }
 # Tests: scratch directories that remove themselves.
 tempfile = "3"
 # The provider kinds (guatiao): terminal, desktop, power and media sources. The family pins one guatiao revision.
@@ -130,6 +134,8 @@ guatiao-serde = { git = "https://github.com/Boriken-Dev/guatiao", rev = "3163647
 bohio-api = { path = "crates/bohio-api" }
 bohio-provider-serial = { path = "providers/terminal/serial" }
 bohio-provider-serial-plugin = { path = "providers/terminal/serial/plugin" }
+bohio-provider-ssh = { path = "providers/ssh" }
+bohio-provider-ssh-plugin = { path = "providers/ssh/plugin" }
 bohio-proto = { path = "crates/bohio-proto" }
 bohio-transfer = { path = "crates/bohio-transfer", default-features = false }
 bohio-client = { path = "crates/bohio-client" }
