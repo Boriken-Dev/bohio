@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/bohio/tests/plugin_other", "crates/bohio-api", "crates/bohio-x11", "providers/terminal/serial", "providers/terminal/serial/plugin", "providers/ssh", "providers/ssh/plugin", "crates/bohio-proto", "crates/bohio-transfer", "crates/bohio-client", "crates/bohio", "crates/bohio-bench"]
+members = ["crates/bohio/tests/plugin_other", "crates/bohio/tests/plugin_echo", "crates/bohio-api", "crates/bohio-x11", "providers/terminal/serial", "providers/terminal/serial/plugin", "providers/ssh", "providers/ssh/plugin", "crates/bohio-proto", "crates/bohio-transfer", "crates/bohio-client", "crates/bohio", "crates/bohio-bench"]
 
 [workspace.package]
 version = "0.0.0-alpha.0"

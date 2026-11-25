@@ -291,6 +291,15 @@ struct Entry {
     source: Option<RemoteSource>,
     current: Arc<Mutex<Arc<Run>>>,
     status: Mutex<Status>,
+    /// The place in the libraries' report of the library this entry hosts, when it hosts one.
+    library: Option<usize>,
+}
+
+/// A library to run in a process of its own: its place in the report of the libraries and its file.
+#[derive(Debug, Clone)]
+pub(super) struct Hosted {
+    pub(super) index: usize,
+    pub(super) file: PathBuf,
 }
 
 /// The program entries of a node.
@@ -320,6 +329,7 @@ impl Entry {
             digest,
             source: None,
             current: Arc::default(),
+            library: None,
             status: Mutex::new(Status {
                 state: ProgramState::Failed,
                 detail: why,
@@ -346,6 +356,19 @@ impl Entry {
         match status.state {
             ProgramState::Running => tracing::info!("{line}"),
             ProgramState::Failed => tracing::warn!("{line}"),
+        }
+    }
+
+    fn report(&self) -> Program {
+        self.observe();
+        let status = lock(&self.status);
+        Program {
+            name: self.name.clone(),
+            path: self.file.clone(),
+            state: status.state,
+            detail: status.detail.clone(),
+            digest: self.digest.clone(),
+            restarts: status.restarts,
         }
     }
 
@@ -401,12 +424,16 @@ impl Programs {
     }
 
     /// Adds each entry of `config` to `registry` as a source and connects them, which starts the programs.
-    pub(super) fn start(registry: &mut Registry, config: &ProvidersConfig) -> Self {
+    pub(super) fn start(
+        registry: &mut Registry,
+        config: &ProvidersConfig,
+        hosted: &[Hosted],
+    ) -> Self {
         let mut programs = Self::default();
-        if config.program.is_empty() {
+        if config.program.is_empty() && hosted.is_empty() {
             return programs;
         }
-        if !config.check_access && config.paths.is_empty() {
+        if !config.check_access && config.paths.is_empty() && config.isolated.is_empty() {
             tracing::warn!(
                 "non-default: [providers] check_access is false: who owns and who may write a provider program and its directory is not checked: whoever can write there chooses the code this node runs"
             );
@@ -417,25 +444,55 @@ impl Programs {
             let entry = Entry::begin(registry, &name, program, config.check_access, &mut checked);
             programs.entries.push(entry);
         }
+        for library in hosted {
+            let name = format!(
+                "library:{}",
+                library
+                    .file
+                    .file_name()
+                    .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
+            );
+            let mut entry = match library_host(config) {
+                Ok(host) => {
+                    let program = ProgramConfig {
+                        command: vec![
+                            host.to_string_lossy().into_owned(),
+                            "--stdio".to_owned(),
+                            "--load".to_owned(),
+                            library.file.to_string_lossy().into_owned(),
+                        ],
+                        ..ProgramConfig::default()
+                    };
+                    Entry::begin(registry, &name, &program, config.check_access, &mut checked)
+                }
+                Err(why) => {
+                    let program = ProgramConfig {
+                        command: vec![String::new()],
+                        ..ProgramConfig::default()
+                    };
+                    Entry::refused(name, &program, None, why)
+                }
+            };
+            entry.library = Some(library.index);
+            programs.entries.push(entry);
+        }
         programs
+    }
+
+    /// The libraries run in a process of their own, as their hosts are now: the library's place in the report and the entry.
+    pub(super) fn hosted_report(&self) -> Vec<(usize, Program)> {
+        self.entries
+            .iter()
+            .filter_map(|entry| entry.library.map(|index| (index, entry.report())))
+            .collect()
     }
 
     /// Every entry as it is now: one that ended on its own is `failed`.
     pub(super) fn report(&self) -> Vec<Program> {
         self.entries
             .iter()
-            .map(|entry| {
-                entry.observe();
-                let status = lock(&entry.status);
-                Program {
-                    name: entry.name.clone(),
-                    path: entry.file.clone(),
-                    state: status.state,
-                    detail: status.detail.clone(),
-                    digest: entry.digest.clone(),
-                    restarts: status.restarts,
-                }
-            })
+            .filter(|entry| entry.library.is_none())
+            .map(Entry::report)
             .collect()
     }
 
@@ -547,6 +604,7 @@ impl Entry {
             digest,
             source: Some(source.clone()),
             current,
+            library: None,
             status: Mutex::new(Status {
                 state: ProgramState::Failed,
                 detail: String::new(),
@@ -630,6 +688,23 @@ impl Entry {
         }
         self.log();
     }
+}
+
+/// The program that hosts libraries: `[providers] library_host`, else `guatiao-remote-server` beside the node.
+fn library_host(config: &ProvidersConfig) -> Result<PathBuf, String> {
+    if let Some(host) = &config.library_host {
+        return Ok(host.clone());
+    }
+    let name = format!("guatiao-remote-server{}", std::env::consts::EXE_SUFFIX);
+    std::env::current_exe()
+        .ok()
+        .and_then(|node| node.parent().map(|directory| directory.join(&name)))
+        .filter(|file| file.is_file())
+        .ok_or_else(|| {
+            format!(
+                "no library host: `{name}` is not beside the node, and `[providers] library_host` names none"
+            )
+        })
 }
 
 /// `sha256:` and the digest of the file, or `None` when it cannot be read.

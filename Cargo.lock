@@ -385,6 +385,7 @@ dependencies = [
  "bohio-provider-serial",
  "bohio-provider-serial-plugin",
  "bohio-provider-ssh",
+ "bohio-test-plugin-echo",
  "bohio-test-plugin-other",
  "bohio-transfer",
  "bohio-x11",
@@ -546,6 +547,13 @@ version = "0.0.0-alpha.0"
 dependencies = [
  "bohio-api",
  "bohio-provider-ssh",
+]
+
+[[package]]
+name = "bohio-test-plugin-echo"
+version = "0.0.0-alpha.0"
+dependencies = [
+ "bohio-api",
 ]
 
 [[package]]

@@ -344,16 +344,15 @@ impl Sources {
     /// A library runs as this process's account once mapped, and stays mapped for as long as the registry lives.
     pub fn load_libraries(&self, config: &crate::config::ProvidersConfig) -> ProvidersReport {
         let mut registry = self.registry.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut report = plugins::load(&mut registry, config);
-        let programs = Programs::start(&mut registry, config);
+        let (report, hosted) = plugins::load(&mut registry, config);
+        let programs = Programs::start(&mut registry, config, &hosted);
         drop(registry);
         *self
             .libraries
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) = report.clone();
-        report.programs = programs.report();
+            .unwrap_or_else(PoisonError::into_inner) = report;
         *self.programs.lock().unwrap_or_else(PoisonError::into_inner) = Arc::new(programs);
-        report
+        self.libraries()
     }
 
     /// What loading `[providers] paths` did, as the node started.
@@ -364,11 +363,18 @@ impl Sources {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
-        report.programs = self
-            .programs
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .report();
+        let programs = Arc::clone(&self.programs.lock().unwrap_or_else(PoisonError::into_inner));
+        report.programs = programs.report();
+        // A library run in a process of its own is reported as the library it is, with how its host fares now.
+        for (index, program) in programs.hosted_report() {
+            if let Some(library) = report.libraries.get_mut(index) {
+                library.state = match program.state {
+                    ProgramState::Running => LibraryState::Loaded,
+                    ProgramState::Failed => LibraryState::Failed,
+                };
+                library.detail = format!("in a process of its own: {}", program.detail);
+            }
+        }
         report
     }
 

@@ -410,6 +410,11 @@ fn a_static_build_maps_a_glibc_library_and_the_platform_loader_can_be_chosen() {
     let report = started(platform);
     let library = entry(&report, &file);
     assert_eq!(library.state, LibraryState::Failed, "{library:?}");
+    assert!(
+        library.detail.contains("isolate = true"),
+        "the report names the way out: {}",
+        library.detail
+    );
 
     let report = started(providers(&[&file], true));
     let library = entry(&report, &file);

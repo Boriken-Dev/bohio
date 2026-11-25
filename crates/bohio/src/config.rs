@@ -1965,6 +1965,18 @@ pub struct ProvidersConfig {
     /// written in any language and built any way (a `guatiao-remote-server --stdio` hosting libraries is one). Default
     /// empty: nothing is started.
     pub program: Vec<ProgramConfig>,
+    /// Run every library of `paths` in a process of its own, hosted by `library_host`, instead of mapping it into the node.
+    /// Default `false` in every build. A hosted library needs neither the node's C library nor its linker, so it serves a node
+    /// the library could not be mapped into; it costs a process, and the providers it offers are one instance each (a source
+    /// naming one takes `provider` alone). `true` is not a weakening: the library runs as the node's account either way.
+    pub isolate: bool,
+    /// Libraries (files, or directories of libraries) run in a process of their own whatever `isolate` says, as if listed in
+    /// `paths` with `isolate` set. Default empty.
+    pub isolated: Vec<PathBuf>,
+    /// The program that hosts a library run in its own process: it is started as `HOST --stdio --load LIBRARY` and speaks
+    /// guatiao's remote protocol, as `guatiao-remote-server` does. Default: `guatiao-remote-server` beside the node (the node
+    /// does not look on `PATH`: name the file here when it is elsewhere). Its file is checked as a program is (`check_access`).
+    pub library_host: Option<PathBuf>,
 }
 
 /// One `[[providers.program]]`: a provider that is a program of its own.
@@ -2062,6 +2074,9 @@ impl Default for ProvidersConfig {
             ld_so: None,
             allow_reserved_signal_handlers: false,
             program: Vec::new(),
+            isolate: false,
+            isolated: Vec::new(),
+            library_host: None,
         }
     }
 }
@@ -2424,9 +2439,26 @@ impl NodeConfig {
             return Err(invalid("providers.ld_so", "is an empty path"));
         }
         self.providers.validate_programs(&invalid)?;
+        if self
+            .providers
+            .isolated
+            .iter()
+            .any(|path| path.as_os_str().is_empty())
+        {
+            return Err(invalid("providers.isolated", "holds an empty path"));
+        }
+        if self
+            .providers
+            .library_host
+            .as_ref()
+            .is_some_and(|path| path.as_os_str().is_empty())
+        {
+            return Err(invalid("providers.library_host", "is an empty path"));
+        }
         // A provider a library or a program offers is known only once it is mapped or started, which `Node::new` does before
         // it builds the sources and refuses then, naming the same key: reading a configuration maps and starts nothing.
         if self.providers.paths.is_empty()
+            && self.providers.isolated.is_empty()
             && self.providers.program.is_empty()
             && let Err((key, message)) = crate::access::check(&self.source, &self.access)
         {

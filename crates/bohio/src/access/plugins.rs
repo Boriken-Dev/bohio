@@ -131,31 +131,56 @@ fn apply_loader(registry: &mut Registry, config: &ProvidersConfig) {
     }
 }
 
-/// Loads what `config` names into `registry` and reports each library.
-pub(super) fn load(registry: &mut Registry, config: &ProvidersConfig) -> Report {
+/// Loads what `config` names into `registry` and reports each library. A library to run in a process of its own is checked
+/// and read as data here, and comes back in the second answer (its place in the report, and its file) for the host to start.
+pub(super) fn load(
+    registry: &mut Registry,
+    config: &ProvidersConfig,
+) -> (Report, Vec<super::programs::Hosted>) {
     let mut report = Report {
         check_access: config.check_access,
         libraries: Vec::new(),
         programs: Vec::new(),
     };
-    if config.paths.is_empty() {
-        return report;
+    let mut hosted = Vec::new();
+    if config.paths.is_empty() && config.isolated.is_empty() {
+        return (report, hosted);
     }
     if !config.check_access {
         tracing::warn!(
             "non-default: [providers] check_access is false: who owns and who may write a provider library and its directory is not checked: whoever can write there chooses the code this node runs"
         );
     }
-    apply_loader(registry, config);
+    if !config.paths.is_empty() && !config.isolate {
+        apply_loader(registry, config);
+    }
     let mut checked = ownership::Checked::new();
-    for path in &config.paths {
+    let named = config
+        .paths
+        .iter()
+        .map(|path| (path, config.isolate))
+        .chain(config.isolated.iter().map(|path| (path, true)));
+    for (path, isolate) in named {
         for candidate in candidates(path, &mut report) {
-            let library = load_one(registry, &candidate, config.check_access, &mut checked);
-            log(&library);
+            let (library, run_apart) = load_one(
+                registry,
+                &candidate,
+                config.check_access,
+                &mut checked,
+                isolate,
+            );
+            if run_apart {
+                hosted.push(super::programs::Hosted {
+                    index: report.libraries.len(),
+                    file: candidate,
+                });
+            } else {
+                log(&library);
+            }
             report.libraries.push(library);
         }
     }
-    report
+    (report, hosted)
 }
 
 /// The library files `path` names: itself, or the files of a directory that look like libraries, by name. A path that
@@ -209,7 +234,8 @@ fn load_one(
     file: &Path,
     check_access: bool,
     checked: &mut ownership::Checked,
-) -> Library {
+    isolate: bool,
+) -> (Library, bool) {
     let mut library = Library {
         path: file.to_owned(),
         state: LibraryState::Skipped,
@@ -223,20 +249,20 @@ fn load_one(
             let texts: Vec<String> = problems.into_iter().map(|problem| problem.text).collect();
             library.state = LibraryState::Failed;
             library.detail = format!("refused: {}", texts.join("; "));
-            return library;
+            return (library, false);
         }
     }
     let probed = match probe(file) {
         Ok(probed) => probed,
         Err(error) => {
             library.detail = format!("could not be read as a library file: {error}");
-            return library;
+            return (library, false);
         }
     };
     if !probed.entry {
         library.detail = "not a guatiao library".to_owned();
         library.digest = digest_of(file);
-        return library;
+        return (library, false);
     }
     if !probed.declared.kinds().any(|kind| KINDS.contains(&kind)) {
         let declared: Vec<&str> = probed.declared.kinds().collect();
@@ -249,7 +275,14 @@ fn load_one(
             )
         };
         library.digest = digest_of(file);
-        return library;
+        return (library, false);
+    }
+    if isolate {
+        // Not mapped here: the host starts and the report is filled from what it answers.
+        library.state = LibraryState::Loaded;
+        library.detail = "to be run in a process of its own".to_owned();
+        library.digest = digest_of(file);
+        return (library, true);
     }
     match registry.load_file(file) {
         Ok(Loading::Loaded(loaded)) => {
@@ -273,11 +306,13 @@ fn load_one(
         }
         Err(error) => {
             library.state = LibraryState::Failed;
-            library.detail = error.to_string();
+            library.detail = format!(
+                "{error}; `[providers] isolate = true` runs it in a process of its own, which needs neither this node's loader nor its C library"
+            );
             library.digest = digest_of(file);
         }
     }
-    library
+    (library, false)
 }
 
 /// `sha256:` and the digest of the file, or `None` when it cannot be read.
