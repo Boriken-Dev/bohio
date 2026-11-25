@@ -89,13 +89,11 @@ fn private_directory() -> tempfile::TempDir {
 /// Copies of the library and the host in a directory only this account may write.
 fn staged() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let dir = private_directory();
-    let library = dir.path().join(
-        library()
-            .file_name()
-            .expect("a library has a file name")
-            .to_owned(),
-    );
-    std::fs::copy(self::library(), &library).expect("the library");
+    let built = self::library();
+    let library = dir
+        .path()
+        .join(built.file_name().expect("a library has a file name"));
+    std::fs::copy(&built, &library).expect("the library");
     let host = dir
         .path()
         .join(format!("host{}", std::env::consts::EXE_SUFFIX));
