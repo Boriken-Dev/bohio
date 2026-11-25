@@ -7,11 +7,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
+use super::vfs::Dir;
 use bohio_proto::search::{
     SearchDone, SearchFile, SearchItemError, SearchMatch, SearchOutput, SearchRequest, Skipped,
 };
 use bohio_proto::{ErrorBody, ErrorCode};
-use cap_std::fs::Dir;
 use coqui_transport::Channel;
 use globset::GlobSet;
 use regex::{Regex, RegexBuilder};
@@ -284,7 +284,7 @@ impl Searcher<'_> {
             ..self.context.files
         };
         authorize(&files, &[Permission::FsRead])?;
-        let roots = Roots::new(grant.fs_roots());
+        let roots = Roots::new(grant.fs_roots(), files.source.0);
         let (dir, relative) = roots.resolve(text)?;
         let here = dot(&relative).to_path_buf();
         let meta = dir
@@ -366,7 +366,7 @@ impl Searcher<'_> {
         depth: u64,
     ) -> Option<Level> {
         let shown = if text.is_empty() { None } else { Some(text) };
-        let read = match super::native::read_dir(dir, relative) {
+        let read = match dir.read_dir(relative) {
             Ok(read) => read,
             Err(error) => {
                 self.item_error(root, shown, &io_error(&error));

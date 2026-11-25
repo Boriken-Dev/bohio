@@ -185,7 +185,7 @@ fn read_item(
         ..*job.context
     };
     authorize(&files, &[Permission::FsRead])?;
-    let roots = Roots::new(grant.fs_roots());
+    let roots = Roots::new(grant.fs_roots(), files.source.0);
     let (mut file, meta) = ops::open_regular(&roots, &item.path)?;
     let size = meta.len();
     if item.offset > size {
@@ -209,13 +209,11 @@ fn read_item(
         }
         _ => false,
     };
-    #[cfg(unix)]
-    let mode = {
-        use cap_std::fs::PermissionsExt;
-        Some(meta.permissions().mode() & 0o7777)
+    let mode = if cfg!(unix) {
+        meta.mode().map(|mode| mode & 0o7777)
+    } else {
+        None
     };
-    #[cfg(not(unix))]
-    let mode = None;
     let header = ReadHeader {
         index: Some(job.index),
         modified: meta.modified().ok().map(ops::timestamp),
@@ -458,7 +456,7 @@ fn open_target(
         }
     }
     let hasher = hasher_for(&files, &computed)?;
-    let roots = Roots::new(grant.fs_roots());
+    let roots = Roots::new(grant.fs_roots(), files.source.0);
     let (dir, relative) = roots.resolve(&item.path)?;
     let staged = Staged::open(&dir, &relative, &item.mode, item.parents, item.file_mode)?;
     Ok(Target {

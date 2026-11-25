@@ -107,7 +107,7 @@ fn run(
             "the host is running as many transfers as it allows",
         )
     })?;
-    let roots = Roots::new(context.grant.fs_roots());
+    let roots = Roots::new(context.grant.fs_roots(), context.source.0);
     let give_up = || ErrorBody::new(ErrorCode::Io, "the stream ended before the file was sent");
     let send = |output: &ReadOutput| send_waiting(channel.as_ref(), &encode(output), poll, idle);
     let chunk = chunk_size(channel.as_ref(), context.config.chunk_size);

@@ -289,7 +289,7 @@ pub fn files(source: &dyn FilesSource, root: &str, settings: &ContractSettings) 
             }
             fails_with(
                 "a confined stat through a link that leaves the directory",
-                directory.stat("up/..", true).map(drop),
+                directory.stat("up", true).map(drop),
                 &[word::OUTSIDE, word::DENIED, word::NOT_FOUND],
             );
             directory.remove_file("up").expect("files: remove the link");
@@ -364,7 +364,8 @@ pub fn files(source: &dyn FilesSource, root: &str, settings: &ContractSettings) 
         &[word::NOT_EMPTY, word::IO, word::INVALID],
     );
 
-    // Cleaning up.
+    // Cleaning up: a directory another handle holds open cannot be removed everywhere.
+    drop(nested);
     directory
         .remove_dir_all("p")
         .expect("files: remove_dir_all");

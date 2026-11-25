@@ -325,6 +325,8 @@ must lie under a root (the longest match; compared without case on Windows and m
 `NUL`, `COM1`...), a colon in a name (alternate data streams), a name ending in a dot or space, `\\.\` and `\\?\GLOBALROOT`
 forms and a drive-relative `C:x` (`bad_request`); both separators are accepted there.
 
+**Handles.** The engines reach files only through `fs/vfs.rs` (`Dir`, `File`, `Metadata`, shaped like the `cap-std` types they replaced) over the `FilesSource` kind; `access/native_files.rs` is the `native` provider, where `cap-std` and `fs/native.rs` (winfs on Windows) live. A `Dir` is a handle for a root or for a directory opened below one, so a caller that keeps one (`Staged`, a walk level) is not redirected by a rename above it. A rename between two roots is `FilesSource::rename_across` (the source opens both). A name still resolves beneath its handle on every call, but a sequence the engine runs in several calls (temporary file, then rename) names the parent through a handle it opened once, so the guarantee is the same as before except for one step: the attributes of a listed entry (`DirEntry::metadata`) are asked by name below the directory the listing was opened on, not through the listing's handle. Confinement to the root holds, and a directory swapped for a link between the listing and that question can answer for another directory inside the root.
+
 **Symbolic links.** The rest of the path is resolved by `cap-std` against the root's directory handle, which follows a link only
 while it stays under that handle: a link out of a root, at the end or in the middle of a path, is `outside_root`, and so is an
 absolute link even when it points back inside. `remove` removes a link, never what it points at; `stat` without `follow` describes

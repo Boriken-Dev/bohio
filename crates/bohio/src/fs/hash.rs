@@ -341,7 +341,7 @@ fn item_result(
         context.files
     };
     authorize(&files, &[Permission::FsRead])?;
-    let roots = Roots::new(files.grant.fs_roots());
+    let roots = Roots::new(files.grant.fs_roots(), files.source.0);
     let (mut file, meta) = ops::open_regular(&roots, &item.path)?;
     let size = meta.len();
     let modified = meta.modified().ok().map(ops::timestamp);

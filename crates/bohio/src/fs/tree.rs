@@ -6,117 +6,18 @@ use std::path::{Path, PathBuf};
 
 use bohio_proto::fs::WriteMode;
 use bohio_proto::{ErrorBody, ErrorCode};
-use cap_fs_ext::{DirExt, SystemTimeSpec};
-use cap_std::fs::{Dir, File, OpenOptions};
 
-use super::native;
-use super::ops::{Roots, open_regular_in};
+use super::ops::{Roots, make_link, open_regular_in};
 use super::path::check_link_target;
 use super::stage::Staged;
+use super::vfs::{Dir, Metadata, OpenOptions};
 use super::{Context, io_error};
 
 fn bad(message: &'static str) -> ErrorBody {
     ErrorBody::new(ErrorCode::BadRequest, message)
 }
 
-/// The directory holding `relative` and its last name, both opened under `dir` without leaving it.
-#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
-fn parent_of<'a>(dir: &Dir, relative: &'a Path) -> std::io::Result<(Dir, &'a std::ffi::OsStr)> {
-    let name = relative
-        .file_name()
-        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
-    let parent = match relative
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-    {
-        Some(parent) => dir.open_dir(parent)?,
-        None => dir.try_clone()?,
-    };
-    Ok((parent, name))
-}
-
-/// Renames `from` to `to`, replacing what is at `to` only when `overwrite`.
-///
-/// Without `overwrite` the operating system decides, in the rename itself, for files and directories alike:
-/// Linux and macOS with `renameat2` (`RENAME_NOREPLACE`) and `renamex_np` (`RENAME_EXCL`), Windows with
-/// `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING`. Only where there is no such call (FreeBSD and other
-/// Unix) or the filesystem refuses the flag (`EINVAL`) is there a gap: a regular file is then given its new
-/// name with a hard link, which fails when the name exists, and the old name is removed; a directory, or a
-/// file on a filesystem without hard links, is checked first and renamed after, so a name made in between is
-/// replaced.
-pub(crate) fn rename_in(
-    from_dir: &Dir,
-    from: &Path,
-    to_dir: &Dir,
-    to: &Path,
-    overwrite: bool,
-) -> std::io::Result<()> {
-    if overwrite {
-        return super::native::rename_replacing(from_dir, from, to_dir, to);
-    }
-    rename_new(from_dir, from, to_dir, to)
-}
-
-#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
-fn rename_new(from_dir: &Dir, from: &Path, to_dir: &Dir, to: &Path) -> std::io::Result<()> {
-    use rustix::fs::{RenameFlags, renameat_with};
-    use rustix::io::Errno;
-    let (from_parent, from_name) = parent_of(from_dir, from)?;
-    let (to_parent, to_name) = parent_of(to_dir, to)?;
-    match renameat_with(
-        &from_parent,
-        from_name,
-        &to_parent,
-        to_name,
-        RenameFlags::NOREPLACE,
-    ) {
-        Ok(()) => Ok(()),
-        // The filesystem or the kernel has no such flag: the fallback is all there is.
-        Err(Errno::INVAL | Errno::NOSYS | Errno::OPNOTSUPP) => {
-            link_then_remove(from_dir, from, to_dir, to)
-        }
-        Err(errno) => Err(errno.into()),
-    }
-}
-
-#[cfg(windows)]
-fn rename_new(from_dir: &Dir, from: &Path, to_dir: &Dir, to: &Path) -> std::io::Result<()> {
-    super::native::rename(from_dir, from, to_dir, to, false)
-}
-
-#[cfg(not(any(
-    target_os = "linux",
-    target_os = "android",
-    target_os = "macos",
-    windows
-)))]
-fn rename_new(from_dir: &Dir, from: &Path, to_dir: &Dir, to: &Path) -> std::io::Result<()> {
-    link_then_remove(from_dir, from, to_dir, to)
-}
-
-/// The fallback: a hard link for a regular file, else check then rename.
-#[cfg(not(windows))]
-fn link_then_remove(from_dir: &Dir, from: &Path, to_dir: &Dir, to: &Path) -> std::io::Result<()> {
-    if from_dir.symlink_metadata(from)?.is_file() {
-        match from_dir.hard_link(from, to_dir, to) {
-            Ok(()) => return from_dir.remove_file(from),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Err(error),
-            // No hard links here (or none to this name): the check below is all there is.
-            Err(_) => {}
-        }
-    }
-    check_then_rename(from_dir, from, to_dir, to)
-}
-
-#[cfg(not(windows))]
-fn check_then_rename(from_dir: &Dir, from: &Path, to_dir: &Dir, to: &Path) -> std::io::Result<()> {
-    if to_dir.symlink_metadata(to).is_ok() {
-        return Err(std::io::ErrorKind::AlreadyExists.into());
-    }
-    from_dir.rename(from, to_dir, to)
-}
-
-/// `move`: [`rename_in`], and when the names lie on different filesystems a copy that keeps permission bits
+/// `move`: a rename, and when the names lie on different filesystems a copy that keeps permission bits
 /// and modification time followed by removal of the original.
 pub(crate) fn move_to(
     roots: &Roots<'_>,
@@ -127,7 +28,7 @@ pub(crate) fn move_to(
 ) -> Result<(), ErrorBody> {
     let (from_dir, from_relative) = roots.resolve_entry(from)?;
     let (to_dir, to_relative) = roots.resolve_entry(to)?;
-    match rename_in(&from_dir, &from_relative, &to_dir, &to_relative, overwrite) {
+    match from_dir.rename_to(&from_relative, &to_dir, &to_relative, overwrite) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::CrossesDevices => move_across(
             context,
@@ -176,17 +77,17 @@ fn move_across(
         // A copy that failed leaves the original where it was; what it made of a new name goes.
         if made_target {
             let _ = if meta.is_dir() {
-                native::remove_dir_all(to.dir, to.relative)
+                to.dir.remove_dir_all(to.relative)
             } else {
-                native::remove_file_or_symlink(to.dir, to.relative)
+                to.dir.remove_file_or_symlink(to.relative)
             };
         }
         return Err(error);
     }
     let removed = if meta.is_dir() {
-        native::remove_dir_all(from.dir, from.relative)
+        from.dir.remove_dir_all(from.relative)
     } else {
-        native::remove_file_or_symlink(from.dir, from.relative)
+        from.dir.remove_file_or_symlink(from.relative)
     };
     removed.map_err(|error| io_error(&error))
 }
@@ -247,13 +148,11 @@ fn copy_file(
     options: &CopyOptions,
 ) -> Result<(), ErrorBody> {
     let (mut source, meta) = open_regular_in(from.dir, from.relative)?;
-    #[cfg(unix)]
-    let file_mode = {
-        use cap_std::fs::PermissionsExt;
-        Some(meta.permissions().mode() & 0o7777 & !super::ID_BITS)
+    let file_mode = if cfg!(unix) {
+        meta.mode().map(|mode| mode & 0o7777 & !super::ID_BITS)
+    } else {
+        None
     };
-    #[cfg(not(unix))]
-    let file_mode = None;
     let mode = if options.overwrite {
         WriteMode::Replace
     } else {
@@ -276,20 +175,17 @@ fn copy_file(
     if options.preserve
         && let Ok(modified) = meta.modified()
     {
-        staged.set_modified(modified.into_std());
+        staged.set_modified(modified);
     }
     staged.commit(context.config.sync_writes)
 }
 
 /// A symbolic link made again at `to` with the same text, which must still stay inside the root.
 fn copy_link(from: &Place<'_>, to: &Place<'_>, overwrite: bool) -> Result<(), ErrorBody> {
-    let text = native::read_link(from.dir, from.relative).map_err(|error| io_error(&error))?;
-    let text = text.into_os_string().into_string().map_err(|_| {
-        ErrorBody::new(
-            ErrorCode::Io,
-            "the link's text is not valid text and cannot be copied",
-        )
-    })?;
+    let text = from
+        .dir
+        .read_link(from.relative)
+        .map_err(|error| io_error(&error))?;
     let depth = to.relative.components().count().saturating_sub(1);
     check_link_target(&text, depth)?;
     if overwrite
@@ -298,28 +194,11 @@ fn copy_link(from: &Place<'_>, to: &Place<'_>, overwrite: bool) -> Result<(), Er
             .symlink_metadata(to.relative)
             .is_ok_and(|meta| !meta.is_dir())
     {
-        native::remove_file_or_symlink(to.dir, to.relative).map_err(|error| io_error(&error))?;
+        to.dir
+            .remove_file_or_symlink(to.relative)
+            .map_err(|error| io_error(&error))?;
     }
-    make_link(to, &text)
-}
-
-#[cfg(not(windows))]
-fn make_link(to: &Place<'_>, text: &str) -> Result<(), ErrorBody> {
-    to.dir
-        .symlink(text, to.relative)
-        .map_err(|error| io_error(&error))
-}
-
-#[cfg(windows)]
-fn make_link(to: &Place<'_>, text: &str) -> Result<(), ErrorBody> {
-    let native_text = text.replace('/', "\\");
-    let beside = to.relative.parent().map_or_else(
-        || PathBuf::from(&native_text),
-        |parent| parent.join(&native_text),
-    );
-    let to_directory = to.dir.metadata(&beside).is_ok_and(|meta| meta.is_dir());
-    native::symlink(to.dir, to.relative, native_text.as_ref(), to_directory)
-        .map_err(|error| io_error(&error))
+    make_link(to.dir, to.relative, &text).map_err(|error| io_error(&error))
 }
 
 /// A directory copied with everything in it, depth first and without recursion. Links are made again as
@@ -334,7 +213,7 @@ fn copy_tree(
     let limit = context.config.max_tree_entries;
     let mut count = 0_usize;
     // Directories whose permission bits and times are set after what is in them is made.
-    let mut finish: Vec<(PathBuf, cap_std::fs::Metadata)> = Vec::new();
+    let mut finish: Vec<(PathBuf, Metadata)> = Vec::new();
     let mut stack = vec![(from.relative.to_path_buf(), to.relative.to_path_buf(), true)];
     while let Some((source, target, top)) = stack.pop() {
         let meta = from
@@ -348,20 +227,20 @@ fn copy_tree(
                 }
             }
             Ok(_) => return Err(ErrorBody::new(ErrorCode::Exists, "the target exists")),
-            Err(_) => native::create_dir(
-                to.dir,
-                &target,
-                false,
-                #[cfg(unix)]
-                None,
-            )
-            .map_err(|error| io_error(&error))?,
+            Err(_) => to
+                .dir
+                .create_dir(&target, false, None)
+                .map_err(|error| io_error(&error))?,
         }
         if options.preserve {
             finish.push((target.clone(), meta));
         }
         let mut children = Vec::new();
-        for entry in native::read_dir(from.dir, &source).map_err(|error| io_error(&error))? {
+        for entry in from
+            .dir
+            .read_dir(&source)
+            .map_err(|error| io_error(&error))?
+        {
             let entry = entry.map_err(|error| io_error(&error))?;
             count += 1;
             if limit != 0 && count > limit {
@@ -404,17 +283,16 @@ fn copy_tree(
         }
     }
     for (target, meta) in finish.into_iter().rev() {
-        #[cfg(unix)]
+        if cfg!(unix)
+            && let Some(mode) = meta.mode()
         {
-            use cap_std::fs::{Permissions, PermissionsExt};
-            let bits = meta.permissions().mode() & 0o7777 & !super::ID_BITS;
             to.dir
-                .set_permissions(&target, Permissions::from_mode(bits))
+                .set_mode(&target, mode & 0o7777 & !super::ID_BITS)
                 .map_err(|error| io_error(&error))?;
         }
         if let Ok(modified) = meta.modified() {
             to.dir
-                .set_times(&target, None, Some(SystemTimeSpec::Absolute(modified)))
+                .set_times(&target, None, Some(modified))
                 .map_err(|error| io_error(&error))?;
         }
     }
@@ -428,7 +306,7 @@ pub(crate) fn truncate(roots: &Roots<'_>, text: &str, length: u64) -> Result<(),
     if !before.is_file() {
         return Err(bad("the path is not a regular file"));
     }
-    let file: File = dir
+    let file = dir
         .open_with(&relative, OpenOptions::new().write(true))
         .map_err(|error| io_error(&error))?;
     if !file.metadata().map_err(|error| io_error(&error))?.is_file() {

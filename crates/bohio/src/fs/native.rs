@@ -21,8 +21,6 @@ pub(crate) struct DirEntry {
     inner: cap_std::fs::DirEntry,
     #[cfg(windows)]
     name: std::ffi::OsString,
-    #[cfg(windows)]
-    parent: std::sync::Arc<Dir>,
 }
 
 impl DirEntry {
@@ -36,17 +34,6 @@ impl DirEntry {
             self.name.clone()
         }
     }
-
-    pub(crate) fn metadata(&self) -> io::Result<cap_std::fs::Metadata> {
-        #[cfg(not(windows))]
-        {
-            self.inner.metadata()
-        }
-        #[cfg(windows)]
-        {
-            self.parent.symlink_metadata(&self.name)
-        }
-    }
 }
 
 /// The entries of a directory, in no order.
@@ -55,8 +42,6 @@ pub(crate) struct ReadDir {
     inner: cap_std::fs::ReadDir,
     #[cfg(windows)]
     inner: crate::platform::winfs::Listing<std::sync::Arc<Dir>>,
-    #[cfg(windows)]
-    parent: std::sync::Arc<Dir>,
 }
 
 impl Iterator for ReadDir {
@@ -71,12 +56,9 @@ impl Iterator for ReadDir {
 
     #[cfg(windows)]
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next().map(|entry| {
-            entry.map(|(name, _)| DirEntry {
-                name,
-                parent: self.parent.clone(),
-            })
-        })
+        self.inner
+            .next()
+            .map(|entry| entry.map(|(name, _)| DirEntry { name }))
     }
 }
 
@@ -107,8 +89,7 @@ pub(crate) fn read_dir(dir: &Dir, relative: &Path) -> io::Result<ReadDir> {
         // A handle of its own, so the position of the listing is nobody else's.
         let opened = std::sync::Arc::new(dir.open_dir(relative)?);
         Ok(ReadDir {
-            inner: crate::platform::winfs::Listing::new(opened.clone()),
-            parent: opened,
+            inner: crate::platform::winfs::Listing::new(opened),
         })
     }
 }
