@@ -58,6 +58,9 @@ pub struct Request {
     /// `bohio-attach/1` picks its output up again. Needs the peer's `session` permission.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<SessionRequest>,
+    /// The exec source that runs it; the node's default one when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 impl Request {
@@ -78,6 +81,7 @@ impl Request {
             output_compression: None,
             stdin_compression: None,
             session: None,
+            source: None,
         }
     }
 

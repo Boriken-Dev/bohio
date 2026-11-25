@@ -215,6 +215,7 @@ pub fn spawn(spec: Spec) -> io::Result<Spawned> {
     ) = {
         // The process starts inside the job, so nothing it starts at once is outside it.
         let job = tree::job()?;
+        let _ = &spec.on_host_death;
         let started = winproc::start(&spec, &job)?;
         (Tree::holding(job), started)
     };

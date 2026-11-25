@@ -1382,6 +1382,7 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
                     compression: &config.compression,
                     slots: &shared.processes,
                     path: &shared.path,
+                    sources: &shared.sources,
                 };
                 match shared.detached.serve_exec(&channel, metadata, &peer, &host) {
                     Ok(ended) => finish_attached(&relay, ended),
@@ -1436,6 +1437,7 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
                     compression: &config.compression,
                     slots: &shared.processes,
                     path: &shared.path,
+                    sources: &shared.sources,
                 };
                 match exec::serve(channel, metadata, &context) {
                     Ok(exit) => tracing::debug!(code = ?exit.code, "exec ended"),

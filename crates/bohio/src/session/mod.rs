@@ -46,6 +46,7 @@ pub(crate) struct ExecHost<'a> {
     pub compression: &'a CompressionConfig,
     pub slots: &'a Arc<Slots>,
     pub path: &'a std::ffi::OsStr,
+    pub sources: &'a Arc<crate::access::Sources>,
 }
 
 /// What a shell session needs from the host besides the request.
@@ -665,6 +666,7 @@ impl Sessions {
             let compression = host.compression.clone();
             let slots = Arc::clone(host.slots);
             let path = host.path.to_owned();
+            let sources = Arc::clone(host.sources);
             let metadata = starting.metadata.clone();
             thread::Builder::new()
                 .name("bohio-session-exec".to_owned())
@@ -676,6 +678,7 @@ impl Sessions {
                         compression: &compression,
                         slots: &slots,
                         path: &path,
+                        sources: &sources,
                     };
                     let _ = crate::exec::serve(Arc::clone(&channel), &metadata, &context);
                     channel.close();

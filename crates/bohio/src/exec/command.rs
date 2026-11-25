@@ -1,14 +1,12 @@
 //! Turning a request into the program and arguments to start.
 
-use std::ffi::{OsStr, OsString};
-use std::path::PathBuf;
+use std::ffi::OsStr;
 
+use bohio_api::model::{EnvVar, ExecStart};
 use bohio_proto::exec::{Command, Request};
 use bohio_proto::shell::ShellKind;
 use bohio_proto::{ErrorBody, ErrorCode};
 
-use crate::config::HostDeath;
-use crate::platform::{Spec, resolve_listed};
 use crate::policy::Grant;
 
 /// The process to start for `request`, once `grant` allows it.
@@ -20,9 +18,17 @@ use crate::policy::Grant;
 /// too, unless it is named), or clears the environment under a program list, or for a shell script when the grant lists
 /// any. Under a list the program that
 /// starts is the one the host finds at the listed name on its own `path`, never one the request
-/// can point elsewhere.
-pub(super) fn spec(request: &Request, grant: &Grant, path: &OsStr) -> Result<Spec, ErrorBody> {
-    let (program, args, raw_args) = match &request.command {
+/// can point elsewhere; finding it is the source's.
+pub(super) fn spec(request: &Request, grant: &Grant, path: &OsStr) -> Result<ExecStart, ErrorBody> {
+    let mut start = ExecStart {
+        cwd: request.cwd.clone(),
+        clear_env: request.env.clear,
+        env: changes(request),
+        stdin: matches!(request.stdin, bohio_proto::exec::Stdin::Open),
+        path: Some(path.to_string_lossy().into_owned()),
+        ..ExecStart::default()
+    };
+    match &request.command {
         Command::Argv { argv } => {
             let Some((program, args)) = argv.split_first() else {
                 return Err(ErrorBody::new(
@@ -43,19 +49,13 @@ pub(super) fn spec(request: &Request, grant: &Grant, path: &OsStr) -> Result<Spe
                     "this peer may not run that program",
                 ));
             }
-            let program = if grant.restricts_programs() {
+            if grant.restricts_programs() {
                 if !grant.permits_env(&request.env) {
                     return Err(env_refused());
                 }
-                resolve_listed(program, path)
-                    .ok_or_else(|| {
-                        ErrorBody::new(ErrorCode::NotFound, "the program was not found")
-                    })?
-                    .into_os_string()
-            } else {
-                OsString::from(program)
-            };
-            (program, args.iter().map(OsString::from).collect(), None)
+                start.listed = true;
+            }
+            start.argv = argv.clone();
         }
         Command::Shell { kind, script } => {
             if !grant.permits_shell_script() {
@@ -70,7 +70,8 @@ pub(super) fn spec(request: &Request, grant: &Grant, path: &OsStr) -> Result<Spe
                     "the script holds a NUL",
                 ));
             }
-            shell_line(*kind, script)?
+            start.shell = Some(shell_word(*kind)?.to_owned());
+            start.script = Some(script.clone());
         }
         _ => {
             return Err(ErrorBody::new(
@@ -78,16 +79,26 @@ pub(super) fn spec(request: &Request, grant: &Grant, path: &OsStr) -> Result<Spe
                 "this host does not know that kind of command",
             ));
         }
-    };
-    Ok(Spec {
-        program,
-        args,
-        raw_args,
-        cwd: request.cwd.as_ref().map(PathBuf::from),
-        env: request.env.clone(),
-        stdin: matches!(request.stdin, bohio_proto::exec::Stdin::Open),
-        on_host_death: HostDeath::default(),
-    })
+    }
+    Ok(start)
+}
+
+/// The request's environment changes in the order a source applies them: sets, then removals.
+fn changes(request: &Request) -> Vec<EnvVar> {
+    let mut changes: Vec<EnvVar> = request
+        .env
+        .set
+        .iter()
+        .map(|(name, value)| EnvVar {
+            name: name.clone(),
+            value: Some(value.clone()),
+        })
+        .collect();
+    changes.extend(request.env.remove.iter().map(|name| EnvVar {
+        name: name.clone(),
+        value: None,
+    }));
+    changes
 }
 
 /// Whether `grant` allows the command of `request` by its program list: what a running process is held
@@ -112,32 +123,15 @@ fn env_refused() -> ErrorBody {
     )
 }
 
-type Line = (OsString, Vec<OsString>, Option<OsString>);
-
-/// The program and arguments that make `kind` run `script`.
-fn shell_line(kind: ShellKind, script: &str) -> Result<Line, ErrorBody> {
-    let program = OsString::from(kind.program());
+/// The word a source knows the shell `kind` by.
+fn shell_word(kind: ShellKind) -> Result<&'static str, ErrorBody> {
     Ok(match kind {
-        ShellKind::Sh | ShellKind::Bash | ShellKind::Zsh => {
-            (program, vec!["-c".into(), script.into()], None)
-        }
-        ShellKind::Powershell | ShellKind::Pwsh => (
-            program,
-            vec![
-                "-NoProfile".into(),
-                "-NonInteractive".into(),
-                "-Command".into(),
-                script.into(),
-            ],
-            None,
-        ),
-        // `cmd` parses its own command line: the script goes through as written.
-        ShellKind::Cmd if cfg!(windows) => (
-            program,
-            vec!["/C".into()],
-            Some(OsString::from(format!(" {script}"))),
-        ),
-        ShellKind::Cmd => (program, vec!["/C".into(), script.into()], None),
+        ShellKind::Sh => "sh",
+        ShellKind::Bash => "bash",
+        ShellKind::Zsh => "zsh",
+        ShellKind::Powershell => "powershell",
+        ShellKind::Pwsh => "pwsh",
+        ShellKind::Cmd => "cmd",
         _ => {
             return Err(ErrorBody::new(
                 ErrorCode::BadRequest,

@@ -380,12 +380,14 @@ impl Open for Link {
             Arc::clone(&self.compression),
         );
         let handle = std::thread::spawn(move || {
+            let sources = bohio::access::Sources::default();
             let context = Context {
                 grant: &grant,
                 config: &config,
                 compression: &compression,
                 slots: &slots,
                 path: &path,
+                sources: &sources,
             };
             let result = exec::serve(Arc::clone(&host), &metadata, &context);
             host.close();

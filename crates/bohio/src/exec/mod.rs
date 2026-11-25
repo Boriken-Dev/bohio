@@ -10,23 +10,26 @@
 mod command;
 
 use std::ffi::OsStr;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use bohio_api::guatiao::library::Object;
+use bohio_api::model::TerminalExit;
+use bohio_api::{ExecSource, Process};
 use bohio_proto::compress::Compression;
 use bohio_proto::exec::{Exit, Input, Output, Request, Signal, Signalled, Started};
 use bohio_proto::{ErrorBody, ErrorCode};
 use bohio_transfer::compress::{Caps, Decoder, Encoder, Piece};
 use coqui_transport::{Channel, Failure};
 
+use crate::access::{Source, Sources, code_of};
 use crate::config::{CompressionConfig, ExecutionConfig};
 use crate::fs::compress::{Settings, decode_failure};
 use crate::limit::Slots;
-use crate::platform::{self, Control, ProcessExit};
 use crate::policy::{Grant, Permission};
 
 /// What [`serve`] needs besides the stream.
@@ -43,6 +46,54 @@ pub struct Context<'a> {
     /// The host's own `PATH`: where a program a grant lists is looked for. The library reads no
     /// environment variable, so the caller says.
     pub path: &'a OsStr,
+    /// The node's sources: the one a request names, or the default exec source, starts the process.
+    pub sources: &'a Sources,
+}
+
+/// A started process and the source it came from.
+struct Live {
+    process: Object<dyn Process>,
+    source: Source<dyn ExecSource>,
+}
+
+/// How a process ended, as the wire says it.
+#[derive(Debug, Clone, Copy)]
+struct ProcessExit {
+    code: Option<i32>,
+    signal: Option<i32>,
+}
+
+impl From<TerminalExit> for ProcessExit {
+    fn from(exit: TerminalExit) -> Self {
+        Self {
+            code: exit.code.and_then(|code| i32::try_from(code).ok()),
+            signal: exit.signal.and_then(|signal| i32::try_from(signal).ok()),
+        }
+    }
+}
+
+/// The input of a process as a writer: dropping it ends the input.
+struct InputPipe(Arc<Live>);
+
+impl Write for InputPipe {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        match self.0.process.write(data) {
+            Ok(taken) if taken > 0 || data.is_empty() => {
+                Ok(usize::try_from(taken).unwrap_or(data.len()))
+            }
+            _ => Err(std::io::ErrorKind::BrokenPipe.into()),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Drop for InputPipe {
+    fn drop(&mut self) {
+        let _ = self.0.process.close_input();
+    }
 }
 
 /// Serves one `bohio-exec/1` stream whose open carried `metadata`, until the process has ended
@@ -78,7 +129,7 @@ pub fn serve(
         killed: AtomicBool::new(false),
         sending: AtomicUsize::new(0),
     });
-    let (request, spawned, _permit, negotiated) = match start(metadata, context) {
+    let (request, live, input, _permit, negotiated) = match start(metadata, context) {
         Ok(started) => started,
         Err(error) => {
             let _ = shared.send(&encode(&Output::Error(error.clone())));
@@ -90,22 +141,25 @@ pub fn serve(
         stdin: stdin_used,
         mut decoder,
     } = negotiated;
-    let platform::Spawned {
-        control,
-        mut stdin,
-        stdout,
-        stderr,
-    } = spawned;
-    tracing::debug!(pid = control.id(), "process started");
+    let control = live;
+    let mut stdin = input;
+    let pid = control
+        .process
+        .pid()
+        .ok()
+        .flatten()
+        .and_then(|pid| u32::try_from(pid).ok())
+        .unwrap_or(0);
+    tracing::debug!(pid, "process started");
 
     let started = Started {
-        pid: control.id(),
+        pid,
         output_compression: output.clone(),
         stdin_compression: stdin_used,
         session: None,
     };
     if !shared.send(&encode(&Output::Started(started))) {
-        let _ = control.kill();
+        let _ = control.process.kill();
         return Ok(Exit {
             killed: true,
             ..Exit::default()
@@ -114,11 +168,9 @@ pub fn serve(
 
     let chunk = chunk_size(&shared, context.config.chunk_size);
     let (done_tx, done_rx) = mpsc::channel();
-    for (reader, is_stderr) in [
-        (Reader::Stdout(stdout), false),
-        (Reader::Stderr(stderr), true),
-    ] {
+    for is_stderr in [false, true] {
         let for_pump = Arc::clone(&shared);
+        let reader = Arc::clone(&control);
         let done = done_tx.clone();
         let compression = output
             .clone()
@@ -127,7 +179,7 @@ pub fn serve(
             .name("bohio-exec-pump".to_owned())
             .spawn(move || pump(&for_pump, reader, is_stderr, chunk, &done, compression));
         if spawned.is_err() {
-            let _ = control.kill();
+            let _ = control.process.kill();
             let error = ErrorBody::new(ErrorCode::Internal, "a thread could not be started");
             let _ = shared.send(&encode(&Output::Error(error.clone())));
             return Err(error);
@@ -145,7 +197,7 @@ pub fn serve(
             .spawn(move || monitor(&shared, &control, timeout, drain, &done_rx))
     };
     let Ok(monitor) = monitor else {
-        let _ = control.kill();
+        let _ = control.process.kill();
         let error = ErrorBody::new(ErrorCode::Internal, "a thread could not be started");
         let _ = shared.send(&encode(&Output::Error(error.clone())));
         return Err(error);
@@ -232,7 +284,8 @@ fn start<'a>(
 ) -> Result<
     (
         Request,
-        platform::Spawned,
+        Arc<Live>,
+        Option<InputPipe>,
         crate::limit::Permit<'a>,
         Negotiated,
     ),
@@ -252,6 +305,13 @@ fn start<'a>(
             "this peer may not run processes",
         ));
     }
+    let source = context.sources.exec(request.source.as_deref())?;
+    if !context.sources.permits(context.grant, source.name()) {
+        return Err(ErrorBody::new(
+            ErrorCode::Denied,
+            "this peer may not use that exec source",
+        ));
+    }
     let settings = Settings::new(context.compression);
     let output = settings.resolve(request.output_compression.as_ref())?;
     let stdin = settings.declared(request.stdin_compression.as_ref())?;
@@ -260,34 +320,34 @@ fn start<'a>(
         .map(|used| settings.decoder(used))
         .transpose()?;
     let mut spec = command::spec(&request, context.grant, context.path)?;
-    spec.on_host_death = context.config.host_death;
-    if let Some(cwd) = &spec.cwd
-        && !cwd.is_dir()
-    {
-        return Err(ErrorBody::new(
-            ErrorCode::NotFound,
-            "the working directory does not exist",
-        ));
-    }
+    spec.on_host_death = Some(context.config.host_death.name().to_owned());
+    let stdin_open = spec.stdin;
     let permit = context.slots.acquire().ok_or_else(|| {
         ErrorBody::new(
             ErrorCode::Busy,
             "the host is running as many processes as it allows",
         )
     })?;
-    let spawned = platform::spawn(spec).map_err(|error| match error.kind() {
-        std::io::ErrorKind::NotFound => {
-            ErrorBody::new(ErrorCode::NotFound, "the program was not found")
-        }
-        std::io::ErrorKind::PermissionDenied => ErrorBody::new(
-            ErrorCode::Denied,
-            "the operating system refused to run the program",
-        ),
-        _ => ErrorBody::new(ErrorCode::Io, "the process could not be started"),
+    let process = source.get().start(spec).map_err(|error| {
+        let text = error.message().to_string();
+        let kind = bohio_api::files::failure_kind(&error);
+        let code = match kind {
+            Some(bohio_api::files::word::NOT_FOUND) => ErrorCode::NotFound,
+            Some(bohio_api::files::word::DENIED) => ErrorCode::Denied,
+            Some(bohio_api::files::word::IO) => ErrorCode::Io,
+            _ => code_of(error.status),
+        };
+        let text = kind
+            .and_then(|word| text.strip_prefix(word)?.strip_prefix(": "))
+            .unwrap_or(&text);
+        ErrorBody::new(code, text.to_owned())
     })?;
+    let live = Arc::new(Live { process, source });
+    let input = stdin_open.then(|| InputPipe(Arc::clone(&live)));
     Ok((
         request,
-        spawned,
+        live,
+        input,
         permit,
         Negotiated {
             output,
@@ -297,25 +357,11 @@ fn start<'a>(
     ))
 }
 
-enum Reader {
-    Stdout(platform::Stdout),
-    Stderr(platform::Stderr),
-}
-
-impl Read for Reader {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        match self {
-            Self::Stdout(pipe) => pipe.read(buf),
-            Self::Stderr(pipe) => pipe.read(buf),
-        }
-    }
-}
-
 /// Copies a pipe to the stream in frames until the pipe ends, then reports so. With `compression`
 /// each chunk is one flushed piece of this pipe's own context.
 fn pump(
     shared: &Shared,
-    mut reader: Reader,
+    live: Arc<Live>,
     is_stderr: bool,
     chunk: usize,
     done: &Sender<()>,
@@ -323,10 +369,20 @@ fn pump(
 ) {
     let mut encoder = compression.and_then(|(used, caps)| Encoder::new(&used, &caps).ok());
     let mut buffer = vec![0_u8; chunk];
+    let stream = if is_stderr {
+        bohio_api::exec::STDERR
+    } else {
+        bohio_api::exec::STDOUT
+    };
+    let wait = u64::try_from(shared.poll.as_millis())
+        .unwrap_or(u64::MAX)
+        .max(1);
     loop {
-        match reader.read(&mut buffer) {
-            Ok(0) => break,
+        match live.process.read(stream, &mut buffer, wait) {
+            Ok(0) => {}
+            Ok(count) if count < 0 => break,
             Ok(count) => {
+                let count = usize::try_from(count).unwrap_or(0);
                 let raw = |bytes: Vec<u8>| {
                     if is_stderr {
                         Output::Stderr(bytes)
@@ -350,25 +406,24 @@ fn pump(
                 if !sent {
                     // Nobody is listening: keep emptying the pipe so the process is not
                     // held up on a full one while it is being ended.
-                    drain(&mut reader, &mut buffer);
+                    drain(&live, stream, &mut buffer);
                     break;
                 }
             }
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
             Err(_) => break,
         }
     }
     let _ = done.send(());
 }
 
-fn drain(reader: &mut Reader, buffer: &mut [u8]) {
-    while matches!(reader.read(buffer), Ok(count) if count > 0) {}
+fn drain(live: &Live, stream: u8, buffer: &mut [u8]) {
+    while matches!(live.process.read(stream, buffer, 1000), Ok(count) if count >= 0) {}
 }
 
 /// Watches the process until it has ended and its output is sent, then sends the last frame.
 fn monitor(
     shared: &Shared,
-    control: &Control,
+    control: &Live,
     timeout: Option<Duration>,
     drain: Duration,
     pumps: &Receiver<()>,
@@ -386,9 +441,15 @@ fn monitor(
             shared.killed.store(true, Ordering::Release);
             break ended(control);
         }
-        match control.try_wait() {
-            Ok(Some(exit)) => break exit,
-            Ok(None) => thread::sleep(shared.poll),
+        if !control.source.is_current() {
+            // The source was reconfigured: what runs on it ends.
+            shared.killed.store(true, Ordering::Release);
+            break ended(control);
+        }
+        let wait = u64::try_from(shared.poll.as_millis()).unwrap_or(u64::MAX);
+        match control.process.wait(wait) {
+            Ok(Some(exit)) => break exit.into(),
+            Ok(None) => {}
             Err(_) => break ended(control),
         }
     };
@@ -397,10 +458,10 @@ fn monitor(
     // holds one open is ended with the rest of the tree after `drain`.
     let mut open = 2_u8;
     if !wait_for(pumps, &mut open, drain, &shared.sending) {
-        let _ = control.kill();
+        let _ = control.process.kill();
         wait_for(pumps, &mut open, drain, &shared.sending);
     }
-    let _ = control.kill();
+    let _ = control.process.kill();
 
     let exit = Exit {
         code: ended.code,
@@ -414,11 +475,14 @@ fn monitor(
 }
 
 /// Ends the tree and returns how the process ended.
-fn ended(control: &Control) -> ProcessExit {
-    control.kill().unwrap_or(ProcessExit {
-        code: None,
-        signal: None,
-    })
+fn ended(control: &Live) -> ProcessExit {
+    control.process.kill().map_or(
+        ProcessExit {
+            code: None,
+            signal: None,
+        },
+        Into::into,
+    )
 }
 
 /// Waits until `open` more pumps have reported or `limit` passes; whether they all reported. A pump
@@ -448,8 +512,8 @@ fn wait_for(pumps: &Receiver<()>, open: &mut u8, limit: Duration, sending: &Atom
 /// Applies the client's frames until the exchange is over or the stream ends.
 fn receive_frames(
     shared: &Shared,
-    control: &Control,
-    stdin: &mut Option<platform::Stdin>,
+    control: &Live,
+    stdin: &mut Option<InputPipe>,
     decoder: &mut Option<Decoder>,
 ) {
     while !shared.done.load(Ordering::Acquire) {
@@ -492,10 +556,10 @@ fn receive_frames(
                 }
                 Ok(Input::StdinEnd) => *stdin = None,
                 Ok(Input::Kill) => {
-                    if matches!(control.try_wait(), Ok(None)) {
+                    if matches!(control.process.wait(0), Ok(None)) {
                         shared.killed.store(true, Ordering::Release);
                     }
-                    let _ = control.kill();
+                    let _ = control.process.kill();
                 }
                 Ok(Input::Signal(signal)) => deliver(shared, control, signal),
                 // A frame this version does not know, or a body that is not what its tag says,
@@ -512,28 +576,34 @@ fn receive_frames(
 }
 
 /// Delivers `signal` to the process and tells the client whether it arrived.
-fn deliver(shared: &Shared, control: &Control, signal: Signal) {
-    let running = matches!(control.try_wait(), Ok(None));
-    let delivery = control.signal(signal);
-    if delivery.ended && running {
+fn deliver(shared: &Shared, control: &Live, signal: Signal) {
+    let delivery = control
+        .process
+        .signal(signal.name())
+        .unwrap_or(bohio_api::Delivery {
+            delivered: false,
+            ended: false,
+            message: Some("the source could not deliver it".to_owned()),
+        });
+    if delivery.ended {
         shared.killed.store(true, Ordering::Release);
     }
     let _ = shared.send(&encode(&Output::Signalled(Signalled {
         signal,
         delivered: delivery.delivered,
-        message: delivery.message.map(str::to_owned),
+        message: delivery.message,
     })));
 }
 
 /// Ends the process and tells the client why: its input could not be taken.
-fn refuse(shared: &Shared, control: &Control, error: ErrorBody) {
+fn refuse(shared: &Shared, control: &Live, error: ErrorBody) {
     shared.killed.store(true, Ordering::Release);
     let _ = shared.send(&encode(&Output::Error(error)));
-    let _ = control.kill();
+    let _ = control.process.kill();
 }
 
 /// Waits for the monitor, which always ends once the process is gone.
-fn finish(monitor: JoinHandle<Exit>, control: &Control) -> Exit {
+fn finish(monitor: JoinHandle<Exit>, control: &Live) -> Exit {
     monitor.join().unwrap_or_else(|_| {
         let ended = ended(control);
         Exit {

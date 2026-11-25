@@ -18,13 +18,18 @@ use std::time::Duration;
 use bohio_api::guatiao::library::{Object, ProviderError};
 use bohio_api::guatiao::{FromValue, Provider, Schema, Status, ToValue};
 use bohio_api::model::{Delivery, EnvVar, SourceInfo, TerminalExit, TerminalOpen};
-use bohio_api::{DesktopSession, DesktopSource, Terminal, TerminalSource, unavailable, vocab};
+use bohio_api::{
+    DesktopSession, DesktopSource, ExecSource, Terminal, TerminalSource, unavailable, vocab,
+};
 use bohio_proto::exec::Env;
 use bohio_proto::shell::ShellKind;
 
 use super::desktop::DesktopOf;
 use crate::config::{HostDeath, Span, WindowsCapture};
 use crate::platform::{self, ProcessExit, PtySpec, Session, Signal, find_program, resolve_listed};
+
+#[path = "native_exec.rs"]
+mod exec_impl;
 
 /// The id of the provider.
 pub const ID: &str = "native";
@@ -395,6 +400,7 @@ fn capture(text: &str) -> Option<WindowsCapture> {
 #[provider(
     TerminalSource,
     DesktopSource,
+    ExecSource,
     id = "native",
     name = "native",
     crate = ::bohio_api::guatiao,
