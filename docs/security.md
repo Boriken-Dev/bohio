@@ -293,6 +293,11 @@ and the session list show a peer only the sources it reaches (a name it may not 
   by `start_timeout`, and a program that exits is started again at most `restart_limit` times in `restart_window`). A program
   that is restarted runs again with the same file and arguments. The report holds the file's SHA-256 to compare against what
   you installed. What the program writes to its standard error goes to the node's.
+- **A library in a process of its own** (`[providers] isolate`, `isolated`) runs the same code as the account that runs the node,
+  through a host program (`library_host`) that is itself code the node runs: both files and their directories are checked
+  (`check_access`) and both are unpinned, so the cost is that of a program (above) plus the library's own. The process boundary
+  keeps a crash, a leaked handle or a second C library out of the node and gives no isolation of rights: it is no sandbox, and
+  the host may read and write whatever the node's account can. Nothing starts it but the configuration.
 - **An ssh source's desktop is the machine's X display.** With `x11_display` set, a peer holding `gui.view` sees the machine's X screen
   and a peer holding `gui.input` types and clicks on it, as the account the source logs in as could; the cookie `xauth list` gives is
   read through the login and used only to connect. The node does not ask the machine's login session whether its screen is locked

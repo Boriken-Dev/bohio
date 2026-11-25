@@ -282,6 +282,50 @@ provider = "program-echo"              # a provider a program offers is named li
   round trip through a pipe. `the_cost_of_a_call_in_process_and_over_a_child_is_measured` in `crates/bohio/tests/programs.rs`
   prints both for a trivial write on your machine (`cargo test -p bohio --test programs -- --nocapture cost`).
 
+### A library in a process of its own
+
+A library the node cannot map (a static node on a machine with no glibc loader, a second foreign C library, signal 33 taken) or
+should not (it is built for another C library, or its crashes must not reach the node) can run **in a process of its own**,
+hosted by a program that speaks guatiao's remote protocol, the way a provider program does:
+
+```toml
+[providers]
+paths = ["/opt/vendor/libbohio_vnc.so"]
+isolate = false                                    # the default in every build: map in this process
+isolated = ["/opt/vendor/libbohio_media.so"]       # these run in a process of their own whatever `isolate` says
+library_host = "/usr/local/bin/guatiao-remote-server"   # default: guatiao-remote-server beside the node
+```
+
+- **`isolate = true`** runs every library of `paths` this way; `isolated` names libraries (files, or directories) to run this way
+  while the rest of `paths` is mapped. **The default is `false` in every build**, static ones included: a static build maps a
+  library through the system's own `ld.so` and glibc (above) and nothing changes unless you ask. A library that cannot be
+  mapped is `failed` with the loader's reason and, in it, the hint that `isolate = true` serves it; the node never switches by
+  itself.
+- **The host** is started as `HOST --stdio --load LIBRARY` and is a program in the sense of the section above: its file and
+  directory are checked (`check_access`), a failing host is started again within `restart_limit` (five times in a minute, one
+  second apart), and `library_host` names it. The default is `guatiao-remote-server` beside the node: the node does not look on
+  `PATH` (the library reads no environment variable), so name the file when it is elsewhere. **The host must match the
+  library**: a library built for glibc needs a glibc host, whatever the node is built with. Release archives do not carry a host
+  (see below).
+- **Reported as the library it is.** `bohio providers` lists it with the others (`loaded`, or `failed` and why; "in a process of
+  its own"); a missing or unusable host is that entry `failed`, naming the host, and the node starts.
+- **One instance.** A provider a host serves is one instance configured where it runs, so a `[source.<name>]` naming it takes
+  `provider` alone, and a provider that is built from settings (the `serial` and `ssh` providers) cannot be served by a stock
+  `guatiao-remote-server`: write a program for it (`providers/terminal/serial/examples/serial_program.rs`) until the link can
+  build an instance. A provider with no settings (an echo console, a read-only status source) works as it is.
+- **The owner check covers the library too**: the file and its directory are checked before the host is started, whatever
+  `isolate` says.
+
+### Which build loads what
+
+| What | A dynamically linked node | A static node (the Linux release archives) |
+| --- | --- | --- |
+| A library in the node's process (`paths`) | the platform's loader; built for the node's C library | the system's `ld.so` and glibc, started in the node: needs glibc and its linker on the machine, one foreign C library per process, signal 33 |
+| A library in a process of its own (`isolate`, `isolated`) | any host that matches the library | any host that matches the library; the node needs neither glibc nor a loader |
+| A provider program (`[[providers.program]]`) | any program in any language | any program in any language |
+
+A program, or an isolated library, therefore needs nothing of the node's build; it needs only the file to run.
+
 ### What is not offered yet
 
 Pinning a library by SHA-256 (refusing a file whose digest is not the one named, checked on the bytes that are mapped) is not
