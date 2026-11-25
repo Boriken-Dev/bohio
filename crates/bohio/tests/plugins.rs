@@ -10,12 +10,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bohio::access::{LibraryState, ProvidersReport};
-use bohio::config::{Config, ConfigError, NodeConfig, ProvidersConfig};
+use bohio::config::{Config, ConfigError, DlopenChoice, NodeConfig, ProvidersConfig};
 use bohio::node::{MemoryGrants, MemoryKeys, Node, NodeError};
 use coqui_link::auth::{Identity, Method};
 use sha2::{Digest, Sha256};
 
-/// Where cargo put a dev-dependency cdylib: beside this binary, or one up.
+/// Where the library is: in `BOHIO_LIBRARY_DIR` when that names it (a static musl test binary loads the libraries built for
+/// glibc, since such a target cannot build a `cdylib`), else where cargo put a dev-dependency cdylib: beside this binary, or
+/// one up.
 fn built(name: &str) -> PathBuf {
     let exe = std::env::current_exe().expect("a test binary knows its own path");
     let deps = exe.parent().expect("the test binary is in a directory");
@@ -24,10 +26,11 @@ fn built(name: &str) -> PathBuf {
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_SUFFIX
     );
-    for dir in [
+    let elsewhere = std::env::var_os("BOHIO_LIBRARY_DIR").map(PathBuf::from);
+    for dir in elsewhere.into_iter().chain([
         deps.to_path_buf(),
         deps.parent().map(PathBuf::from).unwrap_or_default(),
-    ] {
+    ]) {
         let candidate = dir.join(&file);
         if candidate.is_file() {
             return candidate;
@@ -56,6 +59,7 @@ fn providers(paths: &[&Path], check_access: bool) -> ProvidersConfig {
     ProvidersConfig {
         paths: paths.iter().map(|path| (*path).to_owned()).collect(),
         check_access,
+        ..ProvidersConfig::default()
     }
 }
 
@@ -296,6 +300,7 @@ fn an_empty_path_and_a_layer_above_the_lowest_weakening_the_check_are_refused() 
         providers: ProvidersConfig {
             paths: vec![PathBuf::new()],
             check_access: true,
+            ..ProvidersConfig::default()
         },
         ..NodeConfig::default()
     };
@@ -334,6 +339,81 @@ fn a_source_naming_a_provider_no_library_offers_is_refused_when_the_node_is_buil
         error.to_string().contains("source.console.provider"),
         "{error}"
     );
+}
+
+#[test]
+fn the_loader_settings_default_to_the_strict_choice_and_only_the_lowest_layer_names_code() {
+    let config = Config::from_toml("", "bohio.cfg").expect("an empty configuration");
+    assert_eq!(config.providers.dlopen, DlopenChoice::Auto);
+    assert!(config.providers.ld_so.is_none());
+    assert!(!config.providers.allow_reserved_signal_handlers);
+    let config = Config::from_toml(
+        "[providers]\ndlopen = \"foreign\"\nld_so = \"/opt/glibc/ld.so\"\nallow_reserved_signal_handlers = true\n",
+        "bohio.cfg",
+    )
+    .expect("the keys read");
+    assert_eq!(config.providers.dlopen, DlopenChoice::Foreign);
+    assert_eq!(
+        config.providers.ld_so.as_deref(),
+        Some(Path::new("/opt/glibc/ld.so"))
+    );
+    assert!(config.providers.allow_reserved_signal_handlers);
+    let Err(error) = Config::from_toml("[providers]\ndlopen = \"magic\"\n", "bohio.cfg") else {
+        panic!("a loader nobody has is refused");
+    };
+    assert!(error.to_string().contains("dlopen"), "{error}");
+    let empty = ProvidersConfig {
+        ld_so: Some(PathBuf::new()),
+        ..ProvidersConfig::default()
+    };
+    let Err(error) = build(NodeConfig {
+        providers: empty,
+        ..NodeConfig::default()
+    }) else {
+        panic!("an empty linker path cannot work");
+    };
+    assert!(error.to_string().contains("providers.ld_so"), "{error}");
+
+    let dir = tempfile::tempdir().expect("a directory");
+    let lowest = dir.path().join("a.cfg");
+    std::fs::write(&lowest, "").expect("a layer");
+    for key in [
+        "ld_so = \"/opt/glibc/ld.so\"",
+        "allow_reserved_signal_handlers = true",
+    ] {
+        let above = dir.path().join("b.cfg");
+        std::fs::write(&above, format!("[providers]\n{key}\n")).expect("a layer");
+        let Err(error) = bohio::config::Layers::load(&[lowest.clone(), above]) else {
+            panic!("a higher layer may not set {key}");
+        };
+        assert!(
+            matches!(&error, ConfigError::Invalid { key: named, .. } if named.starts_with("providers.")),
+            "{error}"
+        );
+    }
+}
+
+/// A statically linked Linux node maps a library built for glibc through the system's own `ld.so`, and `dlopen = "system"`
+/// turns that off.
+#[cfg(all(
+    target_os = "linux",
+    target_feature = "crt-static",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+#[test]
+fn a_static_build_maps_a_glibc_library_and_the_platform_loader_can_be_chosen() {
+    let dir = private_directory();
+    let file = put(dir.path(), "serial", &serial_plugin());
+
+    let mut platform = providers(&[&file], true);
+    platform.dlopen = DlopenChoice::System;
+    let report = started(platform);
+    let library = entry(&report, &file);
+    assert_eq!(library.state, LibraryState::Failed, "{library:?}");
+
+    let report = started(providers(&[&file], true));
+    let library = entry(&report, &file);
+    assert_eq!(library.state, LibraryState::Loaded, "{library:?}");
 }
 
 #[cfg(all(unix, not(feature = "serial")))]

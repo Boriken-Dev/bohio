@@ -14,11 +14,16 @@ use std::fmt::Write as _;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
-use bohio_api::guatiao::library::{Loading, Registry, probe};
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+use bohio_api::guatiao::library::foreign::Settings;
+use bohio_api::guatiao::library::{Dlopen, Loading, Registry, probe};
 use bohio_proto::hash::Algorithm;
 use bohio_transfer::hash::digest_reader;
 
-use crate::config::ProvidersConfig;
+use crate::config::{DlopenChoice, ProvidersConfig};
 use crate::ownership;
 
 /// The kinds of `bohio-api`: a library that declares none of them is not a Bohío provider library.
@@ -83,18 +88,43 @@ impl Default for Report {
     }
 }
 
-/// Why this build cannot map a library, or `None` when it can.
+/// Tells the registry which loader maps a library and how the foreign one starts, and logs each weakened choice.
 ///
-/// A statically linked musl executable has no dynamic loader to map one with (measured: `dlopen` answers `Dynamic loading not
-/// supported`).
-#[must_use]
-pub const fn unsupported() -> Option<&'static str> {
-    if cfg!(all(target_env = "musl", target_feature = "crt-static")) {
-        Some(
-            "this build is statically linked against musl, whose loader answers `Dynamic loading not supported`: use a glibc build to load providers",
-        )
-    } else {
-        None
+/// The foreign loader (the system's own `ld.so` and glibc, started inside the process) is what a statically linked Linux
+/// build on x86_64 or aarch64 loads libraries with. The process starts it once, with the settings of the first registry that
+/// needs it, and one foreign C library takes signal 33.
+fn apply_loader(registry: &mut Registry, config: &ProvidersConfig) {
+    registry.set_dlopen(match config.dlopen {
+        DlopenChoice::Auto => Dlopen::Auto,
+        DlopenChoice::System => Dlopen::System,
+        DlopenChoice::Foreign => Dlopen::Foreign,
+    });
+    if config.dlopen != DlopenChoice::Auto {
+        tracing::warn!(
+            "non-default: [providers] dlopen is {}: the loader a library is mapped with is not the one this build would choose",
+            config.dlopen.name()
+        );
+    }
+    if let Some(path) = &config.ld_so {
+        tracing::warn!(
+            "non-default: [providers] ld_so names {}: the foreign loader maps and enters that file, so whoever can write it chooses the code this node runs",
+            path.display()
+        );
+    }
+    if config.allow_reserved_signal_handlers {
+        tracing::warn!(
+            "non-default: [providers] allow_reserved_signal_handlers is true: the foreign loader starts even when this node handles signal 32 or 33, and may replace that handler"
+        );
+    }
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    {
+        let mut settings = Settings::default();
+        settings.ld_so.clone_from(&config.ld_so);
+        settings.allow_reserved_signal_handlers = config.allow_reserved_signal_handlers;
+        registry.set_foreign_settings(settings);
     }
 }
 
@@ -112,6 +142,7 @@ pub(super) fn load(registry: &mut Registry, config: &ProvidersConfig) -> Report 
             "non-default: [providers] check_access is false: who owns and who may write a provider library and its directory is not checked: whoever can write there chooses the code this node runs"
         );
     }
+    apply_loader(registry, config);
     let mut checked = ownership::Checked::new();
     for path in &config.paths {
         for candidate in candidates(path, &mut report) {

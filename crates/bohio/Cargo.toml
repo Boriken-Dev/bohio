@@ -116,10 +116,13 @@ tempfile.workspace = true
 rcgen.workspace = true
 time.workspace = true
 sha2.workspace = true
-# Built beside the test binary and never named in code: the library `tests/plugins.rs` loads.
+image = { workspace = true, features = ["webp"] }
+
+# Built beside the test binary and never named in code: the libraries `tests/plugins.rs` loads. A static musl target cannot
+# build a `cdylib`, so a test run for one takes the libraries built for glibc from `BOHIO_LIBRARY_DIR`.
+[target.'cfg(not(target_env = "musl"))'.dev-dependencies]
 bohio-provider-serial-plugin.workspace = true
 bohio-test-plugin-other = { path = "tests/plugin_other" }
-image = { workspace = true, features = ["webp"] }
 
 [[test]]
 name = "gui"

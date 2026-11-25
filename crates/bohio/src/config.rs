@@ -1945,6 +1945,46 @@ pub struct ProvidersConfig {
     /// `false` loads it without asking the file system and logs a `non-default:` line: whoever can write there chooses the code the node runs. Only the
     /// lowest layer sets it, as `[service] check_access`.
     pub check_access: bool,
+    /// Which loader maps a library: `auto` (the default), `system` or `foreign`. A statically linked Linux build on x86_64 or
+    /// aarch64, which the platform's loader cannot serve, loads through the system's own `ld.so` and C library (glibc) started
+    /// inside the process: `auto` chooses that there and the platform's loader elsewhere. `system` never uses the foreign
+    /// loader (a static build then loads nothing: each library is `failed`), `foreign` always does, so a dynamically linked
+    /// build loads libraries built for glibc through it. Only a Linux build on x86_64 or aarch64 has the foreign loader.
+    pub dlopen: DlopenChoice,
+    /// The dynamic linker the foreign loader enters, when it is not at the architecture's usual path
+    /// (`/lib64/ld-linux-x86-64.so.2`, `/lib/ld-linux-aarch64.so.1`). `None`: the usual one. It is mapped and run, so only the
+    /// lowest layer sets it. The first library loaded in a process starts the loader, and its settings hold for the life of
+    /// the process.
+    pub ld_so: Option<PathBuf>,
+    /// Start the foreign loader even when the node already handles signal 32 or 33, which the foreign C library takes when it
+    /// starts. Default `false`. `true` can leave the node's handler replaced, so its signal no longer does what the node
+    /// meant: only the lowest layer sets it.
+    pub allow_reserved_signal_handlers: bool,
+}
+
+/// `[providers] dlopen`: which loader maps a provider library.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DlopenChoice {
+    /// The foreign loader on a statically linked Linux build (x86_64, aarch64), the platform's loader otherwise.
+    #[default]
+    Auto,
+    /// The platform's loader only: a statically linked build has none that works, so nothing loads there.
+    System,
+    /// The foreign loader only (Linux, x86_64 and aarch64): the system's glibc and its `ld.so`.
+    Foreign,
+}
+
+impl DlopenChoice {
+    /// The word `[providers] dlopen` uses.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::System => "system",
+            Self::Foreign => "foreign",
+        }
+    }
 }
 
 impl Default for ProvidersConfig {
@@ -1952,6 +1992,9 @@ impl Default for ProvidersConfig {
         Self {
             paths: Vec::new(),
             check_access: true,
+            dlopen: DlopenChoice::Auto,
+            ld_so: None,
+            allow_reserved_signal_handlers: false,
         }
     }
 }
@@ -2243,11 +2286,6 @@ impl NodeConfig {
         if self.secrets.max_bytes == 0 {
             return Err(invalid("secrets.max_bytes", "must be at least 1"));
         }
-        if let Some(reason) = crate::access::unsupported_libraries()
-            && !self.providers.paths.is_empty()
-        {
-            return Err(invalid("providers.paths", reason));
-        }
         if self
             .providers
             .paths
@@ -2255,6 +2293,14 @@ impl NodeConfig {
             .any(|path| path.as_os_str().is_empty())
         {
             return Err(invalid("providers.paths", "holds an empty path"));
+        }
+        if self
+            .providers
+            .ld_so
+            .as_ref()
+            .is_some_and(|path| path.as_os_str().is_empty())
+        {
+            return Err(invalid("providers.ld_so", "is an empty path"));
         }
         // A provider a library offers is known only once the library is mapped, which `Node::new` does before it builds the
         // sources and refuses then, naming the same key: reading a configuration maps nothing.

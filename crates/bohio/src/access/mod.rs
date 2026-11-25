@@ -15,9 +15,7 @@ mod native;
 mod plugins;
 mod value;
 
-pub use plugins::{
-    Library, LibraryState, Report as ProvidersReport, unsupported as unsupported_libraries,
-};
+pub use plugins::{Library, LibraryState, Report as ProvidersReport};
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};

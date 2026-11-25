@@ -91,8 +91,10 @@ pub struct Layers;
 /// The keys that govern layering and the access checks: the lowest layer alone sets them.
 const LOWEST_ONLY: [&str; 2] = ["check_access", "user_layer"];
 
-/// The `[providers]` key that weakens the check on a library: the lowest layer alone sets it, as `[service] check_access`.
-const PROVIDERS_LOWEST_ONLY: [&str; 1] = ["check_access"];
+/// The `[providers]` keys that weaken a check on a library or name code the node maps: the lowest layer alone sets them, as
+/// `[service] check_access`.
+const PROVIDERS_LOWEST_ONLY: [&str; 3] =
+    ["check_access", "ld_so", "allow_reserved_signal_handlers"];
 
 /// The `[gui]` keys that say whose helper a node serves, and which account a helper trusts as the node: the lowest layer
 /// alone sets them, so a layer an account can write for itself cannot lend the desktop to another or name its own node.
