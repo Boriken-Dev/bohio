@@ -499,6 +499,9 @@ mod posix_tests {
         assert!(locate_in(&list, r"C:\data\x", Syntax::Host).is_ok());
         // In POSIX a backslash is part of a name, so this is one relative name below the first root.
         let found = locate_in(&list, r"C:\data\x", Syntax::Posix).unwrap();
-        assert_eq!(found.relative.components().count(), 1);
+        assert_eq!(
+            found.relative.as_os_str(),
+            std::ffi::OsStr::new(r"C:\data\x")
+        );
     }
 }
