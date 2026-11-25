@@ -548,3 +548,17 @@ fn a_bulk_echo_through_a_real_channel_keeps_its_bytes() {
     });
     assert_eq!(writer, total);
 }
+
+#[test]
+fn the_exec_contract_holds_against_a_real_openssh_server() {
+    let server = sshd!("");
+    let start = ExecStart {
+        argv: vec!["sh".to_owned(), "-c".to_owned(), "echo contract".to_owned()],
+        ..ExecStart::default()
+    };
+    bohio_api::contract::exec(
+        &server.ssh(),
+        &start,
+        &bohio_api::contract::ContractSettings::default(),
+    );
+}

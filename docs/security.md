@@ -232,6 +232,20 @@ and the session list show a peer only the sources it reaches (a name it may not 
   others on Windows) and `credential:` from a file of `$CREDENTIALS_DIRECTORY`, none larger than `[secrets] max_bytes` (`65536`);
   this build has no keyring and refuses `keyring:`. A secret is resolved when its source is built, held in a `Secret` that prints
   `[redacted]`, and handed to the provider, which then holds it: a provider's own care for it is the provider's.
+- **What an ssh source gives a peer.** A peer holding `exec` or `shell` on an ssh source runs anything **the account the source logs in as** can
+  run on that machine, and a peer holding the source's files reads and writes whatever that account can: the node's own grants (program
+  list, roots) are decided on the node, but the machine's own permissions are the only limit behind them. The node holds the means to log in
+  (an agent's signing, a key file, a password), so every peer that reaches the source acts as that account; give a source to a peer as you
+  would give it that account. Under a program list the program is the one the host finds at that name on the account's `PATH`, not the node's.
+- **Host-key checking weakens only by choice.** `host_key_check` is `strict` by default (the key is pinned by `host_key`, or is in
+  `known_hosts`); `tofu` trusts the first key a host with no entry presents and holds it for the life of the source, so an attacker present at
+  first contact is trusted; `off` accepts any key, so anyone on the path can pose as the host and be given every command, input and secret
+  sent through it. Each weaker choice is logged at start as `non-default:`.
+- **Limits are settings, and a larger one costs the host.** `max_channels` (default 8, below the server's 10) bounds the sessions one source
+  holds open; raising it past the server's `MaxSessions` makes the server refuse the extra ones. `keepalive = "0s"` finds a dead connection
+  only when something is sent on it. `operation_timeout`, `connect_timeout`, `exit_grace` and `reconnect_after` bound how long a stuck
+  server holds a request; a larger value holds a node thread that long. A source that cannot connect is reported `unavailable` with the
+  reason (never with a secret) and the node starts all the same.
 - **What loading a library costs.** `[providers] paths` is empty by default, and then nothing is read or mapped. A library named
   there is the node's own code: it is mapped into the process, runs its initialisers and its provider calls as the account that
   runs the node (a service account, often with more rights than a user), with no sandbox, and a provider it offers can be named

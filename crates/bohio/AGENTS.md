@@ -9,6 +9,7 @@ with the source at <https://github.com/Boriken-Dev/bohio>.
 | `cli` | module `cli`, the `bohio` binary; `clap`, `tracing-subscriber`, `serde_`, `crossterm`, and `notify` | the command | on |
 | `gui` | snapshot encoding (`image`: PNG, JPEG; `image-webp`: lossless WebP), and a watch's tiles and rectangle encodings (`bohio-transfer/screen`); without it a snapshot and a watch are `unsupported` | `bohio-gui/1` | on |
 | `gui-wayland` | on Linux, `gui::{WaylandDesktop, WaylandSettings, Persist}`: a Wayland session through `xdg-desktop-portal` (`ashpd`, `pollster`) and a PipeWire stream (`pipewire`); it links the system libpipewire-0.3 (pkg-config, libclang), so glibc builds only, and it does nothing off Linux | a Wayland desktop | off |
+| `ssh` | `bohio-provider-ssh`: the `ssh` provider (`[source.NAME] provider = "ssh"`): a machine reached over SSH as terminal and exec sources, registered with the built-in providers | the machine's terminal and processes | on (in `default`, not implied by `cli`) |
 | `serial` | `bohio-provider-serial`: the `serial` terminal provider (`[source.NAME] provider = "serial"`), registered with the built-in providers (a build without it can load the same provider as a library, `[providers] paths`) | a serial console | on (in `default`, not implied by `cli`) |
 | `notify` | `gui::DesktopNotifier` (`notify-rust`) | the desktop notice of the presence indicator | on with `cli` |
 

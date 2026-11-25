@@ -58,6 +58,31 @@ later grants nobody anything. `info.access` lists, for a peer holding `info`, th
 `default`, `available`, the `reason` when not, and what each `offers` and `lacks`; it is asked of the providers at every `info`
 and never cached.
 
+## A machine over SSH
+
+`provider = "ssh"` (`providers/ssh/`, built in with feature `ssh`, or as a library: `providers/ssh/plugin/`) serves another machine's
+terminal and processes through SSH, with nothing of Bohio installed on it:
+
+```toml
+[access]
+terminal = ["native", "box"]
+exec = ["native", "box"]
+
+[source.box]
+provider = "ssh"
+host = "box.example.org"
+user = "ops"
+host_key = "sha256:..."            # or a line in known_hosts; the default check refuses a host it does not know
+```
+
+One source is one connection (channels on demand, made again on the next use when it drops). Login tries the keys an ssh agent holds
+(the OpenSSH agent's pipe or Pageant on Windows, `SSH_AUTH_SOCK` elsewhere), then a key file, then a password given as a reference
+(`password = "file:PATH"`). `bohio remote HOST exec --source box -- uname -a` runs on the machine, `bohio remote HOST shell --source box` opens a
+login shell on it (the console of the source), and an agent's tools take `source`. A source that cannot connect is listed in `info`
+as `available = false` with the reason and tried again after `reconnect_after`; the node starts either way. Every key, its default
+and what a weaker choice costs is in `providers/ssh/AGENTS.md` and `docs/security.md`; `host_key_check` is `strict` unless the operator
+chooses `tofu` or `off`, `max_channels` stays below sshd's `MaxSessions` of 10, and every timeout is a setting.
+
 ## The console
 
 A source that starts no program (a serial line) is reached with `bohio remote HOST console [--source NAME]`, which opens the

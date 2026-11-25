@@ -645,3 +645,30 @@ fn nothing_the_source_says_holds_a_password() {
     assert!(!reason.contains("a-secret-value"), "{reason}");
     let _ = std::io::stderr().flush();
 }
+
+#[test]
+fn the_exec_contract_holds_against_the_fake_server() {
+    need_shell!();
+    let server = FakeSsh::start();
+    let source = ssh(server.settings());
+    let start = ExecStart {
+        argv: vec!["sh".to_owned(), "-c".to_owned(), "echo contract".to_owned()],
+        ..ExecStart::default()
+    };
+    bohio_api::contract::exec(
+        &source,
+        &start,
+        &bohio_api::contract::ContractSettings::default(),
+    );
+    // And for a source nobody answers for.
+    let mut settings = SshSettings::new("127.0.0.1");
+    settings.port = 1;
+    settings.user = Some(USER.to_owned());
+    settings.agent = false;
+    settings.connect_timeout = "2s".to_owned();
+    bohio_api::contract::exec(
+        &ssh(settings),
+        &start,
+        &bohio_api::contract::ContractSettings::default(),
+    );
+}

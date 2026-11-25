@@ -75,7 +75,7 @@ fn world(source_toml: &str, grant: Grant) -> World {
         .reconfigure(
             &tables(source_toml),
             &AccessConfig {
-                terminal: Some(vec!["remote".to_owned()]),
+                terminal: Some(vec!["native".to_owned(), "remote".to_owned()]),
                 desktop: Some(Vec::new()),
                 exec: Some(vec!["native".to_owned(), "remote".to_owned()]),
                 fs: Some(Vec::new()),
@@ -197,10 +197,15 @@ fn a_peer_attaches_the_machines_login_shell_as_the_console_of_the_source() {
         Some(WAIT),
     )
     .expect("the console opens");
-    shell.write(b"echo from-$((6*7))\r").expect("typing");
+    shell.write(b"echo from-$((6*7))\n").expect("typing");
     let heard = shell
-        .read_until(b"from-42", Some(WAIT))
-        .expect("the machine answers");
+        .read_until(b"from-42", Some(Duration::from_secs(20)))
+        .unwrap_or_else(|error| {
+            panic!(
+                "the machine does not answer ({error:?}); it saw {:?}",
+                server.seen.lock().unwrap()
+            )
+        });
     assert!(String::from_utf8_lossy(&heard).contains("from-42"));
     assert!(
         server
@@ -275,8 +280,9 @@ fn a_peer_not_granted_the_source_cannot_run_a_program_on_it() {
     );
     let mut request = Request::argv(["true"]);
     request.source = Some("remote".to_owned());
+    // The link refuses the open itself, or the engine answers `denied`.
     let refused = Exec::start(&world.link, &request)
-        .map(drop)
+        .and_then(|exec| exec.wait(Some(WAIT)).map(drop))
         .expect_err("the source is not the peer's");
     assert!(
         matches!(&refused, Error::Transport(_))
