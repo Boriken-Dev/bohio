@@ -41,6 +41,8 @@ struct Sftp {
     raw: Arc<RawSftpSession>,
     exts: Exts,
     _permit: OwnedSemaphorePermit,
+    /// The ssh process of the system client, when that is the client: it ends with the session.
+    _child: Option<tokio::process::Child>,
 }
 
 /// A failed request: what to tell the caller, and whether the session is gone and must be opened again.
@@ -120,7 +122,57 @@ impl Files {
         &self.link.settings
     }
 
+    /// The SFTP session over `ssh -s sftp`, one process of the system's ssh client.
+    async fn open_child(&self) -> Result<Arc<Sftp>, ProviderError> {
+        let permit = self.link.permit().await?;
+        let mut command = crate::openssh::command(&self.link, &["-s"], &["sftp"])?;
+        let mut child = command.spawn().map_err(|error| {
+            unavailable(&format!(
+                "{}: the ssh program could not start: {error}",
+                self.link.target()
+            ))
+        })?;
+        let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+            return Err(unavailable("the ssh program has no pipes"));
+        };
+        let settings = self.settings();
+        let config = russh_sftp::client::Config {
+            max_packet_len: 256 * 1024,
+            max_concurrent_reads: settings.sftp_in_flight,
+            max_concurrent_writes: settings.sftp_in_flight,
+            max_write_packet_len: u32::try_from(settings.sftp_packet).unwrap_or(u32::MAX),
+            request_timeout_secs: settings.operation_timeout.as_secs().max(1),
+        };
+        let mut raw = RawSftpSession::new_with_config(tokio::io::join(stdout, stdin), config);
+        let version = tokio::time::timeout(settings.operation_timeout, raw.init())
+            .await
+            .map_err(|_| {
+                unavailable(&format!(
+                    "{}: sftp did not start in time",
+                    self.link.target()
+                ))
+            })?
+            .map_err(|error| {
+                unavailable(&format!(
+                    "{}: sftp: {error} (does the host have an sftp subsystem, and did ssh log in?)",
+                    self.link.target()
+                ))
+            })?;
+        if let Ok(limits) = raw.limits().await {
+            raw.set_limits(limits.into());
+        }
+        Ok(Arc::new(Sftp {
+            raw: Arc::new(raw),
+            exts: exts_of(&version),
+            _permit: permit,
+            _child: Some(child),
+        }))
+    }
+
     async fn open_session(&self) -> Result<Arc<Sftp>, ProviderError> {
+        if self.link.settings.openssh.is_some() {
+            return self.open_child().await;
+        }
         let Slot {
             mut channel,
             permit,
@@ -167,6 +219,7 @@ impl Files {
             raw: Arc::new(raw),
             exts: exts_of(&version),
             _permit: permit,
+            _child: None,
         }))
     }
 

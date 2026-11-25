@@ -68,6 +68,11 @@ fn output_of(script: &str) -> Result<String, String> {
     }
 }
 
+/// Whether the tests run the system's ssh client instead of the provider's own (`BOHIO_TEST_SSH_CLIENT=openssh`).
+fn openssh() -> bool {
+    std::env::var("BOHIO_TEST_SSH_CLIENT").as_deref() == Ok("openssh")
+}
+
 struct Sshd {
     dir: String,
     port: u16,
@@ -98,6 +103,17 @@ impl Sshd {
         client
             .write_openssh_file(key_dir.path().join("client_key"), LineEnding::LF)
             .unwrap();
+        if openssh() && cfg!(windows) {
+            // The system's client refuses a key file another account can read: leave it to this account alone.
+            let user = std::env::var("USERNAME").unwrap();
+            let status = Command::new("icacls")
+                .arg(key_dir.path().join("client_key"))
+                .args(["/inheritance:r", "/grant:r", &format!("{user}:F")])
+                .output()
+                .unwrap()
+                .status;
+            assert!(status.success(), "icacls");
+        }
         let authorized = client.public_key().to_openssh().unwrap();
         assert!(!authorized.contains('\''));
 
@@ -200,8 +216,16 @@ echo started
         settings.user = Some(self.user.clone());
         settings.identity = Some(self.identity());
         settings.agent = false;
-        settings.host_key = Some(self.pin.clone());
         settings.reconnect_after = "0s".to_owned();
+        if openssh() {
+            // The system's client keeps its own known_hosts: the file holds this server's key.
+            let known = self.key_dir.path().join("known_hosts");
+            std::fs::write(&known, &self.known_hosts_line).unwrap();
+            settings.client = "openssh".to_owned();
+            settings.known_hosts = Some(known.to_string_lossy().replace('\\', "/"));
+        } else {
+            settings.host_key = Some(self.pin.clone());
+        }
         settings
     }
 
@@ -217,6 +241,16 @@ impl Drop for Sshd {
             dir = self.dir
         ));
     }
+}
+
+/// A test of what only the provider's own client does says so and passes when the system's client is the one under test.
+macro_rules! skip_openssh {
+    ($why:expr) => {
+        if openssh() {
+            eprintln!("SKIPPED: {}", $why);
+            return;
+        }
+    };
 }
 
 macro_rules! sshd {
@@ -357,6 +391,7 @@ fn processes_run_on_a_real_openssh_server() {
 
 #[test]
 fn a_signal_and_a_kill_end_a_real_program() {
+    skip_openssh!("the system's ssh client sends no signal request");
     let server = sshd!("");
     let source = server.ssh();
     let process = start(&source, &["cat"]);
@@ -377,6 +412,7 @@ fn a_signal_and_a_kill_end_a_real_program() {
 
 #[test]
 fn a_real_terminal_has_a_size_and_follows_a_resize() {
+    skip_openssh!("the system's ssh client cannot resize a terminal");
     let server = sshd!("");
     let source = server.ssh();
     let terminal = source
@@ -454,6 +490,7 @@ fn a_real_login_shell_is_interactive_and_an_interrupt_reaches_the_foreground_pro
 
 #[test]
 fn the_default_check_and_known_hosts_work_against_a_real_host_key() {
+    skip_openssh!("the system's ssh client checks the host key by its own configuration");
     let server = sshd!("");
     let source = server.ssh();
     assert_eq!(run(&source, "true").exit.code, Some(0));
@@ -481,6 +518,9 @@ fn the_default_check_and_known_hosts_work_against_a_real_host_key() {
 
 #[test]
 fn the_channel_limit_stays_below_the_servers_and_a_higher_one_is_the_servers_refusal() {
+    skip_openssh!(
+        "the system's ssh client has one process for each session, not channels of one connection"
+    );
     let server = sshd!("MaxSessions 3");
     let mut settings = server.settings();
     settings.max_channels = 8;
@@ -818,6 +858,7 @@ impl Drop for Window {
 
 #[test]
 fn the_hosts_x_display_is_a_desktop_that_is_seen_and_clicked() {
+    skip_openssh!("a desktop over a channel needs the russh client");
     use bohio_api::DesktopSource;
     use bohio_api::model::InputModel;
 
@@ -923,6 +964,7 @@ fn the_hosts_x_display_is_a_desktop_that_is_seen_and_clicked() {
 
 #[test]
 fn a_source_without_a_display_or_with_a_missing_one_says_why() {
+    skip_openssh!("a desktop over a channel needs the russh client");
     use bohio_api::DesktopSource;
 
     let server = sshd!("");
@@ -945,6 +987,7 @@ const FORWARDING: &str = "X11Forwarding yes\nXAuthLocation @DIR@/xauth_stub\n";
 
 #[test]
 fn a_program_the_source_starts_opens_its_window_on_the_nodes_display() {
+    skip_openssh!("X forwarding needs the russh client");
     let server = sshd!(FORWARDING);
     if cfg!(windows) {
         eprintln!("SKIPPED: a Windows node has no X display to forward to");
@@ -1015,6 +1058,7 @@ fn a_program_the_source_starts_opens_its_window_on_the_nodes_display() {
 
 #[test]
 fn forwarding_without_trust_is_refused_when_the_source_is_built() {
+    skip_openssh!("X forwarding needs the russh client");
     let mut settings = SshSettings::new("example.invalid");
     settings.x11_forward = true;
     let error = Ssh::try_from(settings).err().expect("refused");

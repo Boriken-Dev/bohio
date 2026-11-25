@@ -17,6 +17,7 @@ mod desktop;
 mod files;
 mod forward;
 mod link;
+mod openssh;
 mod session;
 mod settings;
 
@@ -101,6 +102,9 @@ impl Ssh {
     fn reach(&self) -> Result<(), String> {
         let link = self.link().map_err(|error| error.message().to_string())?;
         let wait = link.settings.connect_timeout + link.settings.operation_timeout;
+        if link.settings.openssh.is_some() {
+            return link.rt.block_on(crate::openssh::probe(link, wait));
+        }
         match link
             .rt
             .block_on(async { tokio::time::timeout(wait, link.conn()).await })
@@ -164,6 +168,14 @@ impl DesktopSource for Ssh {
 impl TerminalSource for Ssh {
     fn describe(&self) -> Result<SourceInfo, ProviderError> {
         use vocab::terminal as word;
+        // The system's ssh client cannot tell the host a new size and sends no signal request (a control byte still
+        // interrupts).
+        if self.link()?.settings.openssh.is_some() {
+            return Ok(self.info(
+                &[word::READ, word::WRITE, word::PROGRAMS, word::EXIT_STATUS],
+                &[word::BREAK, word::RESIZE, word::SIGNALS],
+            ));
+        }
         Ok(self.info(
             &[
                 word::READ,
@@ -231,6 +243,21 @@ impl FilesSource for Ssh {
 impl ExecSource for Ssh {
     fn describe(&self) -> Result<SourceInfo, ProviderError> {
         use vocab::exec as word;
+        if self.link()?.settings.openssh.is_some() {
+            return Ok(self.info(
+                &[
+                    word::START,
+                    word::STDIN,
+                    word::STDERR,
+                    word::SHELL,
+                    word::CWD,
+                    word::ENV,
+                    word::LISTED,
+                    word::EXIT_STATUS,
+                ],
+                &[word::KILL_TREE, word::SIGNALS],
+            ));
+        }
         Ok(self.info(
             &[
                 word::START,

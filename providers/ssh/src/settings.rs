@@ -130,6 +130,22 @@ pub struct SshSettings {
     /// The forwarded X connections open at once; one past it is refused. At least 1. Default `64`.
     #[map(default = 64)]
     pub x11_max_connections: u64,
+    /// Who speaks SSH: `russh` (this provider's own client, the default) or `openssh` (the system's `ssh` program, one
+    /// process for each terminal, program and SFTP session, with the account's own `ssh_config`, Kerberos and `ProxyJump`).
+    /// The `openssh` client cannot resize a terminal, signal a program or serve a desktop over a channel (`x11_display`,
+    /// `x11_forward`), cannot pin a key by `host_key` and does not take `password` or `passphrase`: those are refused when
+    /// the source is built.
+    #[map(default = String::from("russh"))]
+    pub client: String,
+    /// The program that is the `openssh` client. Default `ssh`, found on the node's `PATH`.
+    #[map(default = String::from("ssh"))]
+    #[schema(advanced)]
+    pub ssh_program: String,
+    /// Arguments given to the `openssh` client before the host, after those this provider sets (`-o` options, a config
+    /// file). Default none.
+    #[map(default)]
+    #[schema(advanced)]
+    pub ssh_args: Vec<String>,
 }
 
 /// A time: a number and `ms`, `s`, `m` or `h`; a bare number is seconds.
@@ -176,6 +192,7 @@ pub(crate) struct Settings {
     pub passphrase: Option<String>,
     pub pin: Option<String>,
     pub known_hosts: PathBuf,
+    pub known_hosts_set: bool,
     pub check: HostKeyCheck,
     pub connect_timeout: Duration,
     pub keepalive: Option<Duration>,
@@ -195,6 +212,14 @@ pub(crate) struct Settings {
     pub x11_forward: bool,
     pub x11_local_display: Option<String>,
     pub x11_max_connections: usize,
+    pub openssh: Option<OpenSsh>,
+}
+
+/// How the system's ssh client is run.
+#[derive(Debug, Clone)]
+pub(crate) struct OpenSsh {
+    pub program: String,
+    pub args: Vec<String>,
 }
 
 /// The account's home directory, from the environment.
@@ -249,6 +274,9 @@ impl SshSettings {
             x11_trusted: false,
             x11_local_display: None,
             x11_max_connections: 64,
+            client: "russh".to_owned(),
+            ssh_program: "ssh".to_owned(),
+            ssh_args: Vec::new(),
         }
     }
 
@@ -328,6 +356,34 @@ impl SshSettings {
             ));
         }
         let keepalive = time("keepalive", &self.keepalive, true)?;
+        let openssh = match self.client.as_str() {
+            "russh" => None,
+            "openssh" => {
+                for (key, set) in [
+                    ("host_key", self.host_key.is_some()),
+                    ("password", self.password.is_some()),
+                    ("passphrase", self.passphrase.is_some()),
+                    ("x11_display", self.x11_display.is_some()),
+                    ("x11_forward", self.x11_forward),
+                ] {
+                    if set {
+                        return Err(refuse(format!(
+                            "{key} is not available with client = \"openssh\": the system's ssh client does not take it (use the russh client, or ssh's own configuration)"
+                        )));
+                    }
+                }
+                if self.ssh_program.trim().is_empty() {
+                    return Err(refuse("ssh_program names no program".to_owned()));
+                }
+                Some(OpenSsh {
+                    program: self.ssh_program.clone(),
+                    args: self.ssh_args.clone(),
+                })
+            }
+            other => {
+                return Err(refuse(format!("client is `{other}`, not russh or openssh")));
+            }
+        };
         Ok(Settings {
             host: self.host.trim().to_owned(),
             port,
@@ -337,6 +393,7 @@ impl SshSettings {
             password: self.password.clone(),
             passphrase: self.passphrase.clone(),
             pin,
+            known_hosts_set: self.known_hosts.is_some(),
             known_hosts,
             check,
             connect_timeout: time("connect_timeout", &self.connect_timeout, false)?,
@@ -361,6 +418,7 @@ impl SshSettings {
             x11_forward: self.x11_forward,
             x11_local_display: self.x11_local_display.clone(),
             x11_max_connections: count("x11_max_connections", self.x11_max_connections)?,
+            openssh,
         })
     }
 
@@ -376,6 +434,12 @@ impl SshSettings {
         if span(&self.keepalive).is_some_and(|keepalive| keepalive.is_zero()) {
             found.push(
                 "keepalive = 0s: a dead connection is found only when something is sent".to_owned(),
+            );
+        }
+        if self.client == "openssh" {
+            found.push(
+                "client = openssh: the host key, the agent and the login are the system ssh client's own; the source cannot pin a key or resize a terminal"
+                    .to_owned(),
             );
         }
         if self.x11_forward {

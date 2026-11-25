@@ -296,23 +296,31 @@ impl Link {
         }
     }
 
+    /// A slot of `max_channels`: waits for one for at most `operation_timeout`.
+    pub(crate) async fn permit(&self) -> Result<OwnedSemaphorePermit, ProviderError> {
+        tokio::time::timeout(
+            self.settings.operation_timeout,
+            Arc::clone(&self.permits).acquire_owned(),
+        )
+        .await
+        .map_err(|_| {
+            refuse(
+                Status::GUATIAO_ERR_BUSY,
+                format!(
+                    "{}: {} sessions are open, which is max_channels",
+                    self.target(),
+                    self.settings.max_channels
+                ),
+            )
+        })?
+        .map_err(|_| unavailable("the source has been closed"))
+    }
+
     /// A session channel: waits for a slot of `max_channels` (at most `operation_timeout`), then opens the channel,
     /// connecting again once when the connection turns out to be dead.
     pub(crate) async fn channel(&self) -> Result<Slot, ProviderError> {
         let wait = self.settings.operation_timeout;
-        let permit = tokio::time::timeout(wait, Arc::clone(&self.permits).acquire_owned())
-            .await
-            .map_err(|_| {
-                refuse(
-                    Status::GUATIAO_ERR_BUSY,
-                    format!(
-                        "{}: {} sessions are open, which is max_channels",
-                        self.target(),
-                        self.settings.max_channels
-                    ),
-                )
-            })?
-            .map_err(|_| unavailable("the source has been closed"))?;
+        let permit = self.permit().await?;
         let conn = self.conn().await?;
         let opened = match tokio::time::timeout(wait, conn.handle.channel_open_session()).await {
             Ok(Ok(channel)) => Ok(channel),

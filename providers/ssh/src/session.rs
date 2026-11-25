@@ -120,7 +120,7 @@ pub(crate) struct Open {
 /// A program running on the host.
 pub(crate) struct Session {
     link: Arc<Link>,
-    write: Arc<ChannelWriteHalf<Msg>>,
+    backend: Backend,
     out: Mutex<Stream>,
     err: Mutex<Stream>,
     remote: Arc<Remote>,
@@ -131,6 +131,9 @@ pub(crate) struct Session {
 
 impl Session {
     pub(crate) async fn start(link: &Arc<Link>, open: Open) -> Result<Self, ProviderError> {
+        if link.settings.openssh.is_some() {
+            return Self::start_child(link, open).await;
+        }
         let Slot { channel, permit } = link.channel().await?;
         let wait = link.settings.operation_timeout;
         let refused = |what: &str| {
@@ -243,7 +246,7 @@ impl Session {
         ));
         Ok(Self {
             link: Arc::clone(link),
-            write: Arc::new(write),
+            backend: Backend::Channel(Arc::new(write)),
             out: Stream::new(out_rx),
             err: Stream::new(err_rx),
             remote,
@@ -299,22 +302,44 @@ impl Session {
         if self.remote.snapshot().is_some() {
             return Err(unavailable("the program has ended"));
         }
-        within(
-            &self.link,
-            self.link.settings.operation_timeout,
-            self.write.data_bytes(data.to_vec()),
-        )?
-        .map(|()| data.len() as u64)
-        .map_err(|error| unavailable(&format!("{}: {error}", self.link.target())))
+        match &self.backend {
+            Backend::Channel(write) => within(
+                &self.link,
+                self.link.settings.operation_timeout,
+                write.data_bytes(data.to_vec()),
+            )?
+            .map(|()| data.len() as u64)
+            .map_err(|error| unavailable(&format!("{}: {error}", self.link.target()))),
+            Backend::Child(child) => {
+                within(&self.link, self.link.settings.operation_timeout, async {
+                    let mut stdin = child.stdin.lock().await;
+                    let Some(stdin) = stdin.as_mut() else {
+                        return Err(unavailable("the input is closed"));
+                    };
+                    tokio::io::AsyncWriteExt::write_all(stdin, data)
+                        .await
+                        .map(|()| data.len() as u64)
+                        .map_err(|error| unavailable(&format!("the ssh program: {error}")))
+                })?
+            }
+        }
     }
 
     pub(crate) fn close_input(&self) -> Result<(), ProviderError> {
-        within(
-            &self.link,
-            self.link.settings.operation_timeout,
-            self.write.eof(),
-        )?
-        .map_err(|error| unavailable(&format!("{}: {error}", self.link.target())))
+        match &self.backend {
+            Backend::Channel(write) => within(
+                &self.link,
+                self.link.settings.operation_timeout,
+                write.eof(),
+            )?
+            .map_err(|error| unavailable(&format!("{}: {error}", self.link.target()))),
+            Backend::Child(child) => {
+                // Dropping the pipe ends the program's input.
+                within(&self.link, self.link.settings.operation_timeout, async {
+                    child.stdin.lock().await.take();
+                })
+            }
+        }
     }
 
     pub(crate) fn wait(&self, wait_ms: u64) -> Option<TerminalExit> {
@@ -329,15 +354,21 @@ impl Session {
     /// even when the host never answers.
     pub(crate) fn kill(&self) -> TerminalExit {
         if !self.killed.swap(true, Ordering::AcqRel) {
-            let write = Arc::clone(&self.write);
-            let _ = within(
-                &self.link,
-                self.link.settings.operation_timeout,
-                async move {
-                    let _ = write.signal(Sig::KILL).await;
-                    let _ = write.close().await;
-                },
-            );
+            match &self.backend {
+                Backend::Channel(write) => {
+                    let write = Arc::clone(write);
+                    let _ = within(
+                        &self.link,
+                        self.link.settings.operation_timeout,
+                        async move {
+                            let _ = write.signal(Sig::KILL).await;
+                            let _ = write.close().await;
+                        },
+                    );
+                }
+                // The ssh program ends; the host's program is left to its own hangup.
+                Backend::Child(child) => child.kill.notify_one(),
+            }
         }
         self.remote.finish(None, signal_number("KILL"));
         self.stop.notify_one();
@@ -345,11 +376,16 @@ impl Session {
     }
 
     pub(crate) fn resize(&self, cols: u16, rows: u16) -> Result<(), ProviderError> {
+        let Backend::Channel(write) = &self.backend else {
+            return Err(refuse(
+                Status::GUATIAO_ERR_UNSUPPORTED,
+                "the system's ssh client cannot resize a terminal",
+            ));
+        };
         within(
             &self.link,
             self.link.settings.operation_timeout,
-            self.write
-                .window_change(u32::from(cols), u32::from(rows), 0, 0),
+            write.window_change(u32::from(cols), u32::from(rows), 0, 0),
         )?
         .map_err(|error| unavailable(&format!("{}: {error}", self.link.target())))
     }
@@ -357,10 +393,16 @@ impl Session {
     /// Sends the SSH signal `sig`; the host decides whether it reaches the program.
     pub(crate) fn signal(&self, sig: Sig, ends: bool) -> Result<Delivery, ProviderError> {
         let running = self.remote.snapshot().is_none();
+        let Backend::Channel(write) = &self.backend else {
+            return Err(refuse(
+                Status::GUATIAO_ERR_UNSUPPORTED,
+                "the system's ssh client cannot send a signal to the host's program",
+            ));
+        };
         within(
             &self.link,
             self.link.settings.operation_timeout,
-            self.write.signal(sig),
+            write.signal(sig),
         )?
         .map_err(|error| unavailable(&format!("{}: {error}", self.link.target())))?;
         Ok(Delivery {
@@ -383,12 +425,148 @@ impl Drop for Session {
     fn drop(&mut self) {
         if !self.killed.swap(true, Ordering::AcqRel) && self.remote.snapshot().is_none() {
             self.stop.notify_one();
-            let write = Arc::clone(&self.write);
-            self.link.rt.handle().spawn(async move {
-                let _ = write.signal(Sig::KILL).await;
-                let _ = write.close().await;
-            });
+            match &self.backend {
+                Backend::Channel(write) => {
+                    let write = Arc::clone(write);
+                    self.link.rt.handle().spawn(async move {
+                        let _ = write.signal(Sig::KILL).await;
+                        let _ = write.close().await;
+                    });
+                }
+                Backend::Child(child) => child.kill.notify_one(),
+            }
         }
+    }
+}
+
+/// How a program is reached: a channel of the connection, or a process of the system's ssh client.
+enum Backend {
+    Channel(Arc<ChannelWriteHalf<Msg>>),
+    Child(ChildCtl),
+}
+
+/// The ends of an ssh process this side holds.
+struct ChildCtl {
+    stdin: tokio::sync::Mutex<Option<tokio::process::ChildStdin>>,
+    kill: Arc<tokio::sync::Notify>,
+}
+
+impl Session {
+    /// Runs the program as a process of the system's ssh client.
+    async fn start_child(link: &Arc<Link>, open: Open) -> Result<Self, ProviderError> {
+        use tokio::io::AsyncReadExt as _;
+        let permit = link.permit().await?;
+        let after: Vec<&str> = open.command.as_deref().into_iter().collect();
+        let mut command = crate::openssh::command(
+            link,
+            &[if open.pty.is_some() { "-tt" } else { "-T" }],
+            &after,
+        )?;
+        if let Some((term, _, _)) = &open.pty {
+            command.env("TERM", term);
+        }
+        let mut child = command.spawn().map_err(|error| {
+            refuse(
+                Status::GUATIAO_ERR_GONE,
+                format!(
+                    "{}: the ssh program could not start: {error}",
+                    link.target()
+                ),
+            )
+        })?;
+        let (Some(stdin), Some(mut stdout), Some(mut stderr)) =
+            (child.stdin.take(), child.stdout.take(), child.stderr.take())
+        else {
+            return Err(refuse(
+                Status::GUATIAO_ERR_INTERNAL,
+                "the ssh program has no pipes",
+            ));
+        };
+        let queue = link.settings.queue_chunks;
+        let (out_tx, out_rx) = mpsc::channel::<Vec<u8>>(queue);
+        let (err_tx, err_rx) = mpsc::channel::<Vec<u8>>(queue);
+        // Under a terminal the host merges the program's errors into its output; what ssh itself says goes there too.
+        let merged = if open.pty.is_some() {
+            out_tx.clone()
+        } else {
+            err_tx.clone()
+        };
+        let readers = [
+            tokio::spawn(async move {
+                let mut buffer = vec![0_u8; 8192];
+                while let Ok(count @ 1..) = stdout.read(&mut buffer).await {
+                    if out_tx.send(buffer[..count].to_vec()).await.is_err() {
+                        break;
+                    }
+                }
+            }),
+            tokio::spawn(async move {
+                let mut buffer = vec![0_u8; 8192];
+                while let Ok(count @ 1..) = stderr.read(&mut buffer).await {
+                    if merged.send(buffer[..count].to_vec()).await.is_err() {
+                        break;
+                    }
+                }
+            }),
+        ];
+        drop(err_tx);
+        let remote = Arc::new(Remote::default());
+        let kill = Arc::new(tokio::sync::Notify::new());
+        let stop = Arc::new(tokio::sync::Notify::new());
+        tokio::spawn({
+            let (remote, kill, stop) = (Arc::clone(&remote), Arc::clone(&kill), Arc::clone(&stop));
+            let grace = link.settings.exit_grace;
+            async move {
+                let _permit = permit;
+                let status = tokio::select! {
+                    status = child.wait() => status,
+                    () = kill.notified() => {
+                        let _ = child.start_kill();
+                        child.wait().await
+                    }
+                };
+                if let Ok(status) = status {
+                    #[cfg(unix)]
+                    let signal =
+                        std::os::unix::process::ExitStatusExt::signal(&status).map(i64::from);
+                    #[cfg(not(unix))]
+                    let signal: Option<i64> = None;
+                    remote.finish(status.code().map(i64::from), signal);
+                }
+                // What the program wrote before it ended is still in the pipes; a descendant may hold them open.
+                let ends = async {
+                    for reader in readers.iter() {
+                        let _ = tokio::time::timeout(grace, async {
+                            while !reader.is_finished() {
+                                tokio::time::sleep(Duration::from_millis(10)).await;
+                            }
+                        })
+                        .await;
+                    }
+                };
+                tokio::select! { () = ends => {}, () = stop.notified() => {} }
+                for reader in &readers {
+                    reader.abort();
+                }
+                remote.finish(None, None);
+            }
+        });
+        if !open.stdin {
+            // No input: the program sees the end of it at once.
+        }
+        let stdin = if open.stdin { Some(stdin) } else { None };
+        Ok(Self {
+            link: Arc::clone(link),
+            backend: Backend::Child(ChildCtl {
+                stdin: tokio::sync::Mutex::new(stdin),
+                kill,
+            }),
+            out: Stream::new(out_rx),
+            err: Stream::new(err_rx),
+            remote,
+            killed: AtomicBool::new(false),
+            stop,
+        })
     }
 }
 

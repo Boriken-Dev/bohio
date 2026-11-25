@@ -5,6 +5,8 @@
 | `x11_trusted` | `false` | forward as `ssh -Y` does; required by `x11_forward` because this build cannot ask the display for an untrusted authorization |
 | `x11_local_display` | the node's `DISPLAY` | the node's display forwarded windows go to: `:N` (its socket) or `HOST:N` (TCP port 6000+N) |
 | `x11_max_connections` | `64` | forwarded X connections open at once; one past it is refused; at least 1 |
+| `client` | `russh` | who speaks SSH: `russh` (this provider's client) or `openssh` (the system's `ssh` program, see below) |
+| `ssh_program`, `ssh_args` | `ssh` on `PATH`, none | the `openssh` client's program, and arguments put after the options this provider sets and before the host |
 # `bohio-provider-ssh` — API header
 
 Header-file-style reference for the `bohio-provider-ssh` crate: the `ssh` provider of the `bohio_terminal`, `bohio_exec`, `bohio_files` and `bohio_desktop` kinds, with
@@ -89,6 +91,23 @@ has no more) and are set both at once (the one left alone is read first); read-o
 tree on the client and never follows a link. A file reads ahead and writes behind by `sftp_in_flight` packets: a write's failure is told by
 the next call that can (`write_at`, `sync`, `set_len`, `stat`, `read_at`), and a file dropped with writes in flight waits for them before
 its handle is closed. A server without an `sftp` subsystem makes only the files unavailable, with that reason.
+
+## The system's ssh client (`client = "openssh"`)
+
+Each terminal, program and SFTP session is one `ssh` process (`-tt` or `-T` and the command; `-s host sftp` for the files), with
+`-o BatchMode=yes`, `ConnectTimeout`, `ServerAliveInterval`/`CountMax` (from `keepalive`), `StrictHostKeyChecking` (`yes`, `accept-new`
+for `tofu`, `no` with a null known_hosts for `off`), `UserKnownHostsFile` (when `known_hosts` is set), `-i` and `IdentitiesOnly` (when
+`identity` is set), `IdentityAgent=none` (when `agent = false`), `-p` and `-l`, then `ssh_args`. The account's own `ssh_config`,
+Kerberos and `ProxyJump` apply, and the program's own agent is what logs in. A session counts against `max_channels` like a channel.
+`describe` runs `ssh ... true` (at most `connect_timeout + operation_timeout`) to say whether the host can be reached.
+
+What it cannot do, refused when the source is built: `host_key` (the client keeps `known_hosts`), `password` and `passphrase` (batch
+mode never asks), `x11_display` and `x11_forward` (they need channels of one connection). What a session lacks, said in `describe`:
+terminal `resize` (a pty starts at the client's default size, and the new size is not passed on) and `signals` and exec `signals`
+(`interrupt` on a terminal is still the control byte; `kill` ends the ssh process and the host's program is left to its own hangup).
+A program's exit status is the client's: `255` is ssh's own failure, and its message is on the standard error (merged into the
+output under a terminal). A desktop through the helper (`[gui] helper_exec`) needs nothing more, since it is an exec session. The
+test suites run against it with `BOHIO_TEST_SSH_CLIENT=openssh`; tests of what only the russh client does print `SKIPPED`.
 
 ## Desktop (X11)
 

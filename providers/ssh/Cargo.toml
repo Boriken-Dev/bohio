@@ -20,7 +20,7 @@ getrandom.workspace = true
 x11rb.workspace = true
 russh.workspace = true
 russh-sftp.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["process", "io-util"] }
 tracing.workspace = true
 
 [dev-dependencies]
