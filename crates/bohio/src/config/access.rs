@@ -22,28 +22,6 @@ pub struct SourceTable {
     pub settings: toml::Table,
 }
 
-/// Whether an engine over the operating system is served.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Switch {
-    /// Served, as `[filesystem]` and `[execution]` say.
-    #[default]
-    Native,
-    /// Not served: every call is `unsupported`, and `info.access` says so.
-    None,
-}
-
-impl Switch {
-    /// The word `info.access` reports.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Native => "native",
-            Self::None => "none",
-        }
-    }
-}
-
 /// `[access]`: which sources serve each capability. A list names sources of `[source.<name>]` (or `native`); the first
 /// is the default, and a peer's `sources` may name the others.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
@@ -57,14 +35,38 @@ pub struct AccessConfig {
     pub power: Vec<String>,
     /// The virtual-media sources. Default none.
     pub media: Vec<String>,
-    /// Whether files are served (the engine over the operating system), `native` or `none`. Default `native`.
-    pub fs: Switch,
-    /// Whether processes are run (the engine over the operating system), `native` or `none`. Default `native`.
-    pub exec: Switch,
+    /// The files sources. Absent or `"native"`: `["native"]`. `"none"` or `[]`: the node serves no files.
+    #[serde(deserialize_with = "sources_or_word")]
+    pub fs: Option<Vec<String>>,
+    /// The exec sources. Absent or `"native"`: `["native"]`. `"none"` or `[]`: the node runs no processes.
+    #[serde(deserialize_with = "sources_or_word")]
+    pub exec: Option<Vec<String>>,
 }
 
 /// The `[source.*]` tables of a configuration.
 pub type SourceTables = BTreeMap<String, SourceTable>;
+
+/// A list of source names, or the word `native` (the node's own source alone) or `none` (no source).
+fn sources_or_word<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<String>>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Form {
+        Word(String),
+        List(Vec<String>),
+    }
+    Ok(match Form::deserialize(deserializer)? {
+        Form::Word(word) if word == NATIVE => None,
+        Form::Word(word) if word == "none" => Some(Vec::new()),
+        Form::Word(word) => {
+            return Err(serde::de::Error::custom(format!(
+                "`{word}` is not `native`, `none` or a list of source names"
+            )));
+        }
+        Form::List(list) => Some(list),
+    })
+}
 
 impl AccessConfig {
     /// The sources of the terminal capability, the default applied.
@@ -81,5 +83,19 @@ impl AccessConfig {
         self.desktop
             .clone()
             .unwrap_or_else(|| vec![NATIVE.to_owned()])
+    }
+}
+
+impl AccessConfig {
+    /// The sources of the exec capability, the default applied.
+    #[must_use]
+    pub fn execs(&self) -> Vec<String> {
+        self.exec.clone().unwrap_or_else(|| vec![NATIVE.to_owned()])
+    }
+
+    /// The sources of the files capability, the default applied.
+    #[must_use]
+    pub fn filesystems(&self) -> Vec<String> {
+        self.fs.clone().unwrap_or_else(|| vec![NATIVE.to_owned()])
     }
 }

@@ -63,10 +63,10 @@ pub struct AccessInfo {
     pub power: Vec<SourceEntry>,
     /// The virtual-media sources.
     pub media: Vec<SourceEntry>,
-    /// Whether files are served: `native` or `none`.
-    pub fs: String,
-    /// Whether processes are run: `native` or `none`.
-    pub exec: String,
+    /// The file sources, the default first; none when the node serves no files.
+    pub fs: Vec<SourceEntry>,
+    /// The process sources, the default first; none when the node runs no processes.
+    pub exec: Vec<SourceEntry>,
 }
 
 /// One source of a capability.

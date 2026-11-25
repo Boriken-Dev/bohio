@@ -74,8 +74,8 @@ fn world_with(source_toml: &str, order: &[&str], grant: Grant) -> World {
             &AccessConfig {
                 terminal: Some(order.iter().map(|name| (*name).to_owned()).collect()),
                 desktop: Some(Vec::new()),
-                fs: bohio::config::Switch::None,
-                exec: bohio::config::Switch::None,
+                fs: Some(Vec::new()),
+                exec: Some(Vec::new()),
                 ..AccessConfig::default()
             },
         )
@@ -262,8 +262,8 @@ fn info_access_lists_the_console_with_its_limits_and_asks_the_device_every_time(
             .expect("info")
     };
     let first = info();
-    assert_eq!(first.access.fs, "none");
-    assert_eq!(first.access.exec, "none");
+    assert!(first.access.fs.is_empty());
+    assert!(first.access.exec.is_empty());
     assert_eq!(first.access.terminal.len(), 1);
     let source = &first.access.terminal[0];
     assert_eq!(

@@ -249,8 +249,6 @@ fn sample_info() -> Info {
                 offers: vec!["read".into(), "write".into()],
                 lacks: vec!["resize".into(), "signals".into(), "programs".into()],
             }],
-            fs: "none".into(),
-            exec: "none".into(),
             ..bohio_proto::info::AccessInfo::default()
         },
     }

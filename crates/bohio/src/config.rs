@@ -12,7 +12,7 @@ mod gui;
 mod hosts;
 mod layers;
 
-pub use access::{AccessConfig, NATIVE, SourceTable, SourceTables, Switch};
+pub use access::{AccessConfig, NATIVE, SourceTable, SourceTables};
 pub use gui::{ApprovalMode, GuiConfig, Indicator, LadderStep, WindowsCapture};
 pub use hosts::{Hop, HostConfig, Hosts};
 pub use layers::{Layered, Layers, Origin};

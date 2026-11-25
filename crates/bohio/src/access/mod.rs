@@ -23,14 +23,14 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use bohio_api::guatiao::library::{InstantiateError, KindMismatch, Registry};
 use bohio_api::guatiao::{ToValue, Value};
-use bohio_api::{DesktopSource, MediaSource, PowerSource, TerminalSource};
+use bohio_api::{DesktopSource, ExecSource, FilesSource, MediaSource, PowerSource, TerminalSource};
 use bohio_proto::info::SourceEntry;
 use bohio_proto::{ErrorBody, ErrorCode};
 
 pub use desktop::{DesktopOf, KindDesktop, code_of, gui_error};
 pub use native::{ID as NATIVE_ID, Native, NativeSettings};
 
-use crate::config::{AccessConfig, NATIVE, SourceTable, SourceTables, Switch};
+use crate::config::{AccessConfig, NATIVE, SourceTable, SourceTables};
 use crate::secret::{self, NoSecrets, Secret, SecretResolver};
 
 /// What a source gives a node.
@@ -45,11 +45,22 @@ pub enum Capability {
     Power,
     /// Virtual media.
     Media,
+    /// Processes.
+    Exec,
+    /// Files.
+    Files,
 }
 
 impl Capability {
     /// Every capability, in the order `info` lists them.
-    pub const ALL: [Self; 4] = [Self::Terminal, Self::Desktop, Self::Power, Self::Media];
+    pub const ALL: [Self; 6] = [
+        Self::Terminal,
+        Self::Desktop,
+        Self::Power,
+        Self::Media,
+        Self::Exec,
+        Self::Files,
+    ];
 
     /// The name `[access]` and `info` use.
     #[must_use]
@@ -59,6 +70,8 @@ impl Capability {
             Self::Desktop => "desktop",
             Self::Power => "power",
             Self::Media => "media",
+            Self::Exec => "exec",
+            Self::Files => "fs",
         }
     }
 }
@@ -175,8 +188,8 @@ struct State {
     desktop: Table<dyn DesktopSource>,
     power: Table<dyn PowerSource>,
     media: Table<dyn MediaSource>,
-    fs: Switch,
-    exec: Switch,
+    exec: Table<dyn ExecSource>,
+    files: Table<dyn FilesSource>,
     /// The `[source.*]` tables these sources were built from, to tell which a reconfiguration changed.
     tables: SourceTables,
 }
@@ -188,8 +201,8 @@ impl State {
             desktop: Table::empty(),
             power: Table::empty(),
             media: Table::empty(),
-            fs: Switch::Native,
-            exec: Switch::Native,
+            exec: Table::empty(),
+            files: Table::empty(),
             tables: SourceTables::new(),
         }
     }
@@ -398,6 +411,8 @@ impl Sources {
                 keep(&old.desktop, &mut fresh.desktop, name);
                 keep(&old.power, &mut fresh.power, name);
                 keep(&old.media, &mut fresh.media, name);
+                keep(&old.exec, &mut fresh.exec, name);
+                keep(&old.files, &mut fresh.files, name);
                 continue;
             }
             if !build(&registry, name, table, &mut fresh, mode)? {
@@ -425,6 +440,16 @@ impl Sources {
                 fresh.media.by_name.insert(name.clone(), held.clone());
             }
         }
+        for (name, held) in &old.exec.by_name {
+            if held.embedded {
+                fresh.exec.by_name.insert(name.clone(), held.clone());
+            }
+        }
+        for (name, held) in &old.files.by_name {
+            if held.embedded {
+                fresh.files.by_name.insert(name.clone(), held.clone());
+            }
+        }
         fresh.terminal.order = order_of(
             Capability::Terminal,
             &access.terminals(),
@@ -437,8 +462,12 @@ impl Sources {
         )?;
         fresh.power.order = order_of(Capability::Power, &access.power, &fresh.power.by_name)?;
         fresh.media.order = order_of(Capability::Media, &access.media, &fresh.media.by_name)?;
-        fresh.fs = access.fs;
-        fresh.exec = access.exec;
+        fresh.exec.order = order_of(Capability::Exec, &access.execs(), &fresh.exec.by_name)?;
+        fresh.files.order = order_of(
+            Capability::Files,
+            &access.filesystems(),
+            &fresh.files.by_name,
+        )?;
         // A source left out for want of a secret resolver is built, not kept, when one arrives.
         for name in &waiting {
             tables.remove(name);
@@ -453,6 +482,8 @@ impl Sources {
         retire_missing(&previous.desktop, &self.state_ref(), |s| &s.desktop);
         retire_missing(&previous.power, &self.state_ref(), |s| &s.power);
         retire_missing(&previous.media, &self.state_ref(), |s| &s.media);
+        retire_missing(&previous.exec, &self.state_ref(), |s| &s.exec);
+        retire_missing(&previous.files, &self.state_ref(), |s| &s.files);
         Ok(())
     }
 
@@ -474,6 +505,8 @@ impl Sources {
         retire_missing(&previous.desktop, &now, |s| &s.desktop);
         retire_missing(&previous.power, &now, |s| &s.power);
         retire_missing(&previous.media, &now, |s| &s.media);
+        retire_missing(&previous.exec, &now, |s| &s.exec);
+        retire_missing(&previous.files, &now, |s| &s.files);
         drop(now);
         let registry = std::mem::replace(
             &mut *other
@@ -515,6 +548,8 @@ impl Sources {
             state.desktop.order.first(),
             state.power.order.first(),
             state.media.order.first(),
+            state.exec.order.first(),
+            state.files.order.first(),
         ]
         .into_iter()
         .flatten()
@@ -573,6 +608,26 @@ impl Sources {
         self
     }
 
+    /// Adds an exec source of the embedder's own.
+    #[must_use]
+    pub fn with_exec(self, name: &str, source: Arc<dyn ExecSource>) -> Self {
+        self.state_mut()
+            .exec
+            .by_name
+            .insert(name.to_owned(), Source::new(name, source, true));
+        self
+    }
+
+    /// Adds a files source of the embedder's own.
+    #[must_use]
+    pub fn with_files(self, name: &str, source: Arc<dyn FilesSource>) -> Self {
+        self.state_mut()
+            .files
+            .by_name
+            .insert(name.to_owned(), Source::new(name, source, true));
+        self
+    }
+
     /// Sets which sources serve `capability`, the first being the default. A name no source has is ignored here and refused
     /// by [`Sources::from_config`].
     #[must_use]
@@ -589,6 +644,8 @@ impl Sources {
                 Capability::Desktop => state.desktop.order = names,
                 Capability::Power => state.power.order = names,
                 Capability::Media => state.media.order = names,
+                Capability::Exec => state.exec.order = names,
+                Capability::Files => state.files.order = names,
             }
         }
         self
@@ -602,6 +659,8 @@ impl Sources {
             Capability::Desktop => &mut state.desktop.order,
             Capability::Power => &mut state.power.order,
             Capability::Media => &mut state.media.order,
+            Capability::Exec => &mut state.exec.order,
+            Capability::Files => &mut state.files.order,
         };
         order.retain(|held| held != name);
         order.insert(0, name.to_owned());
@@ -656,19 +715,27 @@ impl Sources {
             Capability::Desktop => state.desktop.order.clone(),
             Capability::Power => state.power.order.clone(),
             Capability::Media => state.media.order.clone(),
+            Capability::Exec => state.exec.order.clone(),
+            Capability::Files => state.files.order.clone(),
         }
     }
 
-    /// Whether files are served: `[access] fs`.
-    #[must_use]
-    pub fn fs(&self) -> Switch {
-        self.state_ref().fs
+    /// The exec source `name`, or the default one when `None`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Sources::terminal`].
+    pub fn exec(&self, name: Option<&str>) -> Result<Source<dyn ExecSource>, ErrorBody> {
+        self.state_ref().exec.pick(Capability::Exec, name)
     }
 
-    /// Whether processes are run: `[access] exec`.
-    #[must_use]
-    pub fn exec(&self) -> Switch {
-        self.state_ref().exec
+    /// The files source `name`, or the default one when `None`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Sources::terminal`].
+    pub fn files(&self, name: Option<&str>) -> Result<Source<dyn FilesSource>, ErrorBody> {
+        self.state_ref().files.pick(Capability::Files, name)
     }
 
     /// What `info` says of the sources `grant` reaches: each source's name, provider, whether it is the default, and its
@@ -715,8 +782,8 @@ impl Sources {
             desktop: entries(&state.desktop, &permitted, |source| source.describe()),
             power: entries(&state.power, &permitted, |source| source.describe()),
             media: entries(&state.media, &permitted, |source| source.describe()),
-            fs: state.fs.name().to_owned(),
-            exec: state.exec.name().to_owned(),
+            exec: entries(&state.exec, &permitted, |source| source.describe()),
+            fs: entries(&state.files, &permitted, |source| source.describe()),
         }
     }
 
@@ -727,6 +794,8 @@ impl Sources {
         state.desktop.retire_all();
         state.power.retire_all();
         state.media.retire_all();
+        state.exec.retire_all();
+        state.files.retire_all();
     }
 }
 
@@ -851,6 +920,8 @@ fn build(
     kind!(dyn DesktopSource, desktop);
     kind!(dyn PowerSource, power);
     kind!(dyn MediaSource, media);
+    kind!(dyn ExecSource, exec);
+    kind!(dyn FilesSource, files);
     if served == 0 {
         let known: Vec<&str> = registry.all().iter().map(|known| known.id()).collect();
         return Err((

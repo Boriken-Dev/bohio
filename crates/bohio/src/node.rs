@@ -37,7 +37,7 @@ use coqui_peer::{Established, Handshake, KeyMaterial, Method as ProofMethod, Pee
 use coqui_transport::Channel;
 
 use crate::access::{Capability, DesktopOf, Sources};
-use crate::config::{ConfigError, Switch};
+use crate::config::ConfigError;
 pub use crate::config::{DialConfig, NodeConfig};
 use crate::gui::{self, Desktop, GuiState, Notifier, Presence};
 use crate::limit::{Counted, Hold, Slots};
@@ -136,10 +136,10 @@ impl Shared {
         let sources = &gui.sources();
         // `[access] fs` and `exec` say whether an engine over the operating system is served at all.
         let mut config = config.clone();
-        if sources.fs() == Switch::None {
+        if sources.names(Capability::Files).is_empty() {
             config.filesystem.enabled = false;
         }
-        if sources.exec() == Switch::None {
+        if sources.names(Capability::Exec).is_empty() {
             config.execution.enabled = false;
         }
         let config = &config;

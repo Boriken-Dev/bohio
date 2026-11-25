@@ -1140,7 +1140,7 @@ fn the_agentless_console_node_example_is_accepted() {
     let config = Config::from_toml(&text, "console_node.cfg").expect("it is accepted");
     assert_eq!(config.access.terminals(), ["console"]);
     assert!(config.access.desktops().is_empty());
-    assert_eq!(config.access.fs, bohio::config::Switch::None);
+    assert_eq!(config.access.fs, Some(Vec::new()));
     assert!(config.source.contains_key("console"));
 }
 

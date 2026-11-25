@@ -379,8 +379,9 @@ pub(super) fn print_info(info: &Info) {
         println!("gui: disabled");
     }
     let access = &info.access;
-    println!("files: {}  exec: {}", access.fs, access.exec);
     for (capability, sources) in [
+        ("files", &access.fs),
+        ("exec", &access.exec),
         ("terminal", &access.terminal),
         ("desktop", &access.desktop),
         ("power", &access.power),

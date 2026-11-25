@@ -508,10 +508,10 @@ impl Tools {
                     (!on).then(|| format!("the host has {what} turned off or not offered"))
                 };
                 match need {
-                    Need::FsRead | Need::FsWrite if info.access.fs == "none" => {
+                    Need::FsRead | Need::FsWrite if info.access.fs.is_empty() => {
                         Some("this node serves no files".to_owned())
                     }
-                    Need::Exec if info.access.exec == "none" => {
+                    Need::Exec if info.access.exec.is_empty() => {
                         Some("this node runs no programs".to_owned())
                     }
                     Need::FsRead | Need::FsWrite => off(info.filesystem.enabled, "files"),
