@@ -1,0 +1,4 @@
+type = "rhai"
+module = "rhai_power"
+kinds = ["bohio_power"]
+paths = ["."]
