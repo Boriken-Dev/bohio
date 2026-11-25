@@ -271,7 +271,7 @@ and the session list show a peer only the sources it reaches (a name it may not 
   (the source `lacks` `lock_detection`), so a lock screen is shown and typed at like any window. The X socket's own permissions are the
   account's. The backend reaches the display through a loopback connection of the node, made and accepted in one step and bridged only
   if the connection that arrives is the node's own, so another account on the node cannot take it.
-- **X forwarding gives a program on the machine the node's display.** `x11_forward = true` (with `x11_trusted = true`, which it needs)
+- **X forwarding gives a program on the machine the node's display.** `x11_forward = true` is an error unless `x11_trusted = true` is set too: untrusted forwarding (how `-X` restricts a client) cannot work in this build, because the X SECURITY extension has no binding in x11rb, so every forwarded program is a trusted one (as with `-Y`). With both set
   lets every program an ssh source starts connect to the node's X display as a trusted client: it can read every window, capture the
   screen, type into other programs and set the clipboard, as `ssh -Y` allows. The host's `sshd` gives each program a random cookie that
   the node checks (in constant time) and replaces with the display's own before the first byte reaches the display; a program on the
