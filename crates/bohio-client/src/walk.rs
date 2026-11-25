@@ -13,7 +13,7 @@ use bohio_proto::walk::{
     WalkDone, WalkEntries, WalkEntry, WalkInput, WalkItemError, WalkOutput, WalkRequest, WalkRoot,
 };
 use bohio_transfer::compress::{Bounds, Decoder};
-use coqui_link::mux::LinkStream;
+use cabuya::mux::LinkStream;
 
 use crate::{Error, Open};
 

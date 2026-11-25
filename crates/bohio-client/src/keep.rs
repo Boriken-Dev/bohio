@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use coqui_link::mux::LinkStream;
+use cabuya::mux::LinkStream;
 
 use crate::connect::Cause;
 use crate::{Error, Open, OpenOptions};

@@ -34,7 +34,7 @@ pub mod walk;
 pub use error::Error;
 pub use sourced::Sourced;
 
-use coqui_link::mux::LinkStream;
+use cabuya::mux::LinkStream;
 
 /// Options of one open that a link can honour and a plain implementation may ignore.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

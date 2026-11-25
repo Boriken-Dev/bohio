@@ -16,7 +16,7 @@ use bohio_client::link::{Settings, stream};
 use bohio_client::tools::{
     Availability, Cancel, Output, Settings as ToolSettings, ToolError, Tools,
 };
-use coqui_link::auth::{Identity, Method};
+use cabuya::auth::{Identity, Method};
 use coqui_peer::PeerId;
 use coqui_transport::{Channel, StreamChannel, memory};
 use painted::Painted;

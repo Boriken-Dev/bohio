@@ -4,8 +4,8 @@ use std::io;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::time::Duration;
 
-use coqui_link::auth::MAX_PROOF_MESSAGE;
-use coqui_link::mux::{Heartbeat, Limits};
+use cabuya::auth::MAX_PROOF_MESSAGE;
+use cabuya::mux::{Heartbeat, Limits};
 use coqui_transport::frame::{Codec, LengthPrefix};
 use coqui_transport::{Split, StreamChannel, StreamChannelBuilder};
 use socket2::{Domain, Protocol, SockAddr, SockRef, Socket, Type};
@@ -144,7 +144,7 @@ impl Settings {
     }
 
     /// The largest message the socket carries once the peer is proven, for a proof by `method`.
-    pub fn record_length(&self, method: coqui_link::auth::Method) -> usize {
+    pub fn record_length(&self, method: cabuya::auth::Method) -> usize {
         method.record_length(self.max_frame.max(1).saturating_add(5))
     }
 }

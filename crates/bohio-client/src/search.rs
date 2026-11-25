@@ -8,7 +8,7 @@ use bohio_proto::protocol;
 use bohio_proto::search::{
     SearchDone, SearchItemError, SearchMatch, SearchOutput, SearchRequest, SearchScope,
 };
-use coqui_link::mux::LinkStream;
+use cabuya::mux::LinkStream;
 
 use crate::{Error, Open};
 

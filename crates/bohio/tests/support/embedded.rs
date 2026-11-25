@@ -16,8 +16,8 @@ use bohio::node::{MemoryGrants, MemoryKeys, Node};
 use bohio::policy::Grant;
 use bohio_client::connect::Connection;
 use bohio_client::link::Settings;
-use coqui_link::auth::{Identity, Method, Proof, Trust};
-use coqui_link::mux::LinkStream;
+use cabuya::auth::{Identity, Method, Proof, Trust};
+use cabuya::mux::LinkStream;
 use coqui_peer::PeerId;
 
 /// A wait long enough for any exchange on this machine, short enough to fail a hung test.

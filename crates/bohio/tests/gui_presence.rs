@@ -21,7 +21,7 @@ use bohio_client::gui::{Gui, SnapshotOptions};
 use bohio_client::link::{Settings, stream};
 use bohio_proto::ErrorCode;
 use bohio_proto::gui::{GuiRequest, Want};
-use coqui_link::auth::{Identity, Method};
+use cabuya::auth::{Identity, Method};
 use coqui_peer::PeerId;
 use coqui_transport::{Channel, StreamChannel, memory};
 use painted::Painted;

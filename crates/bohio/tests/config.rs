@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use bohio::config::{Config, ConfigError, Environment, Layers, Span};
 use bohio::policy::Permission;
-use coqui_link::auth::{Identity, Method};
+use cabuya::auth::{Identity, Method};
 
 fn example() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/bohio.cfg")

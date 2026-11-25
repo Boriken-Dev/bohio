@@ -29,7 +29,7 @@ use bohio_client::gui::{Gui, SnapshotOptions};
 use bohio_client::link::{Settings, stream};
 use bohio_proto::gui::{Button, ButtonAction, DisplayId, GuiRequest, InputEvent, Rect, Want};
 use bohio_proto::{ErrorBody, ErrorCode};
-use coqui_link::auth::{Identity, Method};
+use cabuya::auth::{Identity, Method};
 use coqui_peer::PeerId;
 use coqui_transport::{Channel, Failure, StreamChannel, memory};
 use painted::{CLICK, Painted};

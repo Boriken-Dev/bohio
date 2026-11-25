@@ -12,7 +12,7 @@ use std::sync::Arc;
 use bohio::access::{LibraryState, ProvidersReport};
 use bohio::config::{Config, ConfigError, DlopenChoice, NodeConfig, ProvidersConfig};
 use bohio::node::{MemoryGrants, MemoryKeys, Node, NodeError};
-use coqui_link::auth::{Identity, Method};
+use cabuya::auth::{Identity, Method};
 use sha2::{Digest, Sha256};
 
 /// Where the library is: in `BOHIO_LIBRARY_DIR` when that names it (a static musl test binary loads the libraries built for

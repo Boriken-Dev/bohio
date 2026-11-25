@@ -371,10 +371,10 @@ dependencies = [
  "bohio-test-plugin-other",
  "bohio-transfer",
  "bohio-x11",
+ "cabuya",
  "cap-fs-ext",
  "cap-std",
  "clap",
- "coqui-link",
  "coqui-peer",
  "coqui-peer-tls",
  "coqui-transport",
@@ -444,8 +444,8 @@ dependencies = [
  "bohio-client",
  "bohio-proto",
  "bohio-transfer",
+ "cabuya",
  "clap",
- "coqui-link",
  "coqui-transport",
  "serde",
  "serde_json",
@@ -459,7 +459,7 @@ version = "0.0.0-alpha.0"
 dependencies = [
  "bohio-proto",
  "bohio-transfer",
- "coqui-link",
+ "cabuya",
  "coqui-peer",
  "coqui-peer-tls",
  "coqui-transport",
@@ -605,6 +605,21 @@ name = "bytes"
 version = "1.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "776dfebd015e2d8732c684a2c71003674ccb49457b539b9e82151ba38e96dd7c"
+
+[[package]]
+name = "cabuya"
+version = "0.0.0-alpha.0"
+source = "git+https://github.com/Boriken-Dev/cabuya?rev=7089185fbd047b676ba9a74963b7509136f4637a#7089185fbd047b676ba9a74963b7509136f4637a"
+dependencies = [
+ "coqui-builder",
+ "coqui-net-acl",
+ "coqui-peer",
+ "coqui-peer-noise",
+ "coqui-peer-webcrypto",
+ "coqui-transport",
+ "serde_json",
+ "socket2",
+]
 
 [[package]]
 name = "cap-fs-ext"
@@ -889,21 +904,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "coqui-link"
-version = "0.0.0-alpha.0"
-source = "git+https://github.com/Boriken-Dev/coqui-link?rev=46efc71ee72d73d3f1faafbcff2cddc08cea360e#46efc71ee72d73d3f1faafbcff2cddc08cea360e"
-dependencies = [
- "coqui-builder",
- "coqui-net-acl",
- "coqui-peer",
- "coqui-peer-noise",
- "coqui-peer-webcrypto",
- "coqui-transport",
- "serde_json",
- "socket2",
 ]
 
 [[package]]

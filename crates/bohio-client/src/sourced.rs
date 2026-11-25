@@ -5,7 +5,7 @@
 //! A link that names the files source of the host: every file stream and control call opened through it asks that source.
 
 use bohio_proto::protocol;
-use coqui_link::mux::LinkStream;
+use cabuya::mux::LinkStream;
 
 use crate::{Error, Open, OpenOptions, connect};
 

@@ -25,7 +25,7 @@ use bohio::config::{GuiConfig, ListenConfig, NodeConfig};
 use bohio::listen::Listening;
 use bohio::node::{MemoryGrants, MemoryKeys, Node};
 use bohio::policy::{Grant, Permission};
-use coqui_link::auth::{Identity, Method};
+use cabuya::auth::{Identity, Method};
 use coqui_peer::PeerId;
 use painted::Painted;
 use synthetic::{Scene, Synthetic};

@@ -18,7 +18,7 @@ use bohio_client::link::{Settings, stream};
 use bohio_client::shell::{Event, Shell};
 use bohio_proto::shell::{Request, ShellKind};
 use bohio_proto::{ErrorBody, ErrorCode};
-use coqui_link::auth::{Identity, Method};
+use cabuya::auth::{Identity, Method};
 use coqui_transport::{Channel, StreamChannel, memory};
 
 const WAIT: Duration = Duration::from_secs(30);

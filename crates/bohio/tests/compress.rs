@@ -22,7 +22,7 @@ use bohio_proto::hash::Algorithm;
 use bohio_proto::{ErrorCode, protocol};
 use bohio_transfer::compress::{Bounds, Decoder};
 use bohio_transfer::hash::{Hasher, available};
-use coqui_link::mux::LinkStream;
+use cabuya::mux::LinkStream;
 use coqui_transport::Channel;
 use sha2::{Digest, Sha256};
 use support::{Link, WAIT, helper};

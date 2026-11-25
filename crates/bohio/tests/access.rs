@@ -20,7 +20,7 @@ use bohio_proto::control::Call;
 use bohio_proto::gui::{DisplayId, GuiRequest, Want};
 use bohio_proto::shell::{Request, ShellKind};
 use bohio_proto::{ErrorBody, ErrorCode};
-use coqui_link::auth::{Identity, Method};
+use cabuya::auth::{Identity, Method};
 use coqui_peer::PeerId;
 use coqui_transport::{Channel, StreamChannel, memory};
 

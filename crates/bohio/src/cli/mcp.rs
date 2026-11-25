@@ -71,7 +71,7 @@ impl Open for Lazy {
         &self,
         protocol: &str,
         metadata: &[u8],
-    ) -> Result<Box<dyn coqui_link::mux::LinkStream>, Error> {
+    ) -> Result<Box<dyn cabuya::mux::LinkStream>, Error> {
         let (_, link) = self.link()?;
         match link.open(protocol, metadata) {
             Err(_) if !link.is_up() => {

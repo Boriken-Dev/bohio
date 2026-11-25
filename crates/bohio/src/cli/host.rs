@@ -9,8 +9,8 @@ use std::thread;
 use std::time::Duration;
 
 use bohio_proto::local::PairReply;
-use coqui_link::auth::Identity;
-use coqui_link::pairing;
+use cabuya::auth::Identity;
+use cabuya::pairing;
 use coqui_peer::pair::{CodeAlphabet, Pin};
 use coqui_peer::{KeyMaterial, PeerId};
 use coqui_transport::Channel;

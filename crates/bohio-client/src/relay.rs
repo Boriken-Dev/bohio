@@ -14,7 +14,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::Scope;
 use std::time::{Duration, Instant};
 
-use coqui_link::mux::{CloseReason, LinkStream, StreamEnd, StreamLife};
+use cabuya::mux::{CloseReason, LinkStream, StreamEnd, StreamLife};
 use coqui_transport::{Capabilities, Carrier, Channel, Failure};
 
 use crate::link::Settings;

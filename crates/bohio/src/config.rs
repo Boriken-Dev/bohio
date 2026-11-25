@@ -1386,9 +1386,9 @@ impl Default for ForwardConfig {
 }
 
 impl ForwardConfig {
-    /// The pump's bounds, as `coqui-link` names them.
-    pub fn options(&self) -> coqui_link::forward::Options {
-        let mut options = coqui_link::forward::Options::default();
+    /// The pump's bounds, as `cabuya` names them.
+    pub fn options(&self) -> cabuya::forward::Options {
+        let mut options = cabuya::forward::Options::default();
         options.connect_timeout = self.connect_timeout.0;
         options.chunk = self.chunk_size;
         options.stalled = self.stalled.0;

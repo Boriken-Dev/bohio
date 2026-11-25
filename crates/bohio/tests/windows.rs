@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 use bohio_client::OpenOptions;
 use bohio_client::connect::Opener;
 use bohio_client::link::{Settings, stream};
-use coqui_link::link::LINK_PROTOCOL;
-use coqui_link::mux::{CloseReason, Mux, Side};
+use cabuya::link::LINK_PROTOCOL;
+use cabuya::mux::{CloseReason, Mux, Side};
 use coqui_transport::{Channel, Failure, memory};
 
 const MIB: u32 = 1024 * 1024;

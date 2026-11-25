@@ -2,10 +2,10 @@
 //!
 //! [`serve_connect`] is `bohio-connect/1`: the grant decided the request when the stream opened ([`covers`]) and decides it
 //! again at every re-check, so a stream that loses its grant is reset. The host connects, answers once (`connected`, or an
-//! error that says why nothing was connected), then moves raw bytes both ways. [`serve_tcp`] is `tcp/1` as `coqui-link`
+//! error that says why nothing was connected), then moves raw bytes both ways. [`serve_tcp`] is `tcp/1` as `cabuya`
 //! defines it, under the same grant: the connection is made before any answer, and a refusal is a close.
 //!
-//! The pump is `coqui_link::forward::pump_with` for TCP and [`bohio_client::forward::ipc::pump`] for a Unix socket or a
+//! The pump is `cabuya::forward::pump_with` for TCP and [`bohio_client::forward::ipc::pump`] for a Unix socket or a
 //! Windows named pipe, both over the stream itself with no relay in between.
 //!
 //! [`serve_listen`] and [`serve_accept`] are the other direction (`bohio-listen/1` and `bohio-accept/1`): the host listens for
@@ -25,7 +25,7 @@ use std::time::Duration;
 use bohio_client::forward::ipc;
 use bohio_proto::forward::{Answer, ConnectRequest, Connected, Target};
 use bohio_proto::{ErrorBody, ErrorCode};
-use coqui_link::mux::{CloseReason, LinkStream, StreamLife};
+use cabuya::mux::{CloseReason, LinkStream, StreamLife};
 use coqui_peer::PeerId;
 use coqui_transport::Failure;
 use coqui_transport_pipe::PipeName;
@@ -144,7 +144,7 @@ pub fn serve_connect(stream: &dyn LinkStream, metadata: &[u8], context: &Context
                 return;
             }
             context.event(ForwardKind::Connect, &text, ForwardOutcome::Connected);
-            coqui_link::forward::pump_with(stream, &connection, &options);
+            cabuya::forward::pump_with(stream, &connection, &options);
         }
         Target::Unix { .. } | Target::Pipe { .. } => {
             let connection = match connect_ipc(&target, &options) {
@@ -167,7 +167,7 @@ pub fn serve_connect(stream: &dyn LinkStream, metadata: &[u8], context: &Context
     }
 }
 
-/// Serves one `tcp/1` stream to its end, as `coqui-link` does: no answer before the bytes, and a refusal or a failed connect
+/// Serves one `tcp/1` stream to its end, as `cabuya` does: no answer before the bytes, and a refusal or a failed connect
 /// is a close with a reason. The stream is not closed.
 pub fn serve_tcp(stream: &dyn LinkStream, metadata: &[u8], context: &Context<'_>) {
     let target = match core::str::from_utf8(metadata).map(str::parse::<Target>) {
@@ -194,7 +194,7 @@ pub fn serve_tcp(stream: &dyn LinkStream, metadata: &[u8], context: &Context<'_>
     match connect_tcp(&target, context.config.connect_timeout.0) {
         Ok((connection, _)) => {
             context.event(ForwardKind::Connect, &text, ForwardOutcome::Connected);
-            coqui_link::forward::pump_with(stream, &connection, &context.config.options());
+            cabuya::forward::pump_with(stream, &connection, &context.config.options());
         }
         Err(body) => {
             context.event(
@@ -310,7 +310,7 @@ fn connect_tcp(target: &Target, timeout: Duration) -> Result<(TcpStream, SocketA
 /// Connects to a Unix socket or a named pipe.
 fn connect_ipc(
     target: &Target,
-    options: &coqui_link::forward::Options,
+    options: &cabuya::forward::Options,
 ) -> Result<coqui_transport_pipe::Stream, ErrorBody> {
     let name = match target {
         #[cfg(unix)]

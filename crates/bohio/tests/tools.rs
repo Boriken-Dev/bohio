@@ -369,7 +369,7 @@ impl Open for Between {
         &self,
         protocol_name: &str,
         metadata: &[u8],
-    ) -> Result<Box<dyn coqui_link::mux::LinkStream>, Error> {
+    ) -> Result<Box<dyn cabuya::mux::LinkStream>, Error> {
         if protocol_name == protocol::WRITE
             && let Some(act) = self.act.lock().unwrap().take()
         {

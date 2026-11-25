@@ -19,7 +19,7 @@ use bohio_client::Error;
 use bohio_client::forward::{ForwardSettings, Target, connect};
 use bohio_client::link::Settings;
 use bohio_proto::ErrorCode;
-use coqui_link::auth::{Identity, Method, Proof, Trust};
+use cabuya::auth::{Identity, Method, Proof, Trust};
 use coqui_peer::PeerId;
 use coqui_transport::Channel;
 use coqui_transport::Failure;
@@ -352,11 +352,11 @@ fn a_revoke_ends_a_running_forward_within_two_rechecks_and_the_target_sees_a_res
 }
 
 #[test]
-fn a_coqui_link_peer_uses_the_nodes_tcp_1_with_the_same_grant() {
+fn a_cabuya_peer_uses_the_nodes_tcp_1_with_the_same_grant() {
     let _deadline = Deadline::start();
-    use coqui_link::auth::{Sealed, prove_out};
-    use coqui_link::forward::{Target as LinkTarget, connect as link_connect};
-    use coqui_link::mux::{Mux, Side};
+    use cabuya::auth::{Sealed, prove_out};
+    use cabuya::forward::{Target as LinkTarget, connect as link_connect};
+    use cabuya::mux::{Mux, Side};
 
     let node = Running::start();
     let (listener, port) = listening();
@@ -391,9 +391,9 @@ fn a_coqui_link_peer_uses_the_nodes_tcp_1_with_the_same_grant() {
     Mux::run(&sealed, Side::Dialed, settings.limits(), None, |mux| {
         let target: LinkTarget = format!("127.0.0.1:{port}").parse().expect("a target");
         let stream = link_connect(mux, &target).expect("opened");
-        stream.send(b"from coqui-link").expect("sent");
+        stream.send(b"from cabuya").expect("sent");
         stream.finish().expect("finished");
-        assert_eq!(read_all(&stream), b"tcp/1 got from coqui-link");
+        assert_eq!(read_all(&stream), b"tcp/1 got from cabuya");
 
         // A target the grant does not cover is a refusal on the stream, before anything connects.
         let other: LinkTarget = "127.0.0.1:1".parse().expect("a target");

@@ -29,10 +29,10 @@ use bohio_client::link::Settings;
 use bohio_client::relay::relay;
 use bohio_proto::info::Info;
 use bohio_proto::{ErrorBody, ErrorCode, protocol};
-use coqui_link::auth::{Identity, Proof, Sealed, Session, Trust, prove_out};
-use coqui_link::link::{Accepted as Open, Host, Options, Services, serve_with};
-pub use coqui_link::mux::Side;
-use coqui_link::mux::{CloseReason, LinkStream};
+use cabuya::auth::{Identity, Proof, Sealed, Session, Trust, prove_out};
+use cabuya::link::{Accepted as Open, Host, Options, Services, serve_with};
+pub use cabuya::mux::Side;
+use cabuya::mux::{CloseReason, LinkStream};
 use coqui_peer::{Established, Handshake, KeyMaterial, Method as ProofMethod, PeerId};
 use coqui_transport::Channel;
 
@@ -864,7 +864,7 @@ impl Node {
                 });
             }
             Err(unanswered) => match unanswered.error {
-                error @ coqui_link::Error::Proof(_) => {
+                error @ cabuya::Error::Proof(_) => {
                     return tracing::info!(
                         "a key was refused: {error}; a key that proved itself and is not accepted waits for `bohio peer approve`"
                     );
@@ -994,7 +994,7 @@ impl Node {
             .map_err(|error| NodeError::Dial {
                 endpoint: endpoint.clone().unwrap_or_else(|| "channel".to_owned()),
                 reason: match error {
-                    coqui_link::Error::Proof(_) => {
+                    cabuya::Error::Proof(_) => {
                         "the peer did not prove itself as the key expected".to_owned()
                     }
                     other => other.to_string(),

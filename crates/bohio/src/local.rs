@@ -28,9 +28,9 @@ use bohio_proto::local::{
     GUI_APPROVE, LINKS, LibraryEntry, LinkEntry, LinksReply, LinksRequest, PAIR, PROVIDERS,
     PairReply, PairRequest, ProvidersReply, VIA, ViaRequest,
 };
-use coqui_link::link::{Accepted, Host, Options, Services, serve_with};
-use coqui_link::mux::{CloseReason, LinkStream, Mux, Side, StreamEnd, StreamLife};
-use coqui_link::peers::{NoEvents, PeerRecord, PeerStore};
+use cabuya::link::{Accepted, Host, Options, Services, serve_with};
+use cabuya::mux::{CloseReason, LinkStream, Mux, Side, StreamEnd, StreamLife};
+use cabuya::peers::{NoEvents, PeerRecord, PeerStore};
 use coqui_peer::PeerId;
 use coqui_transport::{Channel, Failure};
 use coqui_transport_pipe::{Listener as PipeListener, SocketGroup};
@@ -131,7 +131,7 @@ struct Context {
 struct Everything;
 
 impl PeerStore for Everything {
-    fn get(&self, peer: &str) -> Result<Option<PeerRecord>, coqui_link::Error> {
+    fn get(&self, peer: &str) -> Result<Option<PeerRecord>, cabuya::Error> {
         Ok(Some(
             PeerRecord::new(peer)
                 .granting(VIA)
@@ -142,11 +142,11 @@ impl PeerStore for Everything {
         ))
     }
 
-    fn put(&self, _record: &PeerRecord) -> Result<(), coqui_link::Error> {
+    fn put(&self, _record: &PeerRecord) -> Result<(), cabuya::Error> {
         Ok(())
     }
 
-    fn remove(&self, _peer: &str) -> Result<(), coqui_link::Error> {
+    fn remove(&self, _peer: &str) -> Result<(), cabuya::Error> {
         Ok(())
     }
 }

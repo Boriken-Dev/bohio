@@ -379,7 +379,7 @@ fn metadata_names_the_device_inode_and_links_where_the_host_reports_them() {
 fn a_node_removes_the_expired_kept_writes_in_every_granted_root_when_it_starts() {
     use bohio::config::{NodeConfig, Span};
     use bohio::node::{MemoryGrants, MemoryKeys, Node};
-    use coqui_link::auth::{Identity, Method};
+    use cabuya::auth::{Identity, Method};
     use std::sync::Arc;
     use std::time::{Duration, SystemTime};
 

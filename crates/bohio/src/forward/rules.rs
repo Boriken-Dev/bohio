@@ -1,6 +1,6 @@
 //! Which targets a peer's grant lets the host connect to and bind: the rules of `[peer.<id>.forward] connect` and `listen`.
 //!
-//! A TCP rule is `coqui_link::forward::Rule` (an exact `HOST:PORT`, or `*.suffix`, `*`, an address or a CIDR network, with a
+//! A TCP rule is `cabuya::forward::Rule` (an exact `HOST:PORT`, or `*.suffix`, `*`, an address or a CIDR network, with a
 //! port, a range or `*`): nothing is resolved here, so an address or network rule matches only an address target and a name
 //! rule only a name target. A `unix:PATH` or `pipe:NAME` rule matches the text exactly, or with `*` and `?`, neither of which
 //! crosses a path separator. A requested path with a `..` part or a NUL matches no rule. A `listen` rule has the same
@@ -10,7 +10,7 @@ use core::str::FromStr;
 use std::net::IpAddr;
 
 use bohio_proto::forward::{Bind, Target};
-use coqui_link::forward::{Rule, Target as TcpTarget};
+use cabuya::forward::{Rule, Target as TcpTarget};
 
 use crate::policy::{Grant, Permission};
 
@@ -83,7 +83,7 @@ impl ConnectRule {
     }
 }
 
-/// The target `coqui-link` serves, in its one spelling; `None` for a host or port it refuses.
+/// The target `cabuya` serves, in its one spelling; `None` for a host or port it refuses.
 pub fn tcp_target(target: &Target) -> Option<TcpTarget> {
     match target {
         Target::Tcp { .. } => target.to_string().parse().ok(),
@@ -366,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tcp_rule_matches_what_coqui_link_says() {
+    fn a_tcp_rule_matches_what_cabuya_says() {
         assert!(rule("db.lan:5432").matches(&tcp("DB.lan:5432")));
         assert!(!rule("db.lan:5432").matches(&tcp("db.lan:5433")));
         assert!(rule("10.0.0.0/8:22-25").matches(&tcp("10.1.2.3:24")));

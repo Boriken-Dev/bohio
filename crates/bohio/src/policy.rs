@@ -160,7 +160,7 @@ pub struct Grant {
 #[serde(deny_unknown_fields, default)]
 pub struct ForwardGrant {
     /// The targets the peer may have the host connect to, as rules: `HOST:PORT` where HOST is an exact name, `*.suffix`,
-    /// `*`, an address or a CIDR network and PORT is `N`, `A-B` or `*` (`coqui_link::forward::Rule`); `unix:PATH` and
+    /// `*`, an address or a CIDR network and PORT is `N`, `A-B` or `*` (`cabuya::forward::Rule`); `unix:PATH` and
     /// `pipe:NAME`, exactly or with `*` and `?`, which match within one path component. The peer needs `forward.connect`
     /// as well as a rule that matches; an empty list allows nothing.
     #[serde(skip_serializing_if = "Vec::is_empty")]

@@ -18,7 +18,7 @@ use bohio_proto::fs::{ReadRequest, WriteRequest};
 use bohio_proto::hash::Algorithm;
 #[cfg(feature = "hash")]
 use bohio_proto::hash::HashItem;
-use coqui_link::auth::Proof;
+use cabuya::auth::Proof;
 
 /// The options of the transfer a delta scenario times: a delta or the whole file.
 #[cfg(feature = "delta")]

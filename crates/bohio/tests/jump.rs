@@ -17,7 +17,7 @@ use bohio_client::exec::Exec;
 use bohio_client::forward::ForwardSettings;
 use bohio_client::link::Settings;
 use bohio_proto::exec::Request;
-use coqui_link::auth::{Identity, Method, Proof, Trust};
+use cabuya::auth::{Identity, Method, Proof, Trust};
 use coqui_peer::PeerId;
 use coqui_transport::Failure;
 use support::embedded::{

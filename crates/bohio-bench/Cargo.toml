@@ -22,7 +22,7 @@ bohio = { path = "../bohio", default-features = false }
 bohio-client.workspace = true
 bohio-proto.workspace = true
 bohio-transfer = { workspace = true, optional = true }
-coqui-link.workspace = true
+cabuya.workspace = true
 coqui-transport.workspace = true
 clap.workspace = true
 serde.workspace = true

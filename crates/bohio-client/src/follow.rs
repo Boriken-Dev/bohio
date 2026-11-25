@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use bohio_proto::fs::{FollowBy, ReadFollow, ReadOutput, ReadRequest, Truncated};
 use bohio_proto::protocol;
-use coqui_link::mux::LinkStream;
+use cabuya::mux::LinkStream;
 
 use crate::{Error, Open};
 

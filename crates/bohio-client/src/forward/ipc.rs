@@ -1,5 +1,5 @@
 //! A Unix domain socket or a Windows named pipe on the far end of a forward, in either direction: two threads over a
-//! [`coqui_transport_pipe::Stream`] with blocking reads, as the TCP pump of `coqui-link` does for a socket.
+//! [`coqui_transport_pipe::Stream`] with blocking reads, as the TCP pump of `cabuya` does for a socket.
 //!
 //! A Unix socket half-closes (dropping the write half is `shutdown(Write)`); a Windows pipe does not, so there a `finish`
 //! from the stream ends both directions and a reply the pipe's server would send after the client's end is lost.
@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use coqui_link::forward::Options;
-use coqui_link::mux::{CloseReason, LinkStream, StreamLife};
+use cabuya::forward::Options;
+use cabuya::mux::{CloseReason, LinkStream, StreamLife};
 use coqui_transport::{Channel, Failure, Split};
 use coqui_transport_pipe::{Error, Listener, PipeName, Stream};
 
@@ -57,7 +57,7 @@ pub fn listener(name: &PipeName, options: &Options, mode: Option<u32>) -> Result
     })
 }
 
-/// Moves bytes between `stream` and `ipc` until both directions have ended, as [`coqui_link::forward::pump_with`] does for
+/// Moves bytes between `stream` and `ipc` until both directions have ended, as [`cabuya::forward::pump_with`] does for
 /// TCP: the stream's `finish` ends what is written to `ipc` and `ipc`'s end finishes the stream; a stream that ends any other
 /// way ends the connection at once.
 pub fn pump<S: LinkStream + ?Sized>(stream: &S, ipc: Stream, options: &Options) {

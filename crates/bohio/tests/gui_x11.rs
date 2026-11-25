@@ -35,7 +35,7 @@ use bohio_proto::ErrorCode;
 use bohio_proto::gui::{
     Button, ButtonAction, DisplayId, GuiRequest, ImageFormat, InputEvent, KeyAction, Rect, Want,
 };
-use coqui_link::auth::{Identity, Method};
+use cabuya::auth::{Identity, Method};
 use coqui_peer::PeerId;
 use coqui_transport::{Channel, StreamChannel, memory};
 use x11rb::connection::Connection;

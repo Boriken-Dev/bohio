@@ -25,8 +25,8 @@ use std::time::{Duration, Instant};
 
 use bohio_proto::forward::Answer;
 pub use bohio_proto::forward::{ConnectRequest, Connected, Target};
-pub use coqui_link::forward::Options;
-use coqui_link::mux::LinkStream;
+pub use cabuya::forward::Options;
+use cabuya::mux::LinkStream;
 use coqui_transport::Failure;
 
 use crate::keep::Jitter;
@@ -220,9 +220,9 @@ impl Tunnel {
     }
 
     /// Moves bytes between this tunnel and `connection` until both directions end, then closes the tunnel: see
-    /// [`coqui_link::forward::pump_with`].
+    /// [`cabuya::forward::pump_with`].
     pub fn pump_tcp(self, connection: &std::net::TcpStream) {
-        coqui_link::forward::pump_with(&*self.stream, connection, &self.options);
+        cabuya::forward::pump_with(&*self.stream, connection, &self.options);
         self.stream.close();
     }
 

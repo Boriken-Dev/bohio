@@ -17,7 +17,7 @@ use bohio::policy::{Grant, Permission};
 use bohio_client::gui::{Gui, SnapshotOptions};
 use bohio_client::link::{Settings, stream};
 use bohio_proto::gui::{Button, ButtonAction, GuiRequest, InputEvent, Want};
-use coqui_link::auth::{Identity, Method};
+use cabuya::auth::{Identity, Method};
 use coqui_transport::{Channel as _, memory};
 
 #[path = "../../../providers/ssh/tests/support/mod.rs"]

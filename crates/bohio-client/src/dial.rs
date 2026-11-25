@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use coqui_link::auth::MAX_PROOF_MESSAGE;
+use cabuya::auth::MAX_PROOF_MESSAGE;
 use coqui_peer::PeerId;
 use coqui_peer_tls::{ClientBuilder, PeerServerVerifier, Pins, Policy, Roots, ServerAuth, Trust};
 use coqui_transport::process::{ErrorOutput, Launch, ProcessBuilder};

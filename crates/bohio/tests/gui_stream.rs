@@ -27,7 +27,7 @@ use bohio_proto::ErrorCode;
 use bohio_proto::gui::{
     GuiRequest, InputEvent, Rect, RectEncoding, UpdateHeader, Want, WatchEncoding,
 };
-use coqui_link::auth::{Identity, Method, Proof, Trust};
+use cabuya::auth::{Identity, Method, Proof, Trust};
 use coqui_peer::PeerId;
 use coqui_transport::{Channel, Failure, StreamChannel, memory};
 use painted::{Painted, pattern};

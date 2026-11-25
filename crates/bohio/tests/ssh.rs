@@ -19,7 +19,7 @@ use bohio_client::shell::Shell;
 use bohio_proto::ErrorCode;
 use bohio_proto::exec::Request;
 use bohio_proto::shell::Request as ShellRequest;
-use coqui_link::auth::{Identity, Method};
+use cabuya::auth::{Identity, Method};
 use coqui_transport::{Channel, StreamChannel, memory};
 
 #[path = "../../../providers/ssh/tests/support/mod.rs"]

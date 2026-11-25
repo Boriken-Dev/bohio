@@ -44,7 +44,7 @@ pub mod protocol {
     pub const HASH: &str = "bohio-hash/1";
     /// One connection from the host to a target, then its raw bytes both ways.
     pub const CONNECT: &str = "bohio-connect/1";
-    /// `coqui-link`'s `tcp/1`, served under the same grant as [`CONNECT`]: the open's metadata is `HOST:PORT`
+    /// `cabuya`'s `tcp/1`, served under the same grant as [`CONNECT`]: the open's metadata is `HOST:PORT`
     /// text and the stream is raw bytes at once, with no answer before them.
     pub const TCP: &str = "tcp/1";
     /// One view of a desktop: snapshots, keyboard and mouse input and the clipboard's text.

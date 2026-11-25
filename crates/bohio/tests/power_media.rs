@@ -18,7 +18,7 @@ use bohio_client::link::{Settings, stream};
 use bohio_proto::media::Image;
 use bohio_proto::power::Action;
 use bohio_proto::{ErrorBody, ErrorCode};
-use coqui_link::auth::{Identity, Method};
+use cabuya::auth::{Identity, Method};
 use coqui_transport::{Channel, StreamChannel, memory};
 use sha2::{Digest, Sha256};
 

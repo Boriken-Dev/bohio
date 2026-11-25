@@ -28,7 +28,7 @@ use bohio_proto::hash::{Algorithm, HashItem};
 use bohio_proto::session::{OnFull, SessionRequest};
 use bohio_proto::shell::{Request as ShellRequest, ShellKind};
 use bohio_proto::signal::Signal;
-use coqui_link::auth::{Proof, Trust};
+use cabuya::auth::{Proof, Trust};
 use coqui_peer::PeerId;
 
 use super::commands::{print_info, source};

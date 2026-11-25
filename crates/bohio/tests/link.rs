@@ -30,7 +30,7 @@ use bohio_proto::fs::{ReadRequest, WriteRequest};
 use bohio_proto::hash::Algorithm;
 use bohio_proto::shell::{Request as ShellRequest, ShellKind};
 use bohio_transfer::hash::Hasher;
-use coqui_link::auth::{Proof, Trust};
+use cabuya::auth::{Proof, Trust};
 use coqui_transport::Failure;
 use support::{alive, gone_within, helper};
 use sysinfo::{Pid, ProcessesToUpdate, System};

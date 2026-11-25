@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use bohio_proto::forward::{AcceptRequest, ListenFrame, Target};
 pub use bohio_proto::forward::{Arrival, Bind, ListenRequest};
-use coqui_link::mux::LinkStream;
+use cabuya::mux::LinkStream;
 use coqui_transport::Failure;
 use coqui_transport_pipe::PipeName;
 
@@ -134,7 +134,7 @@ impl RemoteListener {
 
     /// Whether the host's listener is still there.
     pub fn is_open(&self) -> bool {
-        self.stream.life() == coqui_link::mux::StreamLife::Open
+        self.stream.life() == cabuya::mux::StreamLife::Open
     }
 }
 

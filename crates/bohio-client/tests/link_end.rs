@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use bohio_client::connect::Opener;
 use bohio_client::link::{self, Settings};
-use coqui_link::mux::{CloseReason, Mux, Side, StreamEnd};
+use cabuya::mux::{CloseReason, Mux, Side, StreamEnd};
 use coqui_transport::{Channel, Failure, memory};
 
 const WAIT: Option<Duration> = Some(Duration::from_secs(10));

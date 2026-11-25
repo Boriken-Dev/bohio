@@ -28,9 +28,9 @@ use bohio_proto::gui::{
 };
 use bohio_proto::local::GUI_HELPER;
 use bohio_proto::{ErrorBody, ErrorCode, protocol};
-use coqui_link::link::{Accepted, Host, Options, Services, serve_with};
-use coqui_link::mux::{CloseReason, LinkStream, Mux, Side, StreamLife};
-use coqui_link::peers::{NoEvents, PeerRecord, PeerStore};
+use cabuya::link::{Accepted, Host, Options, Services, serve_with};
+use cabuya::mux::{CloseReason, LinkStream, Mux, Side, StreamLife};
+use cabuya::peers::{NoEvents, PeerRecord, PeerStore};
 use coqui_peer::PeerId;
 use coqui_transport::{Channel, Failure};
 use coqui_transport_pipe::{Listener as PipeListener, OsIdentity};
@@ -653,15 +653,15 @@ fn only_this_account_writes(socket: &std::path::Path) -> Result<(), String> {
 struct HelperStore;
 
 impl PeerStore for HelperStore {
-    fn get(&self, peer: &str) -> Result<Option<PeerRecord>, coqui_link::Error> {
+    fn get(&self, peer: &str) -> Result<Option<PeerRecord>, cabuya::Error> {
         Ok(Some(PeerRecord::new(peer).granting(GUI_HELPER)))
     }
 
-    fn put(&self, _record: &PeerRecord) -> Result<(), coqui_link::Error> {
+    fn put(&self, _record: &PeerRecord) -> Result<(), cabuya::Error> {
         Ok(())
     }
 
-    fn remove(&self, _peer: &str) -> Result<(), coqui_link::Error> {
+    fn remove(&self, _peer: &str) -> Result<(), cabuya::Error> {
         Ok(())
     }
 }
@@ -992,15 +992,15 @@ impl NodeEvents for HelperEvents {
 struct NodeStore;
 
 impl PeerStore for NodeStore {
-    fn get(&self, peer: &str) -> Result<Option<PeerRecord>, coqui_link::Error> {
+    fn get(&self, peer: &str) -> Result<Option<PeerRecord>, cabuya::Error> {
         Ok(Some(PeerRecord::new(peer).granting(protocol::GUI)))
     }
 
-    fn put(&self, _record: &PeerRecord) -> Result<(), coqui_link::Error> {
+    fn put(&self, _record: &PeerRecord) -> Result<(), cabuya::Error> {
         Ok(())
     }
 
-    fn remove(&self, _peer: &str) -> Result<(), coqui_link::Error> {
+    fn remove(&self, _peer: &str) -> Result<(), cabuya::Error> {
         Ok(())
     }
 }
@@ -1134,7 +1134,7 @@ fn announce<C: Channel>(
             // The node closed it, or said anything at all: this helper's work is over.
             _ => break,
         }
-        if !matches!(mux.link_state(), coqui_link::mux::LinkState::Up) {
+        if !matches!(mux.link_state(), cabuya::mux::LinkState::Up) {
             return;
         }
         let mut sent = true;

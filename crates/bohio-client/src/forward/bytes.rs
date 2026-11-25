@@ -9,8 +9,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use coqui_link::forward::Options;
-use coqui_link::mux::LinkStream;
+use cabuya::forward::Options;
+use cabuya::mux::LinkStream;
 
 use coqui_transport::{Failure, Halves, Interrupt, Split};
 

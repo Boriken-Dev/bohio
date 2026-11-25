@@ -1,7 +1,7 @@
 //! A proven connection to a Bohío host: [`Connection`] is the [`Open`] every client call takes.
 //!
 //! The host proves itself to this side as this side proves itself to the host (a key each way),
-//! with [`coqui_link`]'s proof; what follows is a link of streams, one per operation.
+//! with [`cabuya`]'s proof; what follows is a link of streams, one per operation.
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,11 +10,9 @@ use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use coqui_link::auth::{Proof, Sealed, prove_out};
-use coqui_link::link::{Capabilities, LINK_PROTOCOL, capabilities};
-use coqui_link::mux::{
-    CloseReason, LinkState, LinkStream, Mux, Side, Stream, StreamEnd, StreamLife,
-};
+use cabuya::auth::{Proof, Sealed, prove_out};
+use cabuya::link::{Capabilities, LINK_PROTOCOL, capabilities};
+use cabuya::mux::{CloseReason, LinkState, LinkStream, Mux, Side, Stream, StreamEnd, StreamLife};
 use coqui_peer::PeerId;
 use coqui_transport::{Channel, Failure};
 
@@ -658,7 +656,7 @@ impl Opened {
 }
 
 /// The text a link's host gives when it refuses an open because a limit is full (`[link] max_pending_opens`, `max_streams`,
-/// `max_per_protocol` or `max_opens_per_minute`), as `coqui_link` writes it. A refusal for a grant says something else.
+/// `max_per_protocol` or `max_opens_per_minute`), as `cabuya` writes it. A refusal for a grant says something else.
 pub const OVER_A_LIMIT: &str = "over a limit";
 
 /// Why a stream ended, kept apart from the stream (which a caller holds as a `dyn LinkStream`): see [`Open::open_cause`].
@@ -756,7 +754,7 @@ fn run<C: Channel>(
         Err(error) => {
             channel.close();
             let _ = ready.send(Err(match error {
-                coqui_link::Error::Channel(failure) => Error::Transport(failure),
+                cabuya::Error::Channel(failure) => Error::Transport(failure),
                 other => Error::Link(other.to_string()),
             }));
             return;

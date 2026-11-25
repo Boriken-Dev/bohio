@@ -1,6 +1,6 @@
 //! Pairing on a node's own listeners: one PIN armed at a time, in memory, tried once.
 //!
-//! A joiner reaches a node over any transport the node listens on and sends [`coqui_link::pairing::MARKER`] before its
+//! A joiner reaches a node over any transport the node listens on and sends [`cabuya::pairing::MARKER`] before its
 //! handshake, which is how the node tells a pairing from a proof (a pairing and a proof begin with the same handshake message
 //! under both methods). The node holds at most one armed PIN, made by [`Node::arm_pairing`] or by a client of the local
 //! `bohio-pair/1` protocol. Unarmed, a joiner is refused as one with no PIN shown, and that is an event.
@@ -18,9 +18,9 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
-use coqui_link::auth::prove;
-use coqui_link::link::Prefilled;
-use coqui_link::pairing::{self, PairingHost, respond, starts_pairing};
+use cabuya::auth::prove;
+use cabuya::link::Prefilled;
+use cabuya::pairing::{self, PairingHost, respond, starts_pairing};
 use coqui_peer::pair::{CodeAlphabet, DeskLimits, Paired, PairingDesk, PairingOptions};
 use coqui_peer::{Established, Handshake, PeerId, TrustStore};
 use coqui_transport::{Channel, Failure};
@@ -232,7 +232,7 @@ pub(crate) struct Unanswered {
     /// `true` when the joiner sent the pairing marker: a refused pairing, never a failed proof.
     pub(crate) pairing: bool,
     /// What went wrong.
-    pub(crate) error: coqui_link::Error,
+    pub(crate) error: cabuya::Error,
 }
 
 /// The responder of a listener that takes proofs and pairings: reads the first message and runs a pairing when it is the
@@ -255,11 +255,11 @@ pub(crate) fn answer<M: coqui_peer::Method, C: Channel>(
     };
     let left = deadline.saturating_duration_since(Instant::now());
     if left.is_zero() {
-        return Err(proof(coqui_link::Error::Channel(Failure::Timeout)));
+        return Err(proof(cabuya::Error::Channel(Failure::Timeout)));
     }
     let first = match channel.receive(Some(left)) {
         Ok(Some(message)) => message,
-        Ok(None) => return Err(proof(coqui_link::Error::Channel(Failure::PathLost))),
+        Ok(None) => return Err(proof(cabuya::Error::Channel(Failure::PathLost))),
         Err(failure) => return Err(proof(failure.into())),
     };
     let left = deadline.saturating_duration_since(Instant::now());
@@ -269,7 +269,7 @@ pub(crate) fn answer<M: coqui_peer::Method, C: Channel>(
             error,
         };
         let Some(pairing) = pairing else {
-            return Err(refused(coqui_link::Error::Proof(
+            return Err(refused(cabuya::Error::Proof(
                 "pairing is not offered on this listener".to_owned(),
             )));
         };
@@ -376,7 +376,7 @@ impl PairState {
     /// The armed slot, if it still takes attempts and counts this one, with whether pairing is offered at all.
     pub(crate) fn host<R>(
         &self,
-        identity: &coqui_link::auth::Identity,
+        identity: &cabuya::auth::Identity,
         source: Option<IpAddr>,
         body: impl FnOnce(Option<PairingHost<'_>>, Option<&Slot>, bool) -> R,
     ) -> R {

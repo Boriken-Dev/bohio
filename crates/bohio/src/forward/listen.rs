@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use bohio_client::forward::ipc;
 use bohio_proto::forward::{AcceptRequest, Arrival, Bind, ListenFrame, ListenRequest, Listening};
 use bohio_proto::{ErrorBody, ErrorCode};
-use coqui_link::mux::{CloseReason, LinkStream, StreamLife};
+use cabuya::mux::{CloseReason, LinkStream, StreamLife};
 use coqui_transport_pipe::{Error as PipeError, Listener as PipeListener, PipeName};
 
 use super::{Context, answer_connected, hold, refuse_with, send_waiting};
@@ -395,7 +395,7 @@ pub fn serve_accept(stream: &dyn LinkStream, metadata: &[u8], context: &Context<
         });
         match waiting.connection {
             Incoming::Tcp(connection) => {
-                coqui_link::forward::pump_with(stream, &connection, &options);
+                cabuya::forward::pump_with(stream, &connection, &options);
             }
             Incoming::Ipc(connection) => ipc::pump(stream, connection, &options),
         }
@@ -415,7 +415,7 @@ fn refuse_listen(stream: &dyn LinkStream, context: &Context<'_>, bind: &str, bod
 fn bind(
     request: &Bind,
     config: &ForwardConfig,
-    options: &coqui_link::forward::Options,
+    options: &cabuya::forward::Options,
 ) -> Result<(Bound, String), ErrorBody> {
     match request {
         Bind::Tcp { host, port } => {
@@ -457,7 +457,7 @@ fn bind_ipc(
     name: Result<PipeName, PipeError>,
     request: &Bind,
     config: &ForwardConfig,
-    options: &coqui_link::forward::Options,
+    options: &cabuya::forward::Options,
 ) -> Result<(Bound, String), ErrorBody> {
     let name = name
         .map_err(|_| ErrorBody::new(ErrorCode::BadRequest, "that is not a socket or pipe name"))?;

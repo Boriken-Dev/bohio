@@ -21,7 +21,7 @@ use bohio_client::connect::Connection;
 use bohio_client::exec::{Event as ExecEvent, Exec};
 use bohio_client::link::Settings;
 use bohio_proto::exec::Request;
-use coqui_link::auth::{Identity, Method, Proof, Trust};
+use cabuya::auth::{Identity, Method, Proof, Trust};
 use coqui_peer::PeerId;
 use coqui_transport::Failure;
 use support::{alive, gone_within, helper};

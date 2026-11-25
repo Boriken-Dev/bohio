@@ -21,7 +21,7 @@ use bohio_client::fs::Reader;
 use bohio_client::link::{Settings, stream};
 use bohio_proto::exec::Request;
 use bohio_proto::fs::ReadRequest;
-use coqui_link::auth::{Identity, Method};
+use cabuya::auth::{Identity, Method};
 use coqui_peer::{KeyMaterial, PeerId};
 use coqui_transport::{Channel, Failure, StreamChannel, memory};
 use support::{alive, gone_within, helper};

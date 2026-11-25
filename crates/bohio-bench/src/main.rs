@@ -23,8 +23,8 @@ use bohio::peer::Data;
 use bohio_client::dial::Endpoint;
 use bohio_client::link::Settings;
 use bohio_client::profile::Profile;
+use cabuya::auth::{Proof, Trust};
 use clap::{Args, Parser, Subcommand};
-use coqui_link::auth::{Proof, Trust};
 
 use host::Sections;
 use report::{Raw, Report};

@@ -11,7 +11,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
-use coqui_link::auth::{Identity, Method};
+use cabuya::auth::{Identity, Method};
 use coqui_peer::{KeyMaterial, PeerId, TrustStore};
 use toml_edit::{DocumentMut, Item, Table};
 

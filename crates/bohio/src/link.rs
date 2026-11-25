@@ -16,10 +16,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, PoisonError, RwLock};
 use std::time::Duration;
 
-use coqui_link::Error;
-use coqui_link::link::Admission;
-use coqui_link::mux::Side;
-use coqui_link::peers::{Event, Events, PeerRecord, PeerStore};
+use cabuya::Error;
+use cabuya::link::Admission;
+use cabuya::mux::Side;
+use cabuya::peers::{Event, Events, PeerRecord, PeerStore};
 use coqui_peer::{KeyMaterial, PeerId};
 
 use bohio_proto::protocol;

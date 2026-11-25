@@ -4,7 +4,7 @@
 //! grant before it connects anything, connects to the target, and answers with one frame: `0x01`
 //! [`Answer::Connected`] or `0x05` [`Answer::Error`] (the last frame; the stream then ends). After
 //! `connected` the stream carries the target's bytes both ways, raw and untagged, one message per
-//! chunk, exactly as `tcp/1` of `coqui-link` does: a `finish` is a half-close, and any other end of the
+//! chunk, exactly as `tcp/1` of `cabuya` does: a `finish` is a half-close, and any other end of the
 //! stream is a reset. The client sends nothing before `connected`.
 //!
 //! | Direction | Tag | Frame | Body |
@@ -31,7 +31,7 @@ use crate::{decode, encode};
 pub enum Target {
     /// A TCP connection to `host` (a name, or an address; an IPv6 address without brackets) and `port`.
     Tcp {
-        /// The host, as `coqui_link::forward::Target` spells it: a name in lowercase or an address.
+        /// The host, as `cabuya::forward::Target` spells it: a name in lowercase or an address.
         host: String,
         /// The port; not zero.
         port: u16,

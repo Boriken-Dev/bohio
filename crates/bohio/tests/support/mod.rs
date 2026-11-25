@@ -23,7 +23,7 @@ use bohio_client::{Error, Open};
 use bohio_proto::exec::Exit;
 use bohio_proto::info::Info;
 use bohio_proto::{ErrorBody, protocol};
-use coqui_link::mux::LinkStream;
+use cabuya::mux::LinkStream;
 use coqui_transport::frame::LengthPrefix;
 use coqui_transport::{Channel, StreamChannel, StreamChannelBuilder, memory};
 

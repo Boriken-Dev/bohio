@@ -10,7 +10,7 @@ use bohio_client::relay::Plain;
 use bohio_client::{Error, Open};
 use bohio_proto::control::{Call, Reply, Request, Response};
 use bohio_proto::{decode, encode};
-use coqui_link::mux::LinkStream;
+use cabuya::mux::LinkStream;
 use coqui_transport::frame::LengthPrefix;
 use coqui_transport::{Channel, StreamChannel, StreamChannelBuilder, memory};
 

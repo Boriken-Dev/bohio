@@ -11,7 +11,7 @@ use bohio_client::dial::Endpoint;
 use bohio_client::link::Settings;
 #[cfg(feature = "hash")]
 use bohio_proto::hash::Algorithm;
-use coqui_link::auth::Proof;
+use cabuya::auth::Proof;
 use sha2::{Digest, Sha256};
 
 use crate::corpus::{Xorshift, parse_size};

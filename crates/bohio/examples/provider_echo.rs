@@ -22,7 +22,7 @@ use bohio::policy::{Grant, Permission};
 use bohio_api::guatiao::library::{Object, ProviderError};
 use bohio_api::model::{SourceInfo, TerminalExit, TerminalOpen};
 use bohio_api::{Terminal, TerminalSource, unavailable, unsupported, vocab};
-use coqui_link::auth::{Identity, Method};
+use cabuya::auth::{Identity, Method};
 use coqui_peer::PeerId;
 
 /// What the far end says and has not been read yet.
