@@ -247,7 +247,10 @@ and the session list show a peer only the sources it reaches (a name it may not 
   swap in between is possible for whoever may write there (which the check refuses). Only libraries that declare a Bohío kind
   are mapped; the declaration is the library's own claim, so it is a filter against loading unrelated files, not a proof of what
   a library is. The report holds each file's SHA-256 to compare against what you installed; pins that refuse a mismatch arrive
-  once `guatiao` can check the bytes before it maps them. A statically linked musl build (the Linux release archives) cannot map libraries and refuses the setting.
+  once `guatiao` can check the bytes before it maps them. A statically linked musl build (the Linux release archives) maps them through the system's own `ld.so` and glibc, started inside the node: that
+  adds the system's dynamic linker (or the file `[providers] ld_so` names, which only the lowest layer sets) to what the node
+  runs, a C library that shares the process with the node's own, a handler on signal 33, and threads the node did not
+  start. Its code has had no security review yet.
 
 ## Filesystem confinement
 

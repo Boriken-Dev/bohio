@@ -111,6 +111,7 @@ with the default (`paths = []`) no file is read, no library is mapped and nothin
 [providers]
 paths = ["/usr/local/lib/bohio/providers", "/opt/vendor/libbohio_vnc.so"]   # files, or directories of libraries
 # check_access = true    # the default: see below
+# dlopen = "auto"        # the loader: "auto", "system" or "foreign" (see "Which builds can load")
 
 [source.console]
 provider = "serial"       # a provider a library offers is named like a built-in one
@@ -138,11 +139,26 @@ path = "/dev/ttyUSB0"
 - **What a library may do.** It runs as the node's own account, inside the node's process, with no sandbox: a library is the
   node's code. Loading is unpinned, so nothing says the file is the one you meant; `bohio providers` prints each digest so that
   you can compare it. `docs/security.md` has what that costs.
-- **Which builds can load.** The glibc, macOS and Windows builds map libraries (measured on Windows ARM64 and Linux aarch64
-  glibc). A statically linked musl build, which is what the Linux release archives are, cannot: its `dlopen` answers `Dynamic
-  loading not supported` (measured with a static `aarch64-unknown-linux-musl` program against a gnu and a musl library), so
-  `[providers] paths` there is a configuration error that says so (`providers.paths`). Use a glibc build, or link the provider
-  in. A musl build that is not static was not measured and is not refused.
+- **Which builds can load.** Every build can: the glibc, macOS and Windows builds map a library with the platform's loader,
+  and the statically linked musl builds (the Linux release archives) have no loader of their own, so on x86_64 and aarch64
+  they load through the **system's own** `ld.so` and C library, started inside the node. That needs glibc on the machine
+  (the program `ld.so` starts asks for GLIBC_2.2.5 and GLIBC_2.3.3 on x86_64, GLIBC_2.17 on aarch64) and its dynamic linker
+  at the usual path (`/lib64/ld-linux-x86-64.so.2`, `/lib/ld-linux-aarch64.so.1`), or `[providers] ld_so` naming it; a
+  machine with neither (Alpine, say) reports each library `failed`, with the loader's own reason. A library must be built for
+  glibc then, and no C compiler or linker is needed on the machine or at build time. Measured with Bohío's static musl
+  test binary serving the serial library built for glibc on aarch64 and x86_64 (`tests/plugins.rs`, run with
+  `BOHIO_LIBRARY_DIR` naming the libraries). What follows from it:
+  - **One foreign C library for the whole process.** The first library loaded starts it, with the settings of that first
+    start (`ld_so`, `allow_reserved_signal_handlers`), and they hold until the node exits.
+  - **Signal 33.** glibc takes it when it starts, so the start is refused when the node already handles signal 32 or 33;
+    `allow_reserved_signal_handlers = true` starts it anyway and may replace that handler (logged as `non-default:`).
+  - **Library code runs on its own threads.** A call into a library is handed to a thread the foreign C library made, and a
+    call back into the node comes back to a node thread; that hop is the cost of a call.
+  - `[providers] dlopen` chooses the loader: `auto` (the default) takes the foreign one on a static Linux build and the
+    platform's elsewhere, `system` never takes the foreign one (a static build then loads nothing: each library is
+    `failed`), `foreign` always does (a dynamically linked build loading libraries built for glibc). Any other value than
+    `auto` is logged as `non-default:`. `ld_so` and `allow_reserved_signal_handlers` are set by the lowest configuration
+    layer only: `ld_so` names a file the node maps and enters.
 - **Making one.** `providers/terminal/serial/plugin/` is a provider as a library in one line,
   `bohio_api::guatiao::providers!(bohio_provider_serial::Serial);` in a crate of type `cdylib` that depends on nothing else
   (the entry symbols it writes are `no_mangle`, so it does not take the workspace's `unsafe_code = "forbid"`). A node built with
