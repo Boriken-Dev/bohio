@@ -47,7 +47,7 @@ pub struct ErrorBody { pub code: ErrorCode, pub message: String }          // Er
 ## Control (`bohio_proto::control`)
 
 ```rust
-pub struct Request { pub id: u64, pub call: Call }
+pub struct Request { pub id: u64, pub call: Call, source: Option<String> /* the files source every filesystem call of this request names */ }
 #[non_exhaustive] pub enum Call {
     Hello { version: u32, client: String }, Info,
     Stat { path, follow }, List { path, after: Option<String>, limit: Option<u64> }, Mkdir { path, parents, mode: Option<u32> },
@@ -73,7 +73,7 @@ pub struct Metadata { kind, size: u64, modified/accessed/created: Option<Timesta
                       readonly: bool, attributes: Option<u32> /* windows */ }
 pub struct Entry { pub name: String, pub metadata: Metadata }                            // not following a link
 pub struct Listing { pub entries: Vec<Entry>, pub next: Option<String>, pub skipped: u64 }   // ascending by name; `next` = pass as `after`
-pub struct ReadRequest { path, offset: u64 /* 0 */, length: Option<u64>, hashes: Vec<Algorithm>, compression: Option<Compression>, prepare: bool, resume: Option<Resume>, delta: Option<ReadDelta> }   // open metadata of bohio-read/1; ReadRequest::whole(path)
+pub struct ReadRequest { source: Option<String> /* the files source; absent: the host's default; the same on the write, hash, walk and search requests */, path, offset: u64 /* 0 */, length: Option<u64>, hashes: Vec<Algorithm>, compression: Option<Compression>, prepare: bool, resume: Option<Resume>, delta: Option<ReadDelta> }   // open metadata of bohio-read/1; ReadRequest::whole(path)
 pub struct ReadHeader { size: u64, length: u64 /* decompressed */, compression: Option<Compression> /* what the host used, never auto */, compressed_length: Option<u64>, token: Option<String>, delta: bool /* copy frames and data add up to length */ }   // ReadHeader::raw(size, length)
 pub const WEAK_RSYNC: &str = "rsync";
 pub struct DeltaCopy { pub block: u64, pub count: u64 }                              // consecutive blocks of the old file; the last block may be shorter

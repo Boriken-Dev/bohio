@@ -27,6 +27,8 @@ pub trait Open: Send + Sync {
 #[non_exhaustive] pub enum Error { Remote(ErrorBody), Transport(Failure), Protocol(bohio_proto::Error), Link(String), Timeout, Closed }   // Clone, Eq, std::error::Error
 ```
 
+`Sourced::new(&link, "name")` / `Sourced::shared(arc, "name")` is an `Open` that names the host's files source on every filesystem stream (`bohio-read/1`, `-write/1`, `-hash/1`, `-walk/1`, `-search/1`) and, through `Open::files_source`, on the calls of a `Control` opened through it; `Tools::call` does the same for a file tool's `source` argument.
+
 `Open` is the link: the caller implements it over its authenticated connection (or uses `connect::Connection`) (the protocol names are `bohio_proto::protocol::*`).
 An implementation over plain channels (a test's memory pair) wraps each in `relay::Plain`, which is open until closed and cannot finish.
 `Failure::Timeout` converts to `Error::Timeout`; every other `Failure` is `Error::Transport`. `Remote` is the host's structured

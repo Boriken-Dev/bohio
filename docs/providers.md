@@ -60,28 +60,40 @@ and never cached.
 
 ## A machine over SSH
 
-`provider = "ssh"` (`providers/ssh/`, built in with feature `ssh`, or as a library: `providers/ssh/plugin/`) serves another machine's
-terminal and processes through SSH, with nothing of Bohio installed on it:
+`provider = "ssh"` reaches another machine through its SSH server, with nothing of Bohío installed there: a **terminal** source (a pty
+running the account's login shell or a program), an **exec** source (programs with separate output and error) and a **files** source
+(SFTP). One source is one connection to one host; `[access] terminal`, `exec` and `fs` list it beside `native`, and a peer's `sources`
+names it.
 
 ```toml
-[access]
-terminal = ["native", "box"]
-exec = ["native", "box"]
-
-[source.box]
+[source.build]
 provider = "ssh"
-host = "box.example.org"
-user = "ops"
-host_key = "sha256:..."            # or a line in known_hosts; the default check refuses a host it does not know
+host = "build.example"
+user = "ci"
+agent = true                  # the keys of the ssh agent first (the OpenSSH pipe or Pageant on Windows, SSH_AUTH_SOCK elsewhere)
+host_key = "sha256:..."       # or a known_hosts entry; "strict" is the default check
+# max_channels = 8, sftp_in_flight = 16, sftp_packet = 32768, operation_timeout = "30s" ...
+
+[access]
+exec = ["native", "build"]
+fs = ["native", "build"]
+terminal = ["native", "build"]
+
+[peer."sha256:..."]
+allow = ["info", "exec", "fs.read", "fs.write", "shell"]
+sources = ["build"]
+fs_root = ["/srv/work"]       # directories of the machine behind the source
 ```
 
-One source is one connection (channels on demand, made again on the next use when it drops). Login tries the keys an ssh agent holds
-(the OpenSSH agent's pipe or Pageant on Windows, `SSH_AUTH_SOCK` elsewhere), then a key file, then a password given as a reference
-(`password = "file:PATH"`). `bohio remote HOST exec --source box -- uname -a` runs on the machine, `bohio remote HOST shell --source box` opens a
-login shell on it (the console of the source), and an agent's tools take `source`. A source that cannot connect is listed in `info`
-as `available = false` with the reason and tried again after `reconnect_after`; the node starts either way. Every key, its default
-and what a weaker choice costs is in `providers/ssh/AGENTS.md` and `docs/security.md`; `host_key_check` is `strict` unless the operator
-chooses `tofu` or `off`, `max_channels` stays below sshd's `MaxSessions` of 10, and every timeout is a setting.
+A request names the source: `bohio remote HOST exec --source build -- uname -a`, `bohio remote HOST shell --source build` (its console),
+`bohio remote HOST read --source build /srv/work/log` (and `write`, `hash`, `put`, `get`, `walk`, `glob`, `search`, `sync`), `source` on the
+agent tools that touch files and on `exec`. A request that names none uses the capability's default source. The names of a files
+source are POSIX paths whatever system the node runs on (`posix_paths`), and the peer's `fs_root`s are held to by the node on that
+machine's paths. The source's `lacks` (in `info`) say what the server does not give: no `confined` (a link on the machine can lead out
+of a root; the node's check is by path), and no `atomic_replace`, `hard_link`, `statvfs` or `sync` where the server lacks those SFTP
+extensions. A source that cannot connect is `available = false` with the reason and the node starts all the same; every key is in
+`providers/ssh/AGENTS.md`, and `docs/security.md` says what a peer holding the source can do (everything the account can) and what a weaker
+host-key check costs.
 
 ## The console
 

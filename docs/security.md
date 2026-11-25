@@ -266,6 +266,28 @@ and the session list show a peer only the sources it reaches (a name it may not 
   runs, a C library that shares the process with the node's own, a handler on signal 33, and threads the node did not
   start. Its code has had no security review yet.
 
+- **What an ssh source gives a peer.** A peer holding `exec` or `shell` on an ssh source runs anything **the account the source logs in as** can
+  run on that machine, and a peer holding the source's files reads and writes whatever that account can: the node's own grants (program
+  list, roots) are decided on the node, but the machine's own permissions are the only limit behind them. The node holds the means to log in
+  (an agent's signing, a key file, a password), so every peer that reaches the source acts as that account; give a source to a peer as you
+  would give it that account. Under a program list the program is the one the host finds at that name on the account's `PATH`, not the node's.
+- **Host-key checking weakens only by choice.** `host_key_check` is `strict` by default (the key is pinned by `host_key`, or is in
+  `known_hosts`); `tofu` trusts the first key a host with no entry presents and holds it for the life of the source, so an attacker present at
+  first contact is trusted; `off` accepts any key, so anyone on the path can pose as the host and be given every command, input and secret
+  sent through it. Each weaker choice is logged at start as `non-default:`.
+- **Limits are settings, and a larger one costs the host.** `max_channels` (default 8, below the server's 10) bounds the sessions one source
+  holds open; raising it past the server's `MaxSessions` makes the server refuse the extra ones. `keepalive = "0s"` finds a dead connection
+  only when something is sent on it. `operation_timeout`, `connect_timeout`, `exit_grace` and `reconnect_after` bound how long a stuck
+  server holds a request; a larger value holds a node thread that long. A source that cannot connect is reported `unavailable` with the
+  reason (never with a secret) and the node starts all the same.
+- **Files on an ssh source are confined by path, not by handle.** A peer's `fs_root`s name directories **of the machine behind the source**
+  and the node checks every path against them lexically, as it does for its own files. The source `lacks` `confined`: the server resolves
+  each name on every call, so a symbolic link inside a root (one the machine has, or one the peer makes with `symlink`) can lead out of it,
+  and a directory swapped for a link between two calls of one request is followed. The account the source logs in as is the only limit behind
+  the roots: give a peer an ssh files source only where that account's own permissions are the confinement you want. `native` keeps its
+  directory-handle guarantee. SFTP times are whole seconds and a server without `posix-rename@openssh.com` cannot replace a name in one step
+  (the source says so and refuses it), so a replacing write that needs atomicity is refused there rather than made in two steps.
+
 ## Filesystem confinement
 
 Every path resolves against a directory handle of a peer's `fs_roots`: `..` and an absolute path outside a root are `outside_root`, and so is a symbolic link that leaves a root, whether at the end of a path or in the middle. On Linux each lookup is one `openat2` with `RESOLVE_BENEATH` (kernel 5.6 and later), and elsewhere an `openat` walk that refuses to follow a link at each component, so a link swapped in while a call runs cannot lead out.
