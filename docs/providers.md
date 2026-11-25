@@ -111,6 +111,15 @@ Two settings of an ssh source serve a desktop, with nothing of Bohío on the mac
   (the way `ssh -Y` does), because this build cannot ask the node's display for an untrusted authorization: a forwarded program can
   read and drive everything on the node's display (`docs/security.md`). A node with no X display (Windows) cannot forward.
 
+### The machine's desktop through Bohío's helper
+
+For a machine that is not an X server (a Windows or macOS desktop, a Wayland session) the node can run Bohío's GUI helper there
+through the source: `[gui] helper_exec = ["build=bohio gui-helper --stdio"]` (a source name, `=`, the command; read from the lowest
+layer only) makes the node start the command on the machine with the exec source `build`, speak `bohio-gui-helper/1` over its
+standard input and output, and serve the machine's desktop as a session of the node (listed as `exec:build`, then the helper's
+`--session` name). SSH's login replaces the pipe's account check (`docs/security.md`). The node starts it again `helper_exec_retry`
+(`10s`) after it ends or could not start. `bohio` must already be on the machine.
+
 ## The console
 
 A source that starts no program (a serial line) is reached with `bohio remote HOST console [--source NAME]`, which opens the

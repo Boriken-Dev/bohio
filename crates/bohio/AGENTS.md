@@ -512,6 +512,8 @@ every `state_interval`. Without feature `gui` a watch is `unsupported`. `example
 as it is then; the stream ends `revoked` at the next `[link] recheck`. An engagement (one peer, one session) starts at its first stream and ends `indicator_linger` after its last, so many short streams make one notice.
 `bohio-gui-approve/1` is served on the local endpoint only (`LocalLink::gui_pending`, `gui_decide`; `bohio gui pending|allow|deny`).
 
+A helper on another machine (`gui::helper_exec`, `bohio gui-helper --stdio`, `[gui] helper_exec` as `SOURCE=COMMAND` and `helper_exec_retry` `10s`, both lowest layer only): `Node::serve_exec_helpers(&[ExecHelper], retry, stop)` starts the command with the exec source, wraps the process's standard output and input as a length-prefixed channel (`bohio_client::link::stream` over `Duplex`) and calls `serve_helper_channel` with the account `exec:SOURCE`; the helper's standard error is drained to the debug log (an unread queue would stop its output). The helper side is `helper::serve_node` over `bohio_client::link::stdio`: nothing else may write to its standard output, and no account is checked, the login being what authenticates it. Tests: `tests/gui_helper_exec.rs` (the painted helper through an in-process ssh server; the real helper on the machine's X display, Linux).
+
 The per-user GUI helper (`bohio::gui::helper`, `bohio gui-helper`, `[gui] helper_accounts`, `helper_endpoint`, `node_account`, `max_helpers`; the first three are read from the lowest layer only): a node with no desktop of its own serves a
 desktop user's, which that user's helper lends over `bohio-gui-helper/1` on the helper endpoint (a mux with no proof: the account is the boundary).
 ```rust
