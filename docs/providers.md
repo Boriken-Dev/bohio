@@ -282,6 +282,43 @@ provider = "program-echo"              # a provider a program offers is named li
   round trip through a pipe. `the_cost_of_a_call_in_process_and_over_a_child_is_measured` in `crates/bohio/tests/programs.rs`
   prints both for a trivial write on your machine (`cargo test -p bohio --test programs -- --nocapture cost`).
 
+### A provider in another language
+
+A program is any process that speaks the remote protocol, so the provider's language is the program's. Two ways are shipped as
+examples, each serving a Bohío kind to a node that has none of the program's language in it:
+
+- **Rust**: `crates/bohio/examples/program_echo.rs` (an echo console) and `providers/terminal/serial/examples/serial_program.rs`
+  (the serial console) serve a registry with `guatiao_source_remote::Server` on `transport::child::stdio()`.
+- **Rhai, a script**: `examples/programs/power_rhai/` is a power source of the `bohio_power` kind in 30 lines of
+  [Rhai](https://rhai.rs), a file and a manifest beside it. `guatiao-remote-server` serves it through guatiao's Rhai source
+  (`guatiao-source-rhai`, a file a host adds, built from the guatiao repository), with the kinds' description
+  `crates/bohio-api/bohio-api.kinds.json` that tells the server what the kind's slots are:
+
+```toml
+[[providers.program]]
+command = [
+  "/usr/local/bin/guatiao-remote-server", "--stdio",
+  "--kinds", "/opt/bohio/bohio-api.kinds.json",
+  "--source", '/opt/bohio/libguatiao_source_rhai.so={"dirs":["/opt/bohio/power_rhai"],"kinds":["/opt/bohio/bohio-api.kinds.json"]}',
+]
+
+[source.switch]
+provider = "rhai_power_power_switch"     # the library's id, then the provider's name in the script
+[access]
+power = ["switch"]
+```
+
+  `crates/bohio/tests/program_script.rs` runs exactly this: it builds the Rhai source and the host, starts the node, and drives
+  the script's `describe`, `state` and `act`. It prints `SKIPPED` with the reason when they cannot be built (no network for the
+  Rhai crates, no C compiler for libffi).
+- **C**, or any language with a socket-free codec: guatiao's own `crates/guatiao-source-remote/tests/c/remote_codec.h` and
+  `remote_peer.c` are the protocol's framing and a server written in C over guatiao's C API; a program built from them starts
+  the same way. None ships here: a C provider is a program like the rest and needs nothing of the node.
+
+A script runs in the host's process under the limits the source's configuration sets (`limits`: operations, time, depth,
+memory); the files a program reads (a script, a manifest) are its own, not covered by `check_access`, which checks the program
+the node starts. Put them where only the node's account may write.
+
 ### A library in a process of its own
 
 A library the node cannot map (a static node on a machine with no glibc loader, a second foreign C library, signal 33 taken) or
@@ -305,8 +342,10 @@ library_host = "/usr/local/bin/guatiao-remote-server"   # default: guatiao-remot
   directory are checked (`check_access`), a failing host is started again within `restart_limit` (five times in a minute, one
   second apart), and `library_host` names it. The default is `guatiao-remote-server` beside the node: the node does not look on
   `PATH` (the library reads no environment variable), so name the file when it is elsewhere. **The host must match the
-  library**: a library built for glibc needs a glibc host, whatever the node is built with. Release archives do not carry a host
-  (see below).
+  library**: a library built for glibc needs a glibc host, whatever the node is built with. Release archives do not carry a host:
+  build one with `cargo build -p guatiao-source-remote --bin guatiao-remote-server` (libffi is built from C, so a C compiler is
+  needed), or take one from the machine the library was built on. Shipping it beside the node in the archives is the maintainer's
+  decision, not made here.
 - **Reported as the library it is.** `bohio providers` lists it with the others (`loaded`, or `failed` and why; "in a process of
   its own"); a missing or unusable host is that entry `failed`, naming the host, and the node starts.
 - **One instance.** A provider a host serves is one instance configured where it runs, so a `[source.<name>]` naming it takes

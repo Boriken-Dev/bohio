@@ -103,6 +103,10 @@ the SDK prefix. `sdk install` writes the set keys into `env.sh` and `env.ps1`; `
 
 ## Release builds
 
+The archives hold the node alone. A host for libraries in a process of their own (`[providers] isolate`) is
+`guatiao-remote-server`, built with `cargo build -p guatiao-source-remote --bin guatiao-remote-server`; it is not in the
+archives (`docs/providers.md` says why a host must match the library, not the node).
+
 A release is one archive per target, built natively on that target's runner, plus a container image per Linux architecture.
 `python tools/build.py release matrix` prints the targets and runners, which is what the workflows read.
 
