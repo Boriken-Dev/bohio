@@ -95,6 +95,22 @@ extensions. A source that cannot connect is `available = false` with the reason 
 `providers/ssh/AGENTS.md`, and `docs/security.md` says what a peer holding the source can do (everything the account can) and what a weaker
 host-key check costs.
 
+### The machine's desktop over SSH
+
+Two settings of an ssh source serve a desktop, with nothing of Bohío on the machine. Neither is on by default.
+
+- `x11_display = ":0"` serves the machine's own X server as the source's **desktop**: the node opens a channel to the display's
+  socket (`/tmp/.X11-unix/X0`, `x11_socket_dir`), reads the cookie `xauth list` gives for it (a machine without `xauth` is served
+  without one) and runs the X11 backend on that stream. `[access] desktop` lists the source and a peer's `gui.view` and `gui.input`
+  reach it. The screen is seen and clicked as the machine's own X session would be; the lock state of the machine's login session is
+  not told (`lock_detection` is in `lacks`), and a Wayland-only machine has no X server to reach (its XWayland, such as WSLg's, serves
+  the X windows alone).
+- `x11_forward = true` makes the programs this source starts show their windows on **the node's own desktop** (the way `ssh -X` does):
+  the machine's `sshd` needs `X11Forwarding yes` and an `xauth`, each program's X connections come back over the session and go to the
+  node's display (`x11_local_display`, else the node's `DISPLAY`; at most `x11_max_connections` at once). It needs `x11_trusted = true`
+  (the way `ssh -Y` does), because this build cannot ask the node's display for an untrusted authorization: a forwarded program can
+  read and drive everything on the node's display (`docs/security.md`). A node with no X display (Windows) cannot forward.
+
 ## The console
 
 A source that starts no program (a serial line) is reached with `bohio remote HOST console [--source NAME]`, which opens the

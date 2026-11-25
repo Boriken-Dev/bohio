@@ -265,6 +265,19 @@ and the session list show a peer only the sources it reaches (a name it may not 
   adds the system's dynamic linker (or the file `[providers] ld_so` names, which only the lowest layer sets) to what the node
   runs, a C library that shares the process with the node's own, a handler on signal 33, and threads the node did not
   start. Its code has had no security review yet.
+- **An ssh source's desktop is the machine's X display.** With `x11_display` set, a peer holding `gui.view` sees the machine's X screen
+  and a peer holding `gui.input` types and clicks on it, as the account the source logs in as could; the cookie `xauth list` gives is
+  read through the login and used only to connect. The node does not ask the machine's login session whether its screen is locked
+  (the source `lacks` `lock_detection`), so a lock screen is shown and typed at like any window. The X socket's own permissions are the
+  account's. The backend reaches the display through a loopback connection of the node, made and accepted in one step and bridged only
+  if the connection that arrives is the node's own, so another account on the node cannot take it.
+- **X forwarding gives a program on the machine the node's display.** `x11_forward = true` (with `x11_trusted = true`, which it needs)
+  lets every program an ssh source starts connect to the node's X display as a trusted client: it can read every window, capture the
+  screen, type into other programs and set the clipboard, as `ssh -Y` allows. The host's `sshd` gives each program a random cookie that
+  the node checks (in constant time) and replaces with the display's own before the first byte reaches the display; a program on the
+  machine that does not hold the cookie is closed. `x11_max_connections` (`64`) bounds the connections; one past it is refused.
+  A peer that may start programs on the source (`exec`, `shell`) can therefore act on the node's desktop: give it the source only where
+  that is acceptable. The node's own display is not reached by anything else through this.
 - **Files on an ssh source are confined by path, not by handle.** A peer's `fs_root`s name directories **of the machine behind the source**
   and the node checks every path against them lexically, as it does for its own files. The source `lacks` `confined`: the server resolves
   each name on every call, so a symbolic link inside a root (one the machine has, or one the peer makes with `symlink`) can lead out of it,
