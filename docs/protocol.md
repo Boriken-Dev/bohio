@@ -851,8 +851,9 @@ pair-reply    = { armed: { pin: text, lifetime_ms: uint } }        ; first, alwa
               / { ended: { reason: text } }
 links-request = { ? wait_ms: opt<uint> }                           ; empty metadata is the same as {}
 links-reply   = { links: [* link-entry] }                          ; oldest first
-providers-reply = { check_access: bool, libraries: [* library-entry] }  ; the order of [providers] paths
+providers-reply = { check_access: bool, libraries: [* library-entry], ? programs: [* program-entry] }  ; libraries in the order of [providers] paths, programs in the order written
 library-entry = { path: tstr, state: "loaded" / "skipped" / "failed", detail: tstr, ? digest: tstr }
+program-entry = { name: tstr, path: tstr, state: "running" / "failed", detail: tstr, ? digest: tstr, ? restarts: uint }
 link-entry    = { peer: text, side: "dialed" / "answered", ? endpoint: opt<text>, ? source: opt<text>,
                   since: uint, ? mine: [* text], ? theirs: opt<[* text]> }
 ```
@@ -861,7 +862,7 @@ link-entry    = { peer: text, side: "dialed" / "answered", ? endpoint: opt<text>
 
 `bohio-links/1`: the open's metadata is a `links-request`; the node sends one `links-reply`, then finishes the stream. `mine` is what this node offers that peer now, `theirs` what the peer's `link/1` document offered when read just now (absent when it did not answer within `wait_ms`, default the node's `[link] proof_timeout`), `since` is in seconds since the Unix epoch, and `side` says which end dialed.
 
-`bohio-providers/1`: no metadata; the node sends one `providers-reply` (`check_access`, and a `library-entry` for each library of `[providers] paths`: `path`, `state` `loaded`, `skipped` or `failed`, `detail`, `digest` `sha256:` and 64 hex digits when the file was read), then finishes the stream. Empty `libraries` when `[providers] paths` is empty.
+`bohio-providers/1`: no metadata; the node sends one `providers-reply` (`check_access`, and a `library-entry` for each library of `[providers] paths`: `path`, `state` `loaded`, `skipped` or `failed`, `detail`, `digest` `sha256:` and 64 hex digits when the file was read), then finishes the stream. Empty `libraries` when `[providers] paths` is empty. A `program-entry` is one `[[providers.program]]` as the node knows it when asked (`state` `running`, or `failed` with how it ended in `detail`; `restarts` the times it was started again).
 
 `bohio-pair/1`: the open's metadata is a `pair-request`. The node arms one PIN, in memory, replacing the one armed before (that request then ends as `replaced`), and sends `armed` with the PIN and how long it lasts (`lifetime_ms` of the request, else `[pairing] timeout`). A joiner on any of the node's listeners may then try it; when a peer pairs the node writes its `[peer.<id>]` table, holding nothing, and sends `paired`; otherwise it sends `ended` with why (expired, used up by `max_attempts` wrong guesses, replaced, or withdrawn) and finishes the stream. A client that closes the stream withdraws the PIN. A node that cannot pair answers `ended` at once. The PIN is in no log or event.
 

@@ -32,5 +32,10 @@ ended on the far end. A line has no end of stream: `exit` is `None` and `read` a
 
 As a library: `providers/terminal/serial/plugin/` (`bohio-provider-serial-plugin`, a `cdylib`) is this provider behind one `providers!` line, loaded with `[providers] paths`; `crates/bohio/tests/plugins.rs` loads it.
 
+As a program: `examples/serial_program.rs` (`cargo build -p bohio-provider-serial --example serial_program`) serves this provider over its
+standard input and output as the provider `serial-program`, for `[[providers.program]]`. A provider a program serves is one instance
+configured where it runs, so the source's settings are the program's arguments, each `--KEY VALUE` (`--path /dev/ttyUSB0 --baud_rate 9600`),
+and the node's `[source.<name>]` is `provider = "serial-program"` alone. `crates/bohio/tests/programs.rs` runs it over `socat` pseudo-terminals.
+
 Tests: `crates/bohio/tests/console.rs` runs a peer against the source over a pair of pseudo-terminals from `socat` (Unix; `SKIPPED` when it is
 not installed) and an in-memory source on every platform; Windows has no COM port to open here.

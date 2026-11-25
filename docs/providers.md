@@ -234,6 +234,54 @@ path = "/dev/ttyUSB0"
   (the entry symbols it writes are `no_mangle`, so it does not take the workspace's `unsafe_code = "forbid"`). A node built with
   feature `serial` already has `serial`; build without it (`--no-default-features --features cli`) to serve it from the library.
 
+### Provider programs
+
+A provider can also be a **program**: a file the node starts as a child and talks to over the child's standard input and
+output, in guatiao's remote protocol. Nothing of the program is shared with the node but those two pipes, so it is written in
+any language, built any way and linked to any C library, and one that crashes ends only its own link. Nothing starts unless a
+`[[providers.program]]` entry names it.
+
+```toml
+[[providers.program]]
+name = "echo"                          # optional; default program-1, program-2, ...
+command = ["/opt/bohio/program_echo", "--prefix", ">> "]   # the program's file, then its arguments
+# env = { NAME = "value" }             # added to the node's own environment; values are never logged
+# cwd = "/var/lib/bohio"               # the child's working directory; default the node's own
+
+[source.echo]
+provider = "program-echo"              # a provider a program offers is named like any other
+```
+
+- **The program serves guatiao.** It speaks the protocol of `guatiao-source-remote` on its standard input and output: the
+  `guatiao-remote-server --stdio` binary (it hosts libraries with `--load FILE`), a Rust program that serves a registry
+  (`crates/bohio/examples/program_echo.rs` is a whole one, and `providers/terminal/serial/examples/serial_program.rs` serves the
+  serial console as one), or anything that speaks the framed protocol in another language. Nothing else may be written to its
+  standard output; its standard error is the node's.
+- **A provider a program serves is one instance.** It is configured where it runs (its arguments, its environment, its own
+  files), so a `[source.<name>]` that names it takes `provider` and nothing else: another key is refused naming it, as one a
+  provider does not know is.
+- **Reading the file starts nothing.** A node starts each program when it starts and lists what it offers; `[source.*]` tables
+  that name a provider only a program offers are checked then, not when the file is read, as for a library.
+- **The program is a file, not a name on `PATH`.** `command[0]` is looked for as written (an absolute path, or one relative to
+  the node's working directory); a name that is no file reports the entry `failed`.
+- **A program that exits is reported and started again.** The report says how it ended (`bohio providers` prints
+  `failed program NAME PATH the program exited (exit code: 3) (sha256:..., 0 restarts)`). A call in flight when it ends fails, as
+  does any call on its old sessions; the node stays up. The next time a source is looked up (the next request that uses one),
+  an entry that exited is started again, its sources are built anew, and a new session works. Starts are bounded by settings:
+  at most `restart_limit` (default `5`; `0` never starts it again) in `restart_window` (`1m`), at least `restart_delay`
+  (`1s`) after it exited. Past the limit the entry stays `failed` until the node is restarted.
+- **A program that never speaks is ended.** `start_timeout` (`10s`) is how long it has to send its first message; the node
+  starts all the same, with the entry `failed`. `stop_grace` (`500ms`) is how long it has to leave once the node closes its
+  input, before it is ended. `call_timeout` (`30s`, `0` waits for good) bounds one call, `max_calls` (`64`) the calls running at
+  once and `max_frame` (`67108864`) the largest frame read from it.
+- **The owner check covers the program.** A program file, or the directory that holds it, that another account owns or may
+  write is refused (`failed`, `refused: ...`) while `[providers] check_access` is `true`; `false` runs it and logs
+  `non-default:`. A program's own descendants are its own concern: the node ends the program, not what it started.
+- **It costs a process and a pipe.** A call goes through two pipes and the protocol's framing, with a thread wake-up at each end,
+  instead of a function call, so a call is slower than one into a provider in the node's own process by about the cost of a
+  round trip through a pipe. `the_cost_of_a_call_in_process_and_over_a_child_is_measured` in `crates/bohio/tests/programs.rs`
+  prints both for a trivial write on your machine (`cargo test -p bohio --test programs -- --nocapture cost`).
+
 ### What is not offered yet
 
 Pinning a library by SHA-256 (refusing a file whose digest is not the one named, checked on the bytes that are mapped) is not

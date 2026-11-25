@@ -180,7 +180,8 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[providers] dlopen` | `auto` | which loader maps a library: `auto` (the system's `ld.so` and glibc on a static Linux build, the platform's loader elsewhere), `system` (never the foreign one: a static build then loads nothing) or `foreign` (always it); not `auto` logs `non-default:` |
 | `[providers] ld_so` | unset | the dynamic linker the foreign loader enters when it is not at the usual path (`/lib64/ld-linux-x86-64.so.2`, `/lib/ld-linux-aarch64.so.1`); mapped and run, so only the lowest layer sets it; the first start's value holds for the process |
 | `[providers] allow_reserved_signal_handlers` | `false` | start the foreign loader though the node handles signal 32 or 33, which it takes; `true` logs `non-default:`; only the lowest layer sets it |
-| `[providers] check_access` | `true` | refuse a library, or the directory holding it, that another account owns or may write; `false` loads it and logs `non-default:`; only the lowest layer sets it |
+| `[[providers.program]]` | none | provider programs started as children over their standard input and output (guatiao's remote protocol; any language, any build): `command` (the program's file, then its arguments; no `PATH` lookup; required), `name` (default `program-N`), `env`, `cwd`, `restart_limit` (`5`; `0` never), `restart_window` (`1m`), `restart_delay` (`1s`), `start_timeout` (`10s`, not zero), `stop_grace` (`500ms`), `call_timeout` (`30s`; `0` waits), `max_calls` (`64`), `max_frame` (`67108864`). A provider it offers is one instance, so a `[source.<name>]` naming it takes `provider` alone. A program that exits is `failed` with how it ended and is started again at the next source lookup, within the limit |
+| `[providers] check_access` | `true` | refuse a library or a provider program, or the directory holding it, that another account owns or may write; `false` loads it and logs `non-default:`; only the lowest layer sets it |
 | `[sessions] queue_frames` | `16` | frames of a program's output that may wait before the session takes them; at least 1 |
 | `[shell] enabled` | `true` | whether shell sessions are opened |
 | `[shell] max_sessions` | `8` | concurrent sessions across peers; at least 1 |
@@ -447,8 +448,8 @@ impl Sources {
     pub fn from_config(source: &SourceTables, access: &AccessConfig) -> Result<Self, (String, String)>;   // (key, why)
     pub fn unconfigured() -> Self;                                                  // no source, not even native; built-in providers registered
     pub fn register_library(&self, name, describe) -> Result<(), String>;           // a linked guatiao library (`local_providers!`)
-    pub fn load_libraries(&self, config: &ProvidersConfig) -> ProvidersReport;   // maps [providers] paths into the registry (Node::new does, before it builds the sources); a library never replaces a built-in provider id
-    pub fn libraries(&self) -> ProvidersReport;    // what the start did: { check_access, libraries: Vec<Library { path, state: Loaded|Skipped|Failed, detail, digest: Option<"sha256:..">  }> }
+    pub fn load_libraries(&self, config: &ProvidersConfig) -> ProvidersReport;   // maps [providers] paths and starts [[providers.program]] into the registry (Node::new does, before it builds the sources); a library never replaces a built-in provider id
+    pub fn libraries(&self) -> ProvidersReport;    // what the start did: { check_access, libraries: Vec<Library { path, state: Loaded|Skipped|Failed, detail, digest: Option<"sha256:..">  }>, programs: Vec<Program { name, path, state: Running|Failed, detail, digest, restarts }> (live: an exit is noticed here) }
     pub fn reconfigure(&self, source, access) -> Result<(), (String, String)>;      // unchanged tables keep their instance; a changed one is rebuilt and the old retired
     pub fn with_terminal / with_desktop / with_power / with_media(self, name, Arc<dyn Kind>) -> Self;   // an embedder's own source; add_terminal/add_desktop on &self
     pub fn with_access(self, Capability, names) -> Self;
