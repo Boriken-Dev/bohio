@@ -349,3 +349,6 @@ pub fn media(source: &dyn MediaSource, settings: &ContractSettings) {
     );
     let _ = slots;
 }
+
+mod files;
+pub use files::files;

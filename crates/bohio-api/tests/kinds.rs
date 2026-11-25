@@ -34,8 +34,8 @@ const HASHES: [(&str, u32); 13] = [
     ("block_reader", 3_458_871_641),
     ("exec", 3687812134),
     ("exec_process", 3762830037),
-    ("files", 1313677026),
-    ("directory", 1491948299),
+    ("files", 3433662462),
+    ("directory", 4168229759),
     ("dir_reader", 3339468807),
     ("file", 316669372),
 ];

@@ -364,6 +364,9 @@ pub struct DirEntryModel {
     pub name: String,
     /// What the entry is (a link is not followed), when the listing carried it; absent, the host asks.
     pub stat: Option<FileStat>,
+    /// The name is not text: `name` is a lossy rendering the host cannot use to reach the entry, and it skips it.
+    #[map(default)]
+    pub unnamed: bool,
 }
 
 /// How a file is opened.
@@ -385,6 +388,9 @@ pub struct OpenModel {
     /// Cut the file to nothing.
     #[map(default)]
     pub truncate: bool,
+    /// Every write goes to the end of the file, whatever offset it names.
+    #[map(default)]
+    pub append: bool,
     /// Permission bits of a file made, where the system has them.
     pub mode: Option<u32>,
 }
