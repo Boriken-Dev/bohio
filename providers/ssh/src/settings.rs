@@ -94,6 +94,15 @@ pub struct SshSettings {
     /// Threads of the runtime that drives the connection. At least 1. Default `2`.
     #[map(default = 2)]
     pub worker_threads: u64,
+    /// The SFTP requests of one file kept in flight at once: reads ahead and writes behind. Throughput over a slow link is
+    /// this many requests per round trip, and the host holds this many packets of a file in memory. At least 1.
+    /// Default `16`.
+    #[map(default = 16)]
+    pub sftp_in_flight: u64,
+    /// The bytes of data one SFTP read or write request carries. The server's own limit (`limits@openssh.com`) caps it.
+    /// At least 1. Default `32768`.
+    #[map(default = 32_768)]
+    pub sftp_packet: u64,
 }
 
 /// A time: a number and `ms`, `s`, `m` or `h`; a bare number is seconds.
@@ -138,6 +147,8 @@ pub(crate) struct Settings {
     pub exit_grace: Duration,
     pub queue_chunks: usize,
     pub worker_threads: usize,
+    pub sftp_in_flight: usize,
+    pub sftp_packet: usize,
 }
 
 /// The account's home directory, from the environment.
@@ -183,6 +194,8 @@ impl SshSettings {
             exit_grace: "1s".to_owned(),
             queue_chunks: 16,
             worker_threads: 2,
+            sftp_in_flight: 16,
+            sftp_packet: 32_768,
         }
     }
 
@@ -277,6 +290,8 @@ impl SshSettings {
             exit_grace: time("exit_grace", &self.exit_grace, true)?,
             queue_chunks: count("queue_chunks", self.queue_chunks)?,
             worker_threads: count("worker_threads", self.worker_threads)?,
+            sftp_in_flight: count("sftp_in_flight", self.sftp_in_flight)?,
+            sftp_packet: count("sftp_packet", self.sftp_packet)?,
         })
     }
 

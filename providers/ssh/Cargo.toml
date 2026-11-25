@@ -16,6 +16,7 @@ publish = false
 [dependencies]
 bohio-api.workspace = true
 russh.workspace = true
+russh-sftp.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 

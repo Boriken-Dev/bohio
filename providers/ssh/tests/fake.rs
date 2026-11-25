@@ -669,3 +669,207 @@ fn the_exec_contract_holds_against_the_fake_server() {
         &bohio_api::contract::ContractSettings::default(),
     );
 }
+
+fn scratch_root() -> (tempfile::TempDir, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = shell_path(dir.path());
+    (dir, root)
+}
+
+fn open_root(source: &Ssh, root: &str) -> Object<dyn bohio_api::Directory> {
+    bohio_api::FilesSource::open_dir(source, root).expect("the root opens")
+}
+
+fn file_options(write: bool) -> bohio_api::model::OpenModel {
+    bohio_api::model::OpenModel {
+        read: !write,
+        write,
+        create: write,
+        truncate: write,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn the_files_of_the_source_pass_the_contract_suite() {
+    let server = FakeSsh::start();
+    let source = ssh(server.settings());
+    let (_dir, root) = scratch_root();
+    bohio_api::contract::files(
+        &source,
+        &root,
+        &bohio_api::contract::ContractSettings::default(),
+    );
+    assert_eq!(
+        server.seen.lock().unwrap().connections,
+        1,
+        "one connection serves it"
+    );
+}
+
+#[test]
+fn small_packets_and_a_short_window_pass_the_contract_suite_too() {
+    let server = FakeSsh::start();
+    let mut settings = server.settings();
+    settings.sftp_packet = 1000;
+    settings.sftp_in_flight = 3;
+    let source = ssh(settings);
+    let (_dir, root) = scratch_root();
+    bohio_api::contract::files(
+        &source,
+        &root,
+        &bohio_api::contract::ContractSettings::default(),
+    );
+}
+
+#[test]
+fn a_server_without_the_extensions_says_what_it_lacks_and_refuses_those_calls() {
+    let server = FakeSsh::start_with(Options {
+        sftp: Some(support::Advertise {
+            posix_rename: false,
+            hardlink: false,
+            statvfs: false,
+            fsync: false,
+        }),
+        ..Options::default()
+    });
+    let source = ssh(server.settings());
+    let info = bohio_api::FilesSource::describe(&source).unwrap();
+    assert!(info.available, "{info:?}");
+    for word in ["atomic_replace", "hard_link", "statvfs", "sync", "confined"] {
+        assert!(info.lacks.contains(&word.to_owned()), "{word}: {info:?}");
+    }
+    for word in ["list_stats", "posix_paths", "symlink", "set_mode"] {
+        assert!(info.offers.contains(&word.to_owned()), "{word}: {info:?}");
+    }
+    let (_dir, root) = scratch_root();
+    bohio_api::contract::files(
+        &source,
+        &root,
+        &bohio_api::contract::ContractSettings::default(),
+    );
+}
+
+#[test]
+fn a_server_with_no_sftp_subsystem_is_unavailable_for_files_and_not_for_programs() {
+    need_shell!();
+    let server = FakeSsh::start_with(Options {
+        sftp: None,
+        ..Options::default()
+    });
+    let source = ssh(server.settings());
+    let info = bohio_api::FilesSource::describe(&source).unwrap();
+    assert!(!info.available);
+    assert!(info.reason.unwrap().contains("sftp"));
+    assert_eq!(run(&source, &["true"]).exit.code, Some(0));
+}
+
+#[test]
+fn a_large_file_is_written_and_read_back_with_every_byte() {
+    let server = FakeSsh::start();
+    let source = ssh(server.settings());
+    let (dir, root) = scratch_root();
+    let directory = open_root(&source, &root);
+    let size = 6 * 1024 * 1024 + 123;
+    let content: Vec<u8> = (0..size)
+        .map(|index: usize| (index.wrapping_mul(31) >> 3) as u8)
+        .collect();
+    let file = directory.open_file("big.bin", file_options(true)).unwrap();
+    for (index, block) in content.chunks(100_000).enumerate() {
+        assert_eq!(
+            file.write_at((index * 100_000) as u64, block).unwrap(),
+            block.len() as u64
+        );
+    }
+    file.sync().unwrap();
+    drop(file);
+    assert_eq!(std::fs::read(dir.path().join("big.bin")).unwrap(), content);
+    let file = directory.open_file("big.bin", file_options(false)).unwrap();
+    let mut back = Vec::new();
+    let mut at = 0_u64;
+    let mut buffer = vec![0_u8; 70_000];
+    loop {
+        let got = file.read_at(at, &mut buffer).unwrap();
+        if got == 0 {
+            break;
+        }
+        back.extend_from_slice(&buffer[..usize::try_from(got).unwrap()]);
+        at += got;
+    }
+    assert_eq!(back.len(), content.len());
+    assert!(back == content, "the bytes differ");
+    // A read in the middle, and one past the end.
+    let mut small = [0_u8; 10];
+    assert_eq!(file.read_at(1_000_003, &mut small).unwrap(), 10);
+    assert_eq!(&small, &content[1_000_003..1_000_013]);
+    assert_eq!(
+        file.read_at(content.len() as u64 + 5, &mut small).unwrap(),
+        0
+    );
+}
+
+#[test]
+fn a_listing_is_read_in_pages_with_the_attributes_of_each_entry() {
+    let server = FakeSsh::start();
+    let source = ssh(server.settings());
+    let (dir, root) = scratch_root();
+    for index in 0..10 {
+        std::fs::write(dir.path().join(format!("f{index}")), vec![1_u8; index]).unwrap();
+    }
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    let directory = open_root(&source, &root);
+    let reader = directory.read_dir(".").unwrap();
+    let mut seen = Vec::new();
+    loop {
+        let page = reader.next(4).unwrap();
+        if page.is_empty() {
+            break;
+        }
+        assert!(page.len() <= 4);
+        seen.extend(page);
+    }
+    seen.sort_by(|a, b| a.name.cmp(&b.name));
+    assert_eq!(seen.len(), 11);
+    let sub = seen.iter().find(|entry| entry.name == "sub").unwrap();
+    assert_eq!(sub.stat.as_ref().unwrap().kind, "dir");
+    let f7 = seen.iter().find(|entry| entry.name == "f7").unwrap();
+    assert_eq!(f7.stat.as_ref().unwrap().size, 7);
+}
+
+#[test]
+fn a_dropped_connection_is_remade_for_the_next_file_call() {
+    let server = FakeSsh::start();
+    let source = ssh(server.settings());
+    let (_dir, root) = scratch_root();
+    let directory = open_root(&source, &root);
+    directory.stat(".", true).unwrap();
+    server.disconnect_all();
+    std::thread::sleep(Duration::from_millis(300));
+    // The call that finds the session dead fails; the next one opens another.
+    let mut worked = false;
+    for _ in 0..3 {
+        if directory.stat(".", true).is_ok() {
+            worked = true;
+            break;
+        }
+    }
+    assert!(worked, "the source never recovered");
+    assert!(server.seen.lock().unwrap().connections >= 2);
+}
+
+#[test]
+fn names_that_leave_a_directory_are_refused_before_they_reach_the_host() {
+    let server = FakeSsh::start();
+    let source = ssh(server.settings());
+    let (_dir, root) = scratch_root();
+    let directory = open_root(&source, &root);
+    for name in ["../x", "a/../../x", "/etc/passwd"] {
+        let error = directory.stat(name, true).err().expect("refused");
+        assert_eq!(
+            bohio_api::files::failure_kind(&error),
+            Some("outside_root"),
+            "{name}"
+        );
+    }
+    assert!(bohio_api::FilesSource::open_dir(&source, "relative").is_err());
+}

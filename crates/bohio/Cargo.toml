@@ -121,6 +121,7 @@ russh.workspace = true
 tokio = { workspace = true, features = ["process"] }
 rand = { version = "0.10", default-features = false, features = ["std", "std_rng", "thread_rng"] }
 bohio-provider-ssh.workspace = true
+russh-sftp.workspace = true
 rcgen.workspace = true
 time.workspace = true
 sha2.workspace = true

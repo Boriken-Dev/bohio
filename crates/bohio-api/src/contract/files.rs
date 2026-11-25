@@ -237,7 +237,10 @@ pub fn files(source: &dyn FilesSource, root: &str, settings: &ContractSettings) 
             directory.rename("b.txt", "c.txt", true),
             &[word::UNSUPPORTED],
         );
-        directory.remove_file("b.txt").expect("files: remove_file");
+        directory.remove_file("c.txt").expect("files: remove_file");
+        directory
+            .rename("b.txt", "c.txt", false)
+            .expect("files: rename to a free name");
     }
 
     // Links.

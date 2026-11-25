@@ -3,6 +3,10 @@
 
 #![allow(dead_code)]
 
+mod sftp;
+
+pub use sftp::{Advertise, native};
+
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -51,6 +55,8 @@ pub struct Options {
     pub password: bool,
     /// Whether public-key login is accepted.
     pub keys: bool,
+    /// What the SFTP subsystem advertises; `None` serves no SFTP subsystem.
+    pub sftp: Option<Advertise>,
 }
 
 impl Default for Options {
@@ -59,6 +65,7 @@ impl Default for Options {
             max_sessions: 100,
             password: false,
             keys: true,
+            sftp: Some(Advertise::default()),
         }
     }
 }
@@ -150,6 +157,7 @@ impl FakeSsh {
                     seen: thread_seen,
                     handles: thread_handles,
                     options,
+                    modes: Arc::default(),
                 };
                 tokio::select! {
                     _ = stop => {}
@@ -264,6 +272,7 @@ struct Server {
     seen: Arc<Mutex<Seen>>,
     handles: Arc<Mutex<Vec<russh::server::Handle>>>,
     options: Options,
+    modes: Arc<Mutex<HashMap<PathBuf, u32>>>,
 }
 
 impl russh::server::Server for Server {
@@ -276,6 +285,7 @@ impl russh::server::Server for Server {
             authorized: self.authorized.clone(),
             seen: self.seen.clone(),
             options: self.options.clone(),
+            modes: self.modes.clone(),
             channels: HashMap::new(),
             ptys: HashSet::new(),
             stdin: HashMap::new(),
@@ -290,6 +300,7 @@ struct Connection {
     authorized: PublicKey,
     seen: Arc<Mutex<Seen>>,
     options: Options,
+    modes: Arc<Mutex<HashMap<PathBuf, u32>>>,
     channels: HashMap<ChannelId, Channel<Msg>>,
     ptys: HashSet<ChannelId>,
     stdin: HashMap<ChannelId, ChildStdin>,
@@ -435,6 +446,26 @@ impl russh::server::Handler for Connection {
         if let Some(kill) = self.kill.remove(&channel) {
             let _ = kill.send(());
         }
+        Ok(())
+    }
+
+    async fn subsystem_request(
+        &mut self,
+        channel: ChannelId,
+        name: &str,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        let (Some(advertise), "sftp") = (self.options.sftp, name) else {
+            return session.channel_failure(channel);
+        };
+        let Some(stream) = self.channels.remove(&channel) else {
+            return session.channel_failure(channel);
+        };
+        session.channel_success(channel)?;
+        tokio::spawn(russh_sftp::server::run(
+            stream.into_stream(),
+            sftp::Sftp::new(advertise, self.modes.clone()),
+        ));
         Ok(())
     }
 

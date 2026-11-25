@@ -13,6 +13,7 @@
 
 mod agent;
 mod command;
+mod files;
 mod link;
 mod session;
 mod settings;
@@ -22,7 +23,7 @@ use std::sync::Arc;
 use bohio_api::guatiao::library::{Object, ProviderError};
 use bohio_api::guatiao::{Provider, Status};
 use bohio_api::model::{Delivery, ExecStart, SourceInfo, TerminalExit, TerminalOpen};
-use bohio_api::{ExecSource, Process, Terminal, TerminalSource, vocab};
+use bohio_api::{Directory, ExecSource, FilesSource, Process, Terminal, TerminalSource, vocab};
 use russh::Sig;
 
 use crate::link::{Link, Rt, refuse};
@@ -37,6 +38,7 @@ pub const ID: &str = "ssh";
 #[provider(
     TerminalSource,
     ExecSource,
+    FilesSource,
     id = "ssh",
     name = "ssh",
     crate = ::bohio_api::guatiao,
@@ -44,6 +46,7 @@ pub const ID: &str = "ssh";
 )]
 pub struct Ssh {
     link: Option<Arc<Link>>,
+    files: Option<crate::files::SftpFiles>,
 }
 
 impl TryFrom<SshSettings> for Ssh {
@@ -56,8 +59,12 @@ impl TryFrom<SshSettings> for Ssh {
             tracing::warn!("non-default: ssh source {}: {line}", read.host);
         }
         let rt = Rt::new(read.worker_threads)?;
+        let link = Link::new(read, rt);
         Ok(Self {
-            link: Some(Link::new(read, rt)),
+            files: Some(crate::files::SftpFiles(crate::files::Files::new(
+                Arc::clone(&link),
+            ))),
+            link: Some(link),
         })
     }
 }
@@ -65,6 +72,12 @@ impl TryFrom<SshSettings> for Ssh {
 impl Ssh {
     fn link(&self) -> Result<&Arc<Link>, ProviderError> {
         self.link
+            .as_ref()
+            .ok_or_else(|| ProviderError::new(Status::GUATIAO_ERR_NULL, "no host is configured"))
+    }
+
+    fn sftp(&self) -> Result<&crate::files::SftpFiles, ProviderError> {
+        self.files
             .as_ref()
             .ok_or_else(|| ProviderError::new(Status::GUATIAO_ERR_NULL, "no host is configured"))
     }
@@ -135,6 +148,27 @@ impl TerminalSource for Ssh {
         };
         let session = link.rt.block_on(Session::start(link, open))?;
         Ok(Term(session).into_object())
+    }
+}
+
+impl FilesSource for Ssh {
+    fn describe(&self) -> Result<SourceInfo, ProviderError> {
+        Ok(self.sftp()?.describe())
+    }
+
+    fn open_dir(&self, path: &str) -> Result<Object<dyn Directory>, ProviderError> {
+        FilesSource::open_dir(self.sftp()?, path)
+    }
+
+    fn rename_across(
+        &self,
+        from_root: &str,
+        from: &str,
+        to_root: &str,
+        to: &str,
+        overwrite: bool,
+    ) -> Result<(), ProviderError> {
+        FilesSource::rename_across(self.sftp()?, from_root, from, to_root, to, overwrite)
     }
 }
 

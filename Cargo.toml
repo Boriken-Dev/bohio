@@ -126,6 +126,8 @@ arboard = { version = "3.7", default-features = false }
 russh = { version = "0.65", default-features = false, features = ["ring", "rsa"] }
 # The runtime the `ssh` provider drives russh with, one small pool for each source; the rest of the node is threads.
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "net", "io-util", "sync", "time"] }
+# The SFTP client of the `ssh` provider's files: the raw session, so each request is the provider's own.
+russh-sftp = "4"
 # Tests: scratch directories that remove themselves.
 tempfile = "3"
 # The provider kinds (guatiao): terminal, desktop, power and media sources. The family pins one guatiao revision.
