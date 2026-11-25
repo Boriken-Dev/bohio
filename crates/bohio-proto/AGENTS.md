@@ -17,7 +17,7 @@ pub const CONTROL: &str = "bohio/1";   pub const EXEC: &str = "bohio-exec/1";   
 pub const READ: &str = "bohio-read/1"; pub const WRITE: &str = "bohio-write/1"; pub const HASH: &str = "bohio-hash/1"; pub const WALK: &str = "bohio-walk/1"; pub const SEARCH: &str = "bohio-search/1";
 pub const ATTACH: &str = "bohio-attach/1";   // a detached session's output from an offset, then live
 pub const GUI: &str = "bohio-gui/1"; pub const POWER: &str = "bohio-power/1"; pub const MEDIA: &str = "bohio-media/1";
-pub const CONNECT: &str = "bohio-connect/1"; pub const TCP: &str = "tcp/1"; pub const LISTEN: &str = "bohio-listen/1"; pub const ACCEPT: &str = "bohio-accept/1";   // `tcp/1` is coqui-link's: metadata is the text HOST:PORT, raw bytes at once, no answer
+pub const CONNECT: &str = "bohio-connect/1"; pub const TCP: &str = "tcp/1"; pub const LISTEN: &str = "bohio-listen/1"; pub const ACCEPT: &str = "bohio-accept/1";   // `tcp/1` is cabuya's: metadata is the text HOST:PORT, raw bytes at once, no answer
 ```
 
 One stream per operation; the stream's open metadata is the request (CBOR). `PROTOCOL_VERSION` is `1`.

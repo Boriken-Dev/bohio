@@ -7,7 +7,7 @@ A node is made from four things the application supplies:
 | What | Type | Where it comes from |
 | --- | --- | --- |
 | Settings | `bohio::node::NodeConfig` | any section of the application's settings (serde, `deny_unknown_fields`), or `NodeConfig::default()` |
-| Identity | `coqui_link::auth::Identity` | the application's own store, as a PKCS#8 PEM |
+| Identity | `cabuya::auth::Identity` | the application's own store, as a PKCS#8 PEM |
 | Who is a peer | an `Arc<dyn bohio::node::Keys>` | the application's list of accepted keys |
 | What each peer may do | an `Arc<dyn bohio::node::Grants>` | the application's grants, as `bohio::policy::Grant` values |
 

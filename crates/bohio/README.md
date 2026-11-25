@@ -21,7 +21,7 @@ Documentation: <https://docs.rs/bohio>.
   remove `PATH` or clear the environment. `git`, `make`, `find` and interpreters still run whatever they are given,
   so list only programs that are safe with every argument.
 - An authenticated link over TCP (`bohio serve`, `bohio pair`, `bohio join`, `bohio remote`): each side proves a key to the
-  other with [`coqui-link`](https://github.com/Boriken-Dev/coqui-link) (Noise by default); a key the host has not accepted is
+  other with [`cabuya`](https://github.com/Boriken-Dev/cabuya) (Noise by default); a key the host has not accepted is
   refused and waits for `bohio peer approve`; each stream a peer opens is decided from the peer's `[peer.<id>]` table in `bohio.cfg` when it opens and every
   `[link] recheck` while it runs, so a revoke ends running processes, shells and transfers.
 - Memory per link is bounded by `[link]` settings (a credit window per stream, a queue per direction, a read-ahead), never by

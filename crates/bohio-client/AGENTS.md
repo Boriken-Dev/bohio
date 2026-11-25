@@ -4,7 +4,7 @@ Header-file-style reference for the `bohio-client` crate: every public item with
 crate can be used without reading its source. It ships inside the package and is self-contained. Development documentation lives
 with the source at <https://github.com/Boriken-Dev/bohio>.
 
-Cargo features: `zstd` (decode zstd), `screen` (the compositor of a watch: `bohio-transfer/screen`). MSRV Rust 1.89. Depends on `bohio-proto`, `coqui-transport` (with `process`), `coqui-link` (with `sealed`), `coqui-peer`, `coqui-transport-pipe` (`channel`), `coqui-transport-web` (`websocket`, `webtransport`), `coqui-peer-tls`, `rustls` and
+Cargo features: `zstd` (decode zstd), `screen` (the compositor of a watch: `bohio-transfer/screen`). MSRV Rust 1.89. Depends on `bohio-proto`, `coqui-transport` (with `process`), `cabuya` (with `sealed`), `coqui-peer`, `coqui-transport-pipe` (`channel`), `coqui-transport-web` (`websocket`, `webtransport`), `coqui-peer-tls`, `rustls` and
 `coqui-transport-serial` (each a git revision, one copy), `url`, `socket2`, `serde`, `serde_json`, `tracing` and `thiserror`. Version
 `0.0.0-alpha.0`, not published.
 
@@ -16,7 +16,7 @@ Imports: the root holds `Open` and `Error`. Public modules: `connect`, `control`
 
 ```rust
 pub trait Open: Send + Sync {
-    fn open(&self, protocol: &str, metadata: &[u8]) -> Result<Box<dyn LinkStream>, Error>;   // a stream named `protocol` whose open carries `metadata`; coqui_link::mux::LinkStream is a Channel that can also `finish` (half-close), say how much of it is left (`life`) and `close_with` a reason
+    fn open(&self, protocol: &str, metadata: &[u8]) -> Result<Box<dyn LinkStream>, Error>;   // a stream named `protocol` whose open carries `metadata`; cabuya::mux::LinkStream is a Channel that can also `finish` (half-close), say how much of it is left (`life`) and `close_with` a reason
     fn open_with(&self, protocol: &str, metadata: &[u8], options: &OpenOptions) -> Result<Box<dyn LinkStream>, Error>;   // provided: `open`, ignoring the options
     fn bulk_window(&self) -> Option<u32>;                          // provided: None; what `Reader::start` asks for, `Some` only when above the link's `window`
     fn is_up(&self) -> bool;                                       // provided: true; whether the link can still open streams (a local listener of a forward ends when it cannot)
@@ -47,7 +47,7 @@ pub mod reply { pub const SUCCEEDED: u8 = 0; FAILURE = 1; NOT_ALLOWED = 2; UNREA
 ## Forward (`bohio_client::forward`)
 
 ```rust
-pub use bohio_proto::forward::{ConnectRequest, Connected, Target};   pub use coqui_link::forward::Options;   // Options: chunk, stalled, idle_min/idle_max, watch, listen_poll, connect_timeout (the host's); validate() refuses zeros
+pub use bohio_proto::forward::{ConnectRequest, Connected, Target};   pub use cabuya::forward::Options;   // Options: chunk, stalled, idle_min/idle_max, watch, listen_poll, connect_timeout (the host's); validate() refuses zeros
 #[non_exhaustive] pub struct ForwardSettings { pub options: Options, pub answer_timeout: Duration /*30 s*/, pub max_connections: usize /*64, a local listener's*/,
     pub open_retry: Duration /*10 s; zero never retries*/, pub open_retry_interval: Duration /*100 ms, moved by up to a quarter of itself*/, pub wait_for_link: Duration /*30 s*/,
     pub socks_timeout: Duration /*10 s; a SOCKS5 client's whole handshake; not zero*/ }   // Default, Copy
@@ -58,7 +58,7 @@ impl Tunnel {
     pub fn address(&self) -> Option<&str>;                      // the address the host's TCP connection reached
     pub fn stream(&self) -> &dyn LinkStream;                    // raw messages both ways; finish() half-closes; finished_by_peer() tells the target's end from a cut
     pub fn into_stream(self) -> Box<dyn LinkStream>;
-    pub fn pump_tcp(self, connection: &TcpStream);              // coqui_link::forward::pump_with over the stream, until both directions end
+    pub fn pump_tcp(self, connection: &TcpStream);              // cabuya::forward::pump_with over the stream, until both directions end
     pub fn pump_ipc(self, connection: coqui_transport_pipe::Stream);   // forward::ipc::pump
     pub fn bridge(self, input: impl Read + Send + 'static, output: &mut dyn Write) -> Result<(), Error>;   // netcat: input's end is a half-close; ends when the host's direction does; Ok only for a finish; input is read on a thread that may outlive the call
 }
@@ -112,7 +112,7 @@ pub struct Relink;   impl Relink { pub fn new(links: Arc<dyn Links>, wait: Durat
 pub struct Reconnecting;   impl Reconnecting { pub fn start(first: Arc<dyn Open>, make: Make, backoff: Backoff, poll: Duration, report: Box<dyn Fn(&Kept) + Send + Sync>) -> Self; pub fn current(&self) -> Option<Arc<dyn Open>> }   // Links; a thread makes the next link with `make` after each Backoff wait once the held one is not up; Drop stops it
 #[non_exhaustive] pub enum Kept { Lost, Failed { reason: String, retry_in: Duration }, Restored }   // what `report` hears, on the thread
 pub type Make = Box<dyn Fn() -> Result<Arc<dyn Open>, String> + Send + Sync>;
-pub struct connect::Cause;   // Clone, Default: Cause::unknown(); end() -> Option<StreamEnd>; over_a_limit() -> bool (the host refused the open with the text `connect::OVER_A_LIMIT`, "over a limit", which coqui-link writes for max_pending_opens, max_streams, max_per_protocol and max_opens_per_minute); Opened::cause() gives one
+pub struct connect::Cause;   // Clone, Default: Cause::unknown(); end() -> Option<StreamEnd>; over_a_limit() -> bool (the host refused the open with the text `connect::OVER_A_LIMIT`, "over a limit", which cabuya writes for max_pending_opens, max_streams, max_per_protocol and max_opens_per_minute); Opened::cause() gives one
 ```
 
 A listener of `-L` over a `Relink` stays up while the link is away, and a connection that arrives then waits for it; `RemoteForward` and a `listen` over a `Reconnecting` are asked for again by whoever holds them (`bohio::forward::keep_remote`).
@@ -408,7 +408,7 @@ pub fn split_command(line: &str) -> Result<Vec<String>, String>;                
 | `serial://PORT[?baud=N&data_bits=N&parity=P&stop_bits=N&flow_control=F]` | `PORT` is a device path or `COM3`; `parity` is `none`, `odd`, `even`; `flow_control` is `none` or `hardware` |
 | `stdio://PROGRAM ARG...` | the program is run directly with its standard streams as the channel |
 
-Every channel `dial` returns holds the peer to one message of `coqui_link::auth::MAX_PROOF_MESSAGE` until the proof raises the bound to
+Every channel `dial` returns holds the peer to one message of `cabuya::auth::MAX_PROOF_MESSAGE` until the proof raises the bound to
 `Settings::record_length` (`max_frame + 5` plus the seal), so a carrier's own message bound must allow that: a stream channel, a WebSocket and
 a COBS channel all follow the proof's `set_max_message`. A serial line has no end of stream: closing it sends nothing, so the host learns the
 link ended from the mux's close frames, and a first message sent to a host that is reopening its port is lost (try again).
@@ -418,9 +418,9 @@ link ended from the mux's close frames, and a first message sent to a host that 
 ```rust
 pub struct Connection;                                            // Debug; Open; Drop ends the link and every stream
 impl Connection {
-    pub fn connect(endpoint: &Endpoint, timeout: Duration, proof: &coqui_link::auth::Proof, settings: &Settings) -> Result<Self, Error>;   // any transport
-    pub fn connect_with(endpoint: &Endpoint, timeout: Duration, proof: &coqui_link::auth::Proof, settings: &Settings, trust: &ServerTrust) -> Result<Self, Error>;   // connect() with a TLS trust
-    pub fn connect_tcp(address: SocketAddr, timeout: Duration, proof: &coqui_link::auth::Proof, settings: &Settings) -> Result<Self, Error>;   // connect() for tcp
+    pub fn connect(endpoint: &Endpoint, timeout: Duration, proof: &cabuya::auth::Proof, settings: &Settings) -> Result<Self, Error>;   // any transport
+    pub fn connect_with(endpoint: &Endpoint, timeout: Duration, proof: &cabuya::auth::Proof, settings: &Settings, trust: &ServerTrust) -> Result<Self, Error>;   // connect() with a TLS trust
+    pub fn connect_tcp(address: SocketAddr, timeout: Duration, proof: &cabuya::auth::Proof, settings: &Settings) -> Result<Self, Error>;   // connect() for tcp
     pub fn over<C: Channel + 'static>(channel: C, proof: &Proof, settings: &Settings) -> Result<Self, Error>;   // an unproven channel to the host
     pub fn through(link: Arc<dyn Open>, endpoint: &Endpoint, proof: &Proof, settings: &Settings, forward: &ForwardSettings) -> Result<Self, Error>;   // a link over a stream the host `link` reaches carries (`ssh -J`): `Tcp` and `Pipe` (a Unix socket, or a Windows pipe named `\.\pipe\NAME`) through `forward::connect`, `Command` as a program run by `bohio-exec/1` with its standard input open (waited until it started, so a refusal is the error); any other endpoint is `Error::Link` naming it. `proof` proves the host at the far end, never the jump: a jump that answers is refused. Keeps `link` up as long as it lives, closed before it
     pub const fn host(&self) -> coqui_peer::PeerId;                // the host's proven id
@@ -437,10 +437,10 @@ impl Opener {
     pub fn open_stream_with(&self, protocol: &str, metadata: &[u8], options: &OpenOptions) -> Result<Opened, Error>;   // a `receive_window` is granted before the stream is returned
     pub fn is_up(&self) -> bool;                                   // false once the link ended or `close` was called
     pub fn close(&self);                                           // closes every stream this opener opened and makes `Opens::run` return
-    pub fn capabilities(&self, wait: Duration) -> Result<coqui_link::link::Capabilities, Error>;   // reads the peer's `link/1` document now, on a thread of the link's
+    pub fn capabilities(&self, wait: Duration) -> Result<cabuya::link::Capabilities, Error>;   // reads the peer's `link/1` document now, on a thread of the link's
 }
 impl Opens {
-    pub fn run<C: Channel>(self, mux: &coqui_link::mux::Mux<'_, C>, settings: &Settings);   // serves open requests, each stream through a bounded relay, until the link leaves Up, `close`, or every Opener is gone; when the link ends, a stream's reader still gets what the stream held and how it ended (a revoke as `Permission`, `Opened::end` the text) for at most `send_limit`, where `close` ends it at once
+    pub fn run<C: Channel>(self, mux: &cabuya::mux::Mux<'_, C>, settings: &Settings);   // serves open requests, each stream through a bounded relay, until the link leaves Up, `close`, or every Opener is gone; when the link ends, a stream's reader still gets what the stream held and how it ended (a revoke as `Permission`, `Opened::end` the text) for at most `send_limit`, where `close` ends it at once
 }
 
 #[non_exhaustive] pub struct Settings { pub max_streams: usize /*64*/, pub proof_timeout: Duration /*10 s*/, pub window: u32 /*1 MiB*/, pub max_window: u32 /*1 MiB*/, pub auto_window: bool /*false*/,
@@ -450,7 +450,7 @@ impl Opens {
     pub send_limit: Duration /*10 s*/, pub send_wait: Duration /*250 ms*/, pub open_wait: Duration /*250 ms; zero: refuse at once*/, pub poll_interval: Duration /*50 ms*/,
     pub heartbeat: Duration /*25 s; zero is off*/, pub heartbeat_misses: u32 /*3; at least 1*/,
     pub accept_wait: Duration /*200 ms: a listener's wait before it looks at its stop flag*/, pub accept_poll: Duration /*20 ms: a non-blocking listener's sleep*/, pub serial_reopen: Duration /*250 ms*/ }   // Default; the host's `[link]` section
-impl Settings { pub fn limits(&self) -> coqui_link::mux::Limits; pub fn record_length(&self, method: coqui_link::auth::Method) -> usize; }
+impl Settings { pub fn limits(&self) -> cabuya::mux::Limits; pub fn record_length(&self, method: cabuya::auth::Method) -> usize; }
 pub fn framed<S: Split, C: Codec>(stream: S, codec: C, settings: &Settings) -> io::Result<StreamChannel>;   // an unproven peer held to one proof-sized message
 pub fn stream<S: Split>(stream: S, settings: &Settings) -> io::Result<StreamChannel>;   // framed with a 4-byte big-endian length: a pipe, a child's streams
 pub fn socket(stream: TcpStream, settings: &Settings) -> io::Result<StreamChannel>;   // stream() with TCP_NODELAY and the TCP buffers `settings` name
@@ -461,8 +461,8 @@ pub fn stdio(settings: &Settings) -> io::Result<StreamChannel>;                 
 pub struct Relay;                                                 // Debug; Channel and LinkStream: an owned, bounded channel over one stream of a link; `finish` is queued behind what is sent, `finished_by_peer` and `life` follow the stream (a peer that finished leaves this side's direction open), `close_with` closes the stream with a reason once what is queued is delivered
 #[derive(Debug)] pub struct Plain<C>(pub C);                      // a Channel as a LinkStream with no half-close: open until closed, finish is Unsupported, close_with closes
 pub fn relay<'scope, 'env, P: Deref + Clone + Send + 'scope>(scope: &'scope thread::Scope<'scope, 'env>, stream: P, settings: &Settings) -> Arc<Relay>
-pub fn relay_with<'scope, 'env, P: Deref + Clone + Send + 'scope, E: Fn(&P::Target) -> Option<coqui_link::mux::StreamEnd> + Send + 'scope>(scope: &'scope thread::Scope<'scope, 'env>, stream: P, settings: &Settings, ended: E) -> Arc<Relay>;   // relay, asking `ended` why the stream ended; Relay::end() -> Option<StreamEnd> gives it
-#[derive(Debug)] pub struct Opened;                                // an Open'ed stream: Channel and LinkStream; end() -> Option<coqui_link::mux::StreamEnd> (a refusal or revoke with the peer's text)
+pub fn relay_with<'scope, 'env, P: Deref + Clone + Send + 'scope, E: Fn(&P::Target) -> Option<cabuya::mux::StreamEnd> + Send + 'scope>(scope: &'scope thread::Scope<'scope, 'env>, stream: P, settings: &Settings, ended: E) -> Arc<Relay>;   // relay, asking `ended` why the stream ended; Relay::end() -> Option<StreamEnd> gives it
+#[derive(Debug)] pub struct Opened;                                // an Open'ed stream: Channel and LinkStream; end() -> Option<cabuya::mux::StreamEnd> (a refusal or revoke with the peer's text)
     where P::Target: LinkStream;
 ```
 

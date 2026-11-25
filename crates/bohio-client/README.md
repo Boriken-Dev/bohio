@@ -25,7 +25,7 @@ so a theater provider, a command line and the host's own tests share one client.
 - `parallel`: one file over several streams and links, `get_parallel`, `put_parallel` and `read_parallel`, each range its own stream with
   its own receive window.
 - `connect::Connection`: a proven connection over TCP (or any coqui channel) that is itself an `Open`: the host and this side
-  prove keys to each other with `coqui-link`, and every operation above then runs on a stream of that link.
+  prove keys to each other with `cabuya`, and every operation above then runs on a stream of that link.
 - Blocking calls with explicit timeouts; every method takes `&self`, so reading and writing can
   run on different threads.
 - Errors keep the host's structured `{code, message}` apart from channel failures.

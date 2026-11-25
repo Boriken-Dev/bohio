@@ -34,7 +34,7 @@ machines and containers. It is an application: the `coqui-*` names are reserved 
 - **Threads, not an async runtime**: one thread per stream, bounded by configuration.
 - **No hard-coded limits**: every bound is a setting in `bohio.cfg` with a documented default.
 - **A proven link**: each side holds a key and proves it to the other (Noise by default) over TCP with
-  [`coqui-link`](https://github.com/Boriken-Dev/coqui-link); a key the host has not accepted waits for
+  [`cabuya`](https://github.com/Boriken-Dev/cabuya); a key the host has not accepted waits for
   `bohio peer approve`. Memory per link is bounded by settings, never by the size of a file.
 
 The filesystem, interactive shells and the authenticated link are built, over TCP, a named pipe or Unix socket,

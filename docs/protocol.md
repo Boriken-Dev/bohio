@@ -9,11 +9,11 @@ A Bohío host serves the protocols in [Protocol names](#protocol-names) over one
 | Layer | What it does | Where it is specified |
 | --- | --- | --- |
 | Carrier | moves whole messages between two endpoints | [Carriers](#carriers) |
-| Proof | shows who holds a key, then seals every message after it | the proof's method, by [`coqui-link`'s page](https://github.com/Boriken-Dev/coqui-link/blob/main/docs/link.md) |
-| Link | named streams over the proven connection, with credit | [`docs/link.md` of coqui-link](https://github.com/Boriken-Dev/coqui-link/blob/main/docs/link.md) |
+| Proof | shows who holds a key, then seals every message after it | the proof's method, by [`cabuya`'s page](https://github.com/Boriken-Dev/cabuya/blob/main/docs/link.md) |
+| Link | named streams over the proven connection, with credit | [`docs/link.md` of cabuya](https://github.com/Boriken-Dev/cabuya/blob/main/docs/link.md) |
 | Bohío | one protocol per kind of operation, each its own messages | this page |
 
-The proof and the link are not repeated here. An implementation takes them from coqui-link's page, which has the proof's methods (`noise` by default, `webcrypto` for a browser), the frame format (`open`, `data`, `more`, `credit`, `finish`, `close`, `ping`, `pong`), stream ids, flow control and limits, and its own vectors in `vectors/mux.json`. Everything below starts after a stream is open.
+The proof and the link are not repeated here. An implementation takes them from cabuya's page, which has the proof's methods (`noise` by default, `webcrypto` for a browser), the frame format (`open`, `data`, `more`, `credit`, `finish`, `close`, `ping`, `pong`), stream ids, flow control and limits, and its own vectors in `vectors/mux.json`. Everything below starts after a stream is open.
 
 A Bohío host answers `open` for a protocol token this page names, if the peer's grant allows it, and answers `close` with `refused` otherwise. A proof admits a peer to the link; it grants no protocol.
 
@@ -53,7 +53,7 @@ A stream's `open` carries a protocol token and metadata. A client ignores a toke
 | `bohio-walk/1` | the entries of whole trees, on one stream | CBOR [`walk-request`](#trees-bohio-walk1) | `fs.read` |
 | `bohio-search/1` | the lines of many files that match a pattern, found on the host | CBOR [`search-request`](#search-bohio-search1) | `fs.read` |
 | `bohio-connect/1` | one connection from the host to a target, then its bytes | CBOR [`connect-request`](#forwarding-bohio-connect1-and-tcp1) | `forward.connect` and a rule that matches the target |
-| `tcp/1` | the same, as [coqui-link](https://github.com/Boriken-Dev/coqui-link) defines it | the text `HOST:PORT` | `forward.connect` and a rule that matches the target |
+| `tcp/1` | the same, as [cabuya](https://github.com/Boriken-Dev/cabuya) defines it | the text `HOST:PORT` | `forward.connect` and a rule that matches the target |
 | `bohio-gui/1` | a view of the host's desktop: snapshots, keyboard and mouse, the clipboard's text | CBOR [`gui-request`](#desktop-bohio-gui1) | one of `gui.view`, `gui.input`, and each thing the request wants |
 | `bohio-listen/1` | one listener the host binds for the peer, each arrival announced on the stream | CBOR [`listen-request`](#remote-forwards-bohio-listen1-and-bohio-accept1) | `forward.listen` and a `listen` rule that matches the bind |
 | `bohio-accept/1` | one arrival of the peer's own listener, then its bytes | CBOR [`accept-request`](#remote-forwards-bohio-listen1-and-bohio-accept1) | `forward.listen` |
@@ -636,7 +636,7 @@ The error codes of a refused connect: `denied` (the grant stopped covering the t
 
 **The grant decides before anything connects.** The peer needs `forward.connect` and a rule of its `[peer.<id>.forward] connect` list that matches the target. A TCP rule is `HOST:PORT`, `HOST` an exact name (lowercase), `*.suffix` (names under it, not the suffix itself), `*` (any target), an address or a CIDR network (an IPv6 one in brackets) and `PORT` a number, a range `A-B` or `*`; a `unix:PATH` or `pipe:NAME` rule matches the text exactly, or with `*` and `?`, which match within one path component. Nothing is resolved to decide: an address or network rule matches only an address target and a name rule only a name target, so `localhost:80` and `127.0.0.1:80` are different targets, and `*` is what covers both. A path with a `..` part never matches. A target the grant does not cover is refused as the stream opens, as any protocol the peer may not use is: the client sees the stream refused (a `Permission` failure) and the host connects to nothing. The grant is asked again at every `[link] recheck`; a peer that loses it has its running connections reset and hears `revoked`.
 
-`tcp/1` is `coqui-link`'s own forward and the host serves it as that crate specifies, under the same grant and `[forward]` bounds, so a `coqui-link` peer (`coqui_link::forward::connect` or `listen`) uses a Bohío host unchanged: the open's metadata is the text `HOST:PORT`, there is no answer before the bytes, and a refusal or a failed connect is a close with a reason. `bohio-connect/1` is what Bohío's client opens, because its `connected` answer is what a SOCKS or `--check` client needs and `tcp/1` has none.
+`tcp/1` is `cabuya`'s own forward and the host serves it as that crate specifies, under the same grant and `[forward]` bounds, so a `cabuya` peer (`cabuya::forward::connect` or `listen`) uses a Bohío host unchanged: the open's metadata is the text `HOST:PORT`, there is no answer before the bytes, and a refusal or a failed connect is a close with a reason. `bohio-connect/1` is what Bohío's client opens, because its `connected` answer is what a SOCKS or `--check` client needs and `tcp/1` has none.
 
 ## Desktop: `bohio-gui/1`
 
@@ -784,7 +784,7 @@ running ends with the same reason.
 
 ### Retrying an open
 
-Nothing on the wire says "try again", and the client does not need it to: a host that is full answers in the words it always had, and a client that was built to wait tells them apart. A host over `[link] max_pending_opens`, `max_streams`, `max_per_protocol` or `max_opens_per_minute` closes the new stream with the reason `refused` and the text `over a limit` (`coqui-link`'s words; a grant's refusal has no such text). A client that sees that, a link whose queue is full when the open is sent, or an answer `busy` to `bohio-connect/1` or `bohio-accept/1`, opens the same stream again every `[forward] open_retry_interval` for `[forward] open_retry`, and only then fails the connection it was opening. A `denied`, a revoke or any other error is final at once, and so is a `busy` answer to `bohio-listen/1` (a kept `remote` entry asks again for the port the host chose, with the `[dial]` waits).
+Nothing on the wire says "try again", and the client does not need it to: a host that is full answers in the words it always had, and a client that was built to wait tells them apart. A host over `[link] max_pending_opens`, `max_streams`, `max_per_protocol` or `max_opens_per_minute` closes the new stream with the reason `refused` and the text `over a limit` (`cabuya`'s words; a grant's refusal has no such text). A client that sees that, a link whose queue is full when the open is sent, or an answer `busy` to `bohio-connect/1` or `bohio-accept/1`, opens the same stream again every `[forward] open_retry_interval` for `[forward] open_retry`, and only then fails the connection it was opening. A `denied`, a revoke or any other error is final at once, and so is a `busy` answer to `bohio-listen/1` (a kept `remote` entry asks again for the port the host chose, with the `[dial]` waits).
 
 ## Sources: console, power, media and `info.access`
 
@@ -824,7 +824,7 @@ off or the source lacks the action), `outside_root`, `busy`, `timeout` (the sour
 
 Nothing is negotiated before a stream opens, and nothing falls back. A client learns what a host does in this order:
 
-1. **The link's `link/1` stream** answers what this peer may open now (`offers`), the authoritative list of protocol tokens, as coqui-link specifies: a token is offered when the answering side's grant for this peer holds a permission it needs. A client does not open a token that is not offered. Either side of a link may ask, and see [Roles](#roles).
+1. **The link's `link/1` stream** answers what this peer may open now (`offers`), the authoritative list of protocol tokens, as cabuya specifies: a token is offered when the answering side's grant for this peer holds a permission it needs. A client does not open a token that is not offered. Either side of a link may ask, and see [Roles](#roles).
 2. **`bohio/1` `hello`** with the client's protocol version; the reply is the version both speak. This page is version 1.
 3. **`bohio/1` `info`** (a peer that holds `info`; `stats` and `which` need it too) reports the host's operating system and architecture, its shells, what its filesystem supports (`symlinks`, `unix_modes`, `windows_attributes`, `case_sensitive`, `separator`), whether `exec` and `shell` are enabled and which signals each delivers, whether it runs detached sessions and what it keeps for one, its limits, and `forward` (whether it forwards and the kinds of target it connects to).
 
@@ -875,7 +875,7 @@ approve-input   = { decide: { id: uint, allow: bool } }
 
 `found` is false for a request that timed out or was answered already. An allowed peer is not asked again on that session for `[gui] approval_ttl`; a denied or unanswered request ends the peer's open with `denied` and the text "not approved". `bohio gui pending`, `allow ID` and `deny ID` speak it.
 
-A joiner on a listener sends one message first, `coqui-link/pairing/1`, which is neither a Noise first message (32 bytes) nor a WebCrypto one (JSON): the node reads the first message of every connection and runs a pairing on that marker and a proof on anything else.
+A joiner on a listener sends one message first, `cabuya/pairing/1`, which is neither a Noise first message (32 bytes) nor a WebCrypto one (JSON): the node reads the first message of every connection and runs a pairing on that marker and a proof on anything else.
 
 ## The GUI helper: `bohio-gui-helper/1`
 
