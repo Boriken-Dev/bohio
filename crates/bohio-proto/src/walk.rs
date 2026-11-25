@@ -27,6 +27,9 @@ use crate::{decode, encode};
 /// described and not followed, is the default.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct WalkRequest {
+    /// The files source that serves it (see `info.access.fs`); the node's default one when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     /// How far below a root to go: `0` is the root alone (a batched `stat`), `1` adds its names, and
     /// absent is the whole tree.
     #[serde(default, skip_serializing_if = "Option::is_none")]

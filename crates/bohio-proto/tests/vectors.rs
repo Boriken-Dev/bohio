@@ -392,7 +392,11 @@ fn control() -> Vec<Case> {
             TO_HOST,
             "message",
             "control.Request",
-            &ControlRequest { id, call },
+            &ControlRequest {
+                id,
+                call,
+                source: None,
+            },
         )
     };
     let response = |name: &str, id: u64, reply: Reply| {
@@ -1844,6 +1848,7 @@ fn walk_cases() -> Vec<Case> {
             "open",
             "walk.Request",
             &WalkRequest {
+                source: None,
                 depth: Some(2),
                 follow: true,
                 include: vec!["**/*.rs".into()],
@@ -1973,6 +1978,7 @@ fn search_cases() -> Vec<Case> {
             "open",
             "search.Request",
             &SearchRequest {
+                source: None,
                 walk: SearchScope {
                     roots: vec!["/srv/docs".into(), "/var/log".into()],
                     depth: Some(3),
@@ -2088,6 +2094,7 @@ fn hash_cases() -> Vec<Case> {
             "open",
             "hash.Request",
             &HashRequest {
+                source: None,
                 algorithms: vec![Algorithm::Md5, Algorithm::Blake3, Algorithm::Xxh128],
                 blocks: Some(BlockOptions {
                     size: Some(2048),

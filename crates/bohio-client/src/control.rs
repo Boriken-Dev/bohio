@@ -42,6 +42,8 @@ pub struct Control {
     send: Mutex<()>,
     pending: Mutex<Pending>,
     arrived: Condvar,
+    /// The files source every call names, when the link names one.
+    source: Option<String>,
 }
 
 impl core::fmt::Debug for Control {
@@ -63,6 +65,7 @@ impl Control {
             send: Mutex::new(()),
             pending: Mutex::new(Pending::default()),
             arrived: Condvar::new(),
+            source: link.files_source().map(str::to_owned),
         })
     }
 
@@ -84,7 +87,11 @@ impl Control {
     pub fn submit(&self, call: Call, timeout: Option<Duration>) -> Result<u64, Error> {
         let _send = locked(&self.send);
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let request = encode(&Request { id, call })?;
+        let request = encode(&Request {
+            id,
+            call,
+            source: self.source.clone(),
+        })?;
         locked(&self.pending).awaiting.insert(id);
         if let Err(failure) = self.channel.send_timeout(&request, timeout) {
             locked(&self.pending).awaiting.remove(&id);

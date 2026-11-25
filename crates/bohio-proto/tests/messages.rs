@@ -107,6 +107,7 @@ fn sample_transfer() -> TransferInfo {
 #[test]
 fn every_control_message_round_trips() {
     round_trips(&ControlRequest {
+        source: None,
         id: 1,
         call: Call::Hello {
             version: 1,
@@ -114,6 +115,7 @@ fn every_control_message_round_trips() {
         },
     });
     round_trips(&ControlRequest {
+        source: None,
         id: u64::MAX,
         call: Call::Info,
     });
@@ -448,7 +450,11 @@ fn every_filesystem_call_and_reply_round_trips() {
         },
     ];
     for (id, call) in (1..).zip(calls) {
-        round_trips(&ControlRequest { id, call });
+        round_trips(&ControlRequest {
+            id,
+            call,
+            source: None,
+        });
     }
     let replies = [
         Reply::Stat(Box::new(sample_metadata())),
@@ -477,6 +483,7 @@ fn every_transfer_message_round_trips() {
         SignatureBatch, WriteDone, WriteInput, WriteMode, WriteOutput, WriteRequest,
     };
     let read = ReadRequest {
+        source: None,
         path: "f".into(),
         offset: 4,
         length: Some(8),
@@ -520,6 +527,7 @@ fn every_transfer_message_round_trips() {
         },
     ] {
         let write = WriteRequest {
+            source: None,
             path: "f".into(),
             mode,
             parents: true,

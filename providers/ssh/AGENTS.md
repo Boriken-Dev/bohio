@@ -1,10 +1,10 @@
 # `bohio-provider-ssh` — API header
 
-Header-file-style reference for the `bohio-provider-ssh` crate: the `ssh` provider of the `bohio_terminal` and `bohio_exec` kinds, with
+Header-file-style reference for the `bohio-provider-ssh` crate: the `ssh` provider of the `bohio_terminal`, `bohio_exec` and `bohio_files` kinds, with
 every setting and gotcha, so it can be configured and embedded without reading its source. Development documentation lives with the
 source at <https://github.com/Boriken-Dev/bohio>.
 
-No Cargo features. MSRV Rust 1.89. Depends on `bohio-api` (the kinds), `russh` (pure Rust over `ring`: no C toolchain, no `aws-lc`),
+No Cargo features. MSRV Rust 1.89. Depends on `bohio-api` (the kinds), `russh` (pure Rust over `ring`: no C toolchain, no `aws-lc`), `russh-sftp` (the files),
 `tokio` (a small runtime for each source) and `tracing`. `#![forbid(unsafe_code)]`. Version `0.0.0-alpha.0`, not published.
 
 Imports: the root holds `Ssh` (the provider), `SshSettings` (its settings; `SshSettings::new(host)` has every default), `ID` (`"ssh"`) and
@@ -34,6 +34,8 @@ Provider id `ssh`. `[source.<name>] provider = "ssh"` and:
 | `exit_grace` | `1s` | how long output and the end of a channel are awaited after the program exited (a descendant can hold the channel open) |
 | `queue_chunks` | `16` | chunks of output held ahead of the reader |
 | `worker_threads` | `2` | threads of the source's runtime |
+| `sftp_in_flight` | `16` | SFTP requests of one file in flight at once (reads ahead, writes behind); over a slow link throughput is this many packets per round trip, and the host holds this many packets of a file in memory; at least 1 |
+| `sftp_packet` | `32768` | bytes of data one SFTP read or write carries; the server's `limits@openssh.com` and 255 KiB cap it; at least 1 |
 
 A key it does not have, or a value that cannot work (a zero timeout, a port of 0, a malformed pin), is refused naming `source.<name>.<key>`
 before the provider is built. Everything else weaker than the default is accepted and logged as `non-default:` by the built-in provider.
@@ -58,13 +60,38 @@ Building the source never touches the network or a key file; the first `describe
 - `describe`: asks for the connection (waiting at most `connect_timeout + operation_timeout`); `available: false` with the reason when it
   fails, and for `reconnect_after` after that without trying again.
 
+## Files (SFTP)
+
+One SFTP session on a channel of the connection (it counts against `max_channels`), opened on first use and again after the connection is
+remade. `open_dir(path)` takes an **absolute POSIX path** of the host; every name below it is joined to it, and a `..` or an absolute
+name is `outside_root` before it reaches the host. `describe` offers `read`, `write`, `symlink`, `set_times`, `set_mode`, `set_readonly`,
+`list_stats` and `posix_paths`, plus what the server's version reply advertises:
+
+| Extension | Offered as | Without it |
+| --- | --- | --- |
+| `posix-rename@openssh.com` | `atomic_replace` (rename over a name in one step) | `rename(.., overwrite)` over an existing name is `unsupported`; to a free name it is the plain rename |
+| `hardlink@openssh.com` | `hard_link` | `unsupported` |
+| `statvfs@openssh.com` | `statvfs` | `unsupported` |
+| `fsync@openssh.com` | `sync` | `unsupported` (the library alone would skip it silently) |
+
+It **lacks `confined`**: the server resolves each name by path on every call, so a symbolic link inside a directory can lead out of it. The
+node's own check (a path is under one of the peer's `fs_roots`) is lexical and holds; a link a peer can make with `symlink` (or one the
+machine has) is the machine's to police. SFTP version 3 has no "exists" or "not empty" status: the provider asks the server (`lstat`,
+`readdir`) to tell `exists`, `not_empty`, `is_a_directory` and `not_a_directory` from a plain failure. Times are whole seconds (the protocol
+has no more) and are set both at once (the one left alone is read first); read-only is the write bits of the mode. `remove_dir_all` walks the
+tree on the client and never follows a link. A file reads ahead and writes behind by `sftp_in_flight` packets: a write's failure is told by
+the next call that can (`write_at`, `sync`, `set_len`, `stat`, `read_at`), and a file dropped with writes in flight waits for them before
+its handle is closed. A server without an `sftp` subsystem makes only the files unavailable, with that reason.
+
 ## Gotchas
 
 - Channels count against the server until they are closed: a handle dropped without `kill` or the program's end still holds a slot until the host
   closes the channel (`exit_grace` after the exit).
 - A server accepts only a few failed logins: a wrong key can lock the account's throttle for a while.
 - A write that cannot make progress for `operation_timeout` fails; a connection that stops answering is dropped by `keepalive`.
+- An SFTP session that stops answering fails a request after `operation_timeout`; the next call opens another session.
 - From Windows into WSL's loopback relay a bulk full-duplex transfer has stalled the whole session in measurement: bulk tests run inside WSL.
 
-Tests: `tests/fake.rs` runs the provider against an in-process server (`tests/support/`, needs `sh`); `tests/real_sshd.rs` starts a private no-root
-`sshd` on loopback (on Windows inside WSL `FedoraLinux-44`).
+Tests: `tests/fake.rs` runs the provider against an in-process server (`tests/support/`, with an SFTP subsystem over the real file system; programs need `sh`);
+`tests/real_sshd.rs` starts a private no-root `sshd` on loopback (on Windows inside WSL `FedoraLinux-44`; `BOHIO_TEST_REQUIRE_SSHD=1` makes a missing one a
+failure instead of a skip). Both run `bohio_api::contract::files`.

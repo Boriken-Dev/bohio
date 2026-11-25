@@ -117,6 +117,7 @@ pub fn hash_blocks(
         .ok_or(Error::Protocol(bohio_proto::Error::Decode))?;
     let request = HashRequest {
         algorithms: algorithms.to_vec(),
+        source: None,
         blocks: Some(BlockOptions {
             weak: Some(WEAK_RSYNC.to_owned()),
             ..options.clone()

@@ -38,6 +38,9 @@ pub struct SearchScope {
 /// What a `bohio-search/1` stream does: the open's metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct SearchRequest {
+    /// The files source that serves it (see `info.access.fs`); the node's default one when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     /// The trees to search.
     #[serde(default)]
     pub walk: SearchScope,

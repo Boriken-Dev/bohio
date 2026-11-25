@@ -140,6 +140,9 @@ pub type Digests = BTreeMap<Algorithm, String>;
 /// The options of a `bohio-hash/1` stream: the open's metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HashRequest {
+    /// The files source that serves it (see `info.access.fs`); the node's default one when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     /// The algorithms every item is hashed with, in one pass. At least one.
     #[serde(default)]
     pub algorithms: Vec<Algorithm>,
@@ -152,6 +155,7 @@ impl HashRequest {
     /// A request for `algorithms` of whole files.
     pub fn new(algorithms: impl IntoIterator<Item = Algorithm>) -> Self {
         Self {
+            source: None,
             algorithms: algorithms.into_iter().collect(),
             blocks: None,
         }

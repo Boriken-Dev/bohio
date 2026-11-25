@@ -191,6 +191,9 @@ pub struct Listing {
 /// What a `bohio-read/1` stream asks for: the open's metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadRequest {
+    /// The files source that serves it (see `info.access.fs`); the node's default one when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     /// The file; empty for a bundle, whose files come as items.
     #[serde(default)]
     pub path: String,
@@ -306,6 +309,7 @@ impl ReadRequest {
     /// A request for the whole of `path`.
     pub fn whole(path: impl Into<String>) -> Self {
         Self {
+            source: None,
             path: path.into(),
             offset: 0,
             length: None,
@@ -453,6 +457,9 @@ pub enum WriteMode {
 /// What a `bohio-write/1` stream does: the open's metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WriteRequest {
+    /// The files source that serves it (see `info.access.fs`); the node's default one when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     /// The file.
     pub path: String,
     /// How the bytes are put in place.
@@ -550,6 +557,7 @@ impl WriteRequest {
     /// A request to replace `path` with the data that follows.
     pub fn replace(path: impl Into<String>) -> Self {
         Self {
+            source: None,
             path: path.into(),
             mode: WriteMode::Replace,
             parents: false,

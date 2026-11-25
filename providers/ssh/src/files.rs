@@ -294,12 +294,13 @@ impl Sftp {
         match self.raw.rmdir(path).await {
             Ok(_) => Ok(()),
             Err(error) => {
-                if status_of(&error) == Some(StatusCode::Failure) {
-                    if let Ok(attrs) = self.lstat(path).await {
-                        if !is_dir(&attrs) {
-                            return Err(failure(word::NOT_A_DIRECTORY, "not a directory").into());
-                        }
+                // A name that is not a directory is told as missing by some servers and as a failure by others.
+                if let Ok(attrs) = self.lstat(path).await {
+                    if !is_dir(&attrs) {
+                        return Err(failure(word::NOT_A_DIRECTORY, "not a directory").into());
                     }
+                }
+                if status_of(&error) == Some(StatusCode::Failure) {
                     if self.has_entries(path).await {
                         return Err(failure(word::NOT_EMPTY, "the directory is not empty").into());
                     }

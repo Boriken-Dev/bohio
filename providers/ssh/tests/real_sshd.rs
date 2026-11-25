@@ -560,3 +560,198 @@ fn the_exec_contract_holds_against_a_real_openssh_server() {
         &bohio_api::contract::ContractSettings::default(),
     );
 }
+
+fn open_scratch(
+    server: &Sshd,
+    source: &Ssh,
+) -> bohio_api::guatiao::library::Object<dyn bohio_api::Directory> {
+    bohio_api::FilesSource::open_dir(source, &format!("{}/scratch", server.dir))
+        .expect("the scratch directory opens")
+}
+
+#[test]
+fn the_files_of_a_real_server_pass_the_contract_suite() {
+    let server = sshd!("");
+    let source = server.ssh();
+    let info = bohio_api::FilesSource::describe(&source).unwrap();
+    assert!(info.available, "{info:?}");
+    for word in ["atomic_replace", "hard_link", "statvfs", "sync"] {
+        assert!(info.offers.contains(&word.to_owned()), "{word}: {info:?}");
+    }
+    assert!(info.lacks.contains(&"confined".to_owned()));
+    bohio_api::contract::files(
+        &source,
+        &format!("{}/scratch", server.dir),
+        &bohio_api::contract::ContractSettings::default(),
+    );
+}
+
+#[test]
+fn a_real_server_replaces_links_and_reports_what_it_holds() {
+    use bohio_api::model::OpenModel;
+    let server = sshd!("");
+    let source = server.ssh();
+    let scratch = format!("{}/scratch", server.dir);
+    let directory = open_scratch(&server, &source);
+    let write = |name: &str, bytes: &[u8]| {
+        let file = directory
+            .open_file(
+                name,
+                OpenModel {
+                    write: true,
+                    create: true,
+                    truncate: true,
+                    mode: Some(0o640),
+                    ..OpenModel::default()
+                },
+            )
+            .unwrap();
+        file.write_at(0, bytes).unwrap();
+        file.sync().unwrap();
+    };
+    write("one", b"first");
+    write("two", b"second");
+    // posix-rename replaces in one step; the plain rename refuses.
+    assert!(directory.rename("one", "two", false).is_err());
+    directory.rename("one", "two", true).unwrap();
+    assert!(directory.stat("one", false).is_err());
+    assert_eq!(directory.stat("two", false).unwrap().size, 5);
+    assert_eq!(directory.stat("two", false).unwrap().mode, Some(0o640));
+    // A hard link, a link with an absolute target and one with a relative target.
+    directory.hard_link("two", "hard").unwrap();
+    assert_eq!(directory.stat("hard", false).unwrap().size, 5);
+    directory
+        .symlink(&format!("{scratch}/two"), "abs", false)
+        .unwrap();
+    assert_eq!(
+        directory.read_link("abs").unwrap(),
+        format!("{scratch}/two")
+    );
+    assert_eq!(directory.stat("abs", true).unwrap().size, 5);
+    assert_eq!(directory.stat("abs", false).unwrap().kind, "symlink");
+    directory.symlink("two", "rel", false).unwrap();
+    assert_eq!(directory.read_link("rel").unwrap(), "two");
+    // The server's own errors, told apart.
+    let word = |error: bohio_api::guatiao::library::ProviderError| {
+        bohio_api::files::failure_kind(&error).map(str::to_owned)
+    };
+    directory.create_dir("full", None, false).unwrap();
+    write("full/x", b"x");
+    assert_eq!(
+        word(directory.remove_dir("full").unwrap_err()).as_deref(),
+        Some("not_empty")
+    );
+    assert_eq!(
+        word(directory.create_dir("full", None, false).unwrap_err()).as_deref(),
+        Some("exists")
+    );
+    assert_eq!(
+        word(directory.remove_file("full").unwrap_err()).as_deref(),
+        Some("is_a_directory")
+    );
+    assert_eq!(
+        word(directory.remove_dir("two").unwrap_err()).as_deref(),
+        Some("not_a_directory")
+    );
+    assert_eq!(
+        word(directory.stat("missing", true).unwrap_err()).as_deref(),
+        Some("not_found")
+    );
+    // Attributes: mode, times and the space.
+    directory.set_mode("two", 0o600).unwrap();
+    assert_eq!(directory.stat("two", false).unwrap().mode, Some(0o600));
+    directory.set_readonly("two", true).unwrap();
+    assert!(directory.stat("two", false).unwrap().readonly);
+    directory
+        .set_times(
+            "two",
+            None,
+            Some(bohio_api::model::TimeModel {
+                secs: 1_000_000_000,
+                nanos: 0,
+            }),
+        )
+        .unwrap();
+    assert_eq!(
+        directory
+            .stat("two", false)
+            .unwrap()
+            .modified
+            .map(|time| time.secs),
+        Some(1_000_000_000)
+    );
+    assert!(directory.statvfs(".").unwrap().blocks > 0);
+    // A listing carries each entry's attributes.
+    let reader = directory.read_dir(".").unwrap();
+    let mut entries = Vec::new();
+    loop {
+        let page = reader.next(1000).unwrap();
+        if page.is_empty() {
+            break;
+        }
+        entries.extend(page);
+    }
+    let two = entries.iter().find(|entry| entry.name == "two").unwrap();
+    assert_eq!(two.stat.as_ref().unwrap().size, 5);
+    assert!(entries.iter().all(|entry| entry.stat.is_some()));
+    directory.remove_dir_all("full").unwrap();
+}
+
+#[test]
+fn a_large_file_goes_to_a_real_server_and_comes_back_whole() {
+    use bohio_api::model::OpenModel;
+    let server = sshd!("");
+    let source = server.ssh();
+    let directory = open_scratch(&server, &source);
+    let size: usize = 32 * 1024 * 1024 + 7;
+    let pattern = |at: usize| ((at.wrapping_mul(2_654_435_761) >> 13) & 0xff) as u8;
+    let file = directory
+        .open_file(
+            "large.bin",
+            OpenModel {
+                write: true,
+                create: true,
+                truncate: true,
+                ..OpenModel::default()
+            },
+        )
+        .unwrap();
+    let mut block = vec![0_u8; 256 * 1024];
+    let mut at = 0_usize;
+    while at < size {
+        let take = block.len().min(size - at);
+        for (index, byte) in block[..take].iter_mut().enumerate() {
+            *byte = pattern(at + index);
+        }
+        assert_eq!(
+            file.write_at(at as u64, &block[..take]).unwrap(),
+            take as u64
+        );
+        at += take;
+    }
+    file.sync().unwrap();
+    drop(file);
+    assert_eq!(
+        directory.stat("large.bin", false).unwrap().size,
+        size as u64
+    );
+    let file = directory
+        .open_file(
+            "large.bin",
+            OpenModel {
+                read: true,
+                ..OpenModel::default()
+            },
+        )
+        .unwrap();
+    let mut at = 0_usize;
+    while at < size {
+        let got = usize::try_from(file.read_at(at as u64, &mut block).unwrap()).unwrap();
+        assert!(got > 0, "the file ended at {at} of {size}");
+        for (index, byte) in block[..got].iter().enumerate() {
+            assert_eq!(*byte, pattern(at + index), "byte {}", at + index);
+        }
+        at += got;
+    }
+    assert_eq!(file.read_at(size as u64, &mut block).unwrap(), 0);
+}

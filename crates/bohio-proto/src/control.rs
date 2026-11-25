@@ -13,6 +13,9 @@ use crate::signal::Signal;
 /// A call from the client.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Request {
+    /// The files source that serves it (see `info.access.fs`); the node's default one when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     /// Chosen by the client, unique on the stream; the response repeats it.
     pub id: u64,
     /// What is asked.

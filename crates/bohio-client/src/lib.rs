@@ -25,12 +25,14 @@ pub mod search;
 pub mod session;
 pub mod shell;
 pub mod socks;
+pub mod sourced;
 pub mod sync;
 pub mod tools;
 mod tree;
 pub mod walk;
 
 pub use error::Error;
+pub use sourced::Sourced;
 
 use coqui_link::mux::LinkStream;
 
@@ -117,6 +119,11 @@ pub trait Open: Send + Sync {
     /// for a link that is what it is. A forward retries a connect whose link was lost before the host answered only when
     /// this is `Some`.
     fn relink_wait(&self) -> Option<std::time::Duration> {
+        None
+    }
+
+    /// The files source of the host this link asks for, when it names one ([`Sourced`]); the control calls it opens carry it.
+    fn files_source(&self) -> Option<&str> {
         None
     }
 }

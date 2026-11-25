@@ -126,6 +126,7 @@ pub fn search_with(
     timeout: Option<Duration>,
 ) -> Result<SearchIter, Error> {
     let request = SearchRequest {
+        source: None,
         walk: SearchScope {
             roots: roots.iter().map(|root| (*root).to_owned()).collect(),
             depth: options.depth,

@@ -96,6 +96,7 @@ pub fn walk_with(
     timeout: Option<Duration>,
 ) -> Result<WalkIter, Error> {
     let request = WalkRequest {
+        source: None,
         depth: options.depth,
         follow: options.follow,
         include: options.include.clone(),
