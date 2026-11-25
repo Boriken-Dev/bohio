@@ -25,9 +25,9 @@ use bohio_api::{
 use bohio_proto::exec::Env;
 use bohio_proto::shell::ShellKind;
 
-use super::desktop::DesktopOf;
 use crate::config::{HostDeath, Span, WindowsCapture};
 use crate::platform::{self, ProcessExit, PtySpec, Session, Signal, find_program, resolve_listed};
+use bohio_x11::source::DesktopOf;
 
 #[path = "native_exec.rs"]
 mod exec_impl;

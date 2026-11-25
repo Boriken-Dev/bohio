@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use xxhash_rust::xxh3::Xxh3;
 
-use super::desktop::{Frame, GuiError};
+use bohio_x11::{Frame, GuiError};
 
 /// The side of the tiles a frame is compared in.
 const TILE: usize = 64;

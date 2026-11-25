@@ -3,7 +3,7 @@
 
 use bohio_proto::gui::ImageFormat;
 
-use super::desktop::{Frame, GuiError};
+use bohio_x11::{Frame, GuiError};
 
 /// The formats this build can encode, in the order of [`ImageFormat::ALL`].
 pub(crate) fn available() -> Vec<ImageFormat> {

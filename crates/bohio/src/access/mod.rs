@@ -28,7 +28,8 @@ use bohio_api::{DesktopSource, ExecSource, FilesSource, MediaSource, PowerSource
 use bohio_proto::info::SourceEntry;
 use bohio_proto::{ErrorBody, ErrorCode};
 
-pub use desktop::{DesktopOf, KindDesktop, code_of, gui_error};
+pub use bohio_x11::source::{DesktopOf, code_of, gui_error};
+pub use desktop::KindDesktop;
 pub use native::{ID as NATIVE_ID, Native, NativeSettings};
 
 use crate::config::{AccessConfig, NATIVE, SourceTable, SourceTables};

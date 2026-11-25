@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/bohio/tests/plugin_other", "crates/bohio-api", "providers/terminal/serial", "providers/terminal/serial/plugin", "providers/ssh", "providers/ssh/plugin", "crates/bohio-proto", "crates/bohio-transfer", "crates/bohio-client", "crates/bohio", "crates/bohio-bench"]
+members = ["crates/bohio/tests/plugin_other", "crates/bohio-api", "crates/bohio-x11", "providers/terminal/serial", "providers/terminal/serial/plugin", "providers/ssh", "providers/ssh/plugin", "crates/bohio-proto", "crates/bohio-transfer", "crates/bohio-client", "crates/bohio", "crates/bohio-bench"]
 
 [workspace.package]
 version = "0.0.0-alpha.0"
@@ -103,11 +103,11 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 image-webp = "0.2"
 # The desktop notification that tells a person someone is viewing or controlling the screen (zbus on Linux, toasts on Windows, the system's on macOS).
 notify-rust = { version = "4.19", default-features = false, features = ["z"] }
-# The Linux desktop (`platform/gui/x11.rs`): the X11 protocol in Rust (no libxcb, so the static musl archive keeps it), with RandR for the monitors and XTest for input.
+# The Linux desktop (`crates/bohio-x11`): the X11 protocol in Rust (no libxcb, so the static musl archive keeps it), with RandR for the monitors and XTest for input.
 x11rb = { version = "0.13", default-features = false, features = ["randr", "xtest"] }
 # Keysyms of characters, for typing text on an X11 display.
 xkeysym = "0.2"
-# The system bus for logind's `LockedHint` (`platform/gui/logind.rs`), driven with `zbus::block_on` on the backend's own thread.
+# The system bus for logind's `LockedHint` (`crates/bohio-x11`, feature `logind`), driven with `zbus::block_on` on the backend's own thread.
 zbus = { version = "6", default-features = false, features = ["proxy", "default-rt"] }
 # The Wayland desktop (`platform/gui/wayland.rs`, feature `gui-wayland`): the ScreenCast and RemoteDesktop portals over D-Bus on the async-io runtime (no Tokio), driven with `pollster`, and the PipeWire stream that carries the frames (it links the system libpipewire, so glibc builds only).
 ashpd = { version = "0.14", default-features = false, features = ["async-io", "screencast", "remote_desktop", "pipewire"] }
@@ -139,6 +139,7 @@ bohio-provider-serial-plugin = { path = "providers/terminal/serial/plugin" }
 bohio-provider-ssh = { path = "providers/ssh" }
 bohio-provider-ssh-plugin = { path = "providers/ssh/plugin" }
 bohio-proto = { path = "crates/bohio-proto" }
+bohio-x11 = { path = "crates/bohio-x11" }
 bohio-transfer = { path = "crates/bohio-transfer", default-features = false }
 bohio-client = { path = "crates/bohio-client" }
 

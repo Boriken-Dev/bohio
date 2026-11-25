@@ -23,8 +23,8 @@ use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 use x11rb::{COPY_DEPTH_FROM_PARENT, CURRENT_TIME, NONE};
 
-use super::x11::X11Settings;
-use crate::gui::GuiError;
+use super::x11::{X11Settings, open_connection};
+use crate::desktop::GuiError;
 
 fn failed(what: &str, error: impl std::fmt::Display) -> GuiError {
     GuiError::io(format!("{what}: {error}"))
@@ -44,8 +44,9 @@ struct Session {
 }
 
 impl Session {
-    fn open(display: &str, selection: &str) -> Result<Self, GuiError> {
-        let (connection, number) = RustConnection::connect(Some(display)).map_err(|error| {
+    fn open(display: &str, settings: &X11Settings) -> Result<Self, GuiError> {
+        let selection = settings.selection.as_str();
+        let (connection, number) = open_connection(settings, display).map_err(|error| {
             GuiError::unavailable(format!(
                 "cannot connect to the X display {display}: {error}"
             ))
@@ -138,7 +139,7 @@ impl Selection {
         let mut held = self.owner.lock().unwrap_or_else(PoisonError::into_inner);
         // The old owner ends first: it would answer for the old text until it saw the selection change hands.
         *held = None;
-        let session = Session::open(display, &settings.selection)?;
+        let session = Session::open(display, settings)?;
         if text.len() + 64 > session.connection.maximum_request_bytes() {
             return Err(GuiError::bad_request(
                 "the clipboard text is longer than one request to the display carries",
@@ -183,7 +184,7 @@ impl Selection {
     /// `unavailable` when the owner holds no text, did not answer within `clipboard_wait`, or needs the incremental
     /// protocol; `bad_request` for text over `clipboard_max_bytes`.
     pub(super) fn read(&self, display: &str, settings: &X11Settings) -> Result<String, GuiError> {
-        let session = Session::open(display, &settings.selection)?;
+        let session = Session::open(display, settings)?;
         let owner = session
             .connection
             .get_selection_owner(session.selection)

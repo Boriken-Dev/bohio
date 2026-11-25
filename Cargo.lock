@@ -370,6 +370,7 @@ dependencies = [
  "bohio-provider-ssh",
  "bohio-test-plugin-other",
  "bohio-transfer",
+ "bohio-x11",
  "cap-fs-ext",
  "cap-std",
  "clap",
@@ -509,12 +510,15 @@ name = "bohio-provider-ssh"
 version = "0.0.0-alpha.0"
 dependencies = [
  "bohio-api",
+ "bohio-x11",
+ "getrandom 0.4.3",
  "rand",
  "russh",
  "russh-sftp",
  "tempfile",
  "tokio",
  "tracing",
+ "x11rb",
 ]
 
 [[package]]
@@ -548,6 +552,18 @@ dependencies = [
  "thiserror 2.0.21",
  "xxhash-rust",
  "zstd",
+]
+
+[[package]]
+name = "bohio-x11"
+version = "0.0.0-alpha.0"
+dependencies = [
+ "bohio-api",
+ "bohio-proto",
+ "thiserror 2.0.21",
+ "x11rb",
+ "xkeysym",
+ "zbus",
 ]
 
 [[package]]

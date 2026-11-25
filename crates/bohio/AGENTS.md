@@ -552,7 +552,7 @@ pub struct X11Settings { pub display: Option<String>, pub wayland: bool, pub in_
     pub headless: bool, pub refused: Option<String>, pub hint: Option<String> }   // Default; read once at start; headless: never locked, no logind; refused: every call is `unavailable` with it; hint: appended to a display that does not answer
 ```
 
-`X11Desktop` (`platform/gui/x11.rs`, `x11_clipboard.rs`, `logind.rs`; all safe code): displays are RandR 1.5 monitors (id from the monitor's name, lowercased: `rdp-0`; `display1` for a root with none; one is primary); `capture` is `GetImage`
+`X11Desktop` (the `bohio-x11` crate: `x11.rs`, `x11_clipboard.rs`, `logind.rs` behind its `logind` feature, which `bohio` turns on; all safe code, re-exported as `bohio::gui::X11Desktop`): displays are RandR 1.5 monitors (id from the monitor's name, lowercased: `rdp-0`; `display1` for a root with none; one is primary); `capture` is `GetImage`
 of the root at the monitor's offset converted from the visual's masks (16, 24 and 32 bits a pixel), and where the root answers `BadMatch` (XWayland's) the viewable top-level windows composed bottom to top over black; the
 pointer is reported by `cursor` and never drawn. `input` plans every event before it sends one (a point off its display or a repeat past `max_repeat` is `bad_request` and nothing is sent) and sends XTest `FakeInput` on the
 root: buttons 1-3, wheel 4-7, back 8, forward 9; a key is looked up in the keyboard mapping (its first symbol, or its second with shift pressed around it) and a symbol with no key is bound to the highest keycode that has none for

@@ -12,7 +12,6 @@
 
 #[cfg(feature = "gui")]
 mod adapt;
-mod desktop;
 mod encode;
 pub mod helper;
 mod limits;
@@ -65,9 +64,9 @@ pub use crate::platform::gui::{
 pub use crate::platform::gui::{Persist, WaylandDesktop, WaylandSettings};
 #[cfg(windows)]
 pub use crate::platform::gui::{WindowsDesktop, WindowsSettings};
+pub use bohio_x11::{Capabilities, Desktop, DesktopState, Frame, GuiError};
 #[cfg(target_os = "linux")]
-pub use crate::platform::gui::{X11Desktop, X11Settings};
-pub use desktop::{Capabilities, Desktop, DesktopState, Frame, GuiError};
+pub use bohio_x11::{X11Desktop, X11Settings};
 #[cfg(feature = "notify")]
 pub use notify::DesktopNotifier;
 pub use presence::{

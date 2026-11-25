@@ -1,0 +1,31 @@
+[package]
+name = "bohio-x11"
+description = "The desktop a Bohío host serves: the desktop trait, an X11 backend that runs over any stream, and a desktop as a provider source"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["bohio", "x11", "desktop", "remote-desktop"]
+categories = ["network-programming"]
+exclude = [".*", "*.local.*"]
+# Its git dependencies are unpublished: released once they are.
+publish = false
+
+[features]
+# Lock detection from logind's `LockedHint` on the system bus (Linux only). Without it a desktop cannot tell a locked screen.
+logind = ["dep:zbus"]
+
+[dependencies]
+bohio-api.workspace = true
+bohio-proto.workspace = true
+thiserror.workspace = true
+x11rb.workspace = true
+xkeysym.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { workspace = true, optional = true }
+
+[lints]
+workspace = true

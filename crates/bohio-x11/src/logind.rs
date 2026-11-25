@@ -15,13 +15,13 @@ const MANAGER: &str = "/org/freedesktop/login1";
 
 /// What logind says of a session. Its `Active` property is not asked: it describes a seat, which an X display need not have.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Hints {
+pub struct Hints {
     /// `LockedHint`: the session's screen is locked.
     pub locked: bool,
 }
 
 /// A way to ask logind about one session, keeping its bus connection between questions.
-pub(crate) struct Logind {
+pub struct Logind {
     /// The system bus's address; `None` is the standard one.
     bus: Option<String>,
     /// The session's id (`XDG_SESSION_ID`); `None` asks for the session of this process.
@@ -32,7 +32,9 @@ pub(crate) struct Logind {
 }
 
 impl Logind {
-    pub(crate) fn new(bus: Option<String>, session: Option<String>, timeout: Duration) -> Self {
+    /// A way to ask about the session `session` (this process's own when `None`) on the bus at `bus` (the system bus when
+    /// `None`), each call waiting at most `timeout`.
+    pub fn new(bus: Option<String>, session: Option<String>, timeout: Duration) -> Self {
         Self {
             bus,
             session,
@@ -42,7 +44,7 @@ impl Logind {
     }
 
     /// The session's hints, or `None` when logind cannot be reached or does not know the session.
-    pub(crate) fn hints(&self) -> Option<Hints> {
+    pub fn hints(&self) -> Option<Hints> {
         let mut held = self
             .connection
             .lock()

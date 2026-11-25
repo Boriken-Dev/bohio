@@ -4,14 +4,14 @@
 //! RandR's monitors (the root window's whole area when the server has none), a capture is `GetImage` of the root window
 //! converted from the visual's masks, and input is XTest `FakeInput` on the root. A character the keyboard has no key
 //! for is typed through a spare keycode bound to it for the moment. The lock state is logind's `LockedHint`
-//! ([`super::logind`]); the clipboard is a selection this node owns ([`super::x11_clipboard`]).
+//! (the `logind` feature); the clipboard is a selection this node owns (the clipboard module).
 //!
 //! The rules that need no server (the layout arithmetic, the pixel formats, the keyboard plan) are plain functions
 //! tested without one.
 
 #![forbid(unsafe_code)]
 
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::Duration;
 
@@ -27,12 +27,13 @@ use x11rb::protocol::xproto::{
     WindowClass,
 };
 use x11rb::protocol::xtest::ConnectionExt as _;
-use x11rb::rust_connection::RustConnection;
+use x11rb::rust_connection::{DefaultStream, RustConnection};
 use xkeysym::{Keysym, key};
 
-use super::logind::Logind;
-use super::x11_clipboard::Selection;
-use crate::gui::{Capabilities, Desktop, DesktopState, Frame, GuiError};
+use crate::desktop::{Capabilities, Desktop, DesktopState, Frame, GuiError};
+#[cfg(all(target_os = "linux", feature = "logind"))]
+use crate::logind::Logind;
+use crate::x11_clipboard::Selection;
 
 /// What a node says of a Wayland session when it is asked for the X display.
 pub(crate) const WAYLAND_SESSION: &str = "this is a Wayland session: an X11 connection reaches only the X11 windows in it. \
@@ -74,6 +75,9 @@ pub struct X11Settings {
     pub hint: Option<String>,
     /// The most clicks of one button event and wheel notches of one scroll event; more is `bad_request`.
     pub max_repeat: u32,
+    /// How to reach the X server when it is not a display this machine names (the server of another machine, over an SSH
+    /// channel): when set, `display` is only a name for messages and every connection comes from it.
+    pub connector: Option<Arc<dyn Connector>>,
 }
 
 impl Default for X11Settings {
@@ -93,8 +97,47 @@ impl Default for X11Settings {
             hint: None,
             selection: "CLIPBOARD".to_owned(),
             max_repeat: 1000,
+            connector: None,
         }
     }
+}
+
+/// The authorization an X server asked for, and the stream to it, for a display that is not reached by its name.
+#[derive(Debug)]
+pub struct Wire {
+    /// The connection to the X server, already open.
+    pub stream: std::net::TcpStream,
+    /// The authorization protocol (`MIT-MAGIC-COOKIE-1`), empty for none.
+    pub auth_name: Vec<u8>,
+    /// The authorization data (the cookie), empty for none.
+    pub auth_data: Vec<u8>,
+}
+
+/// How the backend reaches its X server when the display is not one this machine names: each call makes a new
+/// connection (the backend holds one for the screen and one for each clipboard question).
+pub trait Connector: Send + Sync + std::fmt::Debug {
+    /// A new connection to the server.
+    ///
+    /// # Errors
+    ///
+    /// Why the server cannot be reached.
+    fn connect(&self) -> std::io::Result<Wire>;
+}
+
+/// A connection to `display`, by the settings' connector when it has one, else by the display's name.
+pub(crate) fn open_connection(
+    settings: &X11Settings,
+    display: &str,
+) -> Result<(RustConnection, usize), String> {
+    let Some(connector) = &settings.connector else {
+        return RustConnection::connect(Some(display)).map_err(|error| error.to_string());
+    };
+    let wire = connector.connect().map_err(|error| error.to_string())?;
+    let (stream, _) =
+        DefaultStream::from_tcp_stream(wire.stream).map_err(|error| error.to_string())?;
+    RustConnection::connect_to_stream_with_auth_info(stream, 0, wire.auth_name, wire.auth_data)
+        .map(|connection| (connection, 0))
+        .map_err(|error| error.to_string())
 }
 
 fn failed(what: &str, error: impl std::fmt::Display) -> GuiError {
@@ -110,7 +153,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// The id a monitor named `name` has: its name lowercased with every other character a dash, else `display` and its
 /// place; a repeated one gets its place after it.
-pub(crate) fn display_id(name: &str, index: usize, taken: &[String]) -> String {
+pub fn display_id(name: &str, index: usize, taken: &[String]) -> String {
     let mut id: String = name
         .chars()
         .map(|c| {
@@ -131,7 +174,7 @@ pub(crate) fn display_id(name: &str, index: usize, taken: &[String]) -> String {
 }
 
 /// Exactly one display is primary: the first marked, else the first.
-pub(crate) fn one_primary(displays: &mut [Display]) {
+pub fn one_primary(displays: &mut [Display]) {
     let keep = displays.iter().position(|d| d.primary).unwrap_or(0);
     for (index, display) in displays.iter_mut().enumerate() {
         display.primary = index == keep;
@@ -504,7 +547,7 @@ fn key_steps(stroke: Stroke, action: KeyAction) -> Vec<Step> {
 }
 
 /// The keysym of a key a request names: a name of the closed list, or one character.
-pub(crate) fn keysym_of(name: &str) -> Option<u32> {
+pub fn keysym_of(name: &str) -> Option<u32> {
     let mut characters = name.chars();
     if let (Some(first), None) = (characters.next(), characters.next()) {
         if first.is_ascii_alphabetic() {
@@ -693,7 +736,7 @@ impl Link {
                 "this node has no X display: it was started without one",
             ));
         };
-        let (connection, number) = RustConnection::connect(Some(display)).map_err(|error| {
+        let (connection, number) = open_connection(settings, display).map_err(|error| {
             GuiError::unavailable(format!(
                 "cannot connect to the X display {display}: {error}{}",
                 settings
@@ -1023,6 +1066,7 @@ impl Link {
 pub struct X11Desktop {
     settings: X11Settings,
     link: Mutex<Option<Link>>,
+    #[cfg(all(target_os = "linux", feature = "logind"))]
     logind: Logind,
     selection: Selection,
 }
@@ -1031,17 +1075,25 @@ impl X11Desktop {
     /// A desktop run by `settings`. Nothing is connected until it is asked something.
     #[must_use]
     pub fn new(settings: X11Settings) -> Self {
-        let logind = Logind::new(
-            settings.system_bus.clone(),
-            settings.session.clone(),
-            settings.bus_wait,
-        );
         Self {
+            #[cfg(all(target_os = "linux", feature = "logind"))]
+            logind: Logind::new(
+                settings.system_bus.clone(),
+                settings.session.clone(),
+                settings.bus_wait,
+            ),
             settings,
             link: Mutex::new(None),
-            logind,
             selection: Selection::default(),
         }
+    }
+
+    /// Whether the screen is locked, from logind when this build asks it; `None` when nothing can tell.
+    fn locked(&self) -> Option<bool> {
+        #[cfg(all(target_os = "linux", feature = "logind"))]
+        return self.logind.hints().map(|hints| hints.locked);
+        #[cfg(not(all(target_os = "linux", feature = "logind")))]
+        None
     }
 
     /// Runs `f` on the connection, made first if there is none. A failure on the wire drops the connection.
@@ -1078,7 +1130,7 @@ impl X11Desktop {
             locked: if self.settings.headless {
                 Some(false)
             } else {
-                self.logind.hints().map(|hints| hints.locked)
+                self.locked()
             },
             displays: link.displays()?,
         })
@@ -1177,7 +1229,7 @@ impl Desktop for X11Desktop {
             backend: "x11".to_owned(),
             input,
             clipboard: true,
-            lock_detection: !self.settings.headless && self.logind.hints().is_some(),
+            lock_detection: !self.settings.headless && self.locked().is_some(),
         }
     }
 }

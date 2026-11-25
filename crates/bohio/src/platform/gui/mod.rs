@@ -3,7 +3,7 @@
 //! `input` and `session` hold the rules that need no operating system (the keys and the pointer's coordinates, what a
 //! session's answers mean, the clipboard's text) and are tested on every platform. `windows` and `windows_capture` are
 //! the Windows backend, the only files here that hold `unsafe`: each call that has no safe binding is commented where
-//! it is made, and `tests/unsafe_files.rs` says why it was needed. `x11`, `x11_clipboard` and `logind` are the Linux
+//! it is made, and `tests/unsafe_files.rs` says why it was needed. The X11 backend (the `bohio-x11` crate) is the Linux
 //! backend over an X display, in safe Rust; `wayland` (feature `gui-wayland`) is the one over the desktop portals and
 //! PipeWire, also safe. `mac_rules` holds the macOS backend's rules (tested everywhere) and `macos`
 //! the calls to ScreenCaptureKit and Core Graphics, the third file here that holds `unsafe`.
@@ -17,8 +17,6 @@
 )]
 
 mod input;
-#[cfg(target_os = "linux")]
-mod logind;
 #[cfg_attr(
     not(target_os = "macos"),
     allow(
@@ -38,10 +36,6 @@ mod wayland;
 mod windows;
 #[cfg(windows)]
 mod windows_capture;
-#[cfg(target_os = "linux")]
-mod x11;
-#[cfg(target_os = "linux")]
-mod x11_clipboard;
 
 #[cfg(target_os = "macos")]
 pub use self::macos::{MacosDesktop, MacosSettings};
@@ -53,5 +47,3 @@ pub use self::own::{
 pub use self::wayland::{Persist, WaylandDesktop, WaylandSettings};
 #[cfg(windows)]
 pub use self::windows::{WindowsDesktop, WindowsSettings};
-#[cfg(target_os = "linux")]
-pub use self::x11::{X11Desktop, X11Settings};
