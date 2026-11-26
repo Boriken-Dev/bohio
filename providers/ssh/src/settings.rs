@@ -294,6 +294,7 @@ impl core::fmt::Debug for SshSettings {
             reconnect,
             reconnect_after,
             probe_every,
+            login_shell_check,
             operation_timeout,
             exit_grace,
             queue_chunks,
@@ -331,6 +332,7 @@ impl core::fmt::Debug for SshSettings {
             .field("reconnect", reconnect)
             .field("reconnect_after", reconnect_after)
             .field("probe_every", probe_every)
+            .field("login_shell_check", login_shell_check)
             .field("operation_timeout", operation_timeout)
             .field("exit_grace", exit_grace)
             .field("queue_chunks", queue_chunks)
@@ -374,6 +376,7 @@ impl core::fmt::Debug for Settings {
             reconnect,
             reconnect_after,
             probe_every,
+            login_shell_check,
             operation_timeout,
             exit_grace,
             queue_chunks,
@@ -409,6 +412,7 @@ impl core::fmt::Debug for Settings {
             .field("reconnect", reconnect)
             .field("reconnect_after", reconnect_after)
             .field("probe_every", probe_every)
+            .field("login_shell_check", login_shell_check)
             .field("operation_timeout", operation_timeout)
             .field("exit_grace", exit_grace)
             .field("queue_chunks", queue_chunks)
