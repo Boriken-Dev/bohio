@@ -676,7 +676,15 @@ impl HelperListener {
         let mut builder = PipeListener::builder().name(&name);
         #[cfg(unix)]
         {
-            only_this_account_writes(name.path()).map_err(fail)?;
+            if config.helper_socket_dir_check {
+                only_this_account_writes(name.path()).map_err(fail)?;
+            } else {
+                tracing::warn!(
+                    "non-default: [gui] helper_socket_dir_check is false: the directories of the helper socket are not checked, so an account that can replace one can stand in for the node"
+                );
+                // The pipe listener checks the path too; it is told to accept it.
+                builder = builder.shared_directory(true);
+            }
             builder = builder.socket_mode(0o666);
         }
         #[cfg(windows)]

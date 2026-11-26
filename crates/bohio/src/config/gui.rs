@@ -198,6 +198,10 @@ pub struct GuiConfig {
     /// The most bytes of the machine's answer to `uname -sm` the upload reads; a machine that answers with more fails the
     /// upload, so it cannot grow the node. At least 1. Default `4096`. Lowest layer only.
     pub helper_upload_answer_max: usize,
+    /// Check that the directory of the helper socket (Unix), and every directory above it, can be written only by the node's
+    /// account, root, or sticky: another account that can replace a directory could stand in for the node's socket. `false`
+    /// serves the socket wherever it is and is logged `non-default:`. Default `true`. Lowest layer only.
+    pub helper_socket_dir_check: bool,
 }
 
 impl Default for GuiConfig {
@@ -265,6 +269,7 @@ impl Default for GuiConfig {
             helper_upload_shared_dir: false,
             helper_upload_check_platform: true,
             helper_upload_answer_max: 4096,
+            helper_socket_dir_check: true,
         }
     }
 }

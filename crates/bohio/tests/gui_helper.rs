@@ -851,3 +851,32 @@ fn the_events_of_a_relayed_stream_reach_the_owner_including_the_last() {
     );
     stop_helper(&stop, helper);
 }
+
+#[cfg(unix)]
+#[test]
+fn a_socket_under_a_directory_others_can_swap_is_refused_unless_the_check_is_off() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let root = tempfile::tempdir().expect("a directory");
+    let open = root.path().join("open");
+    std::fs::create_dir(&open).unwrap();
+    std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let held = open.join("held");
+    std::fs::create_dir(&held).unwrap();
+    std::fs::set_permissions(&held, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let endpoint = format!("pipe://{}", held.join("gui.sock").display());
+    let id = Identity::generate(Method::DEFAULT)
+        .expect("an identity")
+        .peer_id();
+    let config = host_config(&[me()], &endpoint, false);
+    let refused = HelperListener::bind(&config, &id).expect_err("an ancestor others can swap");
+    assert!(refused.to_string().contains("not sticky"), "{refused}");
+    let off = GuiConfig {
+        helper_socket_dir_check: false,
+        ..config
+    };
+    assert!(
+        HelperListener::bind(&off, &id)
+            .expect("unchecked")
+            .is_some()
+    );
+}
