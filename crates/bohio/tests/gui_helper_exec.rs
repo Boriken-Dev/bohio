@@ -287,7 +287,6 @@ fn upload_into(dir: &std::path::Path, binary: Option<std::path::PathBuf>) -> Upl
         overwrite: false,
         // A Windows source reports no permission bits, which the upload refuses unless the directory is accepted.
         shared_dir: cfg!(windows),
-        shared_dir: false,
         sticky_dir: false,
     }
 }
