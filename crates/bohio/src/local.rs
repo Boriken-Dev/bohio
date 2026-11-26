@@ -80,6 +80,11 @@ impl Local {
             builder = builder.security_descriptor(Some(descriptor.clone()));
         }
         let listener = builder.build().map_err(|error| fail(error.to_string()))?;
+        if config.sets_access() {
+            tracing::warn!(
+                "non-default: [control] socket_mode, socket_group or security_descriptor is set: the same-user check is off, and every account the endpoint admits may act as this node"
+            );
+        }
         Ok(Self {
             listener,
             endpoint: Endpoint::Pipe(name),
@@ -541,6 +546,9 @@ impl Server {
     /// The server a client of the endpoint `config` describes accepts.
     pub fn for_control(config: &ControlConfig) -> Self {
         if config.sets_access() {
+            tracing::warn!(
+                "non-default: [control] socket_mode, socket_group or security_descriptor is set: this client accepts an endpoint served by any account"
+            );
             Self::Any
         } else {
             Self::ThisAccount
@@ -869,4 +877,82 @@ pub fn since(entry: &LinkEntry) -> SystemTime {
 fn sorted(mut offers: Vec<String>) -> Vec<String> {
     offers.sort();
     offers
+}
+
+#[cfg(all(test, feature = "cli"))]
+mod tests {
+    use super::{Local, Server};
+    use crate::config::ControlConfig;
+
+    #[derive(Clone, Default)]
+    struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("log").extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
+        type Writer = Self;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn logged(run: impl FnOnce()) -> String {
+        let capture = Capture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(capture.clone())
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, run);
+        String::from_utf8(capture.0.lock().expect("log").clone()).expect("text")
+    }
+
+    #[test]
+    fn setting_who_may_connect_is_logged_as_non_default_by_the_endpoint_and_its_client() {
+        let node = cabuya::auth::Identity::generate(cabuya::auth::Method::DEFAULT)
+            .expect("an identity")
+            .peer_id();
+        let plain = ControlConfig {
+            endpoint: Some(format!(
+                "pipe://bohio-nondefault-plain-{}",
+                std::process::id()
+            )),
+            ..ControlConfig::default()
+        };
+        let text = logged(|| {
+            let _ = Local::bind(&plain, &node).expect("binds");
+            assert_eq!(Server::for_control(&plain), Server::ThisAccount);
+        });
+        assert!(!text.contains("non-default"), "{text}");
+
+        let widened = ControlConfig {
+            endpoint: Some(format!(
+                "pipe://bohio-nondefault-wide-{}",
+                std::process::id()
+            )),
+            security_descriptor: cfg!(windows).then(|| "D:(A;;GA;;;WD)".to_owned()),
+            socket_mode: cfg!(unix).then(|| "0o600".to_owned()),
+            ..ControlConfig::default()
+        };
+        let text = logged(|| {
+            let _ = Local::bind(&widened, &node).expect("binds");
+        });
+        assert!(
+            text.contains(
+                "non-default: [control] socket_mode, socket_group or security_descriptor is set"
+            ),
+            "{text}"
+        );
+        let text = logged(|| assert_eq!(Server::for_control(&widened), Server::Any));
+        assert!(text.contains("non-default: [control]"), "{text}");
+    }
 }

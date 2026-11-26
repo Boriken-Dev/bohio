@@ -171,6 +171,7 @@ fn log_non_default(config: &Config, entries: &[ListenConfig]) {
 /// account owns is refused either way. Answers the layers to read the peers from while serving.
 fn guard(found: &Found, environment: &Environment) -> Result<Vec<PathBuf>, String> {
     let config = found.config();
+    announce_unchecked(config.service.check_access);
     let mut problems = Vec::new();
     for file in &found.layered.files {
         problems.extend(access::layer_problems(file));
@@ -187,6 +188,21 @@ fn guard(found: &Found, environment: &Environment) -> Result<Vec<PathBuf>, Strin
     Ok(watched(found))
 }
 
+/// Says once, at start, that `[service] check_access` is off.
+fn announce_unchecked(check_access: bool) {
+    if !check_access {
+        tracing::warn!(
+            "non-default: [service] check_access is false: who owns and who may write the configuration layers and the data directory is not checked, so any account that can change them decides who connects and what each peer may do (a path another account owns is still refused)"
+        );
+    }
+}
+
+/// Whether a layer that does not exist yet is read when it appears, given why its place is not trusted: the operator's own
+/// place that others may change, or that cannot be judged, is waived by `check_access = false`; another account's never.
+fn read_when_made(kind: access::Kind, check_access: bool) -> bool {
+    !check_access && kind != access::Kind::Foreign
+}
+
 /// The layers whose peers are read again while serving: each layer read at start, and each that does not exist
 /// yet in a place no other account may change. One another account could make is left out until a restart
 /// checks it, since a layer made while serving is read unchecked.
@@ -201,7 +217,7 @@ fn watched(found: &Found) -> Vec<PathBuf> {
             }
             match access::may_appear(file) {
                 Ok(()) => true,
-                Err(problem) if problem.kind == access::Kind::Unknown && !check_access => {
+                Err(problem) if read_when_made(problem.kind, check_access) => {
                     tracing::warn!(
                         "{} is read if it is made, as `check_access` is false: {}",
                         file.display(),
@@ -1018,8 +1034,58 @@ fn say_paired(peer: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Environment, desktop_environment};
+    use super::{Environment, announce_unchecked, desktop_environment, read_when_made};
     use crate::ownership::{Kind, Problem, decide};
+
+    #[derive(Clone, Default)]
+    struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("log").extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
+        type Writer = Self;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn logged(run: impl FnOnce()) -> String {
+        let capture = Capture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(capture.clone())
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, run);
+        String::from_utf8(capture.0.lock().expect("log").clone()).expect("text")
+    }
+
+    #[test]
+    fn a_service_check_that_is_off_is_logged_as_non_default_and_one_that_is_on_is_silent() {
+        let text = logged(|| announce_unchecked(false));
+        assert!(
+            text.contains("non-default: [service] check_access is false"),
+            "{text}"
+        );
+        assert!(logged(|| announce_unchecked(true)).is_empty());
+    }
+
+    #[test]
+    fn a_layer_made_later_in_an_open_place_is_read_only_when_the_check_is_off() {
+        assert!(read_when_made(Kind::Open, false));
+        assert!(read_when_made(Kind::Unknown, false));
+        assert!(!read_when_made(Kind::Open, true));
+        assert!(!read_when_made(Kind::Foreign, false));
+    }
 
     fn problem(kind: Kind) -> Problem {
         Problem {
