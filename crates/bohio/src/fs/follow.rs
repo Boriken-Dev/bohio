@@ -29,6 +29,18 @@ fn identity(meta: &Metadata) -> Identity {
     (meta.0.device, meta.0.inode)
 }
 
+/// A follow by name tells one file from the one that took its name by their identity: a source that reports none (an
+/// ssh source) would never notice a rotation, so it is refused rather than followed wrongly.
+fn identity_for(by_name: bool, tracked: &Identity) -> Result<(), ErrorBody> {
+    if by_name && *tracked == (None, None) {
+        return Err(ErrorBody::new(
+            ErrorCode::Unsupported,
+            "this source reports no file identity, so a follow cannot tell a rotated file from the one it follows; follow by handle",
+        ));
+    }
+    Ok(())
+}
+
 /// Serves a followed read: the header (with `follow` true), then data frames as bytes arrive, `truncated` frames when
 /// the file gets shorter or is replaced, until the client closes the stream. Returns the data bytes sent.
 ///
@@ -92,6 +104,7 @@ pub(super) fn serve(
         .map_err(|error| io_error(&error))?;
     let mut tracked = identity(&meta);
     let by_name = follow.by == Some(FollowBy::Name);
+    identity_for(by_name, &tracked)?;
     let chunk = chunk_size(channel.as_ref(), context.config.chunk_size);
     let give_up = || {
         ErrorBody::new(
@@ -221,5 +234,20 @@ fn wait(channel: &dyn Channel, interval: Duration, poll: Duration) -> bool {
             return true;
         }
         std::thread::sleep(left.min(poll));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::identity_for;
+    use bohio_proto::ErrorCode;
+
+    #[test]
+    fn a_follow_by_name_needs_a_source_that_reports_identity() {
+        let error = identity_for(true, &(None, None)).expect_err("no identity, no follow by name");
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(identity_for(true, &(Some(1), Some(2))).is_ok());
+        // By handle the identity is not used.
+        assert!(identity_for(false, &(None, None)).is_ok());
     }
 }
