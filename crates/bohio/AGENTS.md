@@ -277,7 +277,7 @@ A bad endpoint, a fallback that does not follow a `webtransport://` one, or a ba
 ## Execution (`bohio::exec`)
 
 ```rust
-pub struct Context<'a> { pub grant: &'a Grant, pub config: &'a ExecutionConfig, pub compression: &'a CompressionConfig, pub slots: &'a Slots, pub path: &'a OsStr }   // Copy; `path` is the host's own PATH
+pub struct Context<'a> { pub grant: &'a Grant, pub config: &'a ExecutionConfig, pub compression: &'a CompressionConfig, pub slots: &'a Slots, pub peer: &'a str /* the peer's share of `slots` is counted by it */, pub path: &'a OsStr, pub sources: &'a Sources }   // Copy; `path` is the host's own PATH
 pub fn serve(channel: Arc<dyn Channel>, metadata: &[u8], context: &Context<'_>) -> Result<bohio_proto::exec::Exit, ErrorBody>;
 ```
 
@@ -302,7 +302,7 @@ Signals: a `signal` frame (`0x15`) is answered with `signalled` (`delivered`, an
 ## Shells (`bohio::shell`)
 
 ```rust
-pub struct Context<'a> { pub grant: &'a Grant, pub config: &'a ShellConfig, pub slots: &'a Slots, pub path: &'a OsStr, pub sources: &'a Sources }   // Copy
+pub struct Context<'a> { pub grant: &'a Grant, pub config: &'a ShellConfig, pub slots: &'a Slots, pub peer: &'a str, pub path: &'a OsStr, pub sources: &'a Sources }   // Copy
 pub fn serve(channel: Arc<dyn Channel>, metadata: &[u8], context: &Context<'_>) -> Result<bohio_proto::shell::Exit, ErrorBody>;
 ```
 

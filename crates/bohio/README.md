@@ -76,7 +76,7 @@ let slots = Slots::new(config.max_processes);
 let path = std::env::var_os("PATH").unwrap_or_default();
 let compression = CompressionConfig::default();
 let sources = Sources::default();
-let context = Context { grant: &grant, config: &config, compression: &compression, slots: &slots, path: &path, sources: &sources };
+let context = Context { grant: &grant, config: &config, compression: &compression, slots: &slots, peer: "peer", path: &path, sources: &sources };
 
 // This peer lacks `exec`, so the request is refused.
 let metadata = Request::argv(["echo", "hi"]).to_metadata()?;
