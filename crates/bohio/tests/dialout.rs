@@ -42,7 +42,7 @@ struct Pair {
 impl Pair {
     /// The controller accepts the host's key when `known`. The host's configuration is not written yet.
     fn new(known: bool) -> Self {
-        let dir = crate::support::private_dir::private_tempdir().expect("a directory");
+        let dir = crate::support::private_dir::private_tempdir();
         let controller = Node::new(dir.path(), "controller");
         let host = Node::new(dir.path(), "host");
         let extra = if known {
@@ -338,7 +338,7 @@ fn toml_list(path: &std::path::Path) -> String {
 
 #[test]
 fn a_controller_runs_info_read_and_exec_on_a_host_that_dialed_it() {
-    let root = crate::support::private_dir::private_tempdir().expect("a directory");
+    let root = crate::support::private_dir::private_tempdir();
     std::fs::write(
         root.path().join("hello.txt"),
         "read over the link the host made\n",
@@ -509,7 +509,7 @@ fn a_revoke_found_by_the_links_key_check_still_reaches_a_running_read_as_revoked
     use std::io::Read;
     use std::process::{Command, Stdio};
 
-    let root = crate::support::private_dir::private_tempdir().expect("a directory");
+    let root = crate::support::private_dir::private_tempdir();
     let big = root.path().join("big.bin");
     std::fs::File::create(&big)
         .and_then(|file| file.set_len(512 * 1024 * 1024))
@@ -685,7 +685,7 @@ fn serve_finding_layers_in(
 /// every user add one) is never checked, so it would choose who the node accepts and what each may do.
 #[test]
 fn a_layer_made_while_serving_is_read_only_where_no_other_account_could_make_it() {
-    let dir = crate::support::private_dir::private_tempdir().expect("a directory");
+    let dir = crate::support::private_dir::private_tempdir();
     let client = Node::new(dir.path(), "client");
     let nowhere = dir.path().join("nowhere");
     std::fs::create_dir(&nowhere).expect("a directory");

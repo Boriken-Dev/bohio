@@ -196,7 +196,7 @@ impl World {
     /// the client, and starting a process is part of what the proof waits for: on a loaded machine
     /// that takes seconds, so the stdio test allows far more than the other transports' five.
     fn proving_within(host_extra: &str, proof_timeout: &str) -> Self {
-        let dir = crate::support::private_dir::private_tempdir().expect("a directory");
+        let dir = crate::support::private_dir::private_tempdir();
         let mut configs = Vec::new();
         for (name, extra) in [("host", host_extra), ("client", "")] {
             let data = dir.path().join(format!("{name}-data"));
@@ -738,7 +738,7 @@ impl Certificates {
 
     /// As [`Certificates::new`], the host certificate valid only from `delay` on.
     fn starting_in(delay: Duration) -> Self {
-        let dir = crate::support::private_dir::private_tempdir().expect("a directory");
+        let dir = crate::support::private_dir::private_tempdir();
         let path = |name: &str| dir.path().join(name);
         use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair};
         use sha2::{Digest, Sha256};

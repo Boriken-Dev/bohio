@@ -482,7 +482,7 @@ fn expect_ok(label: &str, results: &[Result<(), String>]) {
 
 /// `-L`: a local listener of kind `local`, the host connecting to a target of kind `remote`.
 fn dash_l(local: Kind, remote: Kind, closer: Closer) {
-    let dir = crate::support::private_dir::private_tempdir().expect("a directory");
+    let dir = crate::support::private_dir::private_tempdir();
     let target = serve(remote, dir.path(), "target", closer);
     let (node, config, server) = node_and_peer(dir.path(), connect_grant(&[target.rule.as_str()]));
     let listener = match local {
@@ -516,7 +516,7 @@ fn dash_l(local: Kind, remote: Kind, closer: Closer) {
 
 /// `-R`: the host listens as `remote`, each arrival goes to a local target of kind `local`.
 fn dash_r(remote: Kind, local: Kind, closer: Closer) {
-    let dir = crate::support::private_dir::private_tempdir().expect("a directory");
+    let dir = crate::support::private_dir::private_tempdir();
     let target = serve(local, dir.path(), "target", closer);
     let bind = match remote {
         Kind::Tcp => "127.0.0.1:0".to_owned(),
@@ -545,7 +545,7 @@ fn dash_r(remote: Kind, local: Kind, closer: Closer) {
 
 /// `connect`: standard input and output to a target of kind `remote`.
 fn connect_stdio(remote: Kind, closer: Closer) {
-    let dir = crate::support::private_dir::private_tempdir().expect("a directory");
+    let dir = crate::support::private_dir::private_tempdir();
     let target = serve(remote, dir.path(), "target", closer);
     let (node, config, server) = node_and_peer(dir.path(), connect_grant(&[target.rule.as_str()]));
     let mut args = remote_args(&node, &config, &server);
@@ -571,7 +571,7 @@ fn connect_stdio(remote: Kind, closer: Closer) {
 
 /// `listen`: the host listens as `remote`, one arrival meets standard input and output.
 fn listen_stdio(remote: Kind, closer: Closer) {
-    let dir = crate::support::private_dir::private_tempdir().expect("a directory");
+    let dir = crate::support::private_dir::private_tempdir();
     let bind = match remote {
         Kind::Tcp => "127.0.0.1:0".to_owned(),
         Kind::Ipc => ipc_text(dir.path(), "remote"),
@@ -990,7 +990,7 @@ fn arrivals_past_max_pending_or_the_peers_backlog_are_closed_at_once() {
 fn a_revoke_ends_the_listener_and_its_connections_within_two_rechecks() {
     let _deadline = Deadline::start();
     for kind in [Kind::Tcp, Kind::Ipc] {
-        let dir = crate::support::private_dir::private_tempdir().expect("a directory");
+        let dir = crate::support::private_dir::private_tempdir();
         let node = Running::start();
         let bind_text = match kind {
             Kind::Tcp => "127.0.0.1:0".to_owned(),
@@ -1141,7 +1141,7 @@ fn control_streams_used_and_closed_in_a_row_all_answer() {
 #[test]
 fn a_socket_or_pipe_listener_is_for_the_hosts_own_account() {
     let _deadline = Deadline::start();
-    let dir = crate::support::private_dir::private_tempdir().expect("a directory");
+    let dir = crate::support::private_dir::private_tempdir();
     let text = ipc_text(dir.path(), "own");
     let node = Running::start();
     let (link, _) = node.link(listen_grant(&[text.as_str()]));
@@ -1225,7 +1225,7 @@ mod other_account {
         use std::os::unix::fs::PermissionsExt;
         for (same_user, served) in [(true, false), (false, true)] {
             // The directory is searchable by the other account, and the socket is opened up to it.
-            let dir = crate::support::private_dir::private_tempdir().expect("a directory");
+            let dir = crate::support::private_dir::private_tempdir();
             std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
             let node = Running::with(ForwardConfig {
                 ipc_same_user: same_user,
@@ -1275,7 +1275,7 @@ mod links {
 
     /// A directory whose own path holds no link, so a rule can name it.
     fn plain_dir() -> (tempfile::TempDir, std::path::PathBuf) {
-        let dir = crate::support::private_dir::private_tempdir().expect("a directory");
+        let dir = crate::support::private_dir::private_tempdir();
         let path = dir.path().canonicalize().expect("a real path");
         (dir, path)
     }
@@ -1378,7 +1378,7 @@ mod links {
 #[test]
 fn peer_approve_writes_listen_rules_and_a_bad_rule_is_named() {
     let _deadline = Deadline::start();
-    let dir = crate::support::private_dir::private_tempdir().expect("a directory");
+    let dir = crate::support::private_dir::private_tempdir();
     let config = client_config(dir.path(), "host");
     let peer = id_of(&client_config(dir.path(), "other"));
     let path = config.to_string_lossy().into_owned();
@@ -1438,7 +1438,7 @@ fn peer_approve_writes_listen_rules_and_a_bad_rule_is_named() {
 #[test]
 fn listen_keep_takes_the_next_arrival_after_each_ends() {
     let _deadline = Deadline::start();
-    let dir = crate::support::private_dir::private_tempdir().expect("a directory");
+    let dir = crate::support::private_dir::private_tempdir();
     let (node, config, server) = node_and_peer(dir.path(), listen_grant(&["127.0.0.1:0"]));
     let mut args = remote_args(&node, &config, &server);
     args.extend(["listen", "--keep", "127.0.0.1:0"]);
@@ -1469,7 +1469,7 @@ fn listen_keep_takes_the_next_arrival_after_each_ends() {
 #[test]
 fn listen_without_keep_ends_after_one_connection_with_status_zero() {
     let _deadline = Deadline::start();
-    let dir = crate::support::private_dir::private_tempdir().expect("a directory");
+    let dir = crate::support::private_dir::private_tempdir();
     let (node, config, server) = node_and_peer(dir.path(), listen_grant(&["127.0.0.1:0"]));
     let mut args = remote_args(&node, &config, &server);
     args.extend(["listen", "127.0.0.1:0"]);
@@ -1489,7 +1489,7 @@ fn listen_without_keep_ends_after_one_connection_with_status_zero() {
 #[test]
 fn a_listen_bind_the_grant_does_not_cover_is_refused_with_the_reason() {
     let _deadline = Deadline::start();
-    let dir = crate::support::private_dir::private_tempdir().expect("a directory");
+    let dir = crate::support::private_dir::private_tempdir();
     let (node, config, server) = node_and_peer(dir.path(), listen_grant(&["127.0.0.1:18000"]));
     for command in [
         vec!["listen", "127.0.0.1:0"],
@@ -1515,7 +1515,7 @@ fn a_listen_bind_the_grant_does_not_cover_is_refused_with_the_reason() {
 #[test]
 fn a_remote_forward_ends_the_command_when_its_grant_is_revoked() {
     let _deadline = Deadline::start();
-    let dir = crate::support::private_dir::private_tempdir().expect("a directory");
+    let dir = crate::support::private_dir::private_tempdir();
     let target = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = target.local_addr().unwrap().port();
     let (node, config, server) = node_and_peer(dir.path(), listen_grant(&["127.0.0.1:0"]));
@@ -1605,7 +1605,7 @@ fn remote_forwards_and_listen_work_over_a_link_the_host_made_through_via() {
 #[test]
 fn an_arrival_whose_local_target_refuses_is_closed_and_reported() {
     let _deadline = Deadline::start();
-    let dir = crate::support::private_dir::private_tempdir().expect("a directory");
+    let dir = crate::support::private_dir::private_tempdir();
     let closed = {
         let probe = TcpListener::bind("127.0.0.1:0").unwrap();
         probe.local_addr().unwrap().port()

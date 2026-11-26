@@ -36,7 +36,7 @@ impl World {
 
     /// As [`World::new`], with `extra` text in the host's `bohio.cfg`.
     fn with_config(allow: &str, extra: &str) -> Self {
-        let dir = crate::support::private_dir::private_tempdir().expect("a directory");
+        let dir = crate::support::private_dir::private_tempdir();
         let host = Node::new(dir.path(), "host");
         let agent = Node::new(dir.path(), "agent");
         let root = dir.path().join("files");

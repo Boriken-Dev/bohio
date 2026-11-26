@@ -211,7 +211,7 @@ fn rules_match_networks_ranges_and_names_and_nothing_else() {
 fn a_unix_socket_target_echoes_with_a_half_close() {
     let _deadline = Deadline::start();
     use coqui_transport_pipe::{Listener, PipeName};
-    let dir = crate::support::private_dir::private_tempdir().expect("a directory");
+    let dir = crate::support::private_dir::private_tempdir();
     let path = dir.path().join("echo.sock");
     let name = PipeName::at(&path).expect("a socket name");
     let listener = Listener::builder().name(&name).build().expect("it listens");
@@ -486,7 +486,7 @@ fn node_and_peer(dir: &Path, rules: &[&str]) -> (Running, String, String, PeerId
 #[test]
 fn connect_bridges_standard_input_and_output_and_check_prints_the_address() {
     let _deadline = Deadline::start();
-    let dir = crate::support::private_dir::private_tempdir().expect("a directory");
+    let dir = crate::support::private_dir::private_tempdir();
     let (listener, port) = listening();
     let rule = format!("127.0.0.1:{port}");
     let (node, config, server, peer) = node_and_peer(dir.path(), &[rule.as_str()]);
@@ -540,7 +540,7 @@ fn connect_bridges_standard_input_and_output_and_check_prints_the_address() {
 #[test]
 fn forward_dash_l_listens_and_reaches_the_target() {
     let _deadline = Deadline::start();
-    let dir = crate::support::private_dir::private_tempdir().expect("a directory");
+    let dir = crate::support::private_dir::private_tempdir();
     let (listener, port) = listening();
     let rule = format!("127.0.0.1:{port}");
     let (node, config, server, _peer) = node_and_peer(dir.path(), &[rule.as_str()]);
@@ -577,7 +577,7 @@ fn forward_dash_l_listens_and_reaches_the_target() {
 #[test]
 fn forward_binds_to_loopback_by_default_and_says_when_another_address_is_named() {
     let _deadline = Deadline::start();
-    let dir = crate::support::private_dir::private_tempdir().expect("a directory");
+    let dir = crate::support::private_dir::private_tempdir();
     let (_listener, port) = listening();
     let rule = format!("127.0.0.1:{port}");
     let (node, config, server, _peer) = node_and_peer(dir.path(), &[rule.as_str()]);
@@ -600,7 +600,7 @@ fn forward_binds_to_loopback_by_default_and_says_when_another_address_is_named()
 #[test]
 fn peer_approve_writes_connect_rules_and_a_bad_rule_is_named_by_config_check() {
     let _deadline = Deadline::start();
-    let dir = crate::support::private_dir::private_tempdir().expect("a directory");
+    let dir = crate::support::private_dir::private_tempdir();
     let config = client_config(dir.path(), "host");
     let peer = id_of(&client_config(dir.path(), "other"));
     let path = config.to_string_lossy().into_owned();
@@ -771,7 +771,7 @@ fn connect_and_forward_work_over_a_link_the_host_made_through_via() {
 fn forward_dash_l_listens_on_a_local_socket_or_pipe() {
     let _deadline = Deadline::start();
     use coqui_transport_pipe::{PipeName, Stream};
-    let dir = crate::support::private_dir::private_tempdir().expect("a directory");
+    let dir = crate::support::private_dir::private_tempdir();
     let (listener, port) = listening();
     let rule = format!("127.0.0.1:{port}");
     let (node, config, server, _peer) = node_and_peer(dir.path(), &[rule.as_str()]);
@@ -1082,7 +1082,7 @@ mod socks {
     #[test]
     fn forward_dash_d_serves_socks5_through_the_binary() {
         let _deadline = Deadline::start();
-        let dir = crate::support::private_dir::private_tempdir().expect("a directory");
+        let dir = crate::support::private_dir::private_tempdir();
         let (by_ip, served) = echo_after_end(b"via -D: ");
         let rule = format!("127.0.0.1:{by_ip}");
         let node = Running::start();
