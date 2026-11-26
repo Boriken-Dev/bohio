@@ -70,7 +70,9 @@ fn node(
         peers.clone(),
     )
     .map_err(|error| error.to_string())?
-    .with_secrets(Arc::new(super::secret::CommandSecrets::from_environment()))
+    .with_secrets(Arc::new(
+        super::secret::CommandSecrets::from_environment().with_settings(&config.secrets),
+    ))
     .map_err(|error| error.to_string())?
     .with_pairing(data.store().map_err(|error| error.to_string())?)
     .map_err(|error| error.to_string())?;

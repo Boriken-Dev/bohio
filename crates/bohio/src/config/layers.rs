@@ -99,6 +99,9 @@ const FILESYSTEM_LOWEST_ONLY: [&str; 1] = ["allow_id_bits"];
 const PROVIDERS_LOWEST_ONLY: [&str; 3] =
     ["check_access", "ld_so", "allow_reserved_signal_handlers"];
 
+/// The `[secrets]` keys that weaken what a `file:` secret must be: the lowest layer alone sets them.
+const SECRETS_LOWEST_ONLY: [&str; 2] = ["check_access", "group_readable"];
+
 /// The `[gui]` keys that say whose helper a node serves, and which account a helper trusts as the node: the lowest layer
 /// alone sets them, so a layer an account can write for itself cannot lend the desktop to another or name its own node.
 const GUI_LOWEST_ONLY: [&str; 12] = [
@@ -299,6 +302,15 @@ fn values(formats: &Formats<Value>, inputs: &[Input]) -> Result<Vec<Value>, Conf
                     return Err(ConfigError::Invalid {
                         path: input.label.clone(),
                         key: format!("providers.{key}"),
+                        message: "is read from the lowest layer only: remove it here".to_owned(),
+                    });
+                }
+            }
+            for key in SECRETS_LOWEST_ONLY {
+                if has_path(&value, &["secrets", key]) {
+                    return Err(ConfigError::Invalid {
+                        path: input.label.clone(),
+                        key: format!("secrets.{key}"),
                         message: "is read from the lowest layer only: remove it here".to_owned(),
                     });
                 }

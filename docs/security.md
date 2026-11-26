@@ -265,6 +265,7 @@ A desktop helper that the node starts through an exec source (a session named `e
   others on Windows) and `credential:` from a file of `$CREDENTIALS_DIRECTORY`, none larger than `[secrets] max_bytes` (`65536`);
   this build has no keyring and refuses `keyring:`. A secret is resolved when its source is built, held in a `Secret` that prints
   `[redacted]`, and handed to the provider, which then holds it: a provider's own care for it is the provider's.
+- **Where a `file:` secret may live.** By default it must be the node's own account's and closed to the group and others (mode `0600`; on Windows an access list that admits no other user). `[secrets] check_access = false` (lowest layer only, logged `non-default:`) reads one that is another account's or open: its owner then chooses the secret a provider sends, and anyone it admits can read it. `[secrets] group_readable = true` (lowest layer only, logged `non-default:`; Unix) also accepts `0640` owned by the node's account or root, for the `root:bohio 0640` pattern: every member of the file's group can read the secret.
 - **What an ssh source gives a peer.** A peer holding `exec` or `shell` on an ssh source runs anything **the account the source logs in as** can
   run on that machine, and a peer holding the source's files reads and writes whatever that account can: the node's own grants (program
   list, roots) are decided on the node, but the machine's own permissions are the only limit behind them. The node holds the means to log in

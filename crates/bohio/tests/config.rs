@@ -588,6 +588,50 @@ fn allow_id_bits_is_read_from_the_lowest_layer_only() {
 }
 
 #[test]
+fn the_secret_checks_are_set_by_the_lowest_layer_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    for key in ["check_access = false", "group_readable = true"] {
+        let files = layers(
+            dir.path(),
+            &[
+                (
+                    "system.cfg",
+                    "[service]
+name = \"s\"
+",
+                ),
+                (
+                    "user.cfg",
+                    &format!(
+                        "[secrets]
+{key}
+"
+                    ),
+                ),
+            ],
+        );
+        match Layers::load(&files) {
+            Err(ConfigError::Invalid { key: found, .. }) => {
+                assert_eq!(found, format!("secrets.{}", key.split(' ').next().unwrap()));
+            }
+            other => panic!("{key}: expected Invalid, got {other:?}"),
+        }
+    }
+    let files = layers(
+        dir.path(),
+        &[(
+            "low.cfg",
+            "[secrets]
+check_access = false
+group_readable = true
+",
+        )],
+    );
+    let secrets = Layers::load(&files).unwrap().config.secrets;
+    assert!(!secrets.check_access && secrets.group_readable);
+}
+
+#[test]
 fn an_error_names_the_file_line_column_and_key_and_never_the_value() {
     let dir = tempfile::tempdir().unwrap();
     let files = layers(

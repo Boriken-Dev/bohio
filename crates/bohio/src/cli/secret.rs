@@ -11,16 +11,47 @@ use std::path::{Path, PathBuf};
 use crate::secret::{Secret, SecretError, SecretResolver, split};
 
 /// Reads references as the command does.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub(super) struct CommandSecrets {
     /// `$CREDENTIALS_DIRECTORY`, read by the command.
     credentials: Option<PathBuf>,
+    /// `[secrets] check_access`.
+    check_access: bool,
+    /// `[secrets] group_readable`.
+    group_readable: bool,
+}
+
+impl Default for CommandSecrets {
+    fn default() -> Self {
+        Self::new(None)
+    }
 }
 
 impl CommandSecrets {
     /// A resolver whose `credential:` references are files of `credentials`.
     pub(super) fn new(credentials: Option<PathBuf>) -> Self {
-        Self { credentials }
+        Self {
+            credentials,
+            check_access: true,
+            group_readable: false,
+        }
+    }
+
+    /// Reads `file:` references as `[secrets]` says, logging each weakening.
+    pub(super) fn with_settings(mut self, settings: &crate::config::SecretsConfig) -> Self {
+        self.check_access = settings.check_access;
+        self.group_readable = settings.group_readable;
+        if !self.check_access {
+            tracing::warn!(
+                "non-default: [secrets] check_access is false: a `file:` secret may belong to another account, which then chooses the secret a provider sends, and may be readable by others"
+            );
+        }
+        if self.group_readable {
+            tracing::warn!(
+                "non-default: [secrets] group_readable is true: every member of a `file:` secret's group can read the secret"
+            );
+        }
+        self
     }
 
     /// One taken from the process environment.
@@ -31,6 +62,14 @@ impl CommandSecrets {
                 .map(PathBuf::from),
         )
     }
+}
+
+/// What `[secrets]` asks of a `file:` secret.
+struct Checks {
+    check_access: bool,
+    /// Modes mean nothing on Windows, where the access list is judged.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    group_readable: bool,
 }
 
 fn open(path: &Path, what: &str) -> Result<std::fs::File, SecretError> {
@@ -61,7 +100,7 @@ fn read_bounded(file: std::fs::File, max_bytes: usize, what: &str) -> Result<Sec
 /// Whether the open `file` is the node's own account's and closed to the group and others. The answer is about the file that is
 /// read, not about a path that can be swapped between the check and the read.
 #[cfg(unix)]
-fn only_the_owner(file: &std::fs::File, _path: &Path) -> Result<(), SecretError> {
+fn only_the_owner(file: &std::fs::File, _path: &Path, check: &Checks) -> Result<(), SecretError> {
     use std::os::unix::fs::MetadataExt;
     let meta = file.metadata().map_err(|error| {
         SecretError::new(format!(
@@ -69,12 +108,18 @@ fn only_the_owner(file: &std::fs::File, _path: &Path) -> Result<(), SecretError>
             error.kind()
         ))
     })?;
-    if meta.uid() != rustix::process::geteuid().as_raw() {
+    if !check.check_access {
+        return Ok(());
+    }
+    let me = rustix::process::geteuid().as_raw();
+    // A group-readable secret is the `root:GROUP 0640` pattern, so root may own it then.
+    if meta.uid() != me && !(check.group_readable && meta.uid() == 0) {
         return Err(SecretError::new(
             "the secret file belongs to another account",
         ));
     }
-    if meta.mode() & 0o077 != 0 {
+    let closed = if check.group_readable { 0o037 } else { 0o077 };
+    if meta.mode() & closed != 0 {
         return Err(SecretError::new(
             "the secret file may be read by other accounts: make it readable by its owner alone (chmod 600)",
         ));
@@ -83,13 +128,16 @@ fn only_the_owner(file: &std::fs::File, _path: &Path) -> Result<(), SecretError>
 }
 
 #[cfg(windows)]
-fn only_the_owner(_file: &std::fs::File, path: &Path) -> Result<(), SecretError> {
+fn only_the_owner(_file: &std::fs::File, path: &Path, check: &Checks) -> Result<(), SecretError> {
+    if !check.check_access {
+        return Ok(());
+    }
     crate::ownership::check(path, crate::ownership::Guarded::DataDir)
         .map_err(|_| SecretError::new("the secret file may be read or changed by other accounts"))
 }
 
 #[cfg(not(any(unix, windows)))]
-fn only_the_owner(_file: &std::fs::File, _path: &Path) -> Result<(), SecretError> {
+fn only_the_owner(_file: &std::fs::File, _path: &Path, _check: &Checks) -> Result<(), SecretError> {
     Ok(())
 }
 
@@ -99,7 +147,14 @@ impl SecretResolver for CommandSecrets {
             Some(("file", path)) => {
                 let path = Path::new(path);
                 let file = open(path, "the secret file")?;
-                only_the_owner(&file, path)?;
+                only_the_owner(
+                    &file,
+                    path,
+                    &Checks {
+                        check_access: self.check_access,
+                        group_readable: self.group_readable,
+                    },
+                )?;
                 read_bounded(file, max_bytes, "the secret file")
             }
             Some(("credential", name)) => {
@@ -131,6 +186,45 @@ impl SecretResolver for CommandSecrets {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn strict() -> Checks {
+        Checks {
+            check_access: true,
+            group_readable: false,
+        }
+    }
+
+    /// `group_readable` accepts `0640` and nothing wider; `check_access = false` accepts any mode.
+    #[cfg(unix)]
+    #[test]
+    fn a_group_readable_secret_needs_its_setting_and_a_wider_one_needs_check_access_off() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("a directory");
+        let path = dir.path().join("pw");
+        std::fs::write(
+            &path, "kept
+",
+        )
+        .expect("written");
+        let judge = |bits: u32, check: &Checks| {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(bits)).expect("mode");
+            only_the_owner(&open(&path, "the secret file").unwrap(), &path, check).is_ok()
+        };
+        let group = Checks {
+            check_access: true,
+            group_readable: true,
+        };
+        let off = Checks {
+            check_access: false,
+            group_readable: false,
+        };
+        assert!(!judge(0o640, &strict()));
+        assert!(judge(0o640, &group));
+        assert!(!judge(0o660, &group), "a group that may write is refused");
+        assert!(!judge(0o604, &group), "others may not read");
+        assert!(judge(0o644, &off));
+    }
 
     #[cfg(unix)]
     #[test]
@@ -172,8 +266,10 @@ mod tests {
         std::fs::rename(&path, dir.path().join("moved")).expect("moved");
         std::fs::write(&path, "swapped\n").expect("a swapped file");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("mode");
-        assert!(only_the_owner(&opened, &path).is_ok());
-        assert!(only_the_owner(&open(&path, "the secret file").unwrap(), &path).is_err());
+        assert!(only_the_owner(&opened, &path, &strict()).is_ok());
+        assert!(
+            only_the_owner(&open(&path, "the secret file").unwrap(), &path, &strict()).is_err()
+        );
     }
 
     #[test]

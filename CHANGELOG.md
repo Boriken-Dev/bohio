@@ -136,6 +136,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- `[secrets] check_access` (default `true`) and `[secrets] group_readable` (default `false`), lowest layer only, let a `file:` secret be another account's or readable by its group, logged `non-default:`; neither could be weakened before.
 - A `file:` secret reference is judged on the file once it is open, by the effective user, so a file swapped in at the path between the check and the read is not the one that was approved.
 - A layer, library or program that is a symbolic link is checked at the file it leads to and that file's directory as well as at the link and its directory.
 - On Unix the data directory is made mode `0700`, and it and its key file are checked like a layer: another account's, or one the group or others may write (or, for the key, read), is refused unless `[service] check_access = false`. Before, nothing was checked there.

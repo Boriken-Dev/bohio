@@ -2017,11 +2017,21 @@ impl Default for MediaConfig {
 pub struct SecretsConfig {
     /// The most bytes one secret may be (a password, a key); a larger one is refused. At least 1. Default `65536`.
     pub max_bytes: usize,
+    /// Whether a `file:` secret must belong to the account the node runs as and be closed to others. `false` reads one that
+    /// does not, logged `non-default:`: its owner then chooses the secret a provider sends. Lowest layer only. Default `true`.
+    pub check_access: bool,
+    /// Whether a `file:` secret may be readable by its group (mode `0640`, owned by the node's account or root), the
+    /// `root:bohio 0640` pattern; every member of the group can then read it. Unix only. Lowest layer only. Default `false`.
+    pub group_readable: bool,
 }
 
 impl Default for SecretsConfig {
     fn default() -> Self {
-        Self { max_bytes: 65_536 }
+        Self {
+            max_bytes: 65_536,
+            check_access: true,
+            group_readable: false,
+        }
     }
 }
 
