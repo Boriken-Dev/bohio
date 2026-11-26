@@ -827,6 +827,8 @@ impl Sessions {
                 "this peer may not use that terminal source",
             )));
         }
+        crate::access::refuse_display_forward(host.grant, named.get().describe())
+            .map_err(refuse)?;
         let id = format!("console:{}", named.name());
         let held = lock(&self.entries)
             .get(&id)

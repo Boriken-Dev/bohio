@@ -312,6 +312,7 @@ fn start<'a>(metadata: &[u8], context: &Context<'a>) -> Result<Begun<'a>, ErrorB
             "this peer may not use that exec source",
         ));
     }
+    crate::access::refuse_display_forward(context.grant, source.get().describe())?;
     let settings = Settings::new(context.compression);
     let output = settings.resolve(request.output_compression.as_ref())?;
     let stdin = settings.declared(request.stdin_compression.as_ref())?;

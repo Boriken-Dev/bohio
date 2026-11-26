@@ -312,8 +312,7 @@ A desktop helper that the node starts through an exec source (a session named `e
   screen, type into other programs and set the clipboard, as `ssh -Y` allows. The host's `sshd` gives each program a random cookie that
   the node checks (in constant time) and replaces with the display's own before the first byte reaches the display; a program on the
   machine that does not hold the cookie is closed. `x11_max_connections` (`64`) bounds the connections; one past it is refused.
-  A peer that may start programs on the source (`exec`, `shell`) can therefore act on the node's desktop: give it the source only where
-  that is acceptable. The node's own display is not reached by anything else through this.
+  A peer that may start programs on the source (`exec`, `shell`) can therefore act on the node's desktop, so the node starts a program on such a source only for a peer that also holds `gui.view`, `gui.input` and `gui.clipboard` (the grants that say who may see, type into and read the node's desktop); any other peer gets `denied`, naming the display. The source says it forwards by offering `x11_forward`. The node's own display is not reached by anything else through this.
 - **Files on an ssh source are confined by path, not by handle.** A peer's `fs_root`s name directories **of the machine behind the source**
   and the node checks every path against them lexically, as it does for its own files. The source `lacks` `confined`: the server resolves
   each name on every call, so a symbolic link inside a root (one the machine has, or one the peer makes with `symlink`) can lead out of it,

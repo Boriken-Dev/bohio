@@ -109,7 +109,7 @@ Two settings of an ssh source serve a desktop, with nothing of Bohío on the mac
   the machine's `sshd` needs `X11Forwarding yes` and an `xauth`, each program's X connections come back over the session and go to the
   node's display (`x11_local_display`, else the node's `DISPLAY`; at most `x11_max_connections` at once). It needs `x11_trusted = true`
   (the way `ssh -Y` does), because this build cannot ask the node's display for an untrusted authorization: a forwarded program can
-  read and drive everything on the node's display (`docs/security.md`). A node with no X display (Windows) cannot forward.
+  read and drive everything on the node's display (`docs/security.md`), so the node starts programs on the source only for a peer that holds `gui.view`, `gui.input` and `gui.clipboard`. A node with no X display (Windows) cannot forward.
 
 ### The machine's desktop through Bohío's helper
 

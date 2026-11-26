@@ -660,3 +660,50 @@ fn a_live_machine_serves_programs_and_files_through_the_ssh_source() {
     );
     assert!(same, "the file came back different");
 }
+
+#[test]
+fn a_source_that_forwards_the_nodes_display_serves_only_a_peer_that_holds_the_gui_grants() {
+    need_shell!();
+    let server = FakeSsh::start();
+    let toml = source_toml(&server, "x11_forward = true\nx11_trusted = true\n");
+    let refusal = |grant: Grant| {
+        let world = world(&toml, grant);
+        let mut request = Request::argv(["true"]);
+        request.source = Some("remote".to_owned());
+        let result = Exec::start(&world.link, &request).and_then(|exec| exec.wait(Some(WAIT)));
+        let shell = Shell::start(
+            &world.link,
+            &ShellRequest::console(Some("remote")),
+            Some(WAIT),
+        );
+        (result.err(), shell.err())
+    };
+    let mentions_display = |error: &Option<Error>| {
+        matches!(error, Some(Error::Remote(body))
+            if body.code == ErrorCode::Denied && body.message.contains("node's own display"))
+    };
+    // Exec alone, or exec with only some of the GUI grants, is refused with the reason.
+    let (exec, shell) = refusal(granted());
+    assert!(mentions_display(&exec), "{exec:?}");
+    assert!(mentions_display(&shell), "{shell:?}");
+    let (exec, _) = refusal(with_gui(&[Permission::GuiView, Permission::GuiInput]));
+    assert!(mentions_display(&exec), "{exec:?}");
+    // With all three the display is the peer's to have: this check lets it through.
+    let (exec, shell) = refusal(with_gui(&[
+        Permission::GuiView,
+        Permission::GuiInput,
+        Permission::GuiClipboard,
+    ]));
+    assert!(!mentions_display(&exec), "{exec:?}");
+    assert!(!mentions_display(&shell), "{shell:?}");
+}
+
+/// The grant that runs programs and consoles on the `remote` source, with `gui` besides.
+fn with_gui(gui: &[Permission]) -> Grant {
+    Grant::allowing(
+        [Permission::Info, Permission::Exec, Permission::Shell]
+            .into_iter()
+            .chain(gui.iter().copied()),
+    )
+    .with_sources(["remote"])
+}

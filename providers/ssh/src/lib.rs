@@ -116,7 +116,13 @@ impl Ssh {
     }
 
     fn info(&self, offers: &[&str], lacks: &[&str]) -> SourceInfo {
-        let info = SourceInfo::new(ID, offers, lacks);
+        // A source that hands its programs the node's display says so, for the node to hold such a start to the GUI grants.
+        let forwards = self.link().is_ok_and(|link| link.settings.x11_forward);
+        let mut offers = offers.to_vec();
+        if forwards {
+            offers.push(vocab::exec::X11_FORWARD);
+        }
+        let info = SourceInfo::new(ID, &offers, lacks);
         match self.reach() {
             Ok(()) => info,
             Err(reason) => info.unavailable(&reason),

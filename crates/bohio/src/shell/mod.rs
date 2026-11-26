@@ -298,6 +298,7 @@ fn start<'a>(
             "this peer may not use that terminal source",
         ));
     }
+    crate::access::refuse_display_forward(context.grant, source.get().describe())?;
     let program = resolve(&request.program, &request.env, context)?;
     if !console
         && let Ok(described) = source.get().describe()

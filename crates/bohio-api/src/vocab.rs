@@ -20,6 +20,8 @@ pub mod terminal {
     pub const SIGNALS: &str = "signals";
     /// The program's end carries an exit status.
     pub const EXIT_STATUS: &str = "exit_status";
+    /// Programs the source starts get the node's own display: they can read its windows, type into them and set its clipboard.
+    pub const X11_FORWARD: &str = "x11_forward";
     /// A BREAK condition can be sent.
     pub const BREAK: &str = "break";
 }
@@ -116,6 +118,8 @@ pub mod exec {
     pub const KILL_TREE: &str = "kill_tree";
     /// The program's end carries an exit status.
     pub const EXIT_STATUS: &str = "exit_status";
+    /// Programs the source starts get the node's own display: they can read its windows, type into them and set its clipboard.
+    pub const X11_FORWARD: &str = "x11_forward";
 }
 
 /// What a files source offers and lacks.

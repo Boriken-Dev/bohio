@@ -1132,3 +1132,35 @@ pub fn check(source: &SourceTables, access: &AccessConfig) -> Result<(), Refusal
 pub fn settings_value(settings: &impl ToValue) -> Result<Value, String> {
     settings.to_value().map_err(|error| error.to_string())
 }
+
+/// The refusal of a start on a source that hands its programs the node's own display (`x11_forward`) to a peer that does not
+/// hold the GUI grants: such a program reads the windows, types into them and sets the clipboard, which `gui.view`,
+/// `gui.input` and `gui.clipboard` are for.
+///
+/// # Errors
+///
+/// `denied` when `described` says the source forwards the display and `grant` lacks one of the three.
+pub(crate) fn refuse_display_forward<E>(
+    grant: &crate::policy::Grant,
+    described: Result<bohio_api::SourceInfo, E>,
+) -> Result<(), bohio_proto::ErrorBody> {
+    use crate::policy::Permission;
+    let Ok(described) = described else {
+        return Ok(());
+    };
+    let forwards = described
+        .offers
+        .iter()
+        .any(|word| word == bohio_api::vocab::exec::X11_FORWARD);
+    if forwards
+        && !(grant.allows(Permission::GuiView)
+            && grant.allows(Permission::GuiInput)
+            && grant.allows(Permission::GuiClipboard))
+    {
+        return Err(bohio_proto::ErrorBody::new(
+            bohio_proto::ErrorCode::Denied,
+            "this source gives the programs it starts the node's own display: a peer needs gui.view, gui.input and gui.clipboard to use it",
+        ));
+    }
+    Ok(())
+}
