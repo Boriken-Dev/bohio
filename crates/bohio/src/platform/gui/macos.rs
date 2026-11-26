@@ -276,7 +276,8 @@ fn on_content(
             let _ = out.send(picture);
         })
     };
-    // SAFETY: the filter, the configuration and the block are valid for the call; the system copies the block.
+    // SAFETY: the filter, the configuration and the block are valid for the call; the system copies the block. It calls
+    // the block on a queue of its own, so what the block captured is `Send`: an `mpsc::Sender` and a `Copy` `Target`.
     unsafe {
         SCScreenshotManager::captureImageWithFilter_configuration_completionHandler(
             &filter,
@@ -299,7 +300,8 @@ fn grab(target: Target, wait: Duration) -> Grabbed {
             on_content(content, error, target, sender.clone());
         },
     );
-    // SAFETY: the block is valid for the call and the system copies it.
+    // SAFETY: the block is valid for the call and the system copies it. It calls the block on a queue of its own, so what
+    // the block captured is `Send`: an `mpsc::Sender` and a `Copy` `Target`.
     unsafe { SCShareableContent::getShareableContentWithCompletionHandler(&handler) };
     match receiver.recv_timeout(wait) {
         Ok(picture) => picture,

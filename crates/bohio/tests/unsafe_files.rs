@@ -4,8 +4,11 @@
 //! it says it is.
 //!
 //! The `bohio` crate denies `unsafe_code` for the whole crate (`[lints.rust]`); every module that
-//! needs none forbids it at its top, and a listed file allows it. `platform/mod.rs` only denies,
-//! because the listed files are its children.
+//! needs none forbids it at its top, and a listed file allows it. `platform/mod.rs` and `platform/gui/mod.rs`
+//! only deny, because listed files are their children.
+//!
+//! The scan reads the source text, so `unsafe` that a macro generates is outside it: the plugin crates' exported
+//! entry symbols (`providers!`, guatiao's macro) are such code, and are guatiao's to review.
 
 #![forbid(unsafe_code)]
 
@@ -45,13 +48,39 @@ const ALLOWED: &[Allowed] = &[
     },
     Allowed {
         file: "crates/bohio/src/platform/gui/windows.rs",
-        reason: "the Windows desktop's input, session and clipboard: SendInput with the virtual desktop                  flags (so a display left of or above the main one is reachable), the session and                  input-desktop queries (ProcessIdToSessionId, WTSQuerySessionInformationW,                  OpenInputDesktop and GetUserObjectInformationW, whose name tells the secure desktop of                  the lock screen and an elevation prompt from the person's own), the monitor list and                  DPI awareness, and the clipboard's text (CF_UNICODETEXT in a movable global block).                  The windows crate exposes each as an unsafe function. Ruled out: enigo 0.6.1 maps an                  absolute move on Windows to the main display only (win_impl.rs, its own TODO), so a                  point on another display is unreachable; xcap and win-desktop-duplication capture and                  send no input; arboard would add clipboard-win and its dependencies to every platform's                  lock for fifty lines of calls whose every pointer is a local or the clipboard's own                  block; no maintained crate answers whether the input desktop is the secure one",
-        miri: "not reachable: every unsafe call is a Win32 call, which Miri does not run; the                translation of events, the session's meaning and the clipboard's encoding are pure                and tested on every platform (platform/gui/input.rs, session.rs); the calls are                covered by tests/gui_windows.rs against a probe window the test makes",
+        reason: "the Windows desktop's input, session and clipboard: SendInput with the virtual \
+                 desktop flags (so a display left of or above the main one is reachable), the session \
+                 and input-desktop queries (ProcessIdToSessionId, WTSQuerySessionInformationW, \
+                 OpenInputDesktop and GetUserObjectInformationW, whose name tells the secure desktop \
+                 of the lock screen and an elevation prompt from the person's own), the monitor list \
+                 and DPI awareness, and the clipboard's text (CF_UNICODETEXT in a movable global \
+                 block). The windows crate exposes each as an unsafe function. Ruled out: enigo 0.6.1 \
+                 maps an absolute move on Windows to the main display only (win_impl.rs, its own \
+                 TODO), so a point on another display is unreachable; xcap and \
+                 win-desktop-duplication capture and send no input; arboard would add clipboard-win and its \
+                 dependencies to every platform's lock for fifty lines of calls whose every pointer \
+                 is a local or the clipboard's own block; no maintained crate answers whether the \
+                 input desktop is the secure one",
+        miri: "not reachable: every unsafe call is a Win32 call, which Miri does not run; the \
+                 translation of events, the session's meaning and the clipboard's encoding are pure \
+                 and tested on every platform (platform/gui/input.rs, session.rs); the calls are \
+                 covered by tests/gui_windows.rs against a probe window the test makes",
     },
     Allowed {
         file: "crates/bohio/src/platform/gui/windows_capture.rs",
-        reason: "capturing the Windows screen: DXGI Desktop Duplication (an output's duplication, its                  frames copied through a Direct3D 11 staging texture and mapped to read) and GDI                  (BitBlt of the screen into a DIB section). The windows crate exposes the COM calls                  and the mapped pointer as unsafe. Ruled out: xcap captures with GDI unless built with                  Windows.Graphics.Capture (which draws a border round what it captures), and on Linux                  it pulls the portal and PipeWire stack into every platform's lock;                  win-desktop-duplication and windows-capture capture only (no GDI fallback, no                  rotation or session handling) over the same calls, with a second set of bindings                  beside the windows crate this file needs anyway; no maintained crate does both                  duplication and the GDI fallback",
-        miri: "not reachable: every unsafe call is a COM or GDI call on the display adapter, which                Miri does not run; covered by tests/gui_windows.rs, which captures a probe window's                own region through DXGI and through GDI and compares it with the pixels it painted",
+        reason: "capturing the Windows screen: DXGI Desktop Duplication (an output's duplication, its \
+                 frames copied through a Direct3D 11 staging texture and mapped to read) and GDI \
+                 (BitBlt of the screen into a DIB section). The windows crate exposes the COM calls \
+                 and the mapped pointer as unsafe. Ruled out: xcap captures with GDI unless built \
+                 with Windows.Graphics.Capture (which draws a border round what it captures), and on \
+                 Linux it pulls the portal and PipeWire stack into every platform's lock; \
+                 win-desktop-duplication and windows-capture capture only (no GDI fallback, no rotation \
+                 or session handling) over the same calls, with a second set of bindings beside the \
+                 windows crate this file needs anyway; no maintained crate does both duplication and \
+                 the GDI fallback",
+        miri: "not reachable: every unsafe call is a COM or GDI call on the display adapter, which \
+                 Miri does not run; covered by tests/gui_windows.rs, which captures a probe window's \
+                 own region through DXGI and through GDI and compares it with the pixels it painted",
     },
     Allowed {
         file: "crates/bohio/src/platform/gui/macos.rs",
