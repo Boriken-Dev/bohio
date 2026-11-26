@@ -270,6 +270,37 @@ mod owner {
         assert_eq!(entry(&report, &file).state, LibraryState::Failed);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn an_ld_so_in_a_directory_another_account_can_write_is_refused_and_no_library_is_mapped() {
+        let libraries = private_directory();
+        let file = put(libraries.path(), "serial", &serial_plugin());
+        let open = private_directory();
+        let ld_so = open.path().join("ld.so");
+        std::fs::write(&ld_so, b"not a linker").expect("a file");
+        open_to_everyone(open.path());
+        let mut config = providers(&[&file], true);
+        config.ld_so = Some(ld_so.clone());
+        let report = started(config);
+        let refused = entry(&report, &ld_so);
+        assert_eq!(refused.state, LibraryState::Failed, "{refused:?}");
+        assert!(
+            refused.detail.contains("ld_so") && refused.detail.contains("refused"),
+            "{}",
+            refused.detail
+        );
+        assert!(
+            report.libraries.iter().all(|library| library.path != file),
+            "nothing is mapped through a linker that is not trusted: {report:?}"
+        );
+
+        // With the check off the linker is not looked at, and the library loads as it always did.
+        let mut config = providers(&[&file], false);
+        config.ld_so = Some(ld_so);
+        let report = started(config);
+        assert_eq!(entry(&report, &file).state, LibraryState::Loaded);
+    }
+
     /// Collects what the node logs.
     #[derive(Clone)]
     struct Capture(Arc<Mutex<Vec<u8>>>);

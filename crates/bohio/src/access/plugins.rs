@@ -151,13 +151,45 @@ pub(super) fn load(
             "non-default: [providers] check_access is false: who owns and who may write a provider library and its directory is not checked: whoever can write there chooses the code this node runs"
         );
     }
-    if !config.paths.is_empty() && !config.isolate {
-        apply_loader(registry, config);
-    }
     let mut checked = ownership::Checked::new();
+    let mut map_here = !config.paths.is_empty() && !config.isolate;
+    if map_here {
+        // The linker the foreign loader enters runs as the node as much as a library does: it is checked as one, by the
+        // one absolute path that is then handed to the loader.
+        let mut config = config.clone();
+        if let Some(ld_so) = config.ld_so.take() {
+            let ld_so = std::path::absolute(&ld_so).unwrap_or(ld_so);
+            let problems = if config.check_access {
+                ownership::library_problems(&ld_so, &mut checked)
+            } else {
+                Vec::new()
+            };
+            if problems.is_empty() {
+                config.ld_so = Some(ld_so);
+            } else {
+                let texts: Vec<String> = problems.into_iter().map(|problem| problem.text).collect();
+                let library = Library {
+                    path: ld_so,
+                    state: LibraryState::Failed,
+                    detail: format!(
+                        "`[providers] ld_so` is refused, so no library is mapped into this node: {}",
+                        texts.join("; ")
+                    ),
+                    digest: None,
+                };
+                log(&library);
+                report.libraries.push(library);
+                map_here = false;
+            }
+        }
+        if map_here {
+            apply_loader(registry, &config);
+        }
+    }
     let named = config
         .paths
         .iter()
+        .filter(|_| map_here || config.isolate)
         .map(|path| (path, config.isolate))
         .chain(config.isolated.iter().map(|path| (path, true)));
     for (path, isolate) in named {

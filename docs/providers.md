@@ -241,7 +241,8 @@ path = "/dev/ttyUSB0"
     platform's elsewhere, `system` never takes the foreign one (a static build then loads nothing: each library is
     `failed`), `foreign` always does (a dynamically linked build loading libraries built for glibc). Any other value than
     `auto` is logged as `non-default:`. `ld_so` and `allow_reserved_signal_handlers` are set by the lowest configuration
-    layer only: `ld_so` names a file the node maps and enters.
+    layer only: `ld_so` names a file the node maps and enters, so it is made absolute and held to `check_access` like a library
+    (refused: a `failed` entry naming it, and no library is mapped into the node).
 - **Making one.** `providers/terminal/serial/plugin/` is a provider as a library in one line,
   `bohio_api::guatiao::providers!(bohio_provider_serial::Serial);` in a crate of type `cdylib` that depends on nothing else
   (the entry symbols it writes are `no_mangle` and the macro's generated code is `unsafe`, guatiao's and not seen by `tests/unsafe_files.rs`, so it does not take the workspace's `unsafe_code = "forbid"`). A node built with

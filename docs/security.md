@@ -300,7 +300,8 @@ A desktop helper that the node starts through an exec source (a session named `e
   a library is. The report holds each file's SHA-256 to compare against what you installed; pins that refuse a mismatch arrive
   once `guatiao` can check the bytes before it maps them. A statically linked musl build (the Linux release archives) maps them through the system's own `ld.so` and glibc, started inside the node: that
   adds the system's dynamic linker (or the file `[providers] ld_so` names, which only the lowest layer sets) to what the node
-  runs, a C library that shares the process with the node's own, a handler on signal 33, and threads the node did not
+  runs (`ld_so` is made absolute and checked as a library is, file and directory; one that fails the check is `failed` and maps no
+  library, and `check_access = false` skips it and logs `non-default:`), a C library that shares the process with the node's own, a handler on signal 33, and threads the node did not
   start. Its code has had no security review yet.
 - **What starting a program costs.** `[[providers.program]]` is empty by default, and then nothing starts. A program named there
   is a child of the node, started as the account that runs the node with that account's environment (plus the entry's `env`,
