@@ -435,6 +435,21 @@ mod windows {
                 || (sid.starts_with("S-1-5-21-")
                     && (sid.ends_with("-513") || sid.ends_with("-514")));
             if !broad {
+                // Any other account or group that may change it decides what the node reads, as much as every user would.
+                let on_object = propagation & INHERIT_ONLY == 0;
+                let changes = match what {
+                    Guarded::Config | Guarded::Library | Guarded::Program => {
+                        on_object && rights & CHANGE != 0
+                    }
+                    Guarded::DataDir | Guarded::Identity => rights & CHANGE != 0,
+                };
+                if changes {
+                    return Err((
+                        Kind::Open,
+                        format!("may be changed by another account ({sid})"),
+                        None,
+                    ));
+                }
                 continue;
             }
             // An entry that applies only to children still reaches the files the host makes there.
@@ -616,6 +631,27 @@ mod tests {
         assert!(judge(&children, Guarded::DataDir).is_err());
         let denied = listed(ME, &["ace|S-1-1-0|Deny|1F01FF|0"]);
         assert!(judge(&denied, Guarded::DataDir).is_ok());
+    }
+
+    /// Only the owner, SYSTEM, the administrators and TrustedInstaller may write: one other named account may not either.
+    #[test]
+    fn a_named_account_that_may_write_is_refused_and_one_that_may_read_is_not() {
+        let writer = listed(ME, &["ace|S-1-5-21-1-2-3-1002|Allow|2|0"]);
+        for what in [
+            Guarded::Config,
+            Guarded::Library,
+            Guarded::Program,
+            Guarded::DataDir,
+        ] {
+            assert!(judge(&writer, what).is_err(), "{what:?}");
+        }
+        let group = listed(ME, &["ace|S-1-5-32-547|Allow|1F01FF|0"]);
+        assert!(judge(&group, Guarded::Config).is_err(), "Power Users");
+        let reader = listed(ME, &["ace|S-1-5-21-1-2-3-1002|Allow|1200A9|0"]);
+        assert!(judge(&reader, Guarded::Config).is_ok());
+        let children = listed(ME, &["ace|S-1-5-21-1-2-3-1002|Allow|2|2"]);
+        assert!(judge(&children, Guarded::Config).is_ok(), "children only");
+        assert!(judge(&children, Guarded::DataDir).is_err());
     }
 
     #[test]
