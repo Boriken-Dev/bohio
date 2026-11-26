@@ -358,6 +358,14 @@ pub enum NodeEvent {
         /// How it went.
         outcome: ForwardOutcome,
     },
+    /// A WebTransport certificate the host makes for a listener was half spent and a new one took its place: a client that
+    /// pins the hash needs the new one.
+    CertificateRenewed {
+        /// The `[[listen]]` endpoint as written.
+        endpoint: String,
+        /// The new certificate's SHA-256, `sha256:` and 64 hex digits.
+        hash: String,
+    },
     /// A forward this node keeps toward a peer (`[peer."<id>".forward] local` or `remote`) changed state.
     Kept {
         /// The peer.
@@ -543,6 +551,9 @@ impl NodeEvents for LogEvents {
                 target,
                 outcome,
             } => tracing::info!(%peer, ?kind, %target, ?outcome, "forward"),
+            NodeEvent::CertificateRenewed { endpoint, hash } => {
+                tracing::info!(%endpoint, certificate = %hash, "a WebTransport certificate was renewed");
+            }
             NodeEvent::Kept {
                 peer,
                 direction,

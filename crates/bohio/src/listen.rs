@@ -7,7 +7,7 @@
 
 use std::io;
 use std::net::{SocketAddr, TcpListener};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -23,6 +23,7 @@ use coqui_transport_web::webtransport::{
 };
 
 use crate::config::ListenConfig;
+use crate::link::{NodeEvent, NodeEvents};
 use crate::node::NodeError;
 
 /// What the web transports are told when `origins` is unset or empty: their list is exact text, so one entry no browser can
@@ -132,7 +133,69 @@ fn server_config_of(identity: &Identity) -> Result<Arc<rustls::ServerConfig>, St
 pub struct MadeCertificate {
     validity: Duration,
     backdate: Duration,
+    keep: Option<Keep>,
     current: Mutex<Made>,
+}
+
+/// Called with the hash of a certificate that took the place of one that was half spent.
+pub type Renewed = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// The file a made certificate is kept in, and who hears of its renewal.
+struct Keep {
+    path: PathBuf,
+    renewed: Option<Renewed>,
+}
+
+impl core::fmt::Debug for Keep {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Keep")
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Where the certificates the host makes are kept between runs (a directory under the data directory, owner only), and who
+/// hears of a renewal. Without one, a listener makes a new certificate at every start.
+#[derive(Clone)]
+pub struct CertificateStore {
+    dir: PathBuf,
+    events: Option<Arc<dyn NodeEvents>>,
+}
+
+impl core::fmt::Debug for CertificateStore {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CertificateStore")
+            .field("dir", &self.dir)
+            .finish_non_exhaustive()
+    }
+}
+
+impl CertificateStore {
+    /// A store in `dir`, which is made when a certificate is first kept.
+    #[must_use]
+    pub fn new(dir: impl Into<PathBuf>) -> Self {
+        Self {
+            dir: dir.into(),
+            events: None,
+        }
+    }
+
+    /// Tells `events` ([`NodeEvent::CertificateRenewed`]) when a kept certificate is renewed.
+    #[must_use]
+    pub fn with_events(mut self, events: Arc<dyn NodeEvents>) -> Self {
+        self.events = Some(events);
+        self
+    }
+
+    /// The file of the certificate of `endpoint` valid for `validity`: another endpoint or another validity is another file.
+    fn file(&self, endpoint: &str, validity: Duration) -> PathBuf {
+        let name: String = endpoint
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        self.dir
+            .join(format!("webtransport-{name}-{}s.pem", validity.as_secs()))
+    }
 }
 
 #[derive(Debug)]
@@ -154,16 +217,86 @@ impl MadeCertificate {
         Ok(Arc::new(Self {
             validity,
             backdate,
+            keep: None,
             current: Mutex::new(current),
         }))
     }
 
-    fn make(validity: Duration, backdate: Duration) -> Result<Made, String> {
-        let identity = Identity::builder()
+    /// As [`MadeCertificate::new`], kept in `path` (owner only): a certificate already there that is less than half spent is
+    /// the one used, so a restart does not change the hash a client pinned. `renewed` hears of each later renewal.
+    ///
+    /// # Errors
+    ///
+    /// Why a certificate cannot be made or kept.
+    pub fn kept(
+        path: &Path,
+        validity: Duration,
+        backdate: Duration,
+        renewed: Option<Renewed>,
+    ) -> Result<Arc<Self>, String> {
+        let keep = Keep {
+            path: path.to_owned(),
+            renewed,
+        };
+        let current = Self::resume(&keep, validity)
+            .map_or_else(|| Self::make_kept(&keep, validity, backdate), Ok)?;
+        Ok(Arc::new(Self {
+            validity,
+            backdate,
+            keep: Some(keep),
+            current: Mutex::new(current),
+        }))
+    }
+
+    /// The kept certificate, when there is one and it is not half spent.
+    fn resume(keep: &Keep, validity: Duration) -> Option<Made> {
+        let identity = Identity::read(&keep.path).ok()??;
+        let made = std::fs::metadata(&keep.path)
+            .and_then(|m| m.modified())
+            .ok()?;
+        let left = (made + validity / 2)
+            .duration_since(SystemTime::now())
+            .ok()?;
+        Some(Made {
+            config: server_config_of(&identity).ok()?,
+            hash: identity.fingerprint().to_string(),
+            renew_at: Instant::now() + left,
+        })
+    }
+
+    /// A new certificate, written to the file by a rename so a crash leaves the old one or the new one whole.
+    fn make_kept(keep: &Keep, validity: Duration, backdate: Duration) -> Result<Made, String> {
+        let identity = Self::generate(validity, backdate)?;
+        let written = |error: &dyn core::fmt::Display| {
+            format!(
+                "{}: the certificate cannot be kept: {error}",
+                keep.path.display()
+            )
+        };
+        if let Some(dir) = keep.path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| written(&e))?;
+        }
+        let temporary = keep.path.with_extension("part");
+        let _ = std::fs::remove_file(&temporary);
+        identity.write_new(&temporary).map_err(|e| written(&e))?;
+        std::fs::rename(&temporary, &keep.path).map_err(|e| written(&e))?;
+        Ok(Made {
+            config: server_config_of(&identity)?,
+            hash: identity.fingerprint().to_string(),
+            renew_at: Instant::now() + validity / 2,
+        })
+    }
+
+    fn generate(validity: Duration, backdate: Duration) -> Result<Identity, String> {
+        Identity::builder()
             .not_before(SystemTime::now() - backdate)
             .valid_for(validity)
             .generate()
-            .map_err(|error| format!("a certificate cannot be made: {error}"))?;
+            .map_err(|error| format!("a certificate cannot be made: {error}"))
+    }
+
+    fn make(validity: Duration, backdate: Duration) -> Result<Made, String> {
+        let identity = Self::generate(validity, backdate)?;
         Ok(Made {
             config: server_config_of(&identity)?,
             hash: identity.fingerprint().to_string(),
@@ -178,9 +311,17 @@ impl MadeCertificate {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if Instant::now() >= current.renew_at {
-            match Self::make(self.validity, self.backdate) {
+            let made = match &self.keep {
+                Some(keep) => Self::make_kept(keep, self.validity, self.backdate),
+                None => Self::make(self.validity, self.backdate),
+            };
+            match made {
                 Ok(made) => {
                     tracing::info!(certificate = %made.hash, "a new WebTransport certificate was made");
+                    if let Some(renewed) = self.keep.as_ref().and_then(|keep| keep.renewed.as_ref())
+                    {
+                        renewed(&made.hash);
+                    }
                     *current = made;
                 }
                 // The old one still serves until it expires; the next connection tries again.
@@ -294,6 +435,20 @@ impl Listening {
     /// [`NodeError::Listen`] for an endpoint that does not parse, is not one to listen on, or cannot
     /// be bound.
     pub fn bind(config: &ListenConfig, settings: &Settings) -> Result<(Self, Endpoint), NodeError> {
+        Self::bind_with(config, settings, None)
+    }
+
+    /// As [`Listening::bind`], with the certificate a `webtransport` entry makes for itself kept in `store`: a restart then
+    /// serves the same certificate (the same hash) until it is half spent.
+    ///
+    /// # Errors
+    ///
+    /// As [`Listening::bind`].
+    pub fn bind_with(
+        config: &ListenConfig,
+        settings: &Settings,
+        store: Option<&CertificateStore>,
+    ) -> Result<(Self, Endpoint), NodeError> {
         let fail = |reason: String| NodeError::Listen {
             endpoint: config.endpoint.clone(),
             reason,
@@ -362,12 +517,29 @@ impl Listening {
                     if days > BROWSER_PIN_DAYS {
                         tracing::warn!("the WebTransport certificate is valid for {days} days: a browser will not accept it pinned by its hash, which takes at most {BROWSER_PIN_DAYS}");
                     }
-                    let made = MadeCertificate::new(
-                        Duration::from_secs(days * 24 * 3600),
-                        config
-                            .tls_backdate
-                            .map_or(DEFAULT_BACKDATE, |span| span.0),
-                    )
+                    let validity = Duration::from_secs(days * 24 * 3600);
+                    let backdate = config.tls_backdate.map_or(DEFAULT_BACKDATE, |span| span.0);
+                    let made = match store {
+                        Some(store) => {
+                            let endpoint = config.endpoint.clone();
+                            let events = store.events.clone();
+                            let renewed: Option<Renewed> = events.map(|events| {
+                                Arc::new(move |hash: &str| {
+                                    events.event(&NodeEvent::CertificateRenewed {
+                                        endpoint: endpoint.clone(),
+                                        hash: hash.to_owned(),
+                                    });
+                                }) as Renewed
+                            });
+                            MadeCertificate::kept(
+                                &store.file(&config.endpoint, validity),
+                                validity,
+                                backdate,
+                                renewed,
+                            )
+                        }
+                        None => MadeCertificate::new(validity, backdate),
+                    }
                     .map_err(fail)?;
                     let renewing = Arc::clone(&made);
                     let tls = WebTransportTls::per_connection(move |_, _| renewing.config());
@@ -581,6 +753,57 @@ mod tests {
         let any = || Some(vec!["*".to_owned()]);
         assert!(upgrade_status(any(), Some(page)).contains("101"));
         assert!(upgrade_status(any(), None).contains("101"));
+    }
+
+    #[test]
+    fn a_kept_certificate_survives_a_restart_and_is_renewed_at_half_its_validity() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kept").join("wt.pem");
+        let heard = Arc::new(Mutex::new(Vec::<String>::new()));
+        let kept = || {
+            let heard = Arc::clone(&heard);
+            let renewed: Renewed =
+                Arc::new(move |hash: &str| heard.lock().unwrap().push(hash.to_owned()));
+            MadeCertificate::kept(&path, Duration::from_secs(4), Duration::ZERO, Some(renewed))
+                .unwrap()
+        };
+        let first = kept();
+        let hash = first.hash();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0, "the key is readable by others: {mode:o}");
+        }
+        drop(first);
+        // A restart serves the same certificate.
+        let again = kept();
+        assert_eq!(again.hash(), hash);
+        assert!(heard.lock().unwrap().is_empty());
+        // Half spent: the next connection gets a new one, and the event fires.
+        thread::sleep(Duration::from_millis(2300));
+        let _ = again.config();
+        assert_ne!(again.hash(), hash);
+        assert_eq!(heard.lock().unwrap().as_slice(), [again.hash()]);
+        // And a restart after that serves the renewed one.
+        assert_eq!(kept().hash(), again.hash());
+    }
+
+    #[test]
+    fn two_binds_over_one_store_serve_one_certificate() {
+        let dir = tempfile::tempdir().unwrap();
+        let entry = ListenConfig {
+            endpoint: "webtransport://127.0.0.1:0".to_owned(),
+            ..ListenConfig::default()
+        };
+        let settings = Settings::default();
+        let store = CertificateStore::new(dir.path());
+        let hash = |store: Option<&CertificateStore>| {
+            let (listening, _) = Listening::bind_with(&entry, &settings, store).expect("binds");
+            listening.certificate_hash().expect("a certificate")
+        };
+        assert_eq!(hash(Some(&store)), hash(Some(&store)));
+        assert_ne!(hash(None), hash(None));
     }
 
     #[test]

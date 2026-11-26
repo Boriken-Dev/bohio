@@ -27,7 +27,7 @@ use crate::link::{
     Grants, KeptDirection, KeptState, Keys, KeysError, LogEvents, MemoryGrants, NodeEvent,
     NodeEvents,
 };
-use crate::listen::Listening;
+use crate::listen::{CertificateStore, Listening};
 use crate::local::{ANOTHER_ACCOUNT, Local, LocalLink, Server};
 use crate::node::{Endpoint, Node};
 use crate::ownership::{self as access, Guarded};
@@ -86,6 +86,16 @@ struct Printed;
 
 impl NodeEvents for Printed {
     fn event(&self, event: &NodeEvent) {
+        if let NodeEvent::CertificateRenewed { endpoint, hash } = event {
+            if output::json() {
+                output::event(
+                    "certificate",
+                    serde_json::json!({ "hash": hash, "endpoint": endpoint }),
+                );
+            } else {
+                say!("certificate {hash} for {endpoint}");
+            }
+        }
         if let NodeEvent::Kept {
             peer,
             direction,
@@ -270,12 +280,16 @@ pub(super) fn serve_endpoints(
     let watch = guard(found, environment)?;
     log_non_default(config, entries);
     let (server, peers) = node(found, watch, environment)?;
-    let server = server.with_events(Arc::new(Printed));
+    let events: Arc<dyn NodeEvents> = Arc::new(Printed);
+    let server = server.with_events(Arc::clone(&events));
     let settings = config.link.settings();
+    // A certificate the host makes for WebTransport is kept with the node's other state, so a restart keeps its hash.
+    let certificates = CertificateStore::new(config.data_dir(environment).join("certificates"))
+        .with_events(events);
     let mut listeners = Vec::new();
     for entry in entries {
-        let (listening, bound) =
-            Listening::bind(entry, &settings).map_err(|error| error.to_string())?;
+        let (listening, bound) = Listening::bind_with(entry, &settings, Some(&certificates))
+            .map_err(|error| error.to_string())?;
         announce(
             "listening",
             &bound.to_string(),
@@ -755,7 +769,14 @@ fn pair_alone(found: &Found, environment: &Environment, args: &PairArgs) -> Resu
     let settings = config.link.settings();
     let mut listeners = Vec::new();
     for entry in &entries {
-        let (listening, bound) = Listening::bind(entry, &settings).map_err(|error| {
+        let (listening, bound) = Listening::bind_with(
+            entry,
+            &settings,
+            Some(&CertificateStore::new(
+                config.data_dir(environment).join("certificates"),
+            )),
+        )
+        .map_err(|error| {
             format!("{error}; if `bohio serve` runs here without a [control] endpoint, `bohio pair` cannot reach it")
         })?;
         announce(
