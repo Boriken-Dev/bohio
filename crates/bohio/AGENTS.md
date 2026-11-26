@@ -196,6 +196,7 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[sessions] check_every` | `5s` | how often sessions are looked at for linger, kept time and a revoked grant; not zero |
 | `[power] enabled`, `action_timeout`, `max_streams` | `false`, `60s`, `4` | whether power is served (a peer needs `power` too), how long an action may take before `timeout`, concurrent requests; not zero / at least 1 |
 | `[media] enabled`, `action_timeout`, `max_streams` | `false`, `60s`, `4` | as `[power]`, for virtual media (a peer needs `media`) |
+| `[media] show_image_urls` | `false` | show an image URL whole instead of `scheme://host/path` (user, password, query and fragment removed), logged `non-default:` |
 | `[secrets] max_bytes` | `65536` | the most bytes one secret reference may read; at least 1 |
 | `[secrets] check_access` | `true` | a `file:` secret must be the node's account's and closed to the group and others; `false` reads any and logs `non-default:`; lowest layer only |
 | `[secrets] group_readable` | `false` | accept a `file:` secret of mode `0640` owned by the node's account or root (Unix), logged `non-default:`; lowest layer only |

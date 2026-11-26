@@ -555,6 +555,11 @@ impl Node {
         sources.defer_secrets();
         sources.set_secret_limit(config.secrets.max_bytes);
         sources.set_allow_literal(config.secrets.allow_literal);
+        if config.media.show_image_urls {
+            tracing::warn!(
+                "non-default: [media] show_image_urls is true: an image URL is shown to every peer holding `media` whole, its user, password and query included"
+            );
+        }
         if config.secrets.allow_literal {
             tracing::warn!(
                 "non-default: [secrets] allow_literal is true: a sensitive setting may hold its secret in the configuration file, readable by whoever can read that file and its backups"
