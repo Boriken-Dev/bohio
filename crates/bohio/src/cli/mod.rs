@@ -200,7 +200,7 @@ pub struct ApproveArgs {
     pub config: ConfigOption,
     /// The peer's id, as `bohio peer list` prints it.
     pub id: String,
-    /// What the peer may do; the help is [`allow_help`].
+    /// What the peer may do; its help is built from `Permission::ALL`.
     #[arg(long, value_delimiter = ',', value_name = "PERMISSION", help = allow_help())]
     pub allow: Vec<String>,
     /// A directory file operations are confined to (repeat).
