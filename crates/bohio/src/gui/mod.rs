@@ -262,6 +262,11 @@ impl GuiState {
             info.reason = Some("this host does not serve its desktop ([gui] enabled)".to_owned());
             return info;
         }
+        // What a desktop says of itself is for a peer that may use it: asking would also show a portal's dialog, and the answer
+        // names binaries and units.
+        if !(grant.allows(Permission::GuiView) || grant.allows(Permission::GuiInput)) {
+            return info;
+        }
         let source = match self.sources.desktop(None) {
             Ok(source) => source,
             Err(error) => {

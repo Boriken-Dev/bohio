@@ -582,7 +582,9 @@ fn info_shows_the_sessions_only_to_a_peer_with_a_gui_permission() {
         .unwrap()
         .info(Some(WAIT))
         .unwrap();
-    assert!(info.gui.available);
+    // A peer that may only ask `info` is told that the host serves a desktop and in what formats, and nothing the desktop says.
+    assert!(info.gui.enabled && !info.gui.available);
+    assert!(info.gui.backend.is_none() && info.gui.reason.is_none() && !info.gui.input);
     assert!(info.gui.sessions.is_empty());
     let off = world(
         GuiConfig::default(),

@@ -722,6 +722,8 @@ gui-info = { ? enabled: bool, ? available: bool, ? reason: opt<text>, ? backend:
 gui-session = { id: text, ? user: opt<text>, ? active: bool, ? locked: opt<bool>, ? displays: [* display] }
 ```
 
+
+
 It is asked again at every `info`. `sessions` and `user` are sent only to a peer that holds `gui.view` or `gui.input`. A host that already runs a VNC server is reached with `forward -L 5900=127.0.0.1:5900` under a `forward.connect` rule for `127.0.0.1:5900`; nothing here builds on it.
 ## Remote forwards: `bohio-listen/1` and `bohio-accept/1`
 
