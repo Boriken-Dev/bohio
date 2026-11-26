@@ -26,15 +26,19 @@ pub const fn table(profile: Profile) -> &'static str {
 }
 
 /// A local network: larger frames, and a larger window for a bulk stream so one file is not limited by the
-/// 1 MiB window while a round trip takes a few milliseconds.
-const LAN: &str = r"
+/// 1 MiB window while a round trip takes a few milliseconds. The files of a bundle share one compression context,
+/// which a trusted network can afford (the host logs `non-default:`).
+const LAN: &str = r#"
 [filesystem]
 chunk_size = 262144
 
 [link]
 bulk_window = 4194304
 max_window = 8388608
-";
+
+[compression]
+bundle_context = "shared"
+"#;
 
 /// A host that cannot compress or hash much: the cheap compressor, low caps, one hash and one walk at a time, a small
 /// window that does not grow, and a small signature.
@@ -165,6 +169,10 @@ impl crate::config::Config {
             (
                 "compression.prepare_max_bytes",
                 show(&compression.prepare_max_bytes),
+            ),
+            (
+                "compression.bundle_context",
+                show(&compression.bundle_context),
             ),
             ("hash.max_streams", show(&self.hash.max_streams)),
             ("walk.max_streams", show(&self.walk.max_streams)),

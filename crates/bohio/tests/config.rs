@@ -1196,6 +1196,14 @@ fn every_profile_loads_with_the_values_it_names() {
     assert_eq!(lan.filesystem.chunk_size, 256 * 1024);
     assert_eq!(lan.link.bulk_window, Some(4 * MIB));
     assert_eq!(lan.link.max_window, Some(8 * MIB));
+    assert_eq!(
+        lan.compression.bundle_context,
+        bohio::config::BundleContext::Shared
+    );
+    assert_eq!(
+        default.compression.bundle_context,
+        bohio::config::BundleContext::PerItem
+    );
 
     let weak = load("weak-host");
     assert_eq!(weak.hash.max_streams, 1);
