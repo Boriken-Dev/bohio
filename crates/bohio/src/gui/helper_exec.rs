@@ -75,6 +75,7 @@ impl ExecHelper {
                     files,
                     dir: dir.trim().to_owned(),
                     check_platform: gui.helper_upload_check_platform,
+                    answer_max: gui.helper_upload_answer_max,
                     binary: gui.helper_binary.as_ref().map(std::path::PathBuf::from),
                     overwrite: gui.helper_upload_overwrite,
                     shared_dir: gui.helper_upload_shared_dir,

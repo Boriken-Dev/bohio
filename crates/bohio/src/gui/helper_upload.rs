@@ -42,6 +42,8 @@ pub struct Upload {
     pub overwrite: bool,
     /// Accept a directory that another account can write to.
     pub shared_dir: bool,
+    /// The most bytes of the machine's answer to `uname -sm` that are read; more fails the upload.
+    pub answer_max: usize,
 }
 
 /// The kind of executable a file is, and the processors it holds code for.
@@ -215,6 +217,7 @@ fn capture(
     source: &str,
     argv: &[&str],
     stop: &AtomicBool,
+    max: usize,
 ) -> Result<String, String> {
     let exec = sources.exec(Some(source)).map_err(|error| error.message)?;
     let process: Object<dyn Process> = exec
@@ -235,6 +238,13 @@ fn capture(
             Ok(0) => {}
             Ok(count) if count > 0 => {
                 out.extend_from_slice(&buffer[..usize::try_from(count).unwrap_or(0)]);
+                if out.len() > max {
+                    let _ = process.kill();
+                    return Err(format!(
+                        "`{}` answered with more than the {max} bytes `[gui] helper_upload_answer_max` allows",
+                        argv.join(" ")
+                    ));
+                }
             }
             Ok(_) => break,
             Err(error) => return Err(error.message().to_string()),
@@ -328,7 +338,7 @@ pub fn upload(
     head.truncate(got);
     let built = built_for(&head).map_err(|why| format!("{}: {why}", binary.display()))?;
     if upload.check_platform {
-        let answer = capture(sources, source, &["uname", "-sm"], stop)?;
+        let answer = capture(sources, source, &["uname", "-sm"], stop, upload.answer_max)?;
         check_platform(&built, &answer)?;
     }
 
@@ -352,16 +362,25 @@ pub fn upload(
         .open_dir(&upload.dir)
         .map_err(|error| format!("{}: {}", upload.dir, text(&error)))?;
     let stat = dir.stat(".", true).map_err(|error| text(&error))?;
-    if let Some(mode) = stat.mode
-        && mode & 0o022 != 0
-        && !upload.shared_dir
-    {
-        return Err(format!(
-            "{} is writable by other accounts (mode {:o}): one of them could replace the helper before it runs; \
-             `[gui] helper_upload_shared_dir = true` accepts that",
-            upload.dir,
-            mode & 0o7777
-        ));
+    if !upload.shared_dir {
+        match stat.mode {
+            Some(mode) if mode & 0o022 != 0 => {
+                return Err(format!(
+                    "{} is writable by other accounts (mode {:o}): one of them could replace the helper before it runs; \
+                     `[gui] helper_upload_shared_dir = true` accepts that",
+                    upload.dir,
+                    mode & 0o7777
+                ));
+            }
+            Some(_) => {}
+            None => {
+                return Err(format!(
+                    "the source does not say who may write {}: another account may be able to replace the helper before it \
+                     runs; `[gui] helper_upload_shared_dir = true` accepts that",
+                    upload.dir
+                ));
+            }
+        }
     }
     for (weakened, key) in [
         (upload.overwrite, "helper_upload_overwrite"),
@@ -459,6 +478,34 @@ pub fn upload(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A program that writes without end, as a hostile machine's `uname` would.
+    fn endless() -> Vec<String> {
+        if cfg!(windows) {
+            ["cmd.exe", "/c", "dir", "/s", r"C:\Windows\System32"]
+                .map(str::to_owned)
+                .to_vec()
+        } else {
+            vec!["yes".to_owned()]
+        }
+    }
+
+    #[test]
+    fn a_machine_that_answers_without_end_fails_the_read_at_the_bound() {
+        let sources = Sources::from_config(
+            &crate::config::SourceTables::new(),
+            &crate::config::AccessConfig {
+                desktop: Some(Vec::new()),
+                ..crate::config::AccessConfig::default()
+            },
+        )
+        .expect("the node's own sources");
+        let stop = AtomicBool::new(false);
+        let argv = endless();
+        let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let failed = capture(&sources, "native", &argv, &stop, 4096).unwrap_err();
+        assert!(failed.contains("helper_upload_answer_max"), "{failed}");
+    }
 
     fn elf(machine: u16) -> Vec<u8> {
         let mut head = vec![0_u8; 64];

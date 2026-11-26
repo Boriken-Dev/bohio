@@ -282,9 +282,11 @@ fn upload_into(dir: &std::path::Path, binary: Option<std::path::PathBuf>) -> Upl
         files: None,
         dir: dir.to_string_lossy().replace('\\', "/"),
         check_platform: false,
+        answer_max: 4096,
         binary,
         overwrite: false,
-        shared_dir: false,
+        // A Windows source reports no permission bits, which the upload refuses unless the directory is accepted.
+        shared_dir: cfg!(windows),
     }
 }
 
@@ -414,6 +416,7 @@ fn a_helper_built_for_another_platform_is_refused_and_not_put() {
     let stop = AtomicBool::new(false);
     let checked = |dir: &std::path::Path, binary: std::path::PathBuf| Upload {
         check_platform: true,
+        answer_max: 4096,
         ..upload_into(dir, Some(binary))
     };
     let dir = tempfile::tempdir().expect("a directory");
@@ -450,6 +453,7 @@ fn a_helper_built_for_another_platform_is_refused_and_not_put() {
     // The operator who knows better turns the check off.
     let weaker = Upload {
         check_platform: false,
+        answer_max: 4096,
         ..checked(target.path(), file)
     };
     helper_upload::upload(&sources, "native", &weaker, &stop).expect("unchecked");
@@ -471,6 +475,7 @@ fn a_helper_is_put_through_ssh_files_and_run_through_its_exec() {
     let upload = Upload {
         // `uname` is this machine own: the platform check is the real one.
         check_platform: true,
+        answer_max: 4096,
         ..upload_into(target.path(), Some(program.into()))
     };
     let stop = AtomicBool::new(false);
@@ -626,6 +631,7 @@ fn a_node_puts_its_own_helper_on_a_real_sshd_and_serves_the_x_display_through_it
         files: None,
         dir: format!("{}/upload", server.dir.to_string_lossy()),
         check_platform: true,
+        answer_max: 4096,
         binary: Some(env!("CARGO_BIN_EXE_bohio").into()),
         overwrite: false,
         shared_dir: false,

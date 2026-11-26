@@ -98,7 +98,7 @@ const PROVIDERS_LOWEST_ONLY: [&str; 3] =
 
 /// The `[gui]` keys that say whose helper a node serves, and which account a helper trusts as the node: the lowest layer
 /// alone sets them, so a layer an account can write for itself cannot lend the desktop to another or name its own node.
-const GUI_LOWEST_ONLY: [&str; 10] = [
+const GUI_LOWEST_ONLY: [&str; 11] = [
     "helper_accounts",
     "helper_endpoint",
     "node_account",
@@ -109,6 +109,7 @@ const GUI_LOWEST_ONLY: [&str; 10] = [
     "helper_upload_overwrite",
     "helper_upload_shared_dir",
     "helper_upload_check_platform",
+    "helper_upload_answer_max",
 ];
 
 /// One layer as read.

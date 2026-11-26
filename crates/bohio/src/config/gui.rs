@@ -195,6 +195,9 @@ pub struct GuiConfig {
     /// Ask the machine what it runs (`uname -sm` through the exec source) and refuse a helper built for another platform.
     /// Default `true`; `false` for a machine with no `uname`. Lowest layer only.
     pub helper_upload_check_platform: bool,
+    /// The most bytes of the machine's answer to `uname -sm` the upload reads; a machine that answers with more fails the
+    /// upload, so it cannot grow the node. At least 1. Default `4096`. Lowest layer only.
+    pub helper_upload_answer_max: usize,
 }
 
 impl Default for GuiConfig {
@@ -261,6 +264,7 @@ impl Default for GuiConfig {
             helper_upload_overwrite: false,
             helper_upload_shared_dir: false,
             helper_upload_check_platform: true,
+            helper_upload_answer_max: 4096,
         }
     }
 }
@@ -294,6 +298,10 @@ impl GuiConfig {
             ("gui.max_streams", self.max_streams == 0),
             ("gui.max_streams_per_peer", self.max_streams_per_peer == 0),
             ("gui.max_helpers", self.max_helpers == 0),
+            (
+                "gui.helper_upload_answer_max",
+                self.helper_upload_answer_max == 0,
+            ),
             ("gui.source_retry", self.source_retry.0.is_zero()),
             ("gui.snapshots_per_minute", self.snapshots_per_minute == 0),
             (
