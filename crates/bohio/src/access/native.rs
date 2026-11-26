@@ -586,6 +586,13 @@ fn resolve(
         find_program(first, path)
     }
     .ok_or_else(|| refuse(Status::GUATIAO_ERR_NOT_FOUND, "the program was not found"))?;
+    // A batch file is read by `cmd`, which takes its arguments as commands: refused as `exec` refuses it.
+    if cfg!(windows) && crate::platform::is_batch(&located) {
+        return Err(refuse(
+            Status::GUATIAO_ERR_BAD_VALUE,
+            "a batch file is not started directly: its arguments would be read by cmd; run `cmd /C` on it",
+        ));
+    }
     Ok((
         located.into_os_string(),
         rest.iter().map(OsString::from).collect(),

@@ -442,13 +442,7 @@ fn resolve(spec: &Spec) -> io::Result<PathBuf> {
     };
     let found = found
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the program was not found"))?;
-    let batch = found
-        .extension()
-        .and_then(OsStr::to_str)
-        .is_some_and(|extension| {
-            extension.eq_ignore_ascii_case("bat") || extension.eq_ignore_ascii_case("cmd")
-        });
-    if batch {
+    if super::is_batch(&found) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "a batch file is not started directly: its arguments would be read by cmd; run `cmd /C` on it",

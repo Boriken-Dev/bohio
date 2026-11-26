@@ -447,6 +447,43 @@ pub fn resolve_listed(program: &str, path: &OsStr) -> Option<PathBuf> {
     std::path::absolute(found).ok()
 }
 
+/// Whether `path` names a batch file as Windows reads it: by its extension without case, after the trailing dots and
+/// spaces Windows drops from a name (`x.bat.` is `x.bat`).
+#[must_use]
+pub fn is_batch(path: &Path) -> bool {
+    let name = path.file_name().map(|name| name.to_string_lossy());
+    name.as_deref()
+        .map(|name| name.trim_end_matches(['.', ' ']))
+        .and_then(|name| name.rsplit_once('.'))
+        .is_some_and(|(_, extension)| {
+            extension.eq_ignore_ascii_case("bat") || extension.eq_ignore_ascii_case("cmd")
+        })
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use std::path::Path;
+
+    use super::is_batch;
+
+    #[test]
+    fn a_batch_file_is_known_by_the_name_windows_reads() {
+        for name in [
+            "a.bat",
+            "a.CMD",
+            "dir/a.bat",
+            "a.bat.",
+            "a.cmd. .",
+            "a.Bat ",
+        ] {
+            assert!(is_batch(Path::new(name)), "{name}");
+        }
+        for name in ["a.exe", "bat", "a.batx", "a.bat.exe", "", "a."] {
+            assert!(!is_batch(Path::new(name)), "{name}");
+        }
+    }
+}
+
 #[cfg(all(test, windows))]
 mod inherit_tests;
 #[cfg(all(test, target_os = "linux"))]
