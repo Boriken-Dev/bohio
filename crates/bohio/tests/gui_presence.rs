@@ -495,3 +495,32 @@ fn the_asking_notice_names_the_clipboard() {
     );
     assert!(body(&[Want::Input]).ends_with("asks to control this screen"));
 }
+
+#[test]
+fn a_peer_that_keeps_asking_is_denied_without_the_person_being_asked() {
+    let presence = Arc::new(Recording {
+        answer: Some(Approval::Allow),
+        ..Recording::default()
+    });
+    let local = GuiConfig {
+        approval: ApprovalMode::Local,
+        approval_ttl: Span(Duration::ZERO),
+        approval_asks_per_minute: 3,
+        ..config()
+    };
+    let host = host(local, |node| node.with_presence(presence.clone()));
+    for _ in 0..3 {
+        assert!(Gui::open(&host.link, &GuiRequest::default()).is_ok());
+    }
+    assert_eq!(presence.asked.load(Ordering::SeqCst), 3);
+    let error = Gui::open(&host.link, &GuiRequest::default()).unwrap_err();
+    assert!(
+        matches!(&error, Error::Remote(body) if body.code == ErrorCode::Denied && body.message == "not approved"),
+        "{error:?}"
+    );
+    assert_eq!(
+        presence.asked.load(Ordering::SeqCst),
+        3,
+        "the fourth ask reached the person"
+    );
+}

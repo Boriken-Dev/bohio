@@ -154,6 +154,9 @@ pub struct GuiConfig {
     pub approval_timeout: Span,
     /// How long a peer allowed on a session is not asked again. `0s` asks for every stream. Default `15m`.
     pub approval_ttl: Span,
+    /// The most times a peer may make the person at the desk decide in a minute; past it an open is `denied` ("not approved") without
+    /// asking, and logged once a minute. A higher value is the weaker one. At least 1. Default `3`.
+    pub approval_asks_per_minute: u32,
     /// The accounts whose per-user GUI helper this node serves (`bohio gui-helper`): Windows SIDs or names, Unix uids or
     /// names. A connection to the helper endpoint from any other account is closed unread. Empty: no helper endpoint. Read
     /// from the lowest layer only. Default empty.
@@ -242,6 +245,7 @@ impl Default for GuiConfig {
             approval: ApprovalMode::None,
             approval_timeout: Span(Duration::from_secs(60)),
             approval_ttl: Span(Duration::from_secs(15 * 60)),
+            approval_asks_per_minute: 3,
             helper_accounts: Vec::new(),
             helper_endpoint: None,
             max_helpers: 8,
@@ -288,6 +292,10 @@ impl GuiConfig {
             ("gui.max_helpers", self.max_helpers == 0),
             ("gui.source_retry", self.source_retry.0.is_zero()),
             ("gui.snapshots_per_minute", self.snapshots_per_minute == 0),
+            (
+                "gui.approval_asks_per_minute",
+                self.approval_asks_per_minute == 0,
+            ),
             ("gui.max_snapshot_pixels", self.max_snapshot_pixels == 0),
             ("gui.max_input_rate", self.max_input_rate == 0),
             ("gui.max_batch_events", self.max_batch_events == 0),

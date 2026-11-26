@@ -113,6 +113,10 @@ pub struct GuiState {
     slots: Slots,
     per_peer: Counted<String>,
     snapshots: PerPeerRate,
+    /// How often a peer may make the person at the desk decide, a minute.
+    asks: PerPeerRate,
+    /// When a refused ask was last logged, so a peer that keeps asking writes one line a minute.
+    asks_logged: Mutex<Option<Instant>>,
     engagements: Arc<Engagements>,
     approvals: Arc<Approvals>,
     notifier: Arc<NotifierCell>,
@@ -151,6 +155,8 @@ impl GuiState {
             slots: Slots::new(config.max_streams),
             per_peer: Counted::new(config.max_streams_per_peer),
             snapshots: PerPeerRate::new(config.snapshots_per_minute),
+            asks: PerPeerRate::new(config.approval_asks_per_minute),
+            asks_logged: Mutex::new(None),
             engagements: Engagements::new(
                 presence,
                 config.indicator_linger.0,
@@ -191,6 +197,19 @@ impl GuiState {
         }
         let session = KindDesktop::open(source)?;
         Ok(Arc::new(session))
+    }
+
+    /// Logs that `peer` asked past `approval_asks_per_minute`, at most once a minute.
+    fn log_ask_refused(&self, peer: PeerId) {
+        let mut logged = self
+            .asks_logged
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let now = Instant::now();
+        if logged.is_none_or(|at| now.duration_since(at) >= Duration::from_secs(60)) {
+            *logged = Some(now);
+            tracing::warn!(%peer, "a peer asked the person at the desk more often than [gui] approval_asks_per_minute allows: the open is denied without asking");
+        }
     }
 
     fn call<R>(&self, call: impl FnOnce() -> R) -> R {
@@ -574,6 +593,10 @@ fn approve(channel: &dyn Channel, context: &Context<'_>, wants: &[Want]) -> Resu
     let state = context.state;
     if state.allowed_within(&context.peer, context.session, wants, config.approval_ttl.0) {
         return Ok(());
+    }
+    if !state.asks.admit(&context.peer.to_string()) {
+        state.log_ask_refused(context.peer);
+        return Err(denied("not approved"));
     }
     let cancelled = AtomicBool::new(false);
     let request = ApprovalRequest {
