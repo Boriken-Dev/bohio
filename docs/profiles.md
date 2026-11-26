@@ -11,7 +11,7 @@ asks for more than a host allows is clamped by the host, which says what it used
 | Profile | For | Host defaults | Client asks |
 | --- | --- | --- | --- |
 | `default` | nothing in particular | the built-in values | nothing compressed, one stream, the link's own windows |
-| `lan` | a local network | larger frames and a larger bulk window | no compression, two streams |
+| `lan` | a local network | larger frames, a larger bulk window and one compression context for a bundle | no compression, two streams |
 | `weak-host` | a machine that cannot compress or hash much | the cheap compressor, low caps, one hash and one walk at a time | lz4, a cheap digest, one stream |
 | `slow-link` | a slow or distant path | the best ratio the host can make, long windows, a growing window | zstd level 19 with a long window, a digest to compare, four streams |
 | `fat-link` | a long path with room in it | a larger bulk window | an 8 MiB bulk window |
@@ -67,8 +67,9 @@ Each is a starting point, and the "why" is what it costs.
 | `[filesystem] chunk_size` | 256 KiB | fewer, larger frames when a round trip costs a millisecond |
 | `[link] bulk_window` | 4 MiB | one bulk stream is no longer held to the 1 MiB window |
 | `[link] max_window` | 8 MiB | the most a stream's window may grow to |
+| `[compression] bundle_context` | `shared` | the files of a bundle compress against each other, so many small similar files shrink more; on a trusted network the size one file leaks about the one before it is not a risk (the host logs `non-default:`; see [Security](security.md)) |
 
-Compression is left as it is: nothing is compressed unless a client asks, and a LAN client asks for none. The host's
+Compression is otherwise left as it is: nothing is compressed unless a client asks, and a LAN client asks for none. The host's
 `[compression] default` (what a request for `auto` means) stays zstd level 3, because it must name an algorithm.
 
 ### `weak-host`
