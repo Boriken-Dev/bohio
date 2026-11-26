@@ -38,6 +38,10 @@ pub struct BundleOptions {
     /// How many times the compressed bytes received the output of a read may grow to, once it passes 1 MiB; `Some(0)`
     /// is no check. Default [`crate::fs::DEFAULT_MAX_EXPANSION`].
     pub max_expansion: Option<u32>,
+    /// Whether the files of a write share one compression context. By default each file starts a new one, so the
+    /// size of one file's compressed bytes does not depend on the file before it; `true` compresses many small similar
+    /// files better and lets a path observer learn whether one repeats text of the one before it.
+    pub shared_context: bool,
     /// How long a step may wait for the host; `None` waits without limit. Default five minutes.
     pub timeout: Option<Duration>,
 }
@@ -54,6 +58,7 @@ impl Default for BundleOptions {
             chunk: crate::fs::Writer::DEFAULT_CHUNK,
             window_log_max: None,
             max_expansion: None,
+            shared_context: false,
             timeout: Some(Duration::from_secs(300)),
         }
     }
@@ -193,7 +198,10 @@ fn receive_reads(
                 if *got > header.length {
                     return Err(Error::Protocol(bohio_proto::Error::Decode));
                 }
-                on(Fetch::Data(&bytes))?;
+                // An empty raw frame only ends the context.
+                if !bytes.is_empty() {
+                    on(Fetch::Data(&bytes))?;
+                }
             }
             Ok(ReadOutput::Compressed(piece)) => {
                 let (header, got) = begun
@@ -430,6 +438,13 @@ fn send_files(
     let mut buffer = vec![0_u8; room];
     for file in files.iter_mut() {
         send(WriteInput::Item(file.item.clone()).encode())?;
+        if !options.shared_context
+            && let Some(encoder) = encoder.as_mut()
+        {
+            // A restarted encoder and an empty raw frame, which tells the host to drop its context too.
+            encoder.restart();
+            send(WriteInput::Data(Vec::new()).encode())?;
+        }
         loop {
             let count = match file.source.read(&mut buffer) {
                 Ok(0) => break,

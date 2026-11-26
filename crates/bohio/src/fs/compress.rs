@@ -6,7 +6,7 @@ use std::io::Write;
 use bohio_proto::compress::{Codec, Compression};
 use bohio_proto::{ErrorBody, ErrorCode};
 use bohio_transfer::compress::{Bounds, Caps, DecodeError, Decoder, Unsupported};
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 
 use crate::config::CompressionConfig;
 
@@ -121,7 +121,11 @@ impl<'a> Settings<'a> {
         let mut builder = GlobSetBuilder::new();
         for pattern in &self.config.exclude {
             // A pattern that does not parse was refused when the settings were checked.
-            if let Ok(glob) = Glob::new(pattern) {
+            // Names compare without case where the file system does not tell `Key` from `key`.
+            if let Ok(glob) = GlobBuilder::new(pattern)
+                .case_insensitive(cfg!(windows))
+                .build()
+            {
                 builder.add(glob);
             }
         }

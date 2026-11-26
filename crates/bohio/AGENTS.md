@@ -154,6 +154,7 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[compression] sample_bytes` / `sample_ratio` | `65536` / `0.9` | a read compresses its first `sample_bytes` as a trial and goes raw when it saves less than `1 - sample_ratio`; `0` bytes is no trial |
 | `[compression] exclude` | `*.key *.pem *.p12 *.pfx id_* .env *.kdbx` | globs (of the path and of the name) of files never compressed |
 | `[compression] max_expansion` | `1024` | decompressed over compressed bytes a write or standard input may reach (checked past 1 MiB); `0` is off |
+| `[compression] bundle_context` | `per_item` | `per_item`: each file of a bundle starts a compression context (the host restarts its encoder and sends an empty raw frame; a client's write does the same unless `BundleOptions::shared_context`); `shared`: one context for the bundle, logged `non-default:` |
 | `[compression] prepare_dir` / `prepare_max_bytes` / `prepare_ttl` | `prepared` in the data directory (the command; none when embedded) / `1073741824` / `10m` | where prepared reads are kept, the most one holds (`busy` past it) and how long they live |
 | `[filesystem] list_page` | `1000` | most entries in one listing page, whatever the client asks for; at least 1 |
 | `[filesystem] idle_timeout` | `5m` | how long a transfer may make no progress before the host abandons it; not zero |

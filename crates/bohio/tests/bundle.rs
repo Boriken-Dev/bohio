@@ -352,6 +352,7 @@ fn one_compression_context_over_a_bundle_sends_fewer_bytes_a_file_than_compresse
     let compression = Compression::new(Codec::Zstd).level(3);
     let options = BundleOptions {
         compression: Some(compression.clone()),
+        shared_context: true,
         ..BundleOptions::default()
     };
     let put = put_all(&f.link, &names, &contents, &options, None);
@@ -728,4 +729,65 @@ fn an_auto_compression_of_a_bundle_write_is_refused_and_a_named_one_is_taken() {
     ));
     let info = bohio_proto::info::Info::default();
     assert!(resolve_auto(&info, &Compression::auto()).is_none());
+}
+
+/// Whether the second file of a compressed bundle read decodes with a decoder that never saw the first.
+fn second_item_decodes_alone(context: bohio::config::BundleContext) -> bool {
+    use bohio_proto::compress::Codec as C;
+    use bohio_transfer::compress::{Bounds, Decoder};
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("root");
+    std::fs::create_dir(&root).unwrap();
+    let (first, second) = (text(1, 6000), text(2, 6000));
+    std::fs::write(root.join("a"), &first).unwrap();
+    std::fs::write(root.join("b"), &second).unwrap();
+    let grant = Grant::allowing(RW).with_fs_roots([root]);
+    let link = Link::files(grant, FilesystemConfig::default()).compressing(
+        bohio::config::CompressionConfig {
+            bundle_context: context,
+            ..bohio::config::CompressionConfig::default()
+        },
+    );
+    let request = ReadRequest {
+        compression: Some(Compression::new(C::Zstd)),
+        ..ReadRequest::bundle()
+    };
+    let stream = link
+        .open(protocol::READ, &request.to_metadata().unwrap())
+        .unwrap();
+    let send = |input: ReadInput| stream.send_timeout(&input.encode().unwrap(), WAIT).unwrap();
+    let next = || ReadOutput::decode(&stream.receive(WAIT).unwrap().unwrap()).unwrap();
+    let ReadOutput::Header(opening) = next() else {
+        panic!("the stream opens with a header");
+    };
+    let used = opening.compression.expect("the host compresses");
+    let mut pieces = Vec::new();
+    for name in ["a", "b"] {
+        send(ReadInput::Item(ReadItem::whole(name)));
+        pieces.clear();
+        loop {
+            match next() {
+                ReadOutput::Compressed(piece) => pieces.push(piece),
+                ReadOutput::Done(_) => break,
+                ReadOutput::Header(_) | ReadOutput::Data(_) => {}
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+    }
+    send(ReadInput::ItemsEnd);
+    assert!(!pieces.is_empty(), "the second file was not compressed");
+    let mut decoder = Decoder::new(&used, &Bounds::default()).unwrap();
+    let mut out = Vec::new();
+    pieces
+        .iter()
+        .all(|piece| decoder.feed(piece, &mut out).is_ok())
+        && out == second
+}
+
+#[test]
+fn each_file_of_a_bundle_read_starts_a_compression_context_unless_the_host_shares_one() {
+    use bohio::config::BundleContext;
+    assert!(second_item_decodes_alone(BundleContext::PerItem));
+    // The control: a shared context leans on the file before, which a decoder that did not see it cannot follow.
+    assert!(!second_item_decodes_alone(BundleContext::Shared));
 }

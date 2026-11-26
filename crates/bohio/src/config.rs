@@ -1046,6 +1046,23 @@ pub struct CompressionConfig {
     pub prepare_max_bytes: u64,
     /// How long a prepared file is kept after it was made, for resuming. Not zero. Default `10m`.
     pub prepare_ttl: Span,
+    /// Whether the files of a bundle share one compression context. `per_item` starts each file's compression anew, so
+    /// the compressed size of one file does not depend on the bytes of the file before it (the size a path observer
+    /// sees could otherwise show whether a secret repeats text an attacker placed in the previous file). `shared`
+    /// keeps one context for the bundle, which compresses many small similar files better, and is logged
+    /// `non-default:`. One file and one process's output still share a context with themselves. Default `per_item`.
+    pub bundle_context: BundleContext,
+}
+
+/// `[compression] bundle_context`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BundleContext {
+    /// Each file of a bundle starts a new compression context.
+    #[default]
+    PerItem,
+    /// The files of a bundle share one context.
+    Shared,
 }
 
 impl Default for CompressionConfig {
@@ -1074,6 +1091,7 @@ impl Default for CompressionConfig {
             prepare_dir: None,
             prepare_max_bytes: 1024 * 1024 * 1024,
             prepare_ttl: Span(Duration::from_secs(600)),
+            bundle_context: BundleContext::default(),
         }
     }
 }

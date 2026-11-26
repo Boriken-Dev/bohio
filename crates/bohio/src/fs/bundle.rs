@@ -223,6 +223,17 @@ fn read_item(
     if !send(&ReadOutput::Header(header)) {
         return Err(ItemFailure::Stream(ended()));
     }
+    // Each item starts a context of its own unless the host shares one: a restarted encoder and an empty raw frame, which
+    // tells the reader to drop its context too.
+    if compressed
+        && job.context.compression.bundle_context == crate::config::BundleContext::PerItem
+        && let Some(encoder) = encoder.as_deref_mut()
+    {
+        encoder.restart();
+        if !send(&ReadOutput::Data(Vec::new())) {
+            return Err(ItemFailure::Stream(ended()));
+        }
+    }
     let mut buffer = vec![0_u8; job.chunk];
     let mut remaining = length;
     let mut sent_raw = false;

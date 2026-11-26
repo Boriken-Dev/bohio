@@ -143,6 +143,11 @@ impl Shared {
             config.execution.enabled = false;
         }
         let config = &config;
+        if config.compression.bundle_context == crate::config::BundleContext::Shared {
+            tracing::warn!(
+                "non-default: [compression] bundle_context is shared: the files of a bundle share one compression context, so a path observer can learn from compressed sizes whether a file repeats text placed in the one before it"
+            );
+        }
         if config.filesystem.allow_id_bits {
             tracing::warn!(
                 "non-default: [filesystem] allow_id_bits is true: a peer with fs.write can make a file that runs as this host's account or group for whoever starts it"
