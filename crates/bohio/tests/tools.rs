@@ -685,7 +685,8 @@ fn a_tool_the_grant_does_not_hold_is_refused_with_what_it_needs() {
     assert_eq!(write.code, "denied", "{write}");
     assert!(write.message.contains("fs.write"), "{write}");
     let exec = failed(&tools, "exec", json!({"argv": [helper()]}));
-    assert_eq!(exec.code, "denied");
+    // `info.access` lists no exec source to a peer without `exec`, so the tool is unavailable before the host is asked.
+    assert_eq!(exec.code, "unavailable");
     assert!(exec.message.contains("exec"), "{exec}");
     assert_eq!(
         failed(&tools, "no_such_tool", json!({})).code,
@@ -1049,7 +1050,7 @@ fn search_finds_lines_pages_by_skip_and_reports_what_it_could_not_read() {
     let blind = world.tools(Grant::allowing([Permission::Info]));
     assert_eq!(
         failed(&blind, "search", json!({"pattern": "x", "path": root})).code,
-        "denied"
+        "unavailable"
     );
 }
 
