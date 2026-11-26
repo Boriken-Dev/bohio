@@ -25,6 +25,7 @@
 
 #![allow(unsafe_code)]
 
+use std::ffi::c_void;
 use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
@@ -79,6 +80,32 @@ fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
     }
 }
 
+/// A function that makes a process as `fork` does.
+///
+/// # Safety
+///
+/// A caller is in a process that may fork: see `fork_guardian`.
+type ForkFn = unsafe extern "C" fn() -> c_int;
+
+/// `_Fork` where the C library has it (glibc 2.34, a dynamically linked musl 1.2.5, FreeBSD 13.1), else `fork`.
+///
+/// `_Fork` makes the process without running the `pthread_atfork` handlers, which POSIX does not allow
+/// in a process forked from a multithreaded one to rely on: a handler of any linked library may wait on a
+/// lock that another thread held at the fork. It is looked up here, before any fork, because a guardian's
+/// first fork happens where nothing may be looked up.
+fn fork_function() -> ForkFn {
+    static FORK: OnceLock<ForkFn> = OnceLock::new();
+    *FORK.get_or_init(|| {
+        // SAFETY: a NUL-terminated name looked up in the running program and what it loaded.
+        let found = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"_Fork".as_ptr()) };
+        if found.is_null() {
+            return libc::fork;
+        }
+        // SAFETY: a symbol named `_Fork` is `pid_t _Fork(void)`.
+        unsafe { std::mem::transmute::<*mut c_void, ForkFn>(found) }
+    })
+}
+
 /// The signal a guardian sends, or `None` for a host that leaves its programs running.
 fn signal(on_death: HostDeath) -> Option<c_int> {
     match on_death {
@@ -105,12 +132,13 @@ pub(super) fn attach(command: &mut Command, on_death: HostDeath) -> io::Result<(
         return Ok(());
     };
     let read = lifeline()?.read.as_raw_fd();
+    let fork = fork_function();
     // SAFETY: the closure runs in the forked child before `exec` and calls only functions that are
     // safe there: system calls, and no allocation or lock (see `fork_guardian`).
     unsafe {
         command.pre_exec(move || {
             lead_own_group()?;
-            fork_guardian(read, signal, Target::Group)
+            fork_guardian(fork, read, signal, Target::Group)
         });
     }
     Ok(())
@@ -156,7 +184,12 @@ pub(super) fn watch_session(session: u32, on_death: HostDeath) -> io::Result<Opt
     };
     let session = c_int::try_from(session).map_err(|_| io::Error::other("not a process id"))?;
     let (read, done) = pipe()?;
-    fork_guardian(read.as_raw_fd(), signal, Target::Session(session))?;
+    fork_guardian(
+        fork_function(),
+        read.as_raw_fd(),
+        signal,
+        Target::Session(session),
+    )?;
     Ok(Some(Watch { done }))
 }
 
@@ -170,17 +203,18 @@ impl Watch {
 
 /// Starts a guardian as a grandchild of this process and waits for the process in between.
 ///
-/// Runs in the child between `fork` and `exec` for a program, and in the host for a shell.
-fn fork_guardian(read: c_int, signal: c_int, target: Target) -> io::Result<()> {
-    // SAFETY: `fork` in a process that may have other threads: the new process calls only system
+/// Runs in the child between `fork` and `exec` for a program, and in the host for a shell. `fork` is
+/// [`fork_function`]'s, looked up before the first fork.
+fn fork_guardian(fork: ForkFn, read: c_int, signal: c_int, target: Target) -> io::Result<()> {
+    // SAFETY: a fork in a process that may have other threads: the new process calls only system
     // calls (`guardian`), never the allocator or a lock another thread may have held.
-    let first = unsafe { libc::fork() };
+    let first = unsafe { fork() };
     if first < 0 {
         return Err(io::Error::last_os_error());
     }
     if first == 0 {
         // SAFETY: as above; the intermediate process only forks and exits.
-        let second = unsafe { libc::fork() };
+        let second = unsafe { fork() };
         if second == 0 {
             // SAFETY: `read` is a pipe read end open in this process, which was forked from the
             // process whose group or session the target names.
@@ -497,5 +531,89 @@ mod tests {
         }
         assert!(sweep(me) >= 1);
         assert!(ended_guardians(me).is_empty());
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod fork_tests {
+    use std::cell::Cell;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    use std::process::Command;
+    use std::sync::Once;
+    use std::sync::atomic::{AtomicI32, Ordering};
+    use std::time::Duration;
+
+    use super::*;
+
+    thread_local! {
+        /// Whether forks made by this thread are counted.
+        static COUNTING: Cell<bool> = const { Cell::new(false) };
+    }
+    static COUNT_FD: AtomicI32 = AtomicI32::new(-1);
+
+    /// Runs in the child of every fork: one byte down the pipe when this thread was counting.
+    extern "C" fn in_child() {
+        if COUNTING.with(Cell::get) {
+            // SAFETY: a write of one byte to an open descriptor, which is allowed in a forked child.
+            unsafe { libc::write(COUNT_FD.load(Ordering::Relaxed), b"x".as_ptr().cast(), 1) };
+        }
+    }
+
+    /// How many times a child handler ran for one start of a program through `pre_exec`, with a
+    /// guardian or with a closure that does nothing.
+    fn handlers_for(guardian: bool) -> usize {
+        let (read, write) = rustix::pipe::pipe_with(
+            rustix::pipe::PipeFlags::CLOEXEC | rustix::pipe::PipeFlags::NONBLOCK,
+        )
+        .expect("a pipe");
+        COUNT_FD.store(write.as_raw_fd(), Ordering::Relaxed);
+        static REGISTER: Once = Once::new();
+        REGISTER.call_once(|| {
+            // SAFETY: the handler only writes to a descriptor.
+            assert_eq!(
+                unsafe { libc::pthread_atfork(None, None, Some(in_child)) },
+                0
+            );
+        });
+        let mut command = Command::new("true");
+        command.process_group(0);
+        if guardian {
+            attach(&mut command, HostDeath::Kill).expect("a guardian");
+        } else {
+            // SAFETY: a closure that makes no call.
+            unsafe { command.pre_exec(|| Ok(())) };
+        }
+        COUNTING.with(|counting| counting.set(true));
+        let started = command.spawn();
+        COUNTING.with(|counting| counting.set(false));
+        started
+            .expect("the program starts")
+            .wait()
+            .expect("it ends");
+        // The guardian's own process may still be starting.
+        std::thread::sleep(Duration::from_millis(300));
+        let mut count = 0;
+        let mut byte = [0_u8; 1];
+        while rustix::io::read(&read, &mut byte).is_ok_and(|read| read > 0) {
+            count += 1;
+        }
+        COUNT_FD.store(-1, Ordering::Relaxed);
+        count
+    }
+
+    #[test]
+    fn a_guardian_is_made_without_running_the_fork_handlers_again() {
+        if fork_function() as usize == libc::fork as ForkFn as usize {
+            eprintln!("SKIPPED: this C library has no _Fork");
+            return;
+        }
+        let plain = handlers_for(false);
+        assert!(plain > 0, "the handler was not seen on the start itself");
+        assert_eq!(
+            handlers_for(true),
+            plain,
+            "the guardian's two forks ran the handlers of the process"
+        );
     }
 }
