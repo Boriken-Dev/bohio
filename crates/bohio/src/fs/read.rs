@@ -173,6 +173,14 @@ fn run(
     }
 
     if request.prepare {
+        // A file `[compression] exclude` names is never compressed, so there is nothing to prepare: the size of the
+        // compressed copy would show a path observer what the file holds.
+        if settings.skips(&request.path) {
+            return Err(ErrorBody::new(
+                ErrorCode::BadRequest,
+                "a file `[compression] exclude` or `skip_extensions` names is not prepared compressed",
+            ));
+        }
         let compression = resolved.as_ref().ok_or_else(|| {
             ErrorBody::new(ErrorCode::BadRequest, "a prepared read needs a compression")
         })?;

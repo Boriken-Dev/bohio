@@ -1038,3 +1038,21 @@ fn bounded_config() -> CompressionConfig {
         }
     }
 }
+
+#[test]
+fn a_prepared_read_of_an_excluded_name_is_refused_and_an_ordinary_one_is_made() {
+    let fixture = fixture(CompressionConfig::default());
+    let data = text(200_000);
+    for name in ["id_ed25519", "site.key", "backup.zip"] {
+        std::fs::write(fixture.root.join(name), &data).unwrap();
+        let refused = Reader::start(&fixture.link, &prepared_request(name), WAIT).map(|_| ());
+        match refused {
+            Err(Error::Remote(body)) => assert_eq!(body.code, ErrorCode::BadRequest, "{name}"),
+            other => panic!("{name}: expected a refusal, got {other:?}"),
+        }
+    }
+    std::fs::write(fixture.root.join("notes.txt"), &data).unwrap();
+    let reader = Reader::start(&fixture.link, &prepared_request("notes.txt"), WAIT).unwrap();
+    assert!(reader.header().token.is_some());
+}
+
