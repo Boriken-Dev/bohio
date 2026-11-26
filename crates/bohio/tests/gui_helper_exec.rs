@@ -60,9 +60,7 @@ fn sources_from(text: &str, files: bool) -> Sources {
     struct Whole {
         source: SourceTables,
     }
-    let tables = toml::from_str::<Whole>(&text)
-        .expect("source tables")
-        .source;
+    let tables = toml::from_str::<Whole>(text).expect("source tables").source;
     let sources = Sources::unconfigured();
     sources
         .reconfigure(
