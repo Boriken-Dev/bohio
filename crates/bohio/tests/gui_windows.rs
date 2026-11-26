@@ -467,17 +467,27 @@ fn the_probe_window_is_captured_and_driven() {
         probe.seen
     );
     let _ = probe.drain();
-    desktop
-        .input(&[InputEvent::Text {
-            text: "abc é".to_owned(),
-        }])
-        .unwrap();
-    thread::sleep(Duration::from_millis(400));
-    let lines = probe.drain();
-    assert!(
-        probe.focused,
-        "the probe lost the focus while it was typed to: {lines:?}"
+    // One character at a time, the focus looked at before each: a window that took the focus meanwhile is not typed into.
+    let typed = type_while_focused(
+        "abc é",
+        |character| {
+            desktop
+                .input(&[InputEvent::Text {
+                    text: character.to_owned(),
+                }])
+                .unwrap();
+            thread::sleep(Duration::from_millis(80));
+        },
+        || probe.has_focus(),
     );
+    let lines = probe.drain();
+    assert_eq!(
+        typed,
+        Ok(5),
+        "the probe lost the focus while it was typed to; it said {:?}",
+        probe.seen
+    );
+    assert!(probe.focused, "the probe lost the focus: {lines:?}");
     assert_eq!(last_text(&lines).as_deref(), Some("abc é"), "{lines:?}");
     let chars: Vec<&str> = lines
         .iter()
@@ -490,14 +500,15 @@ fn the_probe_window_is_captured_and_driven() {
     );
     println!("text: ASCII and a non-ASCII character reached the probe's box in order");
 
-    // A combo: control+a selects all, backspace removes it.
+    // A combo: control+a selects all, and `end` only moves the caret, which is harmless in any window that has the focus
+    // instead (a destructive key here would delete the owner's text there).
     assert!(probe.has_focus(), "the probe lost the focus");
     desktop
         .input(&[
             key("control", KeyAction::Press),
             key("a", KeyAction::Click),
             key("control", KeyAction::Release),
-            key("backspace", KeyAction::Click),
+            key("end", KeyAction::Click),
         ])
         .unwrap();
     thread::sleep(Duration::from_millis(400));
@@ -506,8 +517,12 @@ fn the_probe_window_is_captured_and_driven() {
         lines.iter().any(|line| line.starts_with("down A ctrl=1")),
         "control+a did not arrive as a combo: {lines:?}"
     );
-    assert_eq!(last_text(&lines).as_deref(), Some(""), "{lines:?}");
-    println!("combo: control+a then backspace emptied the probe's box");
+    assert!(
+        lines.iter().all(|line| !line.starts_with("text"))
+            || last_text(&lines).as_deref() == Some("abc é"),
+        "the box changed: {lines:?}"
+    );
+    println!("combo: control+a then end arrived as keys and left the probe's box as typed");
 
     // The wheel: positive dy is down (negative at Windows), dx to the right.
     desktop
@@ -606,4 +621,49 @@ fn how_fast_the_primary_display_is_captured() {
             );
         }
     }
+}
+
+/// Types `text` one character at a time through `send`, asking `focused` before each: the first time it says no, nothing more
+/// is sent. The count typed, or how many went before the focus was lost.
+fn type_while_focused(
+    text: &str,
+    mut send: impl FnMut(&str),
+    mut focused: impl FnMut() -> bool,
+) -> Result<usize, usize> {
+    let mut typed = 0;
+    for character in text.chars() {
+        if !focused() {
+            return Err(typed);
+        }
+        send(&character.to_string());
+        typed += 1;
+    }
+    Ok(typed)
+}
+
+#[test]
+fn typing_stops_at_the_first_character_after_the_focus_is_lost() {
+    let mut sent = Vec::new();
+    let mut asked = 0;
+    let result = type_while_focused(
+        "abc é",
+        |character| sent.push(character.to_owned()),
+        || {
+            asked += 1;
+            asked < 2
+        },
+    );
+    assert_eq!(result, Err(1));
+    assert_eq!(
+        sent,
+        ["a"],
+        "a character went to a window that had the focus"
+    );
+    // The control: a probe that keeps the focus gets every character, one call each.
+    let mut sent = Vec::new();
+    assert_eq!(
+        type_while_focused("abc é", |c| sent.push(c.to_owned()), || true),
+        Ok(5)
+    );
+    assert_eq!(sent, ["a", "b", "c", " ", "é"]);
 }
