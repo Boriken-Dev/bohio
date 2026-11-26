@@ -1615,9 +1615,9 @@ fn hash_command(link: &dyn Open, args: &RemoteHashArgs) -> Result<ExitCode, Stri
                 for algorithm in &algorithms {
                     let hex = digests.get(algorithm).map_or("", String::as_str);
                     let line = if algorithms.len() == 1 {
-                        format!("{hex}  {path}")
+                        format!("{hex}  {}", output::shown(path))
                     } else {
-                        format!("{algorithm} {hex}  {path}")
+                        format!("{algorithm} {hex}  {}", output::shown(path))
                     };
                     writeln!(out, "{line}").map_err(|error| error.to_string())?;
                 }
@@ -1706,8 +1706,10 @@ fn walk_command(
                     .map_or(String::new(), |target| format!(" -> {target}"));
                 writeln!(
                     out,
-                    "{kind} {:>12}  {digest}{path}{target}",
-                    entry.metadata.size
+                    "{kind} {:>12}  {digest}{}{}",
+                    entry.metadata.size,
+                    output::shown(&path),
+                    output::shown(&target)
                 )
                 .map_err(|error| error.to_string())?;
             }
@@ -1790,7 +1792,10 @@ fn stats_command(link: &dyn Open, client: &Client) -> Result<ExitCode, String> {
 }
 
 fn print_stats(stats: &bohio_proto::control::Stats) {
-    println!("host    {}", stats.hostname.as_deref().unwrap_or("-"));
+    println!(
+        "host    {}",
+        output::shown(stats.hostname.as_deref().unwrap_or("-"))
+    );
     let (days, rest) = (stats.uptime_s / 86_400, stats.uptime_s % 86_400);
     println!("uptime  {days}d {}h {}m", rest / 3600, (rest % 3600) / 60);
     println!("cpus    {}", stats.cpus);
@@ -1811,12 +1816,12 @@ fn print_stats(stats: &bohio_proto::control::Stats) {
     for disk in &stats.disks {
         println!(
             "disk    {}  {}  {} free of {}",
-            disk.mount,
-            if disk.filesystem.is_empty() {
+            output::shown(&disk.mount),
+            output::shown(if disk.filesystem.is_empty() {
                 "-"
             } else {
                 &disk.filesystem
-            },
+            }),
             size_text(disk.available),
             size_text(disk.total)
         );
@@ -1855,8 +1860,9 @@ fn which_command(
     } else {
         for name in &args.names {
             println!(
-                "{name}  {}",
-                found.get(name).and_then(Option::as_deref).unwrap_or("-")
+                "{}  {}",
+                output::shown(name),
+                output::shown(found.get(name).and_then(Option::as_deref).unwrap_or("-"))
             );
         }
     }
@@ -1906,7 +1912,7 @@ fn glob_command(
                         }),
                     );
                 } else {
-                    writeln!(out, "{path}").map_err(|error| error.to_string())?;
+                    writeln!(out, "{}", output::shown(&path)).map_err(|error| error.to_string())?;
                 }
             }
             bohio_client::walk::WalkItem::Failure(failure) => {
@@ -2020,6 +2026,7 @@ fn write_hit(
     hit: &bohio_proto::search::SearchMatch,
 ) -> std::io::Result<()> {
     let first = hit.line.saturating_sub(hit.before.len() as u64);
+    let path = &*output::shown(path);
     for (offset, line) in hit.before.iter().enumerate() {
         writeln!(out, "{path}-{}-{line}", first + offset as u64)?;
     }
@@ -2123,8 +2130,13 @@ fn sync_command(
                 Step::Update => "update",
                 Step::Delete => "delete",
             };
-            writeln!(out, "{verb} {} ({} bytes)", action.path, action.size)
-                .map_err(|error| error.to_string())?;
+            writeln!(
+                out,
+                "{verb} {} ({} bytes)",
+                output::shown(&action.path),
+                action.size
+            )
+            .map_err(|error| error.to_string())?;
         }
     }
     writeln!(
@@ -2143,7 +2155,11 @@ fn sync_command(
     .map_err(|error| error.to_string())?;
     out.flush().map_err(|error| error.to_string())?;
     for (path, why) in &report.failures {
-        eprintln!("bohio: {path}: {why}");
+        eprintln!(
+            "bohio: {}: {}",
+            output::shown(path),
+            output::shown_lines(why)
+        );
     }
     Ok(if report.is_clean() {
         ExitCode::SUCCESS
@@ -2430,9 +2446,9 @@ fn media_text(slots: &[bohio_proto::media::Slot], json: bool) -> Result<String, 
         .map(|slot| {
             format!(
                 "{} {} {}",
-                slot.slot,
+                output::shown(&slot.slot),
                 if slot.inserted { "inserted" } else { "empty" },
-                slot.image.as_deref().unwrap_or("-")
+                output::shown(slot.image.as_deref().unwrap_or("-"))
             )
         })
         .collect::<Vec<_>>()
@@ -2717,12 +2733,12 @@ fn sessions_command(link: &dyn Open, client: &Client) -> Result<ExitCode, String
                     state,
                     session.next,
                     session.buffered,
-                    session.name.as_deref().unwrap_or("-"),
-                    session.program,
+                    output::shown(session.name.as_deref().unwrap_or("-")),
+                    output::shown(&session.program),
                     session
                         .peer
                         .as_deref()
-                        .map_or(String::new(), |peer| format!("\t{peer}")),
+                        .map_or(String::new(), |peer| format!("\t{}", output::shown(peer))),
                 );
             }
         }
@@ -2840,11 +2856,12 @@ pub(super) fn links(args: &super::LinksArgs, environment: &Environment) -> Resul
                     .theirs
                     .as_deref()
                     .map_or_else(|| "unknown".to_owned(), list);
+                let theirs = output::shown(&theirs);
                 println!(
                     "{} {} {at} offers-to-peer: {} offers-from-peer: {theirs}",
                     link.peer,
                     link.side,
-                    list(&link.mine)
+                    output::shown(&list(&link.mine))
                 );
             }
         }
@@ -2966,7 +2983,11 @@ fn item_failure(path: Option<&str>, message: &str) {
             serde_json::json!({ "path": path, "message": message }),
         );
     } else {
-        eprintln!("bohio: {}: {message}", path.unwrap_or(""));
+        eprintln!(
+            "bohio: {}: {}",
+            output::shown(path.unwrap_or("")),
+            output::shown_lines(message)
+        );
     }
 }
 
