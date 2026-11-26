@@ -19,7 +19,7 @@ MSRV Rust 1.89. A library-only build (`default-features = false`) depends on `bo
 `win32job` (Windows). Version `0.0.0-alpha.0`, not published.
 
 Imports: the root holds `Config`, `ConfigError`, `Environment`, `Grant`, `Peers`, `Permission`. Public modules:
-`access`, `config`, `control`, `exec`, `forward`, `fs`, `gui`, `info`, `limit`, `link`, `listen`, `local`, `media`, `node`, `pair`, `peer`, `policy`, `power`, `secret`, `session`, `shell`, `cli` (feature `cli`). `unsafe_code` is denied crate-wide, forbidden in every module that needs none, and allowed only in the six files of the table below, whose reasons `tests/unsafe_files.rs` records. The library prints nothing, reads no environment variable and installs no logger; it starts threads only inside
+`access`, `config`, `control`, `exec`, `forward`, `fs`, `gui`, `info`, `limit`, `link`, `listen`, `local`, `media`, `node`, `pair`, `peer`, `policy`, `power`, `secret`, `session`, `shell`, `cli` (feature `cli`). `unsafe_code` is denied crate-wide, forbidden in every module that needs none, and allowed only in the seven files of the table below, whose reasons `tests/unsafe_files.rs` records. The library prints nothing, reads no environment variable and installs no logger; it starts threads only inside
 `exec::serve`, `shell::serve`, the transfer and control engines, `node::Node` (a thread per connection, per stream and per relay) and
 `pair::Armed` waits and the pairing a node answers.
 
@@ -27,6 +27,7 @@ Imports: the root holds `Config`, `ConfigError`, `Environment`, `Grant`, `Peers`
 | --- | --- |
 | `platform/guard.rs` | the Unix guardian (fork) |
 | `platform/winproc.rs` | CreateProcessW with handle and job lists, console events |
+| `platform/winacl.rs` | the security API: an access list read for the owner check, and `ReplaceFileW` keeping a replaced file's own list |
 | `platform/winfs.rs` | NT handle-relative filesystem calls (its buffers are built in `platform/winfs_layout.rs`, which forbids `unsafe`) |
 | `platform/gui/windows.rs` | SendInput, session, clipboard |
 | `platform/gui/windows_capture.rs` | DXGI and GDI |

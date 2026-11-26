@@ -388,7 +388,7 @@ The root's owner is trusted: a hard link another local user makes to a file outs
 
 ## Memory safety
 
-`unsafe` code is in six files of the `bohio` crate. `crates/bohio/tests/unsafe_files.rs` lists them with what needed it and what was ruled
+`unsafe` code is in seven files of the `bohio` crate. `crates/bohio/tests/unsafe_files.rs` lists them with what needed it and what was ruled
 out, and fails for a file that holds `unsafe` and is not listed, or that lifts the crate's `unsafe_code` lint and is not listed:
 
 | File | What it calls |
@@ -396,6 +396,7 @@ out, and fails for a file that holds `unsafe` and is not listed, or that lifts t
 | `platform/guard.rs` | `fork`, `waitpid`, `close_range` and `/proc`: the Unix guardian |
 | `platform/winproc.rs` | `CreateProcessW` with a handle list and a job list, and console events |
 | `platform/winfs.rs` | the NT calls that act on a name inside a directory handle |
+| `platform/winacl.rs` | `GetNamedSecurityInfoW` and the access-list walk the owner check reads, and `ReplaceFileW` (a rewritten layer keeps its own access list) |
 | `platform/gui/windows.rs` | `SendInput`, the session and desktop queries, the clipboard |
 | `platform/gui/windows_capture.rs` | DXGI duplication and GDI |
 | `platform/gui/macos.rs` | ScreenCaptureKit and Core Graphics |
