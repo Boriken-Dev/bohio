@@ -536,32 +536,17 @@ mod tests {
                 .set_read_timeout(Some(Duration::from_secs(10)))
                 .unwrap();
             let mut request = format!(
-                "GET / HTTP/1.1
-Host: {}:{}
-Connection: Upgrade
-Upgrade: websocket
-Sec-WebSocket-Version: 13
-Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
-",
+                "GET / HTTP/1.1\r\nHost: {}:{}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n",
                 address.0, address.1
             );
             if let Some(origin) = origin {
-                request.push_str(&format!(
-                    "Origin: {origin}
-"
-                ));
+                request.push_str(&format!("Origin: {origin}\r\n"));
             }
-            request.push_str(
-                "
-",
-            );
+            request.push_str("\r\n");
             stream.write_all(request.as_bytes()).unwrap();
             let mut seen = Vec::new();
             let mut byte = [0_u8; 1];
-            while !seen.ends_with(
-                b"
-",
-            ) {
+            while !seen.ends_with(b"\r\n") {
                 if stream.read(&mut byte).unwrap_or(0) == 0 {
                     break;
                 }

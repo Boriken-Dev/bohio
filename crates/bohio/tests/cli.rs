@@ -274,17 +274,7 @@ fn serve_logs_each_weakened_link_or_forward_check() {
     std::fs::write(
         &config,
         format!(
-            "[service]
-data_dir = '{}'
-[forward]
-ipc_same_user = false
-follow_links = true
-[pairing]
-max_attempts = 0
-[[listen]]
-endpoint = \"ws://127.0.0.1:0\"
-origins = [\"*\"]
-",
+            "[service]\ndata_dir = '{}'\n[forward]\nipc_same_user = false\nfollow_links = true\n[pairing]\nmax_attempts = 0\n[[listen]]\nendpoint = \"ws://127.0.0.1:0\"\norigins = [\"*\"]\n",
             data.display()
         ),
     )
