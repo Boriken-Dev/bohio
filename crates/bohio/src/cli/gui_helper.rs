@@ -126,8 +126,8 @@ fn run_stdio(
         .or_else(|| first_set(&["SESSIONNAME", "XDG_SESSION_ID", "DISPLAY"]))
         .unwrap_or_else(|| "main".to_owned());
     let helper = HelperSettings {
-        // Unused here: the connection is the process's own standard streams.
-        endpoint: Endpoint::parse("pipe://stdio").map_err(|error| error.to_string())?,
+        // Unused here, and one that names nothing of the machine: the connection is the standard streams of the process.
+        endpoint: Endpoint::parse("tcp://127.0.0.1:0").map_err(|error| error.to_string())?,
         node_account: String::new(),
         session,
         user: first_set(&["USERNAME", "USER"]),
