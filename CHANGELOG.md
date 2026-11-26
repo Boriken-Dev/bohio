@@ -136,6 +136,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- A layer, library or program that is a symbolic link is checked at the file it leads to and that file's directory as well as at the link and its directory.
 - On Unix the data directory is made mode `0700`, and it and its key file are checked like a layer: another account's, or one the group or others may write (or, for the key, read), is refused unless `[service] check_access = false`. Before, nothing was checked there.
 - `[service] trusted_owners` (lowest layer only; none by default) and `bohio serve --trust-owner ACCOUNT` (`BOHIO_TRUST_OWNER`) accept a layer, directory or data directory another account owns as the operator's, logged `non-default:`; before, a path another account owned could not be accepted at all. `docs/security.md` has the cost.
 

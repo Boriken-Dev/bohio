@@ -264,6 +264,7 @@ pub(crate) fn layer_problems(file: &Path) -> Vec<Problem> {
     if let Err(problem) = check(&directory_of(file), Guarded::Config) {
         problems.push(problem);
     }
+    problems.extend(target_problems(file, Guarded::Config));
     problems
 }
 
@@ -287,7 +288,26 @@ fn held_problems(file: &Path, checked: &mut Checked, what: Guarded) -> Vec<Probl
         .entry(directory.clone())
         .or_insert_with(|| check(&directory, what).err())
         .clone();
-    check(file, what).err().into_iter().chain(held).collect()
+    check(file, what)
+        .err()
+        .into_iter()
+        .chain(held)
+        .chain(target_problems(file, what))
+        .collect()
+}
+
+/// When `file` is a link, the problems of the file it leads to and of the directory that holds that file: whoever may
+/// write there can replace what the link names.
+fn target_problems(file: &Path, what: Guarded) -> Vec<Problem> {
+    if !std::fs::symlink_metadata(file).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Vec::new();
+    }
+    let Ok(target) = std::fs::canonicalize(file) else {
+        return Vec::new();
+    };
+    let mut problems: Vec<Problem> = check(&target, what).err().into_iter().collect();
+    problems.extend(check(&directory_of(&target), what).err());
+    problems
 }
 
 /// The directory that holds `path`: its parent, or the current directory for a bare file name.
@@ -631,5 +651,39 @@ mod trust_tests {
             owner: None,
         };
         assert!(decide(&[foreign("1234"), open], true, &trusted).is_err());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod link_tests {
+    use super::{Kind, layer_problems};
+    use std::os::unix::fs::PermissionsExt;
+
+    fn mode(path: &std::path::Path, bits: u32) {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(bits)).expect("mode");
+    }
+
+    /// The link's own directory is private, but the file it names can be renamed by anyone who may write its directory.
+    #[test]
+    fn a_link_into_a_directory_others_may_write_is_refused() {
+        let root = tempfile::tempdir().expect("a directory");
+        let mine = root.path().join("mine");
+        let open = root.path().join("open");
+        std::fs::create_dir(&mine).expect("mine");
+        std::fs::create_dir(&open).expect("open");
+        mode(&mine, 0o700);
+        let real = open.join("bohio.cfg");
+        std::fs::write(&real, "").expect("the file");
+        mode(&real, 0o600);
+        mode(&open, 0o777);
+        let link = mine.join("bohio.cfg");
+        std::os::unix::fs::symlink(&real, &link).expect("the link");
+        let problems = layer_problems(&link);
+        assert!(
+            problems.iter().any(|problem| problem.kind == Kind::Open),
+            "{problems:?}"
+        );
+        mode(&open, 0o700);
+        assert!(layer_problems(&link).is_empty());
     }
 }
