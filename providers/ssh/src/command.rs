@@ -28,6 +28,15 @@ fn script_words(kind: &str, script: &str) -> Result<Vec<String>, String> {
     }
 }
 
+/// Whether `name` can be a shell variable. A name that starts with `-` would be read by `env` as an option.
+fn is_variable_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|first| first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+}
+
 /// What goes before the program: `cd DIR && exec env ...`. `env` is on the line because most servers refuse the `env`
 /// channel request.
 fn prefix(cwd: Option<&str>, clear_env: bool, env: &[EnvVar]) -> Result<String, String> {
@@ -48,7 +57,7 @@ fn prefix(cwd: Option<&str>, clear_env: bool, env: &[EnvVar]) -> Result<String, 
         }
         // `env` takes its options before its assignments.
         for change in env {
-            if change.name.is_empty() || change.name.contains(['=', '\0']) {
+            if !is_variable_name(&change.name) {
                 return Err(format!("`{}` is not a variable name", change.name));
             }
             if change.value.is_none() {
@@ -186,5 +195,24 @@ mod tests {
         }];
         assert!(line(&["a".to_owned()], None, false, &bad).is_err());
         assert!(line(&[], None, false, &[]).is_err());
+    }
+
+    #[test]
+    fn a_variable_name_that_env_would_read_as_an_option_is_refused() {
+        for name in ["-S", "A B", "1A", ""] {
+            let option = [EnvVar {
+                name: name.to_owned(),
+                value: Some("x".to_owned()),
+            }];
+            assert!(
+                line(&["a".to_owned()], None, false, &option).is_err(),
+                "{name:?}"
+            );
+        }
+        let fine = [EnvVar {
+            name: "_A1".to_owned(),
+            value: Some("x".to_owned()),
+        }];
+        assert!(line(&["a".to_owned()], None, false, &fine).is_ok());
     }
 }
