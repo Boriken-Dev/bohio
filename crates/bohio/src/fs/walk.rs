@@ -147,6 +147,7 @@ fn run(
             .saturating_sub(1024)
             .max(1),
         sent: 0,
+        checked: 0,
         skipped: 0,
         exhausted: false,
         pace: Pace::new(files.hash.rate, poll),
@@ -205,6 +206,8 @@ struct Walker<'a> {
     /// The most bytes of estimated entries in one frame.
     limit: usize,
     sent: u64,
+    /// `sent` when the grant was last read.
+    checked: u64,
     skipped: u64,
     /// `[walk] max_entries` was reached: nothing more is walked.
     exhausted: bool,
@@ -283,6 +286,24 @@ impl Walker<'_> {
         }
     }
 
+    /// Reads the peer's grant again once `[walk] recheck_entries` entries have gone since the last look, and holds the
+    /// root being walked (`text`) to it: a root removed while the stream runs ends with `outside_root`.
+    fn recheck(&mut self, text: &str) -> Result<(), ErrorBody> {
+        let every = self.context.walk.recheck_entries;
+        if every == 0 || self.sent.saturating_sub(self.checked) < every {
+            return Ok(());
+        }
+        self.checked = self.sent;
+        let grant = grant_now(&self.context.files)?;
+        let files = Context {
+            grant: &grant,
+            ..self.context.files
+        };
+        authorize(&files, &[Permission::FsRead])?;
+        Roots::new(grant.fs_roots(), files.source).resolve(text)?;
+        Ok(())
+    }
+
     /// Whether another entry may be sent; at the limit, says so once and stops the walk.
     fn room(&mut self, root: u64) -> bool {
         let max = self.context.walk.max_entries;
@@ -350,6 +371,7 @@ impl Walker<'_> {
             if self.failed {
                 return Ok(());
             }
+            self.recheck(text)?;
             let Some(name) = level.names.get(level.next).cloned() else {
                 stack.pop();
                 continue;

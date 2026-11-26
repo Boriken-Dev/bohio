@@ -65,6 +65,9 @@ pub struct Link {
     /// What the peer is granted now, when it differs from `grant`: a hash stream reads it before each item, as the
     /// node does, so a test narrows a grant while a stream is open.
     pub live: Arc<Mutex<Option<Grant>>>,
+    /// After this many more reads of the grant, the peer is granted the given one: a stream is narrowed while it runs,
+    /// at a point the test chooses by counting.
+    pub after: Arc<Mutex<Option<(usize, Grant)>>>,
     pub info: Arc<Info>,
     pub shells: Arc<ShellConfig>,
     pub sessions: Arc<Slots>,
@@ -145,6 +148,11 @@ impl Link {
         self
     }
 
+    /// After `reads` more reads of the grant, the peer is granted `grant`.
+    pub fn narrow_after(&self, reads: usize, grant: Grant) {
+        *self.after.lock().unwrap() = Some((reads, grant));
+    }
+
     /// From now on the peer is granted `grant`: a hash stream's next item is decided by it.
     pub fn narrow(&self, grant: Grant) {
         *self.live.lock().unwrap() = Some(grant);
@@ -174,6 +182,7 @@ impl Link {
             compression: Arc::new(CompressionConfig::default()),
             peer: "test-peer".to_owned(),
             live: Arc::new(Mutex::new(None)),
+            after: Arc::new(Mutex::new(None)),
             files: Arc::new(files),
             transfers: Arc::new(transfers),
             follows: Arc::new(follows),
@@ -292,6 +301,7 @@ impl Open for Link {
             let follows = Arc::clone(&self.follows);
             let path = Arc::clone(&self.path);
             let peer = self.peer.clone();
+            let after = Arc::clone(&self.after);
             let (hash, hash_slots, live, compression, delta) = (
                 Arc::clone(&self.hash),
                 Arc::clone(&self.hash_slots),
@@ -303,6 +313,12 @@ impl Open for Link {
             let (search, search_slots) = (Arc::clone(&self.search), Arc::clone(&self.search_slots));
             let handle = std::thread::spawn(move || {
                 let now = || {
+                    if let Some((left, narrowed)) = after.lock().unwrap().as_mut() {
+                        if *left == 0 {
+                            return Ok(narrowed.clone());
+                        }
+                        *left -= 1;
+                    }
                     Ok(live
                         .lock()
                         .unwrap()

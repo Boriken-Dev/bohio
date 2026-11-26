@@ -388,7 +388,7 @@ link's channel queues and reads ahead: a channel that queues `n` bytes can hold 
 pub fn fs::serve_walk(channel: Arc<dyn Channel>, metadata: &[u8], context: &WalkContext<'_>) -> Result<u64, ErrorBody>;   // entries sent; one thread; each root decided by the grant as it is then (`Context::current`)
 pub struct fs::WalkContext<'a> { pub files: fs::Context<'a>, pub walk: &'a WalkConfig, pub slots: &'a Slots }   // Debug, Clone, Copy
 // fs::Context gains `current: Option<control::Current>`: where the grant is read before each item of a bundle and root of a walk; the grant is used when absent.
-pub struct config::WalkConfig { pub max_streams: usize /*4*/, pub max_entries: u64 /*1000000; 0: no limit*/ }   // `[walk]`; Config.walk, NodeConfig.walk
+pub struct config::WalkConfig { pub max_streams: usize /*4*/, pub max_entries: u64 /*1000000; 0: no limit*/, pub recheck_entries: u64 /*1000; entries between looks at the peer's grant; 0: once a root*/ }   // `[walk]`; Config.walk, NodeConfig.walk
 // config::FilesystemConfig gains max_tree_entries: usize /*1000000; 0: none: recursive copy and cross-filesystem move*/, max_bundle_items: u64 /*1000000; 0: none*/, resume_ttl: Span /*0: keeps none*/.
 ```
 

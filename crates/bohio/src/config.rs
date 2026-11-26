@@ -833,6 +833,10 @@ pub struct WalkConfig {
     /// The most entries one walk stream sends, over all its roots; past it the walk ends with an item error
     /// and `done`. `0` is no limit. Default `1000000`.
     pub max_entries: u64,
+    /// How many entries a walk sends between looks at the peer's grant, which end the root being walked with
+    /// `outside_root` (or `denied`) when the root was removed from the peer's `fs_roots` or `fs.read` was taken away
+    /// since. `0` looks once for each root only. Default `1000`.
+    pub recheck_entries: u64,
 }
 
 impl Default for WalkConfig {
@@ -840,6 +844,7 @@ impl Default for WalkConfig {
         Self {
             max_streams: 4,
             max_entries: 1_000_000,
+            recheck_entries: 1000,
         }
     }
 }

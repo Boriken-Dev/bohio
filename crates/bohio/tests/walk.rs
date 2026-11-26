@@ -564,3 +564,29 @@ fn a_seek_inside_what_was_fetched_costs_no_stream_and_a_far_one_wastes_at_most_t
     // Three streams opened at the start, none for the seeks inside the first range.
     assert_eq!(f.link.finished_fs().len(), 3);
 }
+
+#[test]
+fn a_root_removed_from_the_peers_roots_while_a_walk_runs_ends_with_outside_root() {
+    let f = fixture();
+    for index in 0..200 {
+        std::fs::write(f.root.join(format!("f{index:03}")), b"x").unwrap();
+    }
+    let link = Link::files(
+        Grant::allowing(READ).with_fs_roots([f.root.clone()]),
+        FilesystemConfig::default(),
+    )
+    .walking(WalkConfig {
+        recheck_entries: 10,
+        ..WalkConfig::default()
+    });
+    // The grant is read once for the root, then again every ten entries: the third read finds no root.
+    link.narrow_after(2, Grant::allowing(READ));
+    let (entries, failures) = listed(&link, &["."], &WalkOptions::default());
+    assert!(
+        entries.len() < 201,
+        "the walk went on: {} entries",
+        entries.len()
+    );
+    // A grant with no root at all is `denied`; one that names other roots is `outside_root`.
+    assert_eq!(failures, [":Denied"]);
+}
