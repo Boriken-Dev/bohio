@@ -257,11 +257,19 @@ fn signal_names(signals: &[bohio_proto::signal::Signal]) -> String {
 }
 
 pub(super) fn print_info(info: &Info) {
-    println!("service: {} {}", info.service.name, info.service.version);
+    println!(
+        "service: {} {}",
+        output::shown(&info.service.name),
+        output::shown(&info.service.version)
+    );
     println!("protocol: {}", info.protocol);
-    println!("os: {} {}", info.os, info.arch);
+    println!(
+        "os: {} {}",
+        output::shown(&info.os),
+        output::shown(&info.arch)
+    );
     for shell in &info.shells {
-        println!("shell: {:?} {}", shell.kind, shell.path);
+        println!("shell: {:?} {}", shell.kind, output::shown(&shell.path));
     }
     let fs = &info.filesystem;
     println!(
