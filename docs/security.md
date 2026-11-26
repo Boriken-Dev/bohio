@@ -257,7 +257,7 @@ A desktop helper that the node starts through an exec source (a session named `e
 - **Power and media are separate permissions**, `power` and `media`, each off in the node until `[power] enabled` or `[media]
   enabled`. Switching a machine off is the owner's to grant; the image a machine boots decides what it runs. An agent gets only
   `power_status` and `media_status`: actions stay off the tool surface. The node's event names the peer, the source, the action and
-  the outcome, and never an image or a URL (its query may be a credential). A source that outlives `action_timeout` finishes on
+  the outcome, and never an image or a URL (its query may be a credential). `media status` and the answers to insert and eject show the image as the source reports it, URL included, to a peer holding `media` on that source and to no one else (a peer without the grant is denied before the source is asked), so a token put in a URL is read by every peer holding `media` on it. A source that outlives `action_timeout` finishes on
   its own thread and its answer is dropped, and that thread keeps its `max_streams` slot until the source returns, so a source that
   never answers fills the slots (`busy`) and not the node's threads: `max_streams` bounds the calls still running.
 - **An image of the node** (`media insert --path`) must lie under the peer's `fs_roots` and needs `fs.read`; the source reads it
