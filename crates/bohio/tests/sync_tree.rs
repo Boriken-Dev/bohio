@@ -416,3 +416,214 @@ fn a_file_and_a_directory_in_each_others_way_fail_alone_unless_delete_replaces_t
         b"a file here"
     );
 }
+
+/// A host that answers every stream with a walk whose entries are the paths a test names, as a hostile one would.
+struct Hostile {
+    paths: Vec<String>,
+}
+
+impl bohio_client::Open for Hostile {
+    fn open(
+        &self,
+        _protocol: &str,
+        _metadata: &[u8],
+    ) -> Result<Box<dyn cabuya::mux::LinkStream>, bohio_client::Error> {
+        use bohio_proto::fs::{FileKind, Metadata};
+        use bohio_proto::walk::{WalkDone, WalkEntries, WalkEntry, WalkHeader, WalkOutput};
+        use coqui_transport::frame::LengthPrefix;
+        use coqui_transport::{Channel, StreamChannelBuilder, memory};
+        let build = |stream| {
+            StreamChannelBuilder::new()
+                .codec(LengthPrefix::u32_be())
+                .stream(stream)
+                .pending(4)
+                .queued_bytes(1024 * 1024)
+                .build()
+                .unwrap()
+        };
+        let metadata = |kind| Metadata {
+            kind,
+            size: 3,
+            modified: None,
+            accessed: None,
+            created: None,
+            mode: None,
+            readonly: false,
+            attributes: None,
+            device: None,
+            inode: None,
+            links: None,
+        };
+        let entry = |path: &str, kind| WalkEntry {
+            path: path.to_owned(),
+            metadata: metadata(kind),
+            target: None,
+            hashes: None,
+        };
+        let mut entries = vec![entry("", FileKind::Directory)];
+        for path in &self.paths {
+            let kind = if path == "link" {
+                FileKind::Directory
+            } else {
+                FileKind::File
+            };
+            entries.push(entry(path, kind));
+        }
+        let count = entries.len() as u64;
+        let frames = vec![
+            WalkOutput::Header(WalkHeader::default()).encode().unwrap(),
+            WalkOutput::Entries(WalkEntries { root: 0, entries })
+                .encode()
+                .unwrap(),
+            WalkOutput::Done(WalkDone {
+                entries: count,
+                skipped: 0,
+            })
+            .encode()
+            .unwrap(),
+        ];
+        let (host, client) = memory::pipe(64 * 1024);
+        let host = build(host);
+        std::thread::spawn(move || {
+            for frame in frames {
+                if host
+                    .send_timeout(&frame, Some(Duration::from_secs(5)))
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        });
+        Ok(Box::new(bohio_client::relay::Plain(build(client))))
+    }
+}
+
+fn hostile_pull(local: &Path, paths: &[&str]) -> Result<TreeReport, bohio_client::Error> {
+    let host = Hostile {
+        paths: paths.iter().map(|path| (*path).to_owned()).collect(),
+    };
+    let mut options = options(Direction::Pull);
+    options.sync.timeout = Some(Duration::from_secs(2));
+    sync_tree(&host, local, "/remote", &options)
+}
+
+/// What is beside `local`: a pull that refuses a path leaves nothing but the tree it was given.
+fn beside(local: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(local.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn a_host_that_lists_a_path_outside_the_local_tree_is_refused_and_nothing_is_written() {
+    let f = fixture();
+    let outside = f.local.parent().unwrap().join("abs_escape.txt");
+    let absolute = outside.to_string_lossy().replace('\\', "/");
+    let before = beside(&f.local);
+    let mut hostile: Vec<&str> = vec![
+        "../escape.txt",
+        "a/../../escape.txt",
+        "ok/../../escape.txt",
+        "/abs_escape.txt",
+    ];
+    hostile.push(&absolute);
+    if cfg!(windows) {
+        // Names that are only a drive, a share or a separator on Windows.
+        hostile.extend([
+            "C:\\escape.txt",
+            "\\\\srv\\share\\escape.txt",
+            "a\\..\\..\\escape.txt",
+        ]);
+    }
+    for path in hostile {
+        let error = hostile_pull(&f.local, &[path]).expect_err(path).to_string();
+        assert!(
+            error.contains("cannot be below the local tree"),
+            "{path}: {error}"
+        );
+        assert_eq!(beside(&f.local), before, "{path}");
+        assert!(!outside.exists(), "{path}");
+        assert!(snapshot(&f.local).is_empty(), "{path}");
+    }
+    // A good name beside bad ones does not save the sync, and the error says how many more were refused.
+    let error = hostile_pull(&f.local, &["fine.txt", "../one", "../two"])
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("and 1 more"), "{error}");
+    assert!(snapshot(&f.local).is_empty());
+}
+
+#[test]
+fn a_listed_path_that_runs_through_a_link_out_of_the_local_tree_is_refused() {
+    let f = fixture();
+    let outside = f.local.parent().unwrap().join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(&outside, f.local.join("link")).is_ok();
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_dir(&outside, f.local.join("link")).is_ok();
+    if !made {
+        eprintln!("SKIPPED: the operating system refuses to create a symbolic link");
+        return;
+    }
+    let error = hostile_pull(&f.local, &["link", "link/planted.txt"])
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("through a link"), "{error}");
+    assert!(std::fs::read_dir(&outside).unwrap().next().is_none());
+}
+
+#[test]
+fn a_dangling_link_is_no_way_out_either() {
+    let f = fixture();
+    let dangling = f.local.parent().unwrap().join("not-made");
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(&dangling, f.local.join("link")).is_ok();
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_dir(&dangling, f.local.join("link")).is_ok();
+    if !made {
+        eprintln!("SKIPPED: the operating system refuses to create a symbolic link");
+        return;
+    }
+    let error = hostile_pull(&f.local, &["link/planted.txt"])
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("through a link"), "{error}");
+    assert!(!dangling.exists());
+}
+
+#[test]
+fn a_nested_path_and_a_link_that_stays_inside_still_sync_on_a_pull() {
+    let f = fixture();
+    put(&f.remote, "deep/er/still/file.txt", b"nested\n");
+    put(&f.remote, "linked/inner.txt", b"through a link\n");
+    std::fs::create_dir(f.local.join("real")).unwrap();
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink("real", f.local.join("linked")).is_ok();
+    #[cfg(windows)]
+    let made =
+        std::os::windows::fs::symlink_dir(f.local.join("real"), f.local.join("linked")).is_ok();
+    let report = sync_tree(
+        &f.link,
+        &f.local,
+        &remote_text(&f),
+        &options(Direction::Pull),
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read(f.local.join("deep/er/still/file.txt")).unwrap(),
+        b"nested\n"
+    );
+    if made {
+        // `linked` is a link inside the tree: the file lands in what it points at, still below the root.
+        assert!(
+            f.local.join("real/inner.txt").exists(),
+            "{:?}",
+            report.failures
+        );
+    }
+}

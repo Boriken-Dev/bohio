@@ -195,12 +195,115 @@ fn join(root: &str, relative: &str) -> String {
     format!("{}/{relative}", root.trim_end_matches('/'))
 }
 
-fn local_path(root: &Path, relative: &str) -> PathBuf {
-    let mut path = root.to_path_buf();
-    for part in relative.split('/').filter(|part| !part.is_empty()) {
-        path.push(part);
+/// Why `relative`, a path the host named below its root, cannot be a path below a local one; `windows` applies
+/// the rules of Windows names, which differ from a Unix name's.
+fn refuse_name(relative: &str, windows: bool) -> Option<&'static str> {
+    for part in relative.split('/') {
+        if part.is_empty() {
+            return Some("an empty part, a leading or a doubled slash");
+        }
+        if part == "." || part == ".." {
+            return Some("a `.` or `..` part");
+        }
+        if part.contains('\0') {
+            return Some("a NUL in a name");
+        }
+        if !windows {
+            continue;
+        }
+        if part.contains(['\\', ':']) {
+            return Some("a backslash, a drive or a stream in a name");
+        }
+        if part.contains(['<', '>', '"', '|', '?', '*']) || part.chars().any(char::is_control) {
+            return Some("a character a Windows name may not hold");
+        }
+        if part.ends_with(' ') || part.ends_with('.') {
+            return Some("a name ending in a space or a dot");
+        }
+        let stem = part.split('.').next().unwrap_or_default().trim_end();
+        let stem = stem.to_ascii_uppercase();
+        let device = matches!(
+            stem.as_str(),
+            "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+        ) || stem
+            .strip_prefix("COM")
+            .or_else(|| stem.strip_prefix("LPT"))
+            .is_some_and(|digit| matches!(digit.as_bytes(), [b'1'..=b'9']));
+        if device {
+            return Some("a device name");
+        }
     }
-    path
+    None
+}
+
+fn refusal(relative: &str, why: &str) -> Error {
+    Error::Local(format!(
+        "the host named a path that cannot be below the local tree ({why}): {relative:?}"
+    ))
+}
+
+/// The local path of a path the host named below its root: relative, with no empty, `.` or `..` part, no part a
+/// local name cannot be, and resolving below `root` even through a link already there. There is no way to allow
+/// more: a path outside the tree cannot be what a sync is asked to copy. `links` is false for a tree that is only
+/// read (a push), whose names come from its own listing.
+fn local_path(root: &Path, relative: &str, links: bool) -> Result<PathBuf, Error> {
+    if let Some(why) = refuse_name(relative, cfg!(windows)) {
+        return Err(refusal(relative, why));
+    }
+    if !links {
+        let mut full = root.to_path_buf();
+        full.extend(relative.split('/'));
+        return Ok(full);
+    }
+    let mut path = root.to_path_buf();
+    // The deepest part that exists, resolved through every link on the way, must stay below the root.
+    let mut deepest = None;
+    for part in relative.split('/') {
+        path.push(part);
+        match fs::symlink_metadata(&path) {
+            Ok(_) => deepest = Some(path.clone()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => break,
+            Err(error) => return Err(Error::local("looking at a local path", &error)),
+        }
+    }
+    if let Some(deepest) = deepest {
+        let escape = || refusal(relative, "it leads out of the local tree through a link");
+        let inside = fs::canonicalize(root)
+            .and_then(|root| fs::canonicalize(&deepest).map(|found| found.starts_with(root)))
+            .map_err(|_| escape())?;
+        if !inside {
+            return Err(escape());
+        }
+    }
+    let mut full = root.to_path_buf();
+    full.extend(relative.split('/'));
+    Ok(full)
+}
+
+/// Every path of the host's listing, checked before anything is read or written: a host that names one it may
+/// not ends the sync with an error naming each.
+fn check_listing(listing: &BTreeMap<String, Node>, local: Option<&Path>) -> Result<(), Error> {
+    let mut refused = Vec::new();
+    for relative in listing.keys() {
+        let result = match local {
+            Some(root) => local_path(root, relative, true).map(drop),
+            None => refuse_name(relative, cfg!(windows))
+                .map_or(Ok(()), |why| Err(refusal(relative, why))),
+        };
+        if let Err(error) = result {
+            tracing::warn!(path = relative.as_str(), %error, "refused a path the host listed");
+            refused.push(error.to_string());
+        }
+    }
+    if refused.is_empty() {
+        return Ok(());
+    }
+    let first = refused.remove(0);
+    Err(Error::Local(if refused.is_empty() {
+        first
+    } else {
+        format!("{first} (and {} more)", refused.len())
+    }))
 }
 
 fn failed(report: &mut TreeReport, path: &str, error: &Error) {
@@ -351,6 +454,7 @@ fn scan_remote(
         }
     }
     report.walk_wire_bytes += iter.wire_bytes();
+    check_listing(&found, None)?;
     Ok((!missing).then_some(found))
 }
 
@@ -379,6 +483,15 @@ fn same_time(a: Option<Timestamp>, b: Option<Timestamp>, window: Duration) -> bo
 }
 
 impl Context<'_> {
+    /// The local path of `relative`, checked: see [`local_path`].
+    fn local_path(&self, relative: &str) -> Result<PathBuf, Error> {
+        local_path(
+            self.local,
+            relative,
+            self.options.direction == Direction::Pull,
+        )
+    }
+
     /// Whether the file `relative` is the same on both sides.
     fn compare(&self, relative: &str, source: &Node, destination: &Node) -> Result<bool, Error> {
         if source.size != destination.size {
@@ -399,7 +512,7 @@ impl Context<'_> {
             Compare::Blocks => {
                 let verdict = compare_file(
                     self.link,
-                    &local_path(self.local, relative),
+                    &self.local_path(relative)?,
                     &join(self.remote, relative),
                     Compare::Blocks,
                     &self.options.sync,
@@ -450,7 +563,9 @@ enum Job {
 ///
 /// # Errors
 ///
-/// [`Error::Local`] for a local root that is not a directory, [`Error::Remote`] for a host that refuses the walk (or,
+/// [`Error::Local`] for a local root that is not a directory, or for a host that lists a path that cannot be below
+/// the local tree (absolute, with a `..` or empty part, a name the local system cannot have, or reaching out of the
+/// tree through a link already there): nothing is read or written and there is no option to allow it. [`Error::Remote`] for a host that refuses the walk (or,
 /// when pulling, has no such root), and the transport's errors. What goes wrong for one file is not an error.
 pub fn sync_tree(
     link: &dyn Open,
@@ -485,6 +600,10 @@ pub fn sync_tree(
             (there, Some(here))
         }
     };
+    if options.direction == Direction::Pull {
+        // Before anything is read or written: no name of the host's may leave the local tree.
+        check_listing(&source, Some(local))?;
+    }
     // The destination's root is missing when it is the host's and the walk found nothing.
     let destination_root_exists = destination.is_some();
     let destination = destination.unwrap_or_default();
@@ -626,7 +745,9 @@ fn apply(
         let result = if push {
             fs.remove(&join(context.remote, relative), true)
         } else {
-            remove_local(&local_path(context.local, relative))
+            context
+                .local_path(relative)
+                .and_then(|path| remove_local(&path))
         };
         if let Err(error) = result {
             failed(report, relative, &error);
@@ -645,7 +766,7 @@ fn apply(
         if push {
             fs.mkdir(&join(context.remote, relative), true)
         } else {
-            fs::create_dir_all(local_path(context.local, relative))
+            fs::create_dir_all(context.local_path(relative)?)
                 .map_err(|error| Error::local("making a local directory", &error))
         }
     };
@@ -683,14 +804,14 @@ fn apply(
     if !push {
         // A pulled bundle's files are written through paths, so their parents are made up front.
         for path in &bundled {
-            if let Some((parent, _)) = path.rsplit_once('/')
-                && let Err(error) = fs::create_dir_all(local_path(context.local, parent))
-            {
-                failed(
-                    report,
-                    parent,
-                    &Error::local("making a local directory", &error),
-                );
+            if let Some((parent, _)) = path.rsplit_once('/') {
+                let made = context.local_path(parent).and_then(|directory| {
+                    fs::create_dir_all(directory)
+                        .map_err(|error| Error::local("making a local directory", &error))
+                });
+                if let Err(error) = made {
+                    failed(report, parent, &error);
+                }
             }
         }
     }
@@ -762,7 +883,9 @@ fn remove_extras(
     for relative in doomed {
         let result = match &fs {
             Some(fs) => fs.remove(&join(context.remote, relative), true),
-            None => remove_local(&local_path(context.local, relative)),
+            None => context
+                .local_path(relative)
+                .and_then(|path| remove_local(&path)),
         };
         match result {
             Ok(()) => report.deleted += 1,
@@ -820,14 +943,22 @@ fn push_bundle(
     bundle: &BundleOptions,
     report: &mut TreeReport,
 ) {
-    let mut sources: Vec<Lazy> = paths
-        .iter()
-        .map(|relative| Lazy {
-            path: local_path(context.local, relative),
-            file: None,
-            done: false,
-        })
-        .collect();
+    let mut readable: Vec<String> = Vec::with_capacity(paths.len());
+    let mut sources: Vec<Lazy> = Vec::with_capacity(paths.len());
+    for relative in paths {
+        match context.local_path(relative) {
+            Ok(path) => {
+                readable.push(relative.clone());
+                sources.push(Lazy {
+                    path,
+                    file: None,
+                    done: false,
+                });
+            }
+            Err(error) => failed(report, relative, &error),
+        }
+    }
+    let paths = readable.as_slice();
     let mut files: Vec<BundleFile<'_>> = Vec::with_capacity(paths.len());
     for (relative, lazy) in paths.iter().zip(sources.iter_mut()) {
         let mut file = BundleFile::replace(join(context.remote, relative), lazy);
@@ -881,7 +1012,7 @@ fn pull_bundle(
                     .get(at)
                     .ok_or(Error::Protocol(bohio_proto::Error::Decode))?;
                 current = Some(Part::create(
-                    &local_path(context.local, relative),
+                    &context.local_path(relative)?,
                     relative.clone(),
                 )?);
             }
@@ -1006,7 +1137,10 @@ fn run_single(
     let options = context.options;
     let mut sync = options.sync.clone();
     sync.compare = None;
-    let local = local_path(context.local, relative);
+    let local = match context.local_path(relative) {
+        Ok(local) => local,
+        Err(error) => return failed(report, relative, &error),
+    };
     let remote = join(context.remote, relative);
     let node = source.get(relative);
     let moved = if options.direction == Direction::Push {
@@ -1040,5 +1174,55 @@ fn run_single(
             report.wire_bytes += moved.wire_bytes;
         }
         Err(error) => failed(report, relative, &error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::refuse_name;
+
+    #[test]
+    fn a_part_that_climbs_or_is_empty_is_refused_on_every_system() {
+        for windows in [false, true] {
+            for bad in [
+                "..",
+                "a/../../x",
+                "../x",
+                "a/./b",
+                "/abs",
+                "a//b",
+                "a/",
+                "a\0b",
+            ] {
+                assert!(refuse_name(bad, windows).is_some(), "{bad:?} {windows}");
+            }
+            for good in ["a", "a/b/c.txt", "dir/.hidden", "a..b/c", "..a/b"] {
+                assert_eq!(refuse_name(good, windows), None, "{good:?} {windows}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_name_a_windows_path_reads_as_a_drive_a_share_or_a_device_is_refused_there() {
+        for bad in [
+            "C:\\x",
+            "C:x",
+            "C:/x",
+            "\\\\srv\\share\\x",
+            "a\\b",
+            "a/b:stream",
+            "a/NUL",
+            "con.txt",
+            "COM1",
+            "a/x.",
+            "a/x ",
+            "a/b?c",
+        ] {
+            assert!(refuse_name(bad, true).is_some(), "{bad:?}");
+        }
+        // The same names are ordinary on a system whose names may hold them.
+        for fine in ["C:\\x", "a\\b", "a/b:stream", "a/NUL", "con.txt"] {
+            assert_eq!(refuse_name(fine, false), None, "{fine:?}");
+        }
     }
 }
