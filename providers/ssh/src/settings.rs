@@ -24,7 +24,7 @@ pub(crate) enum HostKeyCheck {
 
 /// `[source.<name>]` of an ssh source: the host, how to log in, and the bounds of what is done to it. Every key but
 /// `host` is optional. The defaults check everything; a weaker choice is the operator's and is logged as `non-default:`.
-#[derive(ToValue, FromValue, Schema, Debug, Clone, PartialEq, Eq)]
+#[derive(ToValue, FromValue, Schema, Clone, PartialEq, Eq)]
 #[map(crate = ::bohio_api::guatiao)]
 pub struct SshSettings {
     /// The host's name or address.
@@ -202,7 +202,7 @@ pub(crate) fn display_number(key: &str, text: &str) -> Result<u32, ProviderError
 }
 
 /// The settings once read and checked: durations parsed, paths expanded.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct Settings {
     pub host: String,
     pub port: u16,
@@ -262,6 +262,169 @@ pub(crate) fn expand(path: &str) -> Result<PathBuf, String> {
             .map(|home| home.join(rest))
             .ok_or_else(|| format!("{path}: the account has no home directory")),
         None => Ok(PathBuf::from(path)),
+    }
+}
+
+/// A secret a settings value holds, printed as present or absent and never as itself.
+struct Hidden(bool);
+
+impl core::fmt::Debug for Hidden {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(if self.0 { "Some([redacted])" } else { "None" })
+    }
+}
+
+impl core::fmt::Debug for SshSettings {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let Self {
+            host,
+            port,
+            user,
+            identity,
+            agent,
+            password,
+            passphrase,
+            host_key,
+            known_hosts,
+            host_key_check,
+            connect_timeout,
+            keepalive,
+            keepalive_max,
+            max_channels,
+            reconnect,
+            reconnect_after,
+            probe_every,
+            operation_timeout,
+            exit_grace,
+            queue_chunks,
+            worker_threads,
+            sftp_in_flight,
+            sftp_packet,
+            x11_display,
+            x11_socket_dir,
+            xauth,
+            x11_forward,
+            x11_trusted,
+            x11_local_display,
+            x11_max_connections,
+            x11_answer_max,
+            x11_max_strangers,
+            client,
+            ssh_program,
+            ssh_args,
+        } = self;
+        f.debug_struct("SshSettings")
+            .field("host", host)
+            .field("port", port)
+            .field("user", user)
+            .field("identity", identity)
+            .field("agent", agent)
+            .field("password", &Hidden(password.is_some()))
+            .field("passphrase", &Hidden(passphrase.is_some()))
+            .field("host_key", host_key)
+            .field("known_hosts", known_hosts)
+            .field("host_key_check", host_key_check)
+            .field("connect_timeout", connect_timeout)
+            .field("keepalive", keepalive)
+            .field("keepalive_max", keepalive_max)
+            .field("max_channels", max_channels)
+            .field("reconnect", reconnect)
+            .field("reconnect_after", reconnect_after)
+            .field("probe_every", probe_every)
+            .field("operation_timeout", operation_timeout)
+            .field("exit_grace", exit_grace)
+            .field("queue_chunks", queue_chunks)
+            .field("worker_threads", worker_threads)
+            .field("sftp_in_flight", sftp_in_flight)
+            .field("sftp_packet", sftp_packet)
+            .field("x11_display", x11_display)
+            .field("x11_socket_dir", x11_socket_dir)
+            .field("xauth", xauth)
+            .field("x11_forward", x11_forward)
+            .field("x11_trusted", x11_trusted)
+            .field("x11_local_display", x11_local_display)
+            .field("x11_max_connections", x11_max_connections)
+            .field("x11_answer_max", x11_answer_max)
+            .field("x11_max_strangers", x11_max_strangers)
+            .field("client", client)
+            .field("ssh_program", ssh_program)
+            .field("ssh_args", ssh_args)
+            .finish()
+    }
+}
+
+impl core::fmt::Debug for Settings {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let Self {
+            host,
+            port,
+            user,
+            identity,
+            agent,
+            password,
+            passphrase,
+            pin,
+            known_hosts,
+            known_hosts_set,
+            check,
+            connect_timeout,
+            keepalive,
+            keepalive_max,
+            max_channels,
+            reconnect,
+            reconnect_after,
+            probe_every,
+            operation_timeout,
+            exit_grace,
+            queue_chunks,
+            worker_threads,
+            sftp_in_flight,
+            sftp_packet,
+            x11_display,
+            x11_socket_dir,
+            xauth,
+            x11_forward,
+            x11_local_display,
+            x11_max_connections,
+            x11_answer_max,
+            x11_max_strangers,
+            openssh,
+        } = self;
+        f.debug_struct("Settings")
+            .field("host", host)
+            .field("port", port)
+            .field("user", user)
+            .field("identity", identity)
+            .field("agent", agent)
+            .field("password", &Hidden(password.is_some()))
+            .field("passphrase", &Hidden(passphrase.is_some()))
+            .field("pin", pin)
+            .field("known_hosts", known_hosts)
+            .field("known_hosts_set", known_hosts_set)
+            .field("check", check)
+            .field("connect_timeout", connect_timeout)
+            .field("keepalive", keepalive)
+            .field("keepalive_max", keepalive_max)
+            .field("max_channels", max_channels)
+            .field("reconnect", reconnect)
+            .field("reconnect_after", reconnect_after)
+            .field("probe_every", probe_every)
+            .field("operation_timeout", operation_timeout)
+            .field("exit_grace", exit_grace)
+            .field("queue_chunks", queue_chunks)
+            .field("worker_threads", worker_threads)
+            .field("sftp_in_flight", sftp_in_flight)
+            .field("sftp_packet", sftp_packet)
+            .field("x11_display", x11_display)
+            .field("x11_socket_dir", x11_socket_dir)
+            .field("xauth", xauth)
+            .field("x11_forward", x11_forward)
+            .field("x11_local_display", x11_local_display)
+            .field("x11_max_connections", x11_max_connections)
+            .field("x11_answer_max", x11_answer_max)
+            .field("x11_max_strangers", x11_max_strangers)
+            .field("openssh", openssh)
+            .finish()
     }
 }
 
@@ -520,6 +683,23 @@ mod tests {
         assert_eq!(span("2"), Some(Duration::from_secs(2)));
         assert_eq!(span("1h"), Some(Duration::from_secs(3600)));
         assert_eq!(span("soon"), None);
+    }
+
+    #[test]
+    fn debug_output_never_holds_a_password_or_a_passphrase() {
+        let mut settings = super::SshSettings::new("host.invalid");
+        settings.user = Some("someone".to_owned());
+        settings.password = Some("p4ss-secret".to_owned());
+        settings.passphrase = Some("phr4se-secret".to_owned());
+        let shown = format!("{settings:?}");
+        assert!(
+            !shown.contains("p4ss") && !shown.contains("phr4se"),
+            "{shown}"
+        );
+        assert!(shown.contains("host.invalid"), "{shown}");
+        let read = format!("{:?}", settings.read().unwrap());
+        assert!(!read.contains("p4ss") && !read.contains("phr4se"), "{read}");
+        assert!(read.contains("host.invalid"), "{read}");
     }
 }
 
