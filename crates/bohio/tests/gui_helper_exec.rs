@@ -23,7 +23,7 @@ use coqui_transport::{Channel as _, memory};
 
 #[path = "../../../providers/ssh/tests/support/mod.rs"]
 mod support;
-use support::{FakeSsh, shell_available};
+use support::{FakeSsh, Options};
 
 const WAIT: Duration = Duration::from_secs(60);
 
@@ -78,7 +78,11 @@ fn sources_from(text: &str, files: bool) -> Sources {
 
 /// Runs the scenario with `command` as the helper's command line; `width` is the first display's width when it is known.
 fn scenario(command: Vec<String>, width: Option<u32>) {
-    let server = FakeSsh::start();
+    // The server starts the program itself: the machine under test needs no `sh`.
+    let server = FakeSsh::start_with(Options {
+        direct: true,
+        ..Options::default()
+    });
     let helper = ExecHelper {
         source: "remote".to_owned(),
         command,
@@ -217,10 +221,6 @@ fn run(sources: Sources, helper: ExecHelper, width: Option<u32>) {
 
 #[test]
 fn a_peer_sees_and_clicks_the_desktop_of_a_helper_the_node_runs_through_an_ssh_source() {
-    if !shell_available() {
-        eprintln!("SKIPPED: no `sh` on PATH for the in-process SSH server to run commands");
-        return;
-    }
     let Some(program) = helper_program() else {
         eprintln!(
             "SKIPPED: build the helper first (cargo build -p bohio --example gui_helper_painted)"
@@ -234,10 +234,6 @@ fn a_peer_sees_and_clicks_the_desktop_of_a_helper_the_node_runs_through_an_ssh_s
 #[cfg(target_os = "linux")]
 #[test]
 fn the_real_helper_serves_the_machines_x_display_through_an_ssh_source() {
-    if !shell_available() {
-        eprintln!("SKIPPED: no `sh` on PATH for the in-process SSH server to run commands");
-        return;
-    }
     let Some(display) = std::fs::read_dir("/tmp/.X11-unix")
         .ok()
         .and_then(|mut found| found.find_map(Result::ok))
@@ -463,15 +459,14 @@ fn a_helper_built_for_another_platform_is_refused_and_not_put() {
 /// The helper goes through an SSH server files and runs through its exec: the machine has nothing of Bohio on it.
 #[test]
 fn a_helper_is_put_through_ssh_files_and_run_through_its_exec() {
-    if !shell_available() {
-        eprintln!("SKIPPED: no `sh` on PATH for the in-process SSH server to run commands");
-        return;
-    }
     let Some(program) = helper_program() else {
         eprintln!("SKIPPED: build the helper first");
         return;
     };
-    let server = FakeSsh::start();
+    let server = FakeSsh::start_with(Options {
+        direct: true,
+        ..Options::default()
+    });
     let target = tempfile::tempdir().expect("a directory");
     let upload = Upload {
         // `uname` is this machine own: the platform check is the real one.

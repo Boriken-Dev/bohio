@@ -873,3 +873,26 @@ fn names_that_leave_a_directory_are_refused_before_they_reach_the_host() {
     }
     assert!(bohio_api::FilesSource::open_dir(&source, "relative").is_err());
 }
+
+#[test]
+fn the_direct_runner_takes_a_command_line_of_the_providers_shape_apart() {
+    let line = support::parse_line(
+        "cd '/work dir' && exec env -i -u 'GONE' 'A=it'\\''s' 'B=' 'prog' 'one two' '--x'",
+    )
+    .expect("a line");
+    assert_eq!(line.cwd.as_deref(), Some("/work dir"));
+    assert!(line.clear_env);
+    assert_eq!(
+        line.env,
+        [
+            ("GONE".to_owned(), None),
+            ("A".to_owned(), Some("it's".to_owned())),
+            ("B".to_owned(), Some(String::new())),
+        ]
+    );
+    assert_eq!(line.argv, ["prog", "one two", "--x"]);
+    let plain = support::parse_line("exec 'prog'").expect("a plain line");
+    assert!(plain.cwd.is_none() && !plain.clear_env && plain.env.is_empty());
+    assert!(support::parse_line("echo hi; rm x").is_none());
+    assert!(support::parse_line("exec 'unterminated").is_none());
+}

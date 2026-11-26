@@ -57,6 +57,9 @@ pub struct Options {
     pub keys: bool,
     /// What the SFTP subsystem advertises; `None` serves no SFTP subsystem.
     pub sftp: Option<Advertise>,
+    /// Start the program of a command line the provider built (`cd DIR && exec env ... PROGRAM ARGS`) directly, with no shell:
+    /// for a machine that has no `sh`. A command of another shape is refused.
+    pub direct: bool,
 }
 
 impl Default for Options {
@@ -66,6 +69,7 @@ impl Default for Options {
             password: false,
             keys: true,
             sftp: Some(Advertise::default()),
+            direct: false,
         }
     }
 }
@@ -495,9 +499,31 @@ impl Connection {
         command: String,
         session: &mut Session,
     ) -> Result<(), russh::Error> {
-        let spawned = Command::new("sh")
-            .arg("-c")
-            .arg(&command)
+        let mut process = if self.options.direct {
+            let Some(line) = parse_line(&command) else {
+                return session.channel_failure(channel);
+            };
+            let mut process = Command::new(&line.argv[0]);
+            process.args(&line.argv[1..]);
+            if let Some(cwd) = &line.cwd {
+                process.current_dir(cwd);
+            }
+            if line.clear_env {
+                process.env_clear();
+            }
+            for (name, value) in &line.env {
+                match value {
+                    Some(value) => process.env(name, value),
+                    None => process.env_remove(name),
+                };
+            }
+            process
+        } else {
+            let mut process = Command::new("sh");
+            process.arg("-c").arg(&command);
+            process
+        };
+        let spawned = process
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -516,6 +542,100 @@ impl Connection {
         tokio::spawn(supervise(session.handle(), channel, child, merge, killed));
         Ok(())
     }
+}
+
+/// A command line of the provider's shape, taken apart.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Line {
+    pub cwd: Option<String>,
+    pub clear_env: bool,
+    /// `(name, Some(value))` to set, `(name, None)` to remove.
+    pub env: Vec<(String, Option<String>)>,
+    pub argv: Vec<String>,
+}
+
+/// The words of a POSIX command line made of single-quoted words (`'it'\''s'` is one) and the unquoted `&&`.
+fn words(text: &str) -> Option<Vec<String>> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut started = false;
+    let mut quoted = false;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (quoted, c) {
+            (true, '\'') => quoted = false,
+            (true, c) => current.push(c),
+            (false, '\'') => {
+                quoted = true;
+                started = true;
+            }
+            (false, '\\') => {
+                current.push(chars.next()?);
+                started = true;
+            }
+            (false, c) if c.is_whitespace() => {
+                if started {
+                    out.push(std::mem::take(&mut current));
+                    started = false;
+                }
+            }
+            (false, c) => {
+                current.push(c);
+                started = true;
+            }
+        }
+    }
+    if quoted {
+        return None;
+    }
+    if started {
+        out.push(current);
+    }
+    Some(out)
+}
+
+/// `cd 'DIR' && exec env [-i] [-u 'NAME']... ['NAME=VALUE']... 'PROGRAM' 'ARG'...`, or the same without `cd` or `env`.
+pub fn parse_line(command: &str) -> Option<Line> {
+    let mut words = words(command)?.into_iter().peekable();
+    let mut line = Line {
+        cwd: None,
+        clear_env: false,
+        env: Vec::new(),
+        argv: Vec::new(),
+    };
+    if words.peek().map(String::as_str) == Some("cd") {
+        words.next();
+        line.cwd = Some(words.next()?);
+        if words.next()? != "&&" {
+            return None;
+        }
+    }
+    if words.next()? != "exec" {
+        return None;
+    }
+    if words.peek().map(String::as_str) == Some("env") {
+        words.next();
+        loop {
+            match words.peek().map(String::as_str) {
+                Some("-i") => {
+                    words.next();
+                    line.clear_env = true;
+                }
+                Some("-u") => {
+                    words.next();
+                    line.env.push((words.next()?, None));
+                }
+                Some(word) if word.contains('=') && !word.starts_with('=') => {
+                    let (name, value) = word.split_once('=')?;
+                    line.env.push((name.to_owned(), Some(value.to_owned())));
+                    words.next();
+                }
+                _ => break,
+            }
+        }
+    }
+    line.argv = words.collect();
+    (!line.argv.is_empty()).then_some(line)
 }
 
 /// Relays a child's output to the channel, then its exit status.

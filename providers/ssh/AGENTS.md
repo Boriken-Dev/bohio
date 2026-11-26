@@ -134,7 +134,7 @@ with no X display (Windows) fails each forwarded connection with the reason in t
 - An SFTP session that stops answering fails a request after `operation_timeout`; the next call opens another session.
 - From Windows into WSL's loopback relay a bulk full-duplex transfer has stalled the whole session in measurement: bulk tests run inside WSL.
 
-Tests: `tests/fake.rs` runs the provider against an in-process server (`tests/support/`, with an SFTP subsystem over the real file system; programs need `sh`);
+Tests: `tests/fake.rs` runs the provider against an in-process server (`tests/support/`, with an SFTP subsystem over the real file system; programs need `sh`, or `Options { direct: true }` starts the program of the provider's command line itself, as the helper test does on a machine with no `sh`);
 `tests/real_sshd.rs` starts a private no-root `sshd` on loopback (on Windows inside WSL `FedoraLinux-44`; `BOHIO_TEST_REQUIRE_SSHD=1` makes a missing one a
 failure instead of a skip). Both run `bohio_api::contract::files`.
 
