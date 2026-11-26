@@ -130,6 +130,14 @@ pub struct SshSettings {
     /// The forwarded X connections open at once; one past it is refused. At least 1. Default `64`.
     #[map(default = 64)]
     pub x11_max_connections: u64,
+    /// The most bytes of `xauth`'s answer that are read when the cookie of the machine's display is asked for. At least 1.
+    /// Default `65536`.
+    #[map(default = 65_536)]
+    pub x11_answer_max: u64,
+    /// The most connections to the display's loopback bridge that are not the node's own before the bridge gives up. At
+    /// least 1. Default `16`.
+    #[map(default = 16)]
+    pub x11_max_strangers: u64,
     /// Who speaks SSH: `russh` (this provider's own client, the default) or `openssh` (the system's `ssh` program, one
     /// process for each terminal, program and SFTP session, with the account's own `ssh_config`, Kerberos and `ProxyJump`).
     /// The `openssh` client cannot resize a terminal, signal a program or serve a desktop over a channel (`x11_display`,
@@ -212,6 +220,8 @@ pub(crate) struct Settings {
     pub x11_forward: bool,
     pub x11_local_display: Option<String>,
     pub x11_max_connections: usize,
+    pub x11_answer_max: usize,
+    pub x11_max_strangers: usize,
     pub openssh: Option<OpenSsh>,
 }
 
@@ -274,6 +284,8 @@ impl SshSettings {
             x11_trusted: false,
             x11_local_display: None,
             x11_max_connections: 64,
+            x11_answer_max: 65_536,
+            x11_max_strangers: 16,
             client: "russh".to_owned(),
             ssh_program: "ssh".to_owned(),
             ssh_args: Vec::new(),
@@ -418,6 +430,8 @@ impl SshSettings {
             x11_forward: self.x11_forward,
             x11_local_display: self.x11_local_display.clone(),
             x11_max_connections: count("x11_max_connections", self.x11_max_connections)?,
+            x11_answer_max: count("x11_answer_max", self.x11_answer_max)?,
+            x11_max_strangers: count("x11_max_strangers", self.x11_max_strangers)?,
             openssh,
         })
     }
@@ -518,12 +532,31 @@ mod x11_tests {
         assert_eq!(settings.non_default().len(), 3);
 
         settings.x11_max_connections = 0;
+        settings.x11_max_connections = 0;
         assert!(
             settings
                 .read()
                 .unwrap_err()
                 .message()
                 .contains("x11_max_connections")
+        );
+        settings.x11_max_connections = 64;
+        settings.x11_answer_max = 0;
+        assert!(
+            settings
+                .read()
+                .unwrap_err()
+                .message()
+                .contains("x11_answer_max")
+        );
+        settings.x11_answer_max = 65_536;
+        settings.x11_max_strangers = 0;
+        assert!(
+            settings
+                .read()
+                .unwrap_err()
+                .message()
+                .contains("x11_max_strangers")
         );
     }
 }

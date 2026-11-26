@@ -5,6 +5,8 @@
 | `x11_trusted` | `false` | forward as `ssh -Y` does; required by `x11_forward` because this build cannot ask the display for an untrusted authorization |
 | `x11_local_display` | the node's `DISPLAY` | the node's display forwarded windows go to: `:N` (its socket) or `HOST:N` (TCP port 6000+N) |
 | `x11_max_connections` | `64` | forwarded X connections open at once; one past it is refused; at least 1 |
+| `x11_answer_max` | `65536` | bytes of `xauth`'s answer read when the display's cookie is asked for; at least 1 |
+| `x11_max_strangers` | `16` | connections to the display's loopback bridge that are not the node's own before it gives up; at least 1 |
 | `client` | `russh` | who speaks SSH: `russh` (this provider's client) or `openssh` (the system's `ssh` program, see below) |
 | `ssh_program`, `ssh_args` | `ssh` on `PATH`, none | the `openssh` client's program, and arguments put after the options this provider sets and before the host |
 # `bohio-provider-ssh` — API header

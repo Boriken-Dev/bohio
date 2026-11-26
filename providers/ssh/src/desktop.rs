@@ -17,12 +17,6 @@ use crate::forward::PROTOCOL;
 use crate::link::{Link, lock, within};
 use crate::session::{Open, Session};
 
-/// The most bytes read of `xauth`'s answer.
-const ANSWER_LIMIT: usize = 64 * 1024;
-
-/// The most connections made to the loopback listener that are not ours before giving up.
-const STRANGERS: usize = 16;
-
 type Cookie = Option<(Vec<u8>, Vec<u8>)>;
 
 /// How the X backend reaches the host's X server.
@@ -103,7 +97,7 @@ impl Channels {
         let deadline = Instant::now() + link.settings.operation_timeout;
         let mut out = Vec::new();
         let mut chunk = [0_u8; 4096];
-        while out.len() < ANSWER_LIMIT && Instant::now() < deadline {
+        while out.len() < link.settings.x11_answer_max && Instant::now() < deadline {
             match session.read(1, &mut chunk, 200).ok()? {
                 -1 => break,
                 0 => {}
@@ -139,7 +133,7 @@ impl Channels {
         let ours = client.local_addr()?;
         // Another program on this machine could reach the listener first; only the connection made here is bridged.
         let mut joined = None;
-        for _ in 0..STRANGERS {
+        for _ in 0..self.link.settings.x11_max_strangers {
             let (stream, from) = listener.accept()?;
             if from == ours {
                 joined = Some(stream);
