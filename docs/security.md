@@ -236,7 +236,8 @@ A peer that asks for compression makes the host compress (reads, exec output) an
 A source is a path into the system the node is for, and **a peer reaches only each capability's default source** unless its
 `[peer."<id>"]` table names more with `sources = [..]`; a source added to `bohio.cfg` later grants nobody anything. The check is
 made when a stream opens and again every `[link] recheck`, so narrowing `sources` ends a console attach within it, and `info.access`
-and the session list show a peer only the sources it reaches (a name it may not use is not even told).
+and the session list show a peer only the sources it reaches, and only of the capabilities whose permission it holds (a name it may not use is not even
+told, and an `info`-only peer's call makes no source describe itself).
 
 A desktop helper that the node starts through an exec source (a session named `exec:NAME:...`) is behind that source: the peer must reach `NAME` like any other source (the default exec source, or `sources = ["NAME"]`). Another peer is not told the session, cannot open it by name or by default, and a frame of a stream whose grant lost the source is answered `denied`.
 

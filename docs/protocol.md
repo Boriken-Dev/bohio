@@ -802,7 +802,9 @@ started = { ? pid: uint, ? session: text }              ; no pid for a console; 
 
 The stream attaches live to the node's console of that source (one session the node owns; a newer attach supersedes, a `kill`
 only detaches); `bohio-attach/1` with `session: "console:<source>"` and `from` replays its kept output. `bohio-gui/1`'s request
-gains `? source: text`. `info` gains the sources the peer reaches:
+gains `? source: text`. `info` gains the sources the peer reaches, and a list only for a capability whose permission the peer also holds
+(`terminal` needs `shell`, `desktop` `gui.view` or `gui.input`, `power` `power`, `media` `media`, `exec` `exec`, `fs` `fs.read` or
+`fs.write`); another list is empty and its sources are not asked to describe themselves:
 
 ```cddl
 access-info = { terminal: [* source-entry], desktop: [* source-entry], power: [* source-entry], media: [* source-entry],

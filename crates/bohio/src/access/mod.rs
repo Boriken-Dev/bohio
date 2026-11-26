@@ -824,15 +824,36 @@ impl Sources {
     }
 
     /// What `info` says of the sources `grant` reaches: each source's name, provider, whether it is the default, and its
-    /// `describe`, asked now. Only a peer holding `info` is told, and a source that cannot describe itself is listed
-    /// unavailable with that as the reason.
+    /// `describe`, asked now. Only a peer holding `info` is told, only of a capability whose permission it also holds
+    /// (`shell`, `gui.view` or `gui.input`, `power`, `media`, `exec`, `fs.read` or `fs.write`), and a source that cannot
+    /// describe itself is listed unavailable with that as the reason. The sources' lock is not held while they describe.
     #[must_use]
     pub fn info(&self, grant: &crate::policy::Grant) -> bohio_proto::info::AccessInfo {
-        let state = self.state_ref();
-        let permitted = |name: &String| grant.permits_source(name);
-        fn entries<K: ?Sized>(
+        use crate::policy::Permission;
+        type Picked<K> = Vec<(usize, String, Source<K>)>;
+        fn picked<K: ?Sized>(
             table: &Table<K>,
-            permitted: &impl Fn(&String) -> bool,
+            grant: &crate::policy::Grant,
+            held: bool,
+        ) -> Picked<K> {
+            if !held {
+                return Vec::new();
+            }
+            table
+                .order
+                .iter()
+                .enumerate()
+                .filter(|(_, name)| grant.permits_source(name))
+                .filter_map(|(at, name)| {
+                    table
+                        .by_name
+                        .get(name)
+                        .map(|source| (at, name.clone(), source.clone()))
+                })
+                .collect()
+        }
+        fn entries<K: ?Sized>(
+            picked: Picked<K>,
             describe: impl Fn(
                 &K,
             ) -> Result<
@@ -840,18 +861,14 @@ impl Sources {
                 bohio_api::guatiao::library::ProviderError,
             >,
         ) -> Vec<SourceEntry> {
-            table
-                .order
-                .iter()
-                .enumerate()
-                .filter(|(_, name)| permitted(name))
-                .filter_map(|(at, name)| table.by_name.get(name).map(|source| (at, name, source)))
+            picked
+                .into_iter()
                 .map(|(at, name, source)| {
                     let info = describe(source.get()).unwrap_or_else(|error| {
                         bohio_api::SourceInfo::default().unavailable(error.message())
                     });
                     SourceEntry {
-                        name: name.clone(),
+                        name,
                         provider: info.provider,
                         default: at == 0,
                         available: info.available,
@@ -862,13 +879,33 @@ impl Sources {
                 })
                 .collect()
         }
+        let holds = |permission| grant.allows(permission);
+        let (terminal, desktop, power, media, exec, fs) = {
+            let state = self.state_ref();
+            (
+                picked(&state.terminal, grant, holds(Permission::Shell)),
+                picked(
+                    &state.desktop,
+                    grant,
+                    holds(Permission::GuiView) || holds(Permission::GuiInput),
+                ),
+                picked(&state.power, grant, holds(Permission::Power)),
+                picked(&state.media, grant, holds(Permission::Media)),
+                picked(&state.exec, grant, holds(Permission::Exec)),
+                picked(
+                    &state.files,
+                    grant,
+                    holds(Permission::FsRead) || holds(Permission::FsWrite),
+                ),
+            )
+        };
         bohio_proto::info::AccessInfo {
-            terminal: entries(&state.terminal, &permitted, |source| source.describe()),
-            desktop: entries(&state.desktop, &permitted, |source| source.describe()),
-            power: entries(&state.power, &permitted, |source| source.describe()),
-            media: entries(&state.media, &permitted, |source| source.describe()),
-            exec: entries(&state.exec, &permitted, |source| source.describe()),
-            fs: entries(&state.files, &permitted, |source| source.describe()),
+            terminal: entries(terminal, |source| source.describe()),
+            desktop: entries(desktop, |source| source.describe()),
+            power: entries(power, |source| source.describe()),
+            media: entries(media, |source| source.describe()),
+            exec: entries(exec, |source| source.describe()),
+            fs: entries(fs, |source| source.describe()),
         }
     }
 

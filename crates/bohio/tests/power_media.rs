@@ -429,3 +429,33 @@ fn media_off_or_not_granted_is_refused() {
         .expect_err("no media permission");
     assert!(refused(&error, ErrorCode::Denied), "{error:?}");
 }
+
+#[test]
+fn info_lists_only_the_capabilities_whose_permission_the_peer_holds() {
+    let _link = testing::power_link("pm-info");
+    let sources = Sources::unconfigured();
+    sources
+        .register_library("bohio-api-testing", testing::library)
+        .expect("the fake providers register");
+    sources
+        .reconfigure(
+            &tables("pm-info"),
+            &AccessConfig {
+                power: vec!["bmc".to_owned()],
+                media: vec!["disc".to_owned()],
+                ..AccessConfig::default()
+            },
+        )
+        .expect("the sources build");
+    let defaults = ["bmc", "disc"];
+    let only_info = Grant::allowing([Permission::Info]).with_default_sources(defaults);
+    let told = sources.info(&only_info);
+    assert!(told.power.is_empty(), "{:?}", told.power);
+    assert!(told.media.is_empty(), "{:?}", told.media);
+
+    let power =
+        Grant::allowing([Permission::Info, Permission::Power]).with_default_sources(defaults);
+    let told = sources.info(&power);
+    assert_eq!(told.power.len(), 1);
+    assert!(told.media.is_empty(), "{:?}", told.media);
+}
