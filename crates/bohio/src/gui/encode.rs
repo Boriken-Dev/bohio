@@ -52,7 +52,7 @@ pub(crate) fn resized(frame: &Frame, size: (u32, u32)) -> Result<Frame, GuiError
 
 #[cfg(feature = "gui")]
 pub(crate) fn encode(
-    frame: &Frame,
+    frame: Frame,
     size: (u32, u32),
     format: ImageFormat,
     quality: u8,
@@ -68,15 +68,16 @@ pub(crate) fn encode(
             "the image cannot be encoded",
         )
     };
-    let image = RgbImage::from_raw(frame.width(), frame.height(), frame.rgb().to_vec())
-        .ok_or_else(|| {
-            GuiError::new(
-                bohio_proto::ErrorCode::Internal,
-                "the picture does not match its size",
-            )
-        })?;
+    let (width, height) = (frame.width(), frame.height());
+    // The frame is owned: its pixels become the image without another copy.
+    let image = RgbImage::from_raw(width, height, frame.into_rgb()).ok_or_else(|| {
+        GuiError::new(
+            bohio_proto::ErrorCode::Internal,
+            "the picture does not match its size",
+        )
+    })?;
     let scaled;
-    let image = if size == (frame.width(), frame.height()) {
+    let image = if size == (width, height) {
         &image
     } else {
         scaled = imageops::resize(&image, size.0, size.1, FilterType::Triangle);
@@ -104,7 +105,7 @@ pub(crate) fn encode(
 
 #[cfg(not(feature = "gui"))]
 pub(crate) fn encode(
-    _frame: &Frame,
+    _frame: Frame,
     _size: (u32, u32),
     _format: ImageFormat,
     _quality: u8,

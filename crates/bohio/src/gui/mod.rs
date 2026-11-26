@@ -883,7 +883,7 @@ impl Stream<'_> {
             request.max_width,
             request.max_height,
         );
-        let bytes = encode::encode(&frame, size, format, quality)?;
+        let bytes = encode::encode(frame, size, format, quality)?;
         let cursor = if request.cursor {
             self.call(|| self.desktop.cursor())
                 .filter(|(on, _, _)| *on == display.id)
