@@ -294,7 +294,7 @@ after every output byte. The tree is ended by a `kill` frame, the stream closing
 process left running is killed, so nothing outlives a request. Sending waits while the stream has no room, so a slow client
 slows the process instead of growing a buffer. `serve` does not close the channel.
 
-`bohio::limit`: `Slots::new(limit)`, `Slots::acquire() -> Option<Permit<'_>>`, `in_use()`, `limit()`; a `Permit` frees its slot
+`bohio::limit`: `Slots::new(limit)`, `Slots::acquire() -> Option<Permit<'_>>`, `Slots::with_share(limit, per_key)` and `acquire_for(key)` (at most `per_key` permits for one key, a peer), `in_use()`, `limit()`; a `Permit` frees its slot
 when dropped. One `Slots` is shared by every stream that counts against a bound.
 
 Signals: a `signal` frame (`0x15`) is answered with `signalled` (`delivered`, and a `message` when it was not or when delivering meant something else). On Unix a signal goes to the program's process group (`SIGINT`, `SIGTERM`, `SIGHUP`, `SIGQUIT`, `SIGUSR1`, `SIGUSR2`) and `kill` ends the tree as the `kill` frame does. On Windows `terminate` and `kill` end the tree through the job object; `interrupt` is `CTRL_BREAK_EVENT` to the program's group when the host has a console (the program is then started in a group of its own on that console, so `platform::exec_signals()` lists `interrupt` only then) and `delivered: false` otherwise; the others are `delivered: false`. `info.exec.signals` and `info.shell.signals` say what the host delivers.
