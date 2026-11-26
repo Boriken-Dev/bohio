@@ -290,6 +290,10 @@ impl Default for EncodeParams {
     }
 }
 
+/// The largest zstd window a `zstd_rgb` rectangle may declare, as a power of two (2^27 = 128 MiB): what the decoder allocates
+/// at most, whatever the sender writes. A protocol constant of `bohio-gui/1`: the encoder never needs more for a tile.
+pub const ZSTD_WINDOW_LOG_MAX: u32 = 27;
+
 /// Whether this build does `zstd_rgb`.
 pub const ZSTD: bool = cfg!(feature = "zstd");
 
@@ -392,7 +396,7 @@ pub fn decode_rect(
             use crate::compress::{Bounds, Decoder};
             use bohio_proto::compress::{Codec, Compression};
             let bounds = Bounds {
-                window_log_max: 27,
+                window_log_max: ZSTD_WINDOW_LOG_MAX,
                 max_output: Some(expected),
                 max_expansion: 0,
             };

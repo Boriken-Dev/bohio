@@ -150,6 +150,10 @@ pub fn resolve_accounts(accounts: &[String]) -> Result<Vec<String>, String> {
 
 // ------------------------------------------------------------------------------------------------------- the node's registry
 
+/// The longest name a helper may give its session (`bohio-gui-helper/1`): the name is part of the id every peer sees and types, so
+/// it stays short. A protocol constant.
+pub const MAX_SESSION_NAME: usize = 128;
+
 /// One connected helper.
 pub(super) struct Entry {
     /// How a request names the session: the verified account, then the helper's own name.
@@ -937,7 +941,7 @@ fn hello(held: &Held<'_>, stream: &dyn LinkStream, accepted: &Accepted) {
     let Ok(hello) = HelperHello::from_metadata(&accepted.metadata) else {
         return stream.close_with(CloseReason::Refused, "that is not a helper hello");
     };
-    if hello.session.is_empty() || hello.session.len() > 128 {
+    if hello.session.is_empty() || hello.session.len() > MAX_SESSION_NAME {
         return stream.close_with(
             CloseReason::Refused,
             "the session name is empty or too long",
