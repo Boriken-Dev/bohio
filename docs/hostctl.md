@@ -58,23 +58,30 @@ A refusal arrives as one `error` frame before `started`: `denied` (the peer lack
 
 | `pathapi` operation | Bohío |
 | --- | --- |
-| `stat`, `lstat` | `stat` with `follow` true or false |
+| `stat`, `lstat` | `stat` with `follow` true or false; many at once as `bohio-walk/1` with depth 0 (a batched `stat`), or pipelined on the control stream |
 | `exists`, `is_file`, `is_dir`, `is_symlink` | `stat`; `not_found` is false |
-| `scandir`, `iterdir`, `walk` | `list`, following `next` as `after` until it is `null` |
-| `open("rb")`, `read_bytes`, a seek | `bohio-read/1` with `offset` and `length`; one stream per open handle |
-| `open("wb")`, `write_bytes` | `bohio-write/1`, mode `replace`: the file changes only when the host's `done` arrives, which is when hostctl's write stream closes |
-| `open("ab")` | `bohio-write/1`, mode `append` |
-| `open("xb")` | `bohio-write/1`, mode `create` |
-| `open("r+b")` at an offset | `bohio-write/1`, mode `at` |
+| `samefile` | `device`, `inode` and `links` in the metadata, where the host's platform reports them |
+| `iterdir`, `scandir`, `walk`, `glob`, `rglob` | `bohio-walk/1` with `depth` and `include`/`exclude` globs: one stream for a whole tree, entries in batches, compressed when asked; the control `list` (following `next` as `after` until it is `null`) for one directory |
+| `open("rb")`, `read_bytes`, a seek, a partial read | `bohio-read/1` with `offset` and `length`, one stream per open handle; `RangeReader` (bounded ranges, prefetch) gives a seekable `Read`; the request may ask `compression` and `hashes` of the bytes sent |
+| `open("wb")`, `write_bytes` | `bohio-write/1`, mode `replace`, with `compression`, `expect` and `hashes` of any algorithm, and `resume` for a write that may break: the file changes only when the host's `done` arrives, which is when hostctl's write stream closes |
+| `open("ab")` | `bohio-write/1`, mode `append`, with compression and `flush` acknowledgements |
+| `open("xb")` | `bohio-write/1`, mode `create`, with compression |
+| `open("r+b")` at an offset, `truncate()` | `bohio-write/1`, mode `at` (with `flush`); the control `truncate` for `truncate()` |
+| `open("w+b")`, `open("a+b")` | not a host call: the provider stages the file and uses `at` writes and ranged reads |
 | `mkdir(parents=, mode=)` | `mkdir` |
 | `unlink`, `rmdir`, `rmtree` | `remove` with `recursive` false (a file, a link or an empty directory) or true |
 | `rename`, `replace` | `rename` with `overwrite` false or true |
+| `move`, `move_into` | the control `move`: a rename, else on the host a copy and a removal (never through the client) |
+| `copy`, `copy_into` (same host) | the control `copy`, with `recursive` and `preserve` for a tree, never through the client; `progress` frames arrive while a prepared read compresses |
 | `symlink_to`, `readlink` | `symlink`, `readlink` |
 | `touch`, `utime` | `set_times` |
 | `chmod` | `set_mode` when `info.filesystem.unix_modes`; on Windows `set_attributes` with `readonly` |
-| `NativeChecksum.checksum(algorithm)`, `host_checksum` | `bohio-hash/1`, which hashes on the host and needs no transfer: one stream of items, several algorithms in one pass, a result per file, and `unchanged` when size and time match |
-| `NativeChecksum.supported_checksums()` | `info.transfer.hashes`, advisory; an algorithm not listed raises `NotImplementedError` without opening a stream |
-| same-host copy | `copy` |
+| `NativeChecksum.checksum(algorithm)`, `host_checksum` | `bohio-hash/1`, which hashes on the host and needs no transfer: one stream of items, several algorithms in one pass (md5, sha1, sha256, sha384, sha512 and the others `info.transfer.hashes` lists), a result per file, and `unchanged` when size and time match |
+| `NativeChecksum.supported_checksums()` | `info.transfer.hashes` (also in the `hello` reply for a peer that cannot call `info`), advisory; an algorithm not listed raises `NotImplementedError` without opening a stream |
+| `PathSyncer` listing and quick check (size, modification time) | one `bohio-walk/1` manifest of each tree, then `bohio-hash/1` with `if_size` and `if_modified` for what looks changed; `preserve_mtime` is `modified` on each item of a bundle write |
+| `PathSyncer` small files | a bundle: `bohio-read/1` or `bohio-write/1` with `items`, many files on one stream with one open and one round trip for their names |
+| `PathSyncer` changed large files (temporary sibling, rename) | a delta: a pull is `bohio-read/1` with `delta` and the client's signature, a push is `bohio-write/1` mode `delta` against the host's signature (`bohio-hash/1` with `blocks`); the result is checked and put in place atomically as `replace` does, and a delta write needs `fs.read` as well as `fs.write` |
+| `PathSyncer(max_workers=)` | parallel streams on one link (ranges of a file as `n` `bohio-read/1` streams, writes through staged `at` streams), and `[link] max_opens_per_minute` raised as a setting |
 
 Not in Bohío, so `supports()` answers false and hostctl falls through to the next provider or raises: `hardlink_to`, `chown`, `owner` and `group`, and resolving a path on the host.
 
