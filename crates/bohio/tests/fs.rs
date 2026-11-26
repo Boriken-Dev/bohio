@@ -1541,3 +1541,30 @@ fn an_unreadable_open_on_a_transfer_stream_is_a_bad_request() {
         channel.close();
     }
 }
+
+/// `[filesystem] allow_id_bits` lets a peer set the bits, and a copy still keeps neither.
+#[cfg(unix)]
+#[test]
+fn allow_id_bits_lets_a_peer_set_the_bits_and_a_copy_still_strips_them() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = fixture_with(
+        &RW,
+        FilesystemConfig {
+            allow_id_bits: true,
+            ..FilesystemConfig::default()
+        },
+    );
+    let fs = fixture.fs();
+    fixture.put("tool", b"#!/bin/sh\nid\n");
+    let mode_of = |name: &str| {
+        std::fs::metadata(fixture.root.join(name))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777
+    };
+    fs.set_mode("tool", 0o4755).unwrap();
+    assert_eq!(mode_of("tool"), 0o4755);
+    fs.copy("tool", "copied", false).unwrap();
+    assert_eq!(mode_of("copied") & 0o6000, 0, "the copy keeps a set-ID bit");
+}

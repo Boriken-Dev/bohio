@@ -104,10 +104,10 @@ pub(super) fn check_digests(expect: &bohio_proto::hash::Digests) -> Result<(), E
     Ok(())
 }
 
-pub(super) fn check_request(request: &WriteRequest) -> Result<(), ErrorBody> {
+pub(super) fn check_request(request: &WriteRequest, allow_id_bits: bool) -> Result<(), ErrorBody> {
     let bad = |message: &'static str| Err(ErrorBody::new(ErrorCode::BadRequest, message));
     if let Some(bits) = request.file_mode {
-        super::check_mode(bits)?;
+        super::check_mode(bits, allow_id_bits)?;
     }
     check_digests(&request.expect)?;
     if !request.expect.is_empty()
@@ -259,7 +259,7 @@ fn run(
             &[Permission::FsWrite]
         };
     authorize(context, needs)?;
-    check_request(&request)?;
+    check_request(&request, context.config.allow_id_bits)?;
     let settings = Settings::new(context.compression);
     let declared = settings.declared(request.compression.as_ref())?;
     let mut decoder = declared

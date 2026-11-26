@@ -308,7 +308,7 @@ pub fn call(context: &Context<'_>, call: &Call, budget: usize) -> Result<Reply, 
             parents,
             mode,
         } => {
-            ops::mkdir(&roots, path, *parents, *mode)?;
+            ops::mkdir(&roots, path, *parents, *mode, context.config.allow_id_bits)?;
             Reply::Done
         }
         Call::Remove { path, recursive } => {
@@ -366,7 +366,7 @@ pub fn call(context: &Context<'_>, call: &Call, budget: usize) -> Result<Reply, 
             Reply::Done
         }
         Call::SetMode { path, mode } => {
-            ops::set_mode(&roots, path, *mode)?;
+            ops::set_mode(&roots, path, *mode, context.config.allow_id_bits)?;
             Reply::Done
         }
         Call::SetAttributes { path, readonly } => {
@@ -411,15 +411,17 @@ fn under_a_root(grant: &Grant, text: &str) -> bool {
 /// account, for whoever starts it, so no peer sets them and no copy or replacement keeps them.
 pub(crate) const ID_BITS: u32 = 0o6000;
 
-/// Checks a mode a peer asks for: at most `0o7777` (`bad_request`) and without [`ID_BITS`] (`denied`).
-pub(crate) fn check_mode(mode: u32) -> Result<(), ErrorBody> {
+/// Checks a mode a peer asks for: at most `0o7777` (`bad_request`) and without [`ID_BITS`] (`denied`) unless
+/// `[filesystem] allow_id_bits` says the peer may set them. A copy or a replacement strips them from the mode it
+/// keeps whatever the setting says.
+pub(crate) fn check_mode(mode: u32, allow_id_bits: bool) -> Result<(), ErrorBody> {
     if mode > 0o7777 {
         return Err(ErrorBody::new(
             ErrorCode::BadRequest,
             "a mode is at most 0o7777",
         ));
     }
-    if mode & ID_BITS != 0 {
+    if mode & ID_BITS != 0 && !allow_id_bits {
         return Err(ErrorBody::new(
             ErrorCode::Denied,
             "a peer may not set the set-user-ID or set-group-ID bit",

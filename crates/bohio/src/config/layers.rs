@@ -91,6 +91,9 @@ pub struct Layers;
 /// The keys that govern layering and the access checks: the lowest layer alone sets them.
 const LOWEST_ONLY: [&str; 2] = ["check_access", "user_layer"];
 
+/// The `[filesystem]` keys that let a peer make a file run as the service's account: the lowest layer alone sets them.
+const FILESYSTEM_LOWEST_ONLY: [&str; 1] = ["allow_id_bits"];
+
 /// The `[providers]` keys that weaken a check on a library or name code the node maps: the lowest layer alone sets them, as
 /// `[service] check_access`.
 const PROVIDERS_LOWEST_ONLY: [&str; 3] =
@@ -278,6 +281,15 @@ fn values(formats: &Formats<Value>, inputs: &[Input]) -> Result<Vec<Value>, Conf
                     return Err(ConfigError::Invalid {
                         path: input.label.clone(),
                         key: format!("service.{key}"),
+                        message: "is read from the lowest layer only: remove it here".to_owned(),
+                    });
+                }
+            }
+            for key in FILESYSTEM_LOWEST_ONLY {
+                if has_path(&value, &["filesystem", key]) {
+                    return Err(ConfigError::Invalid {
+                        path: input.label.clone(),
+                        key: format!("filesystem.{key}"),
                         message: "is read from the lowest layer only: remove it here".to_owned(),
                     });
                 }

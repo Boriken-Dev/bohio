@@ -133,6 +133,7 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[link] serial_reopen` | `250ms` | how long a serial host leaves the port closed between links; a shorter wait can lose a reconnecting peer's first message |
 | `[filesystem] enabled` | `true` | whether filesystem calls are served |
 | `[filesystem] max_transfers` | `16` | concurrent `bohio-read/1` and `bohio-write/1` streams across peers; at least 1 |
+| `[filesystem] allow_id_bits` | `false` | lowest layer only: whether a peer with `fs.write` may set the set-user-ID and set-group-ID bits (`mkdir`/`set_mode` mode, a write's `file_mode`); `true` is logged `non-default:`; a copy or replacement keeps neither bit either way |
 | `[filesystem] chunk_size` | `65536` | most file bytes in one frame, and the buffer a copy reads with; at least 1; a smaller message bound of the stream wins |
 | `[filesystem] write_hashes` | `["sha256"]` | the digests a write answers when its request names none; each must be in `[hash] algorithms`; empty answers none |
 | `[hash] max_streams` | `4` | concurrent `bohio-hash/1` streams across peers (`busy` past it); at least 1 |

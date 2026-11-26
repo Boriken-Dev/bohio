@@ -198,6 +198,7 @@ pub(crate) fn mkdir(
     text: &str,
     parents: bool,
     mode: Option<u32>,
+    allow_id_bits: bool,
 ) -> Result<(), ErrorBody> {
     let (dir, relative) = roots.resolve(text)?;
     if relative.as_os_str().is_empty() {
@@ -214,7 +215,7 @@ pub(crate) fn mkdir(
         ));
     }
     if let Some(bits) = mode {
-        super::check_mode(bits)?;
+        super::check_mode(bits, allow_id_bits)?;
     }
     dir.create_dir(&relative, parents, mode)
         .map_err(|error| io_error(&error))
@@ -294,15 +295,25 @@ pub(crate) fn set_times(
 }
 
 #[cfg(unix)]
-pub(crate) fn set_mode(roots: &Roots<'_>, text: &str, mode: u32) -> Result<(), ErrorBody> {
-    super::check_mode(mode)?;
+pub(crate) fn set_mode(
+    roots: &Roots<'_>,
+    text: &str,
+    mode: u32,
+    allow_id_bits: bool,
+) -> Result<(), ErrorBody> {
+    super::check_mode(mode, allow_id_bits)?;
     let (dir, relative) = roots.resolve_entry(text)?;
     dir.set_mode(&relative, mode)
         .map_err(|error| io_error(&error))
 }
 
 #[cfg(not(unix))]
-pub(crate) fn set_mode(roots: &Roots<'_>, text: &str, _mode: u32) -> Result<(), ErrorBody> {
+pub(crate) fn set_mode(
+    roots: &Roots<'_>,
+    text: &str,
+    _mode: u32,
+    _allow_id_bits: bool,
+) -> Result<(), ErrorBody> {
     // The path is still judged first: a refusal for leaving a root does not depend on the host.
     roots.resolve_entry(text)?;
     Err(ErrorBody::new(

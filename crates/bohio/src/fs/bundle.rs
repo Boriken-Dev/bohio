@@ -283,7 +283,7 @@ pub(super) fn write(
 ) -> Result<WriteDone, ErrorBody> {
     let idle = context.config.idle_timeout.0;
     authorize(context, &[Permission::FsWrite])?;
-    super::write::check_request(request)?;
+    super::write::check_request(request, context.config.allow_id_bits)?;
     let settings = Settings::new(context.compression);
     let declared = settings.declared(request.compression.as_ref())?;
     let mut decoder = declared
@@ -446,7 +446,7 @@ fn open_target(
         return Err(bad("a bundle's item is replace or create"));
     }
     if let Some(bits) = item.file_mode {
-        super::check_mode(bits)?;
+        super::check_mode(bits, context.config.allow_id_bits)?;
     }
     super::write::check_digests(&item.expect)?;
     let mut computed = answered.to_vec();

@@ -789,6 +789,11 @@ pub struct FilesystemConfig {
     /// The most followed reads running at once, across peers; a follow holds one of these and no transfer slot, and is
     /// not ended by `idle_timeout` while its client keeps the stream open. One past it is `busy`. At least 1. Default `16`.
     pub max_follows: usize,
+    /// Whether a peer with `fs.write` may set the set-user-ID and set-group-ID bits (a `mode` of `mkdir`, `set_mode` or
+    /// a write's `file_mode`). A file that carries one runs as its owner or group, the service's account, for whoever
+    /// starts it, so a peer that may write there could use it to run as the service. A copy or a replacement keeps
+    /// neither bit whatever this says. Set in the lowest layer only; `true` is logged `non-default:`. Default `false`.
+    pub allow_id_bits: bool,
 }
 
 impl Default for FilesystemConfig {
@@ -807,6 +812,7 @@ impl Default for FilesystemConfig {
             resume_ttl: Span(Duration::ZERO),
             follow_interval: Span(Duration::from_millis(250)),
             max_follows: 16,
+            allow_id_bits: false,
         }
     }
 }

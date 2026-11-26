@@ -558,6 +558,36 @@ fn a_governing_key_set_above_the_lowest_layer_is_refused_naming_the_layer() {
 }
 
 #[test]
+fn allow_id_bits_is_read_from_the_lowest_layer_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let files = layers(
+        dir.path(),
+        &[
+            ("system.cfg", "[filesystem]\nmax_transfers = 4\n"),
+            ("user.cfg", "[filesystem]\nallow_id_bits = true\n"),
+        ],
+    );
+    match Layers::load(&files) {
+        Err(ConfigError::Invalid { path, key, .. }) => {
+            assert!(path.ends_with("user.cfg"), "{path}");
+            assert_eq!(key, "filesystem.allow_id_bits");
+        }
+        other => panic!("expected Invalid, got {other:?}"),
+    }
+    let files = layers(
+        dir.path(),
+        &[("low.cfg", "[filesystem]\nallow_id_bits = true\n")],
+    );
+    assert!(
+        Layers::load(&files)
+            .unwrap()
+            .config
+            .filesystem
+            .allow_id_bits
+    );
+}
+
+#[test]
 fn an_error_names_the_file_line_column_and_key_and_never_the_value() {
     let dir = tempfile::tempdir().unwrap();
     let files = layers(
