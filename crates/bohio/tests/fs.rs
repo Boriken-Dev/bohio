@@ -1606,3 +1606,26 @@ fn a_named_pipe_in_a_root_is_refused_at_once_by_a_read_and_a_write() {
         .expect("a named pipe made a transfer wait");
     assert!(read.is_err() && write.is_err(), "{read:?} {write:?}");
 }
+
+#[test]
+fn one_peer_cannot_take_more_than_its_share_of_the_transfer_slots() {
+    let fixture = fixture_with(
+        &RW,
+        FilesystemConfig {
+            max_transfers: 16,
+            max_transfers_per_peer: 1,
+            ..FilesystemConfig::default()
+        },
+    );
+    // An open write holds a transfer slot until it finishes.
+    let first = Writer::start(&fixture.link, &WriteRequest::replace("a"), WAIT).unwrap();
+    first.write(b"x").unwrap();
+    let second = Writer::start(&fixture.link, &WriteRequest::replace("b"), WAIT)
+        .and_then(|writer| {
+            writer.write(b"y")?;
+            writer.finish(WAIT)
+        })
+        .map(|_| ());
+    assert_eq!(code(second), ErrorCode::Busy);
+    first.finish(WAIT).unwrap();
+}

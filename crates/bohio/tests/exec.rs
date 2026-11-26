@@ -885,3 +885,26 @@ fn the_signals_a_host_delivers_are_in_its_info() {
         assert!(!signals.contains(&Signal::Hangup));
     }
 }
+
+#[test]
+fn one_peer_cannot_take_more_than_its_share_of_the_process_slots() {
+    let config = ExecutionConfig {
+        max_processes: 16,
+        max_processes_per_peer: 1,
+        ..ExecutionConfig::default()
+    };
+    let link = Link::new(Grant::allowing([Permission::Exec]), config);
+    let first = Exec::start(&link, &Request::argv([helper().as_str(), "sleep", "60000"])).unwrap();
+    assert!(matches!(
+        first.next(WAIT).unwrap(),
+        Some(Event::Started { .. })
+    ));
+    assert_eq!(
+        refused(&link, &Request::argv([helper().as_str(), "echo", "x"])),
+        ErrorCode::Busy
+    );
+    // The slots are not all taken: another peer still gets one.
+    assert!(link.slots.acquire_for("another-peer").is_some());
+    first.kill().unwrap();
+    first.wait(WAIT).unwrap();
+}

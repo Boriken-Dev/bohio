@@ -278,7 +278,7 @@ fn run(
         }
     }
     let mut hasher = hasher_for(context, &computed)?;
-    let _permit = context.slots.acquire().ok_or_else(|| {
+    let _permit = context.slots.acquire_for(context.peer).ok_or_else(|| {
         ErrorBody::new(
             ErrorCode::Busy,
             "the host is running as many transfers as it allows",

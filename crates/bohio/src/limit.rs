@@ -7,11 +7,12 @@ use std::hash::Hash;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError};
 
-/// At most `limit` permits out at once.
+/// At most `limit` permits out at once, and when a share is set at most that many for one key.
 #[derive(Debug)]
 pub struct Slots {
     limit: usize,
     used: AtomicUsize,
+    share: Option<(usize, Mutex<HashMap<String, usize>>)>,
 }
 
 impl Slots {
@@ -20,7 +21,33 @@ impl Slots {
         Self {
             limit,
             used: AtomicUsize::new(0),
+            share: None,
         }
+    }
+
+    /// Slots for `limit` concurrent holders, of which one key (a peer) may hold at most `share`.
+    pub fn with_share(limit: usize, share: usize) -> Self {
+        Self {
+            limit,
+            used: AtomicUsize::new(0),
+            share: Some((share, Mutex::new(HashMap::new()))),
+        }
+    }
+
+    /// As [`Slots::acquire`], for `key`: `None` also when `key` already holds its share.
+    pub fn acquire_for(&self, key: &str) -> Option<Permit<'_>> {
+        let Some((share, held)) = &self.share else {
+            return self.acquire();
+        };
+        let mut held = held.lock().unwrap_or_else(PoisonError::into_inner);
+        let count = held.get(key).copied().unwrap_or(0);
+        if count >= *share {
+            return None;
+        }
+        let mut permit = self.acquire()?;
+        held.insert(key.to_owned(), count + 1);
+        permit.key = Some(key.to_owned());
+        Some(permit)
     }
 
     /// Takes a slot, or `None` when all are taken.
@@ -36,7 +63,12 @@ impl Slots {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => return Some(Permit { slots: self }),
+                Ok(_) => {
+                    return Some(Permit {
+                        slots: self,
+                        key: None,
+                    });
+                }
                 Err(actual) => current = actual,
             }
         }
@@ -58,10 +90,20 @@ impl Slots {
 #[must_use = "the slot is returned when the permit drops"]
 pub struct Permit<'a> {
     slots: &'a Slots,
+    key: Option<String>,
 }
 
 impl Drop for Permit<'_> {
     fn drop(&mut self) {
+        if let (Some(key), Some((_, held))) = (&self.key, &self.slots.share) {
+            let mut held = held.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(count) = held.get_mut(key) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    held.remove(key);
+                }
+            }
+        }
         self.slots.used.fetch_sub(1, Ordering::AcqRel);
     }
 }
@@ -115,5 +157,26 @@ impl<K: Eq + Hash> Drop for Hold<'_, K> {
                 held.remove(&self.key);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Slots;
+
+    #[test]
+    fn a_key_holds_at_most_its_share_and_gives_it_back() {
+        let slots = Slots::with_share(4, 2);
+        let a1 = slots.acquire_for("a").expect("a first");
+        let _a2 = slots.acquire_for("a").expect("a second");
+        assert!(slots.acquire_for("a").is_none(), "a third of one key");
+        let _b = slots.acquire_for("b").expect("another key");
+        drop(a1);
+        let _a3 = slots
+            .acquire_for("a")
+            .expect("a again after one was given back");
+        // The total still holds: 2 of a, 1 of b, and one more of b is the fourth.
+        let _b2 = slots.acquire_for("b").expect("the fourth slot");
+        assert!(slots.acquire_for("c").is_none(), "past the total");
     }
 }

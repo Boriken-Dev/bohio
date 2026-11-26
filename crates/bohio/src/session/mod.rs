@@ -665,6 +665,7 @@ impl Sessions {
             let config = host.config.clone();
             let compression = host.compression.clone();
             let slots = Arc::clone(host.slots);
+            let owner = peer.to_owned();
             let path = host.path.to_owned();
             let sources = Arc::clone(host.sources);
             let metadata = starting.metadata.clone();
@@ -677,6 +678,7 @@ impl Sessions {
                         config: &config,
                         compression: &compression,
                         slots: &slots,
+                        peer: &owner,
                         path: &path,
                         sources: &sources,
                     };
@@ -749,6 +751,7 @@ impl Sessions {
             let grant = host.grant.clone();
             let config = host.config.clone();
             let slots = Arc::clone(host.slots);
+            let owner = peer.to_owned();
             let path: OsString = host.path.to_owned();
             let sources = Arc::clone(host.sources);
             let metadata = starting.metadata.clone();
@@ -760,6 +763,7 @@ impl Sessions {
                         grant: &grant,
                         config: &config,
                         slots: &slots,
+                        peer: &owner,
                         path: &path,
                         sources: &sources,
                     };
@@ -869,6 +873,7 @@ impl Sessions {
             let grant = host.grant.clone();
             let config = host.config.clone();
             let slots = Arc::clone(host.slots);
+            let owner = peer.to_owned();
             let path: OsString = host.path.to_owned();
             let sources = Arc::clone(host.sources);
             let metadata = starting.metadata.clone();
@@ -880,6 +885,7 @@ impl Sessions {
                         grant: &grant,
                         config: &config,
                         slots: &slots,
+                        peer: &owner,
                         path: &path,
                         sources: &sources,
                     };

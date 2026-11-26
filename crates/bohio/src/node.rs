@@ -117,6 +117,8 @@ struct Shared {
     detached: Arc<session::Sessions>,
     forwards: Slots,
     forwards_per_peer: Counted<String>,
+    /// How many streams each peer has open over all its links.
+    streams_per_peer: Counted<String>,
     listeners: forward::Listeners,
     events: Arc<EventCell>,
     gui: Arc<GuiState>,
@@ -196,13 +198,22 @@ impl Shared {
             grants: Arc::clone(grants),
             path,
             info: capabilities,
-            processes: Arc::new(Slots::new(config.execution.max_processes)),
-            transfers: Slots::new(config.filesystem.max_transfers),
+            processes: Arc::new(Slots::with_share(
+                config.execution.max_processes,
+                config.execution.max_processes_per_peer,
+            )),
+            transfers: Slots::with_share(
+                config.filesystem.max_transfers,
+                config.filesystem.max_transfers_per_peer,
+            ),
             follows: Slots::new(config.filesystem.max_follows),
             hashes: Slots::new(config.hash.max_streams),
             walks: Slots::new(config.walk.max_streams),
             searches: Slots::new(config.search.max_searches),
-            sessions: Arc::new(Slots::new(config.shell.max_sessions)),
+            sessions: Arc::new(Slots::with_share(
+                config.shell.max_sessions,
+                config.shell.max_sessions_per_peer,
+            )),
             power: Slots::new(config.power.max_streams),
             media: Slots::new(config.media.max_streams),
             detached: session::Sessions::new(
@@ -213,6 +224,7 @@ impl Shared {
             ),
             forwards: Slots::new(config.forward.max_connections),
             forwards_per_peer: Counted::new(config.forward.max_connections_per_peer),
+            streams_per_peer: Counted::new(config.link.max_streams_per_peer),
             listeners: forward::Listeners::new(&config.forward),
             events: Arc::clone(events),
             gui: Arc::clone(gui),
@@ -1294,6 +1306,13 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
             return;
         }
     };
+    // A peer's streams are counted over all its links, so many links do not multiply what one peer may hold.
+    let Some(_held) = shared.streams_per_peer.take(accepted.peer.to_string()) else {
+        return stream.close_with(
+            CloseReason::Refused,
+            "this peer has as many streams open as the host allows",
+        );
+    };
     // A write is the bulk stream this side receives: it is widened to `bulk_window` as soon as it is accepted. The
     // link caps the grant at its `max_window`; a stream that already ended says so to the engine.
     if accepted.protocol == protocol::WRITE && shared.settings.bulk_window > shared.settings.window
@@ -1478,6 +1497,7 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
                     config: &config.execution,
                     compression: &config.compression,
                     slots: &shared.processes,
+                    peer: &peer,
                     path: &shared.path,
                     sources: &shared.sources,
                 };
@@ -1491,6 +1511,7 @@ fn stream_served(shared: &Shared, stream: &dyn LinkStream, accepted: &Open) {
                     grant: &grant,
                     config: &config.shell,
                     slots: &shared.sessions,
+                    peer: &peer,
                     path: &shared.path,
                     sources: &shared.sources,
                 };

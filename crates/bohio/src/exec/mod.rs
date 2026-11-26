@@ -43,6 +43,8 @@ pub struct Context<'a> {
     pub compression: &'a CompressionConfig,
     /// The bound on concurrent processes, shared by every stream.
     pub slots: &'a Slots,
+    /// The peer's id as text: the peer's share of the slots is counted by it.
+    pub peer: &'a str,
     /// The host's own `PATH`: where a program a grant lists is looked for. The library reads no
     /// environment variable, so the caller says.
     pub path: &'a OsStr,
@@ -324,7 +326,7 @@ fn start<'a>(metadata: &[u8], context: &Context<'a>) -> Result<Begun<'a>, ErrorB
     spec.on_host_death = Some(context.config.host_death.name().to_owned());
     spec.reset_signals = Some(context.config.reset_signals);
     let stdin_open = spec.stdin;
-    let permit = context.slots.acquire().ok_or_else(|| {
+    let permit = context.slots.acquire_for(context.peer).ok_or_else(|| {
         ErrorBody::new(
             ErrorCode::Busy,
             "the host is running as many processes as it allows",

@@ -64,7 +64,7 @@ pub(super) fn read(
     let resolved = settings.resolve(request.compression.as_ref())?;
     // The algorithms are checked once; each item makes its own hasher.
     hasher_for(context, &request.hashes)?;
-    let _permit = context.slots.acquire().ok_or_else(|| {
+    let _permit = context.slots.acquire_for(context.peer).ok_or_else(|| {
         ErrorBody::new(
             ErrorCode::Busy,
             "the host is running as many transfers as it allows",
@@ -306,7 +306,7 @@ pub(super) fn write(
         .clone()
         .unwrap_or_else(|| context.config.write_hashes.clone());
     hasher_for(context, &answered)?;
-    let _permit = context.slots.acquire().ok_or_else(|| {
+    let _permit = context.slots.acquire_for(context.peer).ok_or_else(|| {
         ErrorBody::new(
             ErrorCode::Busy,
             "the host is running as many transfers as it allows",

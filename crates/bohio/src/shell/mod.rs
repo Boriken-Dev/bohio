@@ -38,6 +38,8 @@ pub struct Context<'a> {
     pub config: &'a ShellConfig,
     /// The bound on concurrent sessions, shared by every stream.
     pub slots: &'a Slots,
+    /// The peer's id as text: the peer's share of the slots is counted by it.
+    pub peer: &'a str,
     /// The host's `PATH`, where a shell kind or a program without a directory is looked for.
     pub path: &'a OsStr,
     /// The node's sources: the default terminal one opens the terminal.
@@ -320,7 +322,7 @@ fn start<'a>(
             "a terminal is 1 to 32767 columns and rows",
         ));
     }
-    let permit = context.slots.acquire().ok_or_else(|| {
+    let permit = context.slots.acquire_for(context.peer).ok_or_else(|| {
         refuse(
             ErrorCode::Busy,
             "the host is running as many shell sessions as it allows",

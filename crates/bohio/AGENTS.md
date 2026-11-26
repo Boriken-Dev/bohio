@@ -143,6 +143,11 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[filesystem] enabled` | `true` | whether filesystem calls are served |
 | `[filesystem] max_transfers` | `16` | concurrent `bohio-read/1` and `bohio-write/1` streams across peers; at least 1 |
 | `[filesystem] allow_id_bits` | `false` | lowest layer only: whether a peer with `fs.write` may set the set-user-ID and set-group-ID bits (`mkdir`/`set_mode` mode, a write's `file_mode`); `true` is logged `non-default:`; a copy or replacement keeps neither bit either way |
+| `[filesystem] max_transfers_per_peer` | `16` | the most transfers one peer has running of the `max_transfers` across peers; at least 1 |
+| `[execution] max_processes_per_peer` | `16` | the most processes one peer has running of `max_processes`; at least 1 |
+| `[shell] max_sessions_per_peer` | `8` | the most shell sessions one peer has open of `max_sessions`; at least 1 |
+| `[link] max_streams_per_peer` | `256` | the most streams one peer has open over all its links; one past it is refused; at least 1 |
+| `[walk] recheck_entries` | `1000` | entries a walk sends between looks at the peer's grant; 0: once for each root |
 | `[filesystem] chunk_size` | `65536` | most file bytes in one frame, and the buffer a copy reads with; at least 1; a smaller message bound of the stream wins |
 | `[filesystem] write_hashes` | `["sha256"]` | the digests a write answers when its request names none; each must be in `[hash] algorithms`; empty answers none |
 | `[hash] max_streams` | `4` | concurrent `bohio-hash/1` streams across peers (`busy` past it); at least 1 |

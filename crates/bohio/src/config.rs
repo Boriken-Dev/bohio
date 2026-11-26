@@ -408,6 +408,10 @@ pub struct LinkConfig {
     pub key_recheck: Option<Span>,
     /// The most streams one peer may have open at once. At least 1. Default `64`.
     pub max_streams: usize,
+    /// The most streams one peer may have open at once over all its links, which `max_links_per_peer` times `max_streams`
+    /// would otherwise allow (each stream holds its receive window and two relay queues). One past it is refused. At
+    /// least 1. Default `256`.
+    pub max_streams_per_peer: usize,
     /// The most links open at once across peers, counting those still proving themselves; a
     /// connection past it is closed unread. At least 1. Default `128`.
     pub max_connections: usize,
@@ -501,6 +505,7 @@ impl Default for LinkConfig {
             recheck: Span(Duration::from_secs(5)),
             key_recheck: None,
             max_streams: 64,
+            max_streams_per_peer: 256,
             max_connections: 128,
             max_unproven_per_source: 16,
             max_links_per_peer: 16,
@@ -791,6 +796,9 @@ pub struct FilesystemConfig {
     /// The most followed reads running at once, across peers; a follow holds one of these and no transfer slot, and is
     /// not ended by `idle_timeout` while its client keeps the stream open. One past it is `busy`. At least 1. Default `16`.
     pub max_follows: usize,
+    /// The most transfers one peer may have running at once, of the `max_transfers` there are across peers, so that one
+    /// peer cannot take every slot. At least 1. Default `16`, the default `max_transfers`: raise both together.
+    pub max_transfers_per_peer: usize,
     /// Whether a peer with `fs.write` may set the set-user-ID and set-group-ID bits (a `mode` of `mkdir`, `set_mode` or
     /// a write's `file_mode`). A file that carries one runs as its owner or group, the service's account, for whoever
     /// starts it, so a peer that may write there could use it to run as the service. A copy or a replacement keeps
@@ -814,6 +822,7 @@ impl Default for FilesystemConfig {
             resume_ttl: Span(Duration::ZERO),
             follow_interval: Span(Duration::from_millis(250)),
             max_follows: 16,
+            max_transfers_per_peer: 16,
             allow_id_bits: false,
         }
     }
@@ -1175,6 +1184,10 @@ pub struct ExecutionConfig {
     pub enabled: bool,
     /// The most processes running at once, across peers. At least 1. Default `16`.
     pub max_processes: usize,
+    /// The most processes one peer may have running at once, of the `max_processes` there are across peers, so that one
+    /// peer (even one that runs a program that waits on its input) cannot take every slot. At least 1. Default `16`, the
+    /// default `max_processes`: raise both together.
+    pub max_processes_per_peer: usize,
     /// The most output bytes in one frame. At least 1; a smaller bound of the stream wins.
     /// Default `16384`.
     pub chunk_size: usize,
@@ -1248,6 +1261,7 @@ impl Default for ExecutionConfig {
         Self {
             enabled: true,
             max_processes: 16,
+            max_processes_per_peer: 16,
             chunk_size: 16 * 1024,
             poll_interval: Span(Duration::from_millis(20)),
             drain_timeout: Span(Duration::from_millis(500)),
@@ -1267,6 +1281,9 @@ pub struct ShellConfig {
     pub enabled: bool,
     /// The most sessions open at once, across peers. At least 1. Default `8`.
     pub max_sessions: usize,
+    /// The most sessions one peer may have open at once, of the `max_sessions` there are across peers. At least 1.
+    /// Default `8`, the default `max_sessions`: raise both together.
+    pub max_sessions_per_peer: usize,
     /// The most terminal bytes in one frame. At least 1; a smaller message bound of the stream
     /// wins. Default `16384`.
     pub chunk_size: usize,
@@ -1289,6 +1306,7 @@ impl Default for ShellConfig {
         Self {
             enabled: true,
             max_sessions: 8,
+            max_sessions_per_peer: 8,
             chunk_size: 16 * 1024,
             poll_interval: Span(Duration::from_millis(20)),
             drain_quiet: Span(Duration::from_millis(200)),
@@ -2301,6 +2319,25 @@ impl NodeConfig {
         }
         if self.execution.poll_interval.0.is_zero() {
             return Err(invalid("execution.poll_interval", "must not be zero"));
+        }
+        for (key, value) in [
+            ("link.max_streams_per_peer", self.link.max_streams_per_peer),
+            (
+                "filesystem.max_transfers_per_peer",
+                self.filesystem.max_transfers_per_peer,
+            ),
+            (
+                "execution.max_processes_per_peer",
+                self.execution.max_processes_per_peer,
+            ),
+            (
+                "shell.max_sessions_per_peer",
+                self.shell.max_sessions_per_peer,
+            ),
+        ] {
+            if value == 0 {
+                return Err(invalid(key, "must be at least 1"));
+            }
         }
         if self.execution.reap_interval.0.is_zero() {
             return Err(invalid("execution.reap_interval", "must not be zero"));

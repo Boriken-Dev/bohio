@@ -164,10 +164,10 @@ impl Link {
         files: FilesystemConfig,
         shells: ShellConfig,
     ) -> Self {
-        let slots = Slots::new(config.max_processes);
-        let transfers = Slots::new(files.max_transfers);
+        let slots = Slots::with_share(config.max_processes, config.max_processes_per_peer);
+        let transfers = Slots::with_share(files.max_transfers, files.max_transfers_per_peer);
         let follows = Slots::new(files.max_follows);
-        let sessions = Slots::new(shells.max_sessions);
+        let sessions = Slots::with_share(shells.max_sessions, shells.max_sessions_per_peer);
         Self {
             grant: Arc::new(grant),
             config: Arc::new(config),
@@ -280,6 +280,7 @@ impl Open for Link {
                     grant: &grant,
                     config: &shells,
                     slots: &sessions,
+                    peer: "test-peer",
                     path: &path,
                     sources: &bohio::access::Sources::default(),
                 };
@@ -406,6 +407,7 @@ impl Open for Link {
                 config: &config,
                 compression: &compression,
                 slots: &slots,
+                peer: "test-peer",
                 path: &path,
                 sources: &sources,
             };
