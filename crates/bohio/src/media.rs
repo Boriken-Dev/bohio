@@ -32,7 +32,7 @@ pub struct Context<'a> {
     /// The `[media]` settings.
     pub config: &'a MediaConfig,
     /// The bound on concurrent streams, shared by every peer.
-    pub slots: &'a Limit,
+    pub slots: &'a Arc<Limit>,
     /// The node's sources.
     pub sources: &'a Sources,
     /// The peer.
@@ -181,7 +181,7 @@ fn run(request: &Request, context: &Context<'_>) -> Result<Slots, ErrorBody> {
             ));
         }
     };
-    let _permit = context.slots.acquire().ok_or_else(|| {
+    let permit = context.slots.acquire_owned().ok_or_else(|| {
         refuse(
             ErrorCode::Busy,
             "the host is serving as many media requests as it allows",
@@ -190,25 +190,29 @@ fn run(request: &Request, context: &Context<'_>) -> Result<Slots, ErrorBody> {
     let shared: Arc<dyn MediaSource> = source.arc();
     let limit = context.config.action_timeout.0;
     let op = request.op;
-    let answered = within(limit, move || -> Result<Vec<MediaSlot>, ProviderError> {
-        match (op, slot, image) {
-            (Op::Status, _, _) => shared.status(),
-            (Op::Eject, Some(slot), _) => shared.eject(&slot).map(|slot| vec![slot]),
-            (Op::Insert, Some(slot), Some(Picked::Url(url))) => {
-                shared.insert_url(&slot, &url).map(|slot| vec![slot])
+    let answered = within(
+        limit,
+        permit,
+        move || -> Result<Vec<MediaSlot>, ProviderError> {
+            match (op, slot, image) {
+                (Op::Status, _, _) => shared.status(),
+                (Op::Eject, Some(slot), _) => shared.eject(&slot).map(|slot| vec![slot]),
+                (Op::Insert, Some(slot), Some(Picked::Url(url))) => {
+                    shared.insert_url(&slot, &url).map(|slot| vec![slot])
+                }
+                (Op::Insert, Some(slot), Some(Picked::Reader(file, name))) => {
+                    let reader: Object<dyn BlockReader> = file.into_object();
+                    shared
+                        .insert_reader(&slot, &name, reader)
+                        .map(|slot| vec![slot])
+                }
+                _ => Err(ProviderError::new(
+                    Status::GUATIAO_ERR_BAD_VALUE,
+                    "not a request a source can take",
+                )),
             }
-            (Op::Insert, Some(slot), Some(Picked::Reader(file, name))) => {
-                let reader: Object<dyn BlockReader> = file.into_object();
-                shared
-                    .insert_reader(&slot, &name, reader)
-                    .map(|slot| vec![slot])
-            }
-            _ => Err(ProviderError::new(
-                Status::GUATIAO_ERR_BAD_VALUE,
-                "not a request a source can take",
-            )),
-        }
-    })?;
+        },
+    )?;
     let slots = answered.map_err(|error| provider(&error))?;
     Ok(Slots {
         slots: slots.into_iter().map(slot_of).collect(),

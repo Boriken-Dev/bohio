@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 
 /// At most `limit` permits out at once, and when a share is set at most that many for one key.
 #[derive(Debug)]
@@ -74,6 +74,15 @@ impl Slots {
         }
     }
 
+    /// Takes a slot that does not borrow the bound, so it can move to the thread that holds the slot's work.
+    pub fn acquire_owned(self: &Arc<Self>) -> Option<OwnedPermit> {
+        let permit = self.acquire()?;
+        core::mem::forget(permit);
+        Some(OwnedPermit {
+            slots: Arc::clone(self),
+        })
+    }
+
     /// How many permits are out.
     pub fn in_use(&self) -> usize {
         self.used.load(Ordering::Acquire)
@@ -104,6 +113,19 @@ impl Drop for Permit<'_> {
                 }
             }
         }
+        self.slots.used.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// A taken slot that owns its bound, returned when dropped.
+#[derive(Debug)]
+#[must_use = "the slot is returned when the permit drops"]
+pub struct OwnedPermit {
+    slots: Arc<Slots>,
+}
+
+impl Drop for OwnedPermit {
+    fn drop(&mut self) {
         self.slots.used.fetch_sub(1, Ordering::AcqRel);
     }
 }

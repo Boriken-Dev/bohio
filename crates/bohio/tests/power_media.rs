@@ -71,15 +71,28 @@ fn tables(name: &str) -> SourceTables {
 }
 
 fn world(name: &str, power: bool, media: bool, timeout: Duration, grant: Grant) -> World {
+    world_limited(name, power, media, timeout, 4, grant)
+}
+
+fn world_limited(
+    name: &str,
+    power: bool,
+    media: bool,
+    timeout: Duration,
+    max_streams: usize,
+    grant: Grant,
+) -> World {
     let config = NodeConfig {
         power: PowerConfig {
             enabled: power,
             action_timeout: Span(timeout),
+            max_streams,
             ..PowerConfig::default()
         },
         media: MediaConfig {
             enabled: media,
             action_timeout: Span(timeout),
+            max_streams,
             ..MediaConfig::default()
         },
         ..NodeConfig::default()
@@ -260,6 +273,40 @@ fn a_source_slower_than_the_action_timeout_is_a_timeout() {
         started.elapsed() < Duration::from_secs(3),
         "the host did not wait for the source"
     );
+}
+
+#[test]
+fn a_call_that_timed_out_keeps_its_slot_until_the_source_returns() {
+    let link = testing::power_link("pm-held");
+    link.set_delay(Duration::from_secs(3));
+    let world = world_limited(
+        "pm-held",
+        true,
+        true,
+        Duration::from_millis(200),
+        1,
+        can(Permission::Power),
+    );
+    let first =
+        bohio_client::power::act(&world.link, None, Action::On, Some(WAIT)).expect_err("too slow");
+    assert_eq!(remote(&first).code, ErrorCode::Timeout);
+    // The first call still runs in the source: its slot is not free, so a second call is turned away and starts no thread.
+    let second = bohio_client::power::act(&world.link, None, Action::Off, Some(WAIT))
+        .expect_err("the slot is held");
+    assert_eq!(remote(&second).code, ErrorCode::Busy, "{second:?}");
+    // The slot comes back once the source returns.
+    let until = Instant::now() + WAIT;
+    loop {
+        link.set_delay(Duration::ZERO);
+        match bohio_client::power::status(&world.link, None, Some(WAIT)) {
+            Ok(_) => break,
+            Err(error) => assert!(
+                Instant::now() < until && remote(&error).code == ErrorCode::Busy,
+                "{error:?}"
+            ),
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
 }
 
 #[test]

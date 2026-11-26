@@ -20,7 +20,7 @@ use coqui_transport::Channel;
 
 use crate::access::{Sources, code_of};
 use crate::config::PowerConfig;
-use crate::limit::Slots;
+use crate::limit::{OwnedPermit, Slots};
 use crate::link::{NodeEvent, NodeEvents};
 use crate::policy::{Grant, Permission};
 
@@ -32,7 +32,7 @@ pub struct Context<'a> {
     /// The `[power]` settings.
     pub config: &'a PowerConfig,
     /// The bound on concurrent streams, shared by every peer.
-    pub slots: &'a Slots,
+    pub slots: &'a Arc<Slots>,
     /// The node's sources.
     pub sources: &'a Sources,
     /// The peer.
@@ -42,15 +42,18 @@ pub struct Context<'a> {
 }
 
 /// Runs `call` on a thread of its own and waits at most `limit` for it: a source that never answers cannot hold a stream.
-/// A call that outlives the limit finishes on its own thread, and its answer is dropped.
+/// A call that outlives the limit finishes on its own thread, and its answer is dropped. The thread holds `permit` until
+/// the call returns, so the slots bound the calls still running and not only those still waited for.
 pub(crate) fn within<T: Send + 'static>(
     limit: Duration,
+    permit: OwnedPermit,
     call: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, ErrorBody> {
     let (sender, receiver) = channel();
     thread::Builder::new()
         .name("bohio-source-call".to_owned())
         .spawn(move || {
+            let _permit = permit;
             let _ = sender.send(call());
         })
         .map_err(|_| refuse(ErrorCode::Internal, "a thread could not be started"))?;
@@ -115,7 +118,7 @@ fn decide(metadata: &[u8], context: &Context<'_>) -> Result<State, ErrorBody> {
                 "this peer may not use that power source",
             ));
         }
-        let _permit = context.slots.acquire().ok_or_else(|| {
+        let permit = context.slots.acquire_owned().ok_or_else(|| {
             refuse(
                 ErrorCode::Busy,
                 "the host is serving as many power requests as it allows",
@@ -125,7 +128,7 @@ fn decide(metadata: &[u8], context: &Context<'_>) -> Result<State, ErrorBody> {
         let action = request.action;
         let limit = context.config.action_timeout.0;
         let shared: Arc<dyn PowerSource> = source.arc();
-        let answered = within(limit, move || match action {
+        let answered = within(limit, permit, move || match action {
             Action::Status => shared.state(),
             other => shared.act(other.name()),
         })?;
