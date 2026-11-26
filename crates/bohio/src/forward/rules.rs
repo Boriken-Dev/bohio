@@ -91,9 +91,15 @@ pub fn tcp_target(target: &Target) -> Option<TcpTarget> {
     }
 }
 
-/// A path with no NUL and no `..` part: what a rule can meaningfully match.
+/// A path with no NUL and no `.`, `..` or empty part (a leading separator is not one): what a rule can meaningfully match.
+/// The system reads `/a/./b` and `/a//b` as the parent's entry, so a wildcard must never reach them.
 fn plain_path(path: &str) -> bool {
-    !path.contains('\0') && !path.split(['/', '\\']).any(|part| part == "..")
+    let mut parts = path.split(['/', '\\']);
+    let rooted = path.starts_with(['/', '\\']);
+    if rooted {
+        parts.next();
+    }
+    !path.contains('\0') && parts.all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
 /// Whether `text` fits `pattern`, where `*` is any run of characters and `?` one character, neither of them a `/` or a `\`.
@@ -398,6 +404,21 @@ mod tests {
         assert!(rule("pipe:docker*").matches(&pipe("docker_engine")));
         assert!(!rule("pipe:docker*").matches(&pipe("other")));
         assert!(!rule("pipe:docker_engine").matches(&unix("docker_engine")));
+    }
+
+    #[test]
+    fn a_wildcard_never_matches_an_empty_or_dot_component() {
+        let unix = |path: &str| Target::Unix { path: path.into() };
+        let listen = |path: &str| Bind::Unix { path: path.into() };
+        let listen_rule = "unix:/run/*/docker.sock".parse::<ListenRule>().unwrap();
+        assert!(rule("unix:/run/*/docker.sock").matches(&unix("/run/user/docker.sock")));
+        assert!(listen_rule.matches(&listen("/run/user/docker.sock")));
+        for path in ["/run/./docker.sock", "/run//docker.sock", "/run/user/docker.sock/"] {
+            assert!(!rule("unix:/run/*/docker.sock").matches(&unix(path)), "{path}");
+            assert!(!listen_rule.matches(&listen(path)), "{path}");
+        }
+        assert!(!rule("unix:/run/*").matches(&unix("/run/./")));
+        assert!(!rule("unix:/srv/a/*/x.sock").matches(&unix("/srv/a/./x.sock")));
     }
 
     #[test]
