@@ -1047,3 +1047,31 @@ fn trust_on_first_use_refuses_a_known_hosts_it_cannot_read() {
     assert!(message.contains("known_hosts"), "{message}");
     assert!(server.seen.lock().unwrap().commands.is_empty());
 }
+
+#[cfg(unix)]
+#[test]
+fn an_openssh_exit_of_255_says_it_may_be_sshs_own_failure_and_what_ssh_said() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().unwrap();
+    let program = dir.path().join("fake-ssh");
+    std::fs::write(
+        &program,
+        "#!/bin/sh\necho 'ssh: connect to host x port 22: Connection refused' >&2\nexit 255\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut settings = SshSettings::new("host.invalid");
+    settings.user = Some(USER.to_owned());
+    settings.client = "openssh".to_owned();
+    settings.ssh_program = program.to_string_lossy().into_owned();
+    let done = run(&ssh(settings), &["true"]);
+    assert_eq!(done.exit.code, Some(255));
+    let said = String::from_utf8_lossy(&done.stderr).into_owned();
+    assert!(said.contains("Connection refused"), "{said}");
+    assert!(
+        said.contains("exited 255") && said.contains("ssh's own"),
+        "the status is not marked as possibly ssh's own: {said}"
+    );
+    // The last thing ssh said is repeated, so it is what the reader sees last.
+    assert!(said.trim_end().ends_with("Connection refused"), "{said}");
+}

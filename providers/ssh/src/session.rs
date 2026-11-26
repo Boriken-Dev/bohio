@@ -491,6 +491,9 @@ impl Session {
         } else {
             err_tx.clone()
         };
+        // The last thing ssh itself said, kept for an exit status that may be its own.
+        let said = Arc::new(Mutex::new(String::new()));
+        let after_exit = merged.clone();
         let readers = [
             tokio::spawn(async move {
                 let mut buffer = vec![0_u8; 8192];
@@ -500,11 +503,19 @@ impl Session {
                     }
                 }
             }),
-            tokio::spawn(async move {
-                let mut buffer = vec![0_u8; 8192];
-                while let Ok(count @ 1..) = stderr.read(&mut buffer).await {
-                    if merged.send(buffer[..count].to_vec()).await.is_err() {
-                        break;
+            tokio::spawn({
+                let said = Arc::clone(&said);
+                async move {
+                    let mut buffer = vec![0_u8; 8192];
+                    while let Ok(count @ 1..) = stderr.read(&mut buffer).await {
+                        let text = String::from_utf8_lossy(&buffer[..count]);
+                        if let Some(line) = text.lines().rev().find(|line| !line.trim().is_empty())
+                        {
+                            *lock(&said) = line.trim().to_owned();
+                        }
+                        if merged.send(buffer[..count].to_vec()).await.is_err() {
+                            break;
+                        }
                     }
                 }
             }),
@@ -518,6 +529,7 @@ impl Session {
             let grace = link.settings.exit_grace;
             async move {
                 let _permit = permit;
+                let mut exited = None;
                 let status = tokio::select! {
                     status = child.wait() => status,
                     () = kill.notified() => {
@@ -526,6 +538,7 @@ impl Session {
                     }
                 };
                 if let Ok(status) = status {
+                    exited = status.code();
                     #[cfg(unix)]
                     let signal =
                         std::os::unix::process::ExitStatusExt::signal(&status).map(i64::from);
@@ -545,6 +558,14 @@ impl Session {
                     }
                 };
                 tokio::select! { () = ends => {}, () = stop.notified() => {} }
+                // 255 is what ssh itself exits with when it fails, and a program may exit with it too: say which it may be.
+                if exited == Some(255) {
+                    let line = lock(&said).clone();
+                    let note = format!(
+                        "bohio: ssh exited 255, which is also ssh's own failure status, so it may not be the program's. ssh said: {line}\n"
+                    );
+                    let _ = after_exit.send(note.into_bytes()).await;
+                }
                 for reader in &readers {
                     reader.abort();
                 }

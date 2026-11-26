@@ -272,7 +272,7 @@ A desktop helper that the node starts through an exec source (a session named `e
   `tofu` is `accept-new`, `off` is `no` with no known_hosts file), a `host_key` pin is refused because ssh cannot check one, and
   `ssh_args` are the operator's own options. A `ProxyCommand` or `LocalCommand` in the account's configuration, or in `ssh_args`, runs
   as the node's account whenever a session starts: the configuration is as trusted as the source. A program the node starts under
-  this client cannot be signalled (only killed by ending the ssh process), and a terminal's interrupt is the control byte.
+  this client cannot be signalled (only killed by ending the ssh process), and a terminal's interrupt is the control byte. Ending one kills the ssh process only: the remote program runs on until the host's hangup reaches it, and on Windows a `ProxyCommand` child of `ssh.exe` may outlive it (reasoned, not measured). `tofu` is `accept-new`, so ssh writes the key to its `known_hosts` for good, where the russh client holds it only for the life of the source. An exit status of 255 is ssh's own failure status as well as a program's: the source adds a line with what ssh said to the program's error output.
 - **Host-key checking weakens only by choice.** `host_key_check` is `strict` by default (the key is pinned by `host_key`, or is in
   `known_hosts`); `tofu` trusts the first key a host with no entry presents and holds it for the life of the source, so an attacker present at
   first contact is trusted (a host `known_hosts` lists under any other key, or under another key type, is not a host with no entry and is
