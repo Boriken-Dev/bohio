@@ -2023,6 +2023,9 @@ pub struct SecretsConfig {
     /// Whether a `file:` secret may be readable by its group (mode `0640`, owned by the node's account or root), the
     /// `root:bohio 0640` pattern; every member of the group can then read it. Unix only. Lowest layer only. Default `false`.
     pub group_readable: bool,
+    /// Whether a sensitive setting may hold the secret itself instead of a reference. A literal is then in the configuration
+    /// file and its backups, readable by whoever reads them; logged `non-default:`. Lowest layer only. Default `false`.
+    pub allow_literal: bool,
 }
 
 impl Default for SecretsConfig {
@@ -2031,6 +2034,7 @@ impl Default for SecretsConfig {
             max_bytes: 65_536,
             check_access: true,
             group_readable: false,
+            allow_literal: false,
         }
     }
 }
@@ -2591,7 +2595,8 @@ impl NodeConfig {
         if self.providers.paths.is_empty()
             && self.providers.isolated.is_empty()
             && self.providers.program.is_empty()
-            && let Err((key, message)) = crate::access::check(&self.source, &self.access)
+            && let Err((key, message)) =
+                crate::access::check(&self.source, &self.access, self.secrets.allow_literal)
         {
             return Err(invalid(&key, &message));
         }

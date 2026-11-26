@@ -123,6 +123,24 @@ fn a_literal_for_a_sensitive_setting_is_refused_by_key_and_never_quoted() {
 }
 
 #[test]
+fn allow_literal_lets_a_sensitive_setting_hold_the_secret_itself() {
+    let literal = "literal-allowed-password";
+    let sources = sources();
+    sources.set_allow_literal(true);
+    sources
+        .set_secrets(Arc::new(Reads(Mutex::default())), 64)
+        .unwrap();
+    sources
+        .reconfigure(&tables(literal), &access())
+        .expect("a literal is allowed once the operator says so");
+    assert!(
+        GIVEN.lock().unwrap().iter().any(|given| given == literal),
+        "the provider received the literal"
+    );
+    assert!(sources.power(None).is_ok());
+}
+
+#[test]
 fn a_reference_is_read_when_the_source_is_built_and_the_provider_gets_the_value() {
     let reads = Arc::new(Reads(Mutex::default()));
     let sources = sources();

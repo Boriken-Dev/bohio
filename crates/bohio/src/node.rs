@@ -554,6 +554,12 @@ impl Node {
         // A source whose settings hold a secret reference waits for `Node::with_secrets`.
         sources.defer_secrets();
         sources.set_secret_limit(config.secrets.max_bytes);
+        sources.set_allow_literal(config.secrets.allow_literal);
+        if config.secrets.allow_literal {
+            tracing::warn!(
+                "non-default: [secrets] allow_literal is true: a sensitive setting may hold its secret in the configuration file, readable by whoever can read that file and its backups"
+            );
+        }
         // Libraries are mapped before the sources are built, so a `[source.<name>]` can name what they offer.
         sources.load_libraries(&config.providers);
         sources

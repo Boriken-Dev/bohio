@@ -221,6 +221,8 @@ pub struct Sources {
     secrets: Mutex<(Arc<dyn SecretResolver>, usize)>,
     /// Sources whose settings hold a secret reference are left out until a resolver is given.
     deferring: AtomicBool,
+    /// `[secrets] allow_literal`: a sensitive setting may hold the secret itself.
+    literal: AtomicBool,
     /// The configuration the sources were last built from, to build them again when a resolver arrives.
     last: Mutex<Option<(SourceTables, AccessConfig)>>,
     /// What loading `[providers] paths` did.
@@ -232,11 +234,20 @@ pub struct Sources {
 /// What a sensitive setting's reference is turned into when a source is built.
 enum Resolve<'a> {
     /// The reference's shape is checked and nothing is read: a configuration is validated before anything is opened.
-    Shape,
+    Shape(bool),
     /// A source with a secret reference is left out: the node has no resolver yet.
-    Defer,
+    Defer(bool),
     /// The reference is read.
-    With(&'a dyn SecretResolver, usize),
+    With(&'a dyn SecretResolver, usize, bool),
+}
+
+impl Resolve<'_> {
+    /// Whether a sensitive setting may hold the secret itself (`[secrets] allow_literal`).
+    const fn literal(&self) -> bool {
+        match self {
+            Self::Shape(literal) | Self::Defer(literal) | Self::With(_, _, literal) => *literal,
+        }
+    }
 }
 
 /// The default of `[secrets] max_bytes`.
@@ -267,6 +278,7 @@ impl Sources {
             state: RwLock::new(State::empty()),
             secrets: Mutex::new((Arc::new(NoSecrets), DEFAULT_SECRET_BYTES)),
             deferring: AtomicBool::new(false),
+            literal: AtomicBool::new(false),
             last: Mutex::new(None),
             libraries: Mutex::new(ProvidersReport::default()),
             programs: Mutex::new(Arc::default()),
@@ -302,6 +314,11 @@ impl Sources {
             Some((source, access)) => self.reconfigure(&source, &access),
             None => Ok(()),
         }
+    }
+
+    /// Lets a sensitive setting hold the secret itself (`[secrets] allow_literal`); it is refused otherwise.
+    pub fn set_allow_literal(&self, allow: bool) {
+        self.literal.store(allow, Ordering::Release);
     }
 
     /// The most bytes of one secret, `[secrets] max_bytes`.
@@ -420,10 +437,11 @@ impl Sources {
             let held = self.secrets.lock().unwrap_or_else(PoisonError::into_inner);
             (Arc::clone(&held.0), held.1)
         };
+        let literal = self.literal.load(Ordering::Acquire);
         let mode = if self.deferring.load(Ordering::Acquire) {
-            Resolve::Defer
+            Resolve::Defer(literal)
         } else {
-            Resolve::With(resolver.as_ref(), max)
+            Resolve::With(resolver.as_ref(), max, literal)
         };
         if let Err((key, message)) = self.apply(&source, &access, &mode, &names) {
             tracing::warn!(
@@ -458,10 +476,11 @@ impl Sources {
             let held = self.secrets.lock().unwrap_or_else(PoisonError::into_inner);
             (Arc::clone(&held.0), held.1)
         };
+        let literal = self.literal.load(Ordering::Acquire);
         let mode = if self.deferring.load(Ordering::Acquire) {
-            Resolve::Defer
+            Resolve::Defer(literal)
         } else {
-            Resolve::With(resolver.as_ref(), max)
+            Resolve::With(resolver.as_ref(), max, literal)
         };
         self.apply(source, access, &mode, &[])?;
         *self.last.lock().unwrap_or_else(PoisonError::into_inner) =
@@ -1133,16 +1152,20 @@ fn settings_of<K: ?Sized + bohio_api::guatiao::library::Kind>(
             .as_str()
             .filter(|text| secret::split(text).is_some());
         let Some(reference) = reference else {
+            if mode.literal() && setting.as_str().is_some() {
+                // `[secrets] allow_literal`: the setting is the secret itself.
+                continue;
+            }
             // Never quote what was written: it may be the secret itself.
             return Err((
                 at,
-                "is a secret and must name where it is kept (`file:PATH`, `credential:NAME` or `keyring:SERVICE/ACCOUNT`), never hold it".to_owned(),
+                "is a secret and must name where it is kept (`file:PATH`, `credential:NAME` or `keyring:SERVICE/ACCOUNT`), never hold it (`[secrets] allow_literal = true` allows a literal)".to_owned(),
             ));
         };
         let resolved = match mode {
-            Resolve::Shape => Secret::new("x"),
-            Resolve::Defer => return Ok(None),
-            Resolve::With(resolver, max) => resolver
+            Resolve::Shape(_) => Secret::new("x"),
+            Resolve::Defer(_) => return Ok(None),
+            Resolve::With(resolver, max, _) => resolver
                 .resolve(reference, *max)
                 .map_err(|error| (at.clone(), error.to_string()))?,
         };
@@ -1157,8 +1180,12 @@ fn settings_of<K: ?Sized + bohio_api::guatiao::library::Kind>(
 /// # Errors
 ///
 /// As [`Sources::from_config`].
-pub fn check(source: &SourceTables, access: &AccessConfig) -> Result<(), Refusal> {
-    Sources::bare().apply(source, access, &Resolve::Shape, &[])
+pub fn check(
+    source: &SourceTables,
+    access: &AccessConfig,
+    allow_literal: bool,
+) -> Result<(), Refusal> {
+    Sources::bare().apply(source, access, &Resolve::Shape(allow_literal), &[])
 }
 
 /// A value for a provider that is its own configuration, for tests and embedders that build an instance by hand.

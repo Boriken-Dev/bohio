@@ -590,7 +590,11 @@ fn allow_id_bits_is_read_from_the_lowest_layer_only() {
 #[test]
 fn the_secret_checks_are_set_by_the_lowest_layer_alone() {
     let dir = tempfile::tempdir().unwrap();
-    for key in ["check_access = false", "group_readable = true"] {
+    for key in [
+        "check_access = false",
+        "group_readable = true",
+        "allow_literal = true",
+    ] {
         let files = layers(
             dir.path(),
             &[
