@@ -43,7 +43,7 @@ use objc2_screen_capture_kit::{
 
 use super::mac_rules::{
     Key, Named, RawDisplay, SessionFacts, Step, accessibility_denied, displays_of, judge,
-    packed_of, pixel_of, plan, rgb_of_packed, screen_recording_denied,
+    packed_of, pixel_of, plan, readable_pixels, rgb_of_packed, screen_recording_denied,
 };
 use crate::gui::{Capabilities, Desktop, DesktopState, Frame, GuiError};
 
@@ -209,9 +209,10 @@ fn convert(image: *mut CGImage, target: Target) -> Grabbed {
         .ok_or_else(|| GuiError::io("the screenshot has no pixel data"))?;
     let data = CGDataProvider::data(Some(&provider))
         .ok_or_else(|| GuiError::io("the screenshot's pixels could not be read"))?;
-    let length = usize::try_from(data.length()).unwrap_or(0);
-    // SAFETY: a CFData of `length` bytes is readable at its byte pointer for as long as `data` is alive.
-    let bytes = unsafe { std::slice::from_raw_parts(data.byte_ptr(), length) };
+    let pointer = data.byte_ptr();
+    let length = readable_pixels(pointer, usize::try_from(data.length()).unwrap_or(0))?;
+    // SAFETY: `pointer` is not null and the CFData holds `length` bytes there for as long as `data` is alive.
+    let bytes = unsafe { std::slice::from_raw_parts(pointer, length) };
     rgb_of_packed(
         bytes,
         CGImage::bytes_per_row(Some(image)),

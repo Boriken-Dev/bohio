@@ -482,6 +482,19 @@ pub(crate) fn packed_of(
     }
 }
 
+/// How many bytes of a `CFData`'s byte pointer may be read as a slice: `length`, unless the data is empty or the
+/// pointer is null (`CFDataGetBytePtr` of empty data may be), which no slice can be made of.
+///
+/// # Errors
+///
+/// An I/O error when there is nothing to read.
+pub(crate) fn readable_pixels(pointer: *const u8, length: usize) -> Result<usize, GuiError> {
+    if pointer.is_null() || length == 0 {
+        return Err(GuiError::io("the screenshot's pixels could not be read"));
+    }
+    Ok(length)
+}
+
 /// The RGB bytes of a picture of four-byte pixels laid out as `packed` says, rows `stride` bytes apart, cut to `region`
 /// (left, top, width, height in pixels).
 ///
@@ -867,6 +880,20 @@ mod tests {
         assert_eq!(&all[..6], &[0, 10, 20, 1, 11, 21]);
         let corner = rgb_of_packed(&rows, 16, 3, 2, layout, (1, 1, 2, 1)).unwrap();
         assert_eq!(corner, vec![4, 14, 24, 5, 15, 25]);
+    }
+
+    #[test]
+    fn pixels_are_readable_only_through_a_pointer_to_something() {
+        let bytes = [1_u8, 2, 3, 4];
+        assert_eq!(readable_pixels(bytes.as_ptr(), bytes.len()).unwrap(), 4);
+        for (pointer, length) in [
+            (std::ptr::null(), 0),
+            (std::ptr::null(), 4),
+            (bytes.as_ptr(), 0),
+        ] {
+            let error = readable_pixels(pointer, length).unwrap_err();
+            assert_eq!(error.code, GuiError::io("x").code);
+        }
     }
 
     #[test]
