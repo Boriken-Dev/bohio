@@ -14,6 +14,14 @@ mod reap;
 mod tree;
 #[cfg(windows)]
 pub(crate) mod winfs;
+#[cfg_attr(
+    not(windows),
+    allow(
+        dead_code,
+        reason = "the byte layouts are `winfs`'s and are tested on every platform"
+    )
+)]
+mod winfs_layout;
 #[cfg(windows)]
 mod winproc;
 

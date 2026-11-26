@@ -38,16 +38,24 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use windows_sys::Win32::System::IO::{DeviceIoControl, IO_STATUS_BLOCK};
 
+use super::winfs_layout::{self as layout, MAX_REPARSE_DATA, bad_name};
+
+// The layouts `winfs_layout` writes and reads are the system's: a change of the bindings breaks the build here.
+const _: () = {
+    assert!(std::mem::offset_of!(FILE_RENAME_INFORMATION, RootDirectory) == layout::RENAME_ROOT);
+    assert!(std::mem::offset_of!(FILE_RENAME_INFORMATION, FileNameLength) == layout::RENAME_LENGTH);
+    assert!(std::mem::offset_of!(FILE_RENAME_INFORMATION, FileName) == layout::RENAME_NAME);
+    assert!(std::mem::offset_of!(FILE_FULL_DIR_INFO, FileAttributes) == layout::ENTRY_ATTRIBUTES);
+    assert!(std::mem::offset_of!(FILE_FULL_DIR_INFO, FileNameLength) == layout::ENTRY_NAME_LENGTH);
+    assert!(std::mem::offset_of!(FILE_FULL_DIR_INFO, FileName) == layout::ENTRY_NAME);
+};
+
 /// `FILE_LIST_DIRECTORY`: the right to read a directory's entries.
 const LIST_DIRECTORY: u32 = 0x0000_0001;
 /// `FILE_FLAG_..` not needed: `OBJ_CASE_INSENSITIVE`, so a name matches as it does through Win32.
 const CASE_INSENSITIVE: u32 = 0x40;
 const FSCTL_GET_REPARSE_POINT: u32 = 0x0009_00A8;
 const FSCTL_SET_REPARSE_POINT: u32 = 0x0009_00A4;
-const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xA000_0003;
-const IO_REPARSE_TAG_SYMLINK: u32 = 0xA000_000C;
-const SYMLINK_FLAG_RELATIVE: u32 = 1;
-const MAX_REPARSE_DATA: usize = 16 * 1024;
 const SHARE_ALL: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
 /// `FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS`: the name is gone when the call
 /// returns, even while another handle to the file is open.
@@ -55,13 +63,6 @@ const DELETE_NOW: u32 = 0x1 | 0x2;
 /// `FILE_RENAME_FLAG_REPLACE_IF_EXISTS` and `FILE_RENAME_FLAG_POSIX_SEMANTICS`.
 const RENAME_REPLACE: u32 = 0x1;
 const RENAME_POSIX: u32 = 0x2;
-
-fn bad_name() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::InvalidInput,
-        "a name must be one component without a separator or a stream",
-    )
-}
 
 /// The UTF-16 of `name`, which must be one plain component.
 fn wide_name(name: &OsStr) -> io::Result<Vec<u16>> {
@@ -360,37 +361,16 @@ fn send_rename(
     class: i32,
     first: u32,
 ) -> io::Result<()> {
-    let name_offset = std::mem::offset_of!(FILE_RENAME_INFORMATION, FileName);
-    let root_offset = std::mem::offset_of!(FILE_RENAME_INFORMATION, RootDirectory);
-    let length_offset = std::mem::offset_of!(FILE_RENAME_INFORMATION, FileNameLength);
-    let name_bytes = name.len() * 2;
-    let total = name_offset + name_bytes + 2;
-    // Eight-byte units, so the buffer is aligned for the `HANDLE` it holds.
-    let mut storage = vec![0_u64; total.div_ceil(8)];
-    {
-        let bytes = bytes_mut(&mut storage);
-        bytes[..4].copy_from_slice(&first.to_le_bytes());
-        bytes[root_offset..root_offset + std::mem::size_of::<HANDLE>()]
-            .copy_from_slice(&(root as usize).to_le_bytes());
-        bytes[length_offset..length_offset + 4].copy_from_slice(
-            &u32::try_from(name_bytes)
-                .map_err(|_| bad_name())?
-                .to_le_bytes(),
-        );
-        for (index, unit) in name.iter().enumerate() {
-            let at = name_offset + index * 2;
-            bytes[at..at + 2].copy_from_slice(&unit.to_le_bytes());
-        }
-    }
+    let packed = layout::rename_information(first, root as usize, name)?;
     let mut status_block = IO_STATUS_BLOCK::default();
-    // SAFETY: `storage` holds a `FILE_RENAME_INFORMATION` of `total` bytes, aligned, whose root handle the
-    // caller keeps open and whose name is inside the buffer; `source` is open with `DELETE`.
+    // SAFETY: `packed.words` holds a `FILE_RENAME_INFORMATION` of `packed.len` bytes, aligned, whose root handle
+    // the caller keeps open and whose name is inside the buffer; `source` is open with `DELETE`.
     let status = unsafe {
         NtSetInformationFile(
             source.as_raw_handle(),
             &raw mut status_block,
-            storage.as_ptr().cast(),
-            u32::try_from(total).map_err(|_| bad_name())?,
+            packed.words.as_ptr().cast(),
+            u32::try_from(packed.len).map_err(|_| bad_name())?,
             class,
         )
     };
@@ -398,30 +378,6 @@ fn send_rename(
         return Err(nt_error(status));
     }
     Ok(())
-}
-
-/// A writable byte view of eight-byte-aligned storage.
-fn bytes_mut(storage: &mut [u64]) -> &mut [u8] {
-    // SAFETY: a `u64` slice is `len * 8` initialised bytes, and `u8` has no alignment need.
-    unsafe { std::slice::from_raw_parts_mut(storage.as_mut_ptr().cast::<u8>(), storage.len() * 8) }
-}
-
-/// A byte view of eight-byte-aligned storage.
-fn bytes(storage: &[u64]) -> &[u8] {
-    // SAFETY: as in `bytes_mut`.
-    unsafe { std::slice::from_raw_parts(storage.as_ptr().cast::<u8>(), storage.len() * 8) }
-}
-
-fn read_u16(buffer: &[u8], at: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(buffer.get(at..at + 2)?.try_into().ok()?))
-}
-
-fn read_u32(buffer: &[u8], at: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(buffer.get(at..at + 4)?.try_into().ok()?))
-}
-
-fn malformed() -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, "the reparse data is malformed")
 }
 
 /// The text of the link `name` in `parent`, as `read_link` of the standard library gives it: a relative
@@ -446,36 +402,7 @@ pub(crate) fn read_link(parent: &impl AsHandle, name: &OsStr) -> io::Result<Path
     if done == 0 {
         return Err(io::Error::last_os_error());
     }
-    let buffer = &bytes(&storage)[..usize::try_from(returned).unwrap_or(0).min(MAX_REPARSE_DATA)];
-    let tag = read_u32(buffer, 0).ok_or_else(malformed)?;
-    let (names_at, relative) = match tag {
-        IO_REPARSE_TAG_SYMLINK => (
-            20,
-            read_u32(buffer, 16).ok_or_else(malformed)? & SYMLINK_FLAG_RELATIVE != 0,
-        ),
-        IO_REPARSE_TAG_MOUNT_POINT => (16, false),
-        _ => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "an unsupported kind of reparse point",
-            ));
-        }
-    };
-    let offset = usize::from(read_u16(buffer, 8).ok_or_else(malformed)?);
-    let length = usize::from(read_u16(buffer, 10).ok_or_else(malformed)?);
-    let text = buffer
-        .get(names_at + offset..names_at + offset + length)
-        .ok_or_else(malformed)?;
-    let mut wide: Vec<u16> = text
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|pair| u16::from_le_bytes(*pair))
-        .collect();
-    let prefix: Vec<u16> = r"\??\".encode_utf16().collect();
-    if !relative && wide.starts_with(&prefix) {
-        wide.drain(..prefix.len());
-    }
+    let wide = layout::link_text(&storage, returned)?;
     Ok(PathBuf::from(OsString::from_wide(&wide)))
 }
 
@@ -502,47 +429,21 @@ pub(crate) fn symlink(
     )?;
     let printed: Vec<u16> = target.encode_wide().collect();
     let absolute = std::path::Path::new(target).is_absolute();
-    let substitute: Vec<u16> = if absolute {
-        r"\??\"
-            .encode_utf16()
-            .chain(printed.iter().copied())
-            .collect()
-    } else {
-        printed.clone()
-    };
-    let (sub_bytes, print_bytes) = (substitute.len() * 2, printed.len() * 2);
-    let data_length = 12 + sub_bytes + print_bytes;
-    let total = 8 + data_length;
-    if data_length > MAX_REPARSE_DATA {
-        let _ = dispose(&handle);
-        return Err(bad_name());
-    }
-    let mut storage = vec![0_u64; total.div_ceil(8)];
-    {
-        let out = bytes_mut(&mut storage);
-        let mut put = |at: usize, value: &[u8]| out[at..at + value.len()].copy_from_slice(value);
-        put(0, &IO_REPARSE_TAG_SYMLINK.to_le_bytes());
-        put(4, &u16::try_from(data_length).unwrap_or(0).to_le_bytes());
-        put(8, &0_u16.to_le_bytes());
-        put(10, &u16::try_from(sub_bytes).unwrap_or(0).to_le_bytes());
-        put(12, &u16::try_from(sub_bytes).unwrap_or(0).to_le_bytes());
-        put(14, &u16::try_from(print_bytes).unwrap_or(0).to_le_bytes());
-        put(
-            16,
-            &(if absolute { 0 } else { SYMLINK_FLAG_RELATIVE }).to_le_bytes(),
-        );
-        for (index, unit) in substitute.iter().chain(printed.iter()).enumerate() {
-            put(20 + index * 2, &unit.to_le_bytes());
+    let packed = match layout::symlink_data(&printed, absolute) {
+        Ok(packed) => packed,
+        Err(error) => {
+            let _ = dispose(&handle);
+            return Err(error);
         }
-    }
+    };
     let mut returned = 0_u32;
-    // SAFETY: the input is `total` bytes of `storage`, readable for the length passed; `handle` is open.
+    // SAFETY: the input is `packed.len` bytes of `packed.words`, readable for the length passed; `handle` is open.
     let done = unsafe {
         DeviceIoControl(
             handle.as_raw_handle(),
             FSCTL_SET_REPARSE_POINT,
-            storage.as_ptr().cast(),
-            u32::try_from(total).unwrap_or(0),
+            packed.words.as_ptr().cast(),
+            u32::try_from(packed.len).unwrap_or(0),
             ptr::null_mut(),
             0,
             &raw mut returned,
@@ -605,6 +506,8 @@ pub(crate) fn set_readonly(parent: &impl AsHandle, name: &OsStr, readonly: bool)
 pub(crate) struct Listing<H: AsHandle> {
     directory: H,
     storage: Vec<u64>,
+    /// The bytes of the last buffer the system filled.
+    bytes: Vec<u8>,
     at: usize,
     end: usize,
     restart: bool,
@@ -617,6 +520,7 @@ impl<H: AsHandle> Listing<H> {
         Self {
             directory,
             storage: vec![0_u64; 8 * 1024],
+            bytes: Vec::new(),
             at: 0,
             end: 0,
             restart: true,
@@ -649,7 +553,8 @@ impl<H: AsHandle> Listing<H> {
             return Err(error);
         }
         self.at = 0;
-        self.end = self.storage.len() * 8;
+        self.bytes = layout::bytes_of(&self.storage);
+        self.end = self.bytes.len();
         Ok(true)
     }
 }
@@ -658,9 +563,6 @@ impl<H: AsHandle> Iterator for Listing<H> {
     type Item = io::Result<(OsString, u32)>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let name_at = std::mem::offset_of!(FILE_FULL_DIR_INFO, FileName);
-        let attributes_at = std::mem::offset_of!(FILE_FULL_DIR_INFO, FileAttributes);
-        let length_at = std::mem::offset_of!(FILE_FULL_DIR_INFO, FileNameLength);
         loop {
             if self.done {
                 return None;
@@ -678,35 +580,21 @@ impl<H: AsHandle> Iterator for Listing<H> {
                     }
                 }
             }
-            let buffer = bytes(&self.storage);
-            let entry = &buffer[self.at..];
-            let parsed = (|| {
-                let next = usize::try_from(read_u32(entry, 0)?).ok()?;
-                let attributes = read_u32(entry, attributes_at)?;
-                let length = usize::try_from(read_u32(entry, length_at)?).ok()?;
-                let text = entry.get(name_at..name_at + length)?;
-                let wide: Vec<u16> = text
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .map(|pair| u16::from_le_bytes(*pair))
-                    .collect();
-                Some((next, attributes, OsString::from_wide(&wide)))
-            })();
-            let Some((next, attributes, name)) = parsed else {
+            let Some(entry) = layout::dir_entry(&self.bytes, self.at) else {
                 self.done = true;
-                return Some(Err(malformed()));
+                return Some(Err(layout::malformed()));
             };
             // The last entry of a buffer says zero; the next fill starts a new buffer.
-            if next == 0 {
+            if entry.next == 0 {
                 self.at = self.end;
             } else {
-                self.at += next;
+                self.at = self.at.saturating_add(entry.next);
             }
+            let name = OsString::from_wide(&entry.name);
             if name == "." || name == ".." {
                 continue;
             }
-            return Some(Ok((name, attributes)));
+            return Some(Ok((name, entry.attributes)));
         }
     }
 }
@@ -720,9 +608,8 @@ mod tests {
 
     use super::{
         AsRawHandle, DELETE, DeviceIoControl, FILE_CREATE, FILE_DIRECTORY_FILE,
-        FILE_WRITE_ATTRIBUTES, FSCTL_SET_REPARSE_POINT, IO_REPARSE_TAG_MOUNT_POINT, Listing, Open,
-        Remove, bytes_mut, create_dir, open_at, ptr, read_link, remove, remove_tree, rename,
-        set_readonly, symlink,
+        FILE_WRITE_ATTRIBUTES, FSCTL_SET_REPARSE_POINT, Listing, Open, Remove, create_dir, open_at,
+        ptr, read_link, remove, remove_tree, rename, set_readonly, symlink,
     };
 
     /// `FILE_FLAG_BACKUP_SEMANTICS`, which opening a directory needs.
@@ -758,32 +645,15 @@ mod tests {
             let full = std::fs::canonicalize(target)?;
             let full = full.to_string_lossy().replace(r"\\?\", "");
             let substitute: Vec<u16> = format!(r"\??\{full}").encode_utf16().collect();
-            let sub_bytes = substitute.len() * 2;
-            let data_length = 8 + sub_bytes + 2 + 2;
-            let total = 8 + data_length;
-            let mut storage = vec![0_u64; total.div_ceil(8)];
-            {
-                let out = bytes_mut(&mut storage);
-                let mut put =
-                    |at: usize, value: &[u8]| out[at..at + value.len()].copy_from_slice(value);
-                put(0, &IO_REPARSE_TAG_MOUNT_POINT.to_le_bytes());
-                put(4, &u16::try_from(data_length).unwrap().to_le_bytes());
-                put(8, &0_u16.to_le_bytes());
-                put(10, &u16::try_from(sub_bytes).unwrap().to_le_bytes());
-                put(12, &u16::try_from(sub_bytes + 2).unwrap().to_le_bytes());
-                put(14, &0_u16.to_le_bytes());
-                for (index, unit) in substitute.iter().enumerate() {
-                    put(16 + index * 2, &unit.to_le_bytes());
-                }
-            }
+            let packed = super::layout::mount_point_data(&substitute)?;
             let mut returned = 0_u32;
-            // SAFETY: the input is `total` bytes of `storage`; `handle` is open with write-attributes.
+            // SAFETY: the input is `packed.len` bytes of `packed.words`; `handle` is open with write-attributes.
             let done = unsafe {
                 DeviceIoControl(
                     handle.as_raw_handle(),
                     FSCTL_SET_REPARSE_POINT,
-                    storage.as_ptr().cast(),
-                    u32::try_from(total).unwrap(),
+                    packed.words.as_ptr().cast(),
+                    u32::try_from(packed.len).unwrap(),
                     ptr::null_mut(),
                     0,
                     &raw mut returned,

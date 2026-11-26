@@ -86,8 +86,9 @@ const ALLOWED: &[Allowed] = &[
                  takes a directory handle; cap-primitives' own NtCreateFile wrapper is private; no \
                  maintained crate wraps the NT calls over handles (ntapi and windows-sys give the \
                  bindings only), and the bindings are already a dependency",
-        miri: "not reachable: every unsafe call is a Win32 or NT call, which Miri does not run; \
-               covered by tests/fs.rs, tests/treeops.rs and tests/fs_swap_windows.rs (a directory \
+        miri: "not reachable: every unsafe call is a Win32 or NT call, which Miri does not run; the \
+               buffers it passes and reads are built and parsed by platform/winfs_layout.rs, which \
+               holds no unsafe and is tested on every platform; covered by tests/fs.rs, tests/treeops.rs and tests/fs_swap_windows.rs (a directory \
                swapped for a junction while the calls run) on Windows",
     },
     Allowed {
