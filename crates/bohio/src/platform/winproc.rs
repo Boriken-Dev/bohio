@@ -162,7 +162,7 @@ pub(super) fn start(spec: &Spec, job: &win32job::Job) -> io::Result<Started> {
     // reaches the child alone. A host without one (a service) gives the child none to show.
     let shared_console = host_has_console();
     let mut jobs: [HANDLE; 1] = [job.handle() as HANDLE];
-    let attributes = AttributeList::new(&mut handles, &mut jobs)?;
+    let mut attributes = AttributeList::new(&mut handles, &mut jobs)?;
     // SAFETY: an all-zero STARTUPINFOEXW is the documented starting value (every field a number or a null pointer).
     let mut info: STARTUPINFOEXW = unsafe { mem::zeroed() };
     info.StartupInfo.cb = u32::try_from(mem::size_of::<STARTUPINFOEXW>()).unwrap_or(0);
@@ -256,14 +256,14 @@ impl AttributeList {
         if unsafe { InitializeProcThreadAttributeList(pointer, 2, 0, &raw mut size) } == 0 {
             return Err(io::Error::last_os_error());
         }
-        let list = Self { storage };
+        let mut list = Self { storage };
         list.set(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handles)?;
         list.set(PROC_THREAD_ATTRIBUTE_JOB_LIST, jobs)?;
         Ok(list)
     }
 
     /// Sets `attribute` to the handles `values`, which the caller keeps open and in place.
-    fn set(&self, attribute: u32, values: &mut [HANDLE]) -> io::Result<()> {
+    fn set(&mut self, attribute: u32, values: &mut [HANDLE]) -> io::Result<()> {
         // SAFETY: the list is initialised with room for this attribute; `values` outlives the
         // process creation the caller does with the list, which reads the array through its pointer.
         let updated = unsafe {
@@ -283,8 +283,9 @@ impl AttributeList {
         Ok(())
     }
 
-    fn pointer(&self) -> LPPROC_THREAD_ATTRIBUTE_LIST {
-        self.storage.as_ptr().cast_mut().cast()
+    /// The list, as the system writes it: taken from the storage through a unique borrow.
+    fn pointer(&mut self) -> LPPROC_THREAD_ATTRIBUTE_LIST {
+        self.storage.as_mut_ptr().cast()
     }
 }
 
