@@ -53,7 +53,7 @@ url = "2.5"
 # The Windows service manager: `bohio service`. Its entry point is written without the crate's macro, which expands to unsafe code.
 windows-service = "0.8"
 # Signalling a process group and looking at a child without collecting it, which std does not offer; a pipe with close-on-exec set.
-rustix = { version = "1", default-features = false, features = ["std", "process", "pipe", "fs", "net"] }
+rustix = { version = "1", default-features = false, features = ["std", "process", "pipe", "fs", "net", "event"] }
 # The system calls a guardian process makes between `fork` and `exec` (`platform/guard.rs`), which rustix does not offer.
 libc = "0.2"
 # A job object that ends every process in it when its handle closes.

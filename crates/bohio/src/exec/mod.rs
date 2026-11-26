@@ -383,7 +383,12 @@ fn pump(
         .max(1);
     loop {
         match live.process.read(stream, &mut buffer, wait) {
-            Ok(0) => {}
+            Ok(0) => {
+                // The process is over and its last frame sent: a survivor that still holds the pipe is not waited for.
+                if shared.done.load(Ordering::Acquire) {
+                    break;
+                }
+            }
             Ok(count) if count < 0 => break,
             Ok(count) => {
                 let count = usize::try_from(count).unwrap_or(0);

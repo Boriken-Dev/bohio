@@ -190,6 +190,10 @@ fn shell_line(kind: &str, script: &str) -> Result<Line, ProviderError> {
 /// What a reader thread holds back: the chunks it has read and not yet been asked for.
 struct Pipe {
     queue: Mutex<Queue>,
+    /// The write end of a pipe the reader thread also waits on: it closes when the process is let go, which wakes a thread
+    /// a surviving descendant would otherwise keep blocked on the output pipe for good.
+    #[cfg(unix)]
+    _wake: Option<std::os::fd::OwnedFd>,
 }
 
 struct Queue {
@@ -200,16 +204,60 @@ struct Queue {
     at: usize,
 }
 
+/// What the reader thread waits on besides its pipe, where the system lets it.
+#[cfg(unix)]
+trait Waitable: std::os::fd::AsFd {}
+#[cfg(unix)]
+impl<T: std::os::fd::AsFd> Waitable for T {}
+#[cfg(not(unix))]
+trait Waitable {}
+#[cfg(not(unix))]
+impl<T> Waitable for T {}
+
+/// Waits until `reader` has something to read (or ended), or until `wake` is closed; `false` when it was.
+#[cfg(unix)]
+fn readable(reader: &impl std::os::fd::AsFd, wake: &std::os::fd::OwnedFd) -> bool {
+    use rustix::event::{PollFd, PollFlags, poll};
+    loop {
+        let mut fds = [
+            PollFd::new(reader, PollFlags::IN),
+            PollFd::new(wake, PollFlags::IN),
+        ];
+        match poll(&mut fds, None) {
+            Ok(_) => return fds[1].revents().is_empty(),
+            Err(rustix::io::Errno::INTR) => {}
+            Err(_) => return true,
+        }
+    }
+}
+
 impl Pipe {
-    fn start<R: Read + Send + 'static>(mut reader: R, chunk: usize, queued: usize) -> Self {
+    fn start<R: Read + Send + Waitable + 'static>(
+        mut reader: R,
+        chunk: usize,
+        queued: usize,
+    ) -> Self {
         let (sender, chunks): (SyncSender<Vec<u8>>, _) = sync_channel(queued.max(1));
         let size = chunk.max(1);
-        // The thread ends when the pipe does (the tree is ended) or when nobody holds the queue any more.
+        #[cfg(unix)]
+        let (wake_read, wake_write) =
+            match rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC) {
+                Ok((read, write)) => (Some(read), Some(write)),
+                Err(_) => (None, None),
+            };
+        // The thread ends when the pipe does (the tree is ended), when the process is let go, or when nobody holds the
+        // queue any more.
         let _ = thread::Builder::new()
             .name("bohio-exec-read".to_owned())
             .spawn(move || {
                 let mut buffer = vec![0_u8; size];
                 loop {
+                    #[cfg(unix)]
+                    if let Some(wake) = &wake_read
+                        && !readable(&reader, wake)
+                    {
+                        return;
+                    }
                     match reader.read(&mut buffer) {
                         Ok(0) => return,
                         Ok(count) => {
@@ -228,6 +276,8 @@ impl Pipe {
                 left: Vec::new(),
                 at: 0,
             }),
+            #[cfg(unix)]
+            _wake: wake_write,
         }
     }
 
