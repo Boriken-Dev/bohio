@@ -76,7 +76,7 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[[listen]] endpoint` | none | `tcp://host:port`, `pipe://name` or `pipe:///path.sock`, `ws://host:port`, `wss://host:port`, `webtransport://host:port`, `serial://port?baud=N`; required in each entry |
 | `[[listen]] socket_mode` | `"0o600"` | `pipe`, Unix: the socket's mode, octal text with the `0o` prefix |
 | `[[listen]] remote_clients` | `false` | `pipe`, Windows: clients on other hosts through file sharing |
-| `[[listen]] origins` | none | `ws`, `wss`, `webtransport`: the origins a browser may connect from; none allows any |
+| `[[listen]] origins` | none | `ws`, `wss`, `webtransport`: the origins a browser may connect from; none (or empty) refuses every request that names an origin and serves a client that names none; `["*"]` allows any, logged `non-default:` |
 | `[[listen]] tls_cert`, `tls_key` | none | `wss`, `webtransport`: PEM files, the certificate (leaf first, then its intermediates) and its private key; both or neither; `wss` needs both; read at start, never logged; a `webtransport` entry with neither makes its own certificate |
 | `[[listen]] tls_valid_days` | `13` | `webtransport` without `tls_cert`: the made certificate's validity in days, at least 1 (a browser pins at most 14: a longer one is logged once as not browser-pinnable); a new one is made halfway through and its hash logged |
 | `[[listen]] tls_backdate` | `1h` | `webtransport` without `tls_cert`: how long before now the made certificate starts to be valid, so a client whose clock is behind the host's accepts it at once (`0s` starts it now; a client further behind is refused until its clock reaches the start, or allows for it with `--clock-skew`); a time as in `[link]` |

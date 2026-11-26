@@ -25,6 +25,21 @@ use coqui_transport_web::webtransport::{
 use crate::config::ListenConfig;
 use crate::node::NodeError;
 
+/// What the web transports are told when `origins` is unset or empty: their list is exact text, so one entry no browser can
+/// send (an `Origin` is a scheme, a host and a port, or `null`) refuses every request that names an origin, while a client
+/// that sends none (a program, not a page) is still served.
+const NO_BROWSER_ORIGIN: &str = "bohio: no browser origin is allowed";
+
+/// The origins a `ws`, `wss` or `webtransport` listener serves: those the entry lists, every browser's when it lists `*`
+/// (the transports take an empty list for that), and no browser's when it lists none.
+fn web_origins(config: &ListenConfig) -> Vec<String> {
+    match config.origins.as_deref() {
+        Some(listed) if listed.iter().any(|origin| origin == "*") => Vec::new(),
+        Some(listed) if !listed.is_empty() => listed.to_vec(),
+        _ => vec![NO_BROWSER_ORIGIN.to_owned()],
+    }
+}
+
 /// How many days a certificate the host makes for WebTransport is valid when the entry says nothing:
 /// a browser pinning it by hash accepts at most 14, and a day short of that leaves room for a slow clock.
 const DEFAULT_CERTIFICATE_DAYS: u32 = 13;
@@ -320,7 +335,7 @@ impl Listening {
                     .frames(Frames::Binary)
                     // The proof seals everything after it, so the carrier's own protection is not what the link relies on.
                     .plain_beyond_loopback(true)
-                    .origins(config.origins.clone().unwrap_or_default())
+                    .origins(web_origins(config))
                     .build()
                     .map_err(|e| fail(e.to_string()))?;
                 let bound = listener.local_addr().map_err(|e| fail(e.to_string()))?;
@@ -362,7 +377,7 @@ impl Listening {
                 let listener = WebTransportListener::builder(address, tls)
                     .limits(web_limits(settings))
                     .mtu(mtu)
-                    .origins(config.origins.clone().unwrap_or_default())
+                    .origins(web_origins(config))
                     .build()
                     .map_err(|e| fail(e.to_string()))?;
                 let bound = listener.local_addr();
@@ -497,6 +512,90 @@ mod tests {
         let both = browser_pin_problem(other.der()).expect("Ed25519 is not ECDSA P-256");
         assert!(both.contains("not ECDSA P-256"), "{both}");
         assert!(browser_pin_problem(b"not a certificate").is_some());
+    }
+
+    /// Binds `ws://127.0.0.1:0` with `origins`, has a client ask to upgrade (naming `origin` when given) and answers the status
+    /// line the client read.
+    fn upgrade_status(origins: Option<Vec<String>>, origin: Option<&str>) -> String {
+        use std::io::{Read, Write};
+        let entry = ListenConfig {
+            endpoint: "ws://127.0.0.1:0".to_owned(),
+            origins,
+            ..ListenConfig::default()
+        };
+        let settings = Settings::default();
+        let (listening, bound) = Listening::bind(&entry, &settings).expect("binds");
+        let Endpoint::WebSocket(url) = bound else {
+            panic!("a ws endpoint");
+        };
+        let address = (url.host_str().unwrap().to_owned(), url.port().unwrap());
+        let origin = origin.map(str::to_owned);
+        let client = thread::spawn(move || {
+            let mut stream = std::net::TcpStream::connect((address.0.as_str(), address.1)).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut request = format!(
+                "GET / HTTP/1.1
+Host: {}:{}
+Connection: Upgrade
+Upgrade: websocket
+Sec-WebSocket-Version: 13
+Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+",
+                address.0, address.1
+            );
+            if let Some(origin) = origin {
+                request.push_str(&format!(
+                    "Origin: {origin}
+"
+                ));
+            }
+            request.push_str(
+                "
+",
+            );
+            stream.write_all(request.as_bytes()).unwrap();
+            let mut seen = Vec::new();
+            let mut byte = [0_u8; 1];
+            while !seen.ends_with(
+                b"
+",
+            ) {
+                if stream.read(&mut byte).unwrap_or(0) == 0 {
+                    break;
+                }
+                seen.push(byte[0]);
+            }
+            String::from_utf8_lossy(&seen).trim().to_owned()
+        });
+        let until = Instant::now() + Duration::from_secs(10);
+        let arrival = loop {
+            match listening.accept(Duration::from_millis(50), &settings) {
+                Ok(Some(arrival)) => break arrival,
+                Ok(None) if Instant::now() < until => {}
+                other => panic!("no connection arrived: {:?}", other.map(|_| ())),
+            }
+        };
+        let _ = arrival.open();
+        client.join().unwrap()
+    }
+
+    #[test]
+    fn a_websocket_listener_refuses_a_browser_unless_origins_allow_it() {
+        let page = "https://page.example";
+        // No `origins`: a browser (it names its origin) is refused; a client that names none is served.
+        assert!(upgrade_status(None, Some(page)).contains("403"));
+        assert!(upgrade_status(Some(Vec::new()), Some(page)).contains("403"));
+        assert!(upgrade_status(None, None).contains("101"));
+        // Named origins: that one is served, another is refused.
+        let listed = || Some(vec![page.to_owned()]);
+        assert!(upgrade_status(listed(), Some(page)).contains("101"));
+        assert!(upgrade_status(listed(), Some("https://other.example")).contains("403"));
+        // `*` is the opt-out.
+        let any = || Some(vec!["*".to_owned()]);
+        assert!(upgrade_status(any(), Some(page)).contains("101"));
+        assert!(upgrade_status(any(), None).contains("101"));
     }
 
     #[test]

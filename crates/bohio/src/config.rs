@@ -261,7 +261,8 @@ pub struct ListenConfig {
     #[serde(default)]
     pub remote_clients: Option<bool>,
     /// `ws`, `wss`, `webtransport`: the origins a browser may connect from; a connection that names another origin is
-    /// refused. Default none: any origin, and a client that names none.
+    /// refused, and a client that names none (a program) is served. `["*"]` allows every origin and is logged
+    /// `non-default:`. Default none: every browser is refused.
     #[serde(default)]
     pub origins: Option<Vec<String>>,
     /// `wss`, `webtransport`: the PEM file holding the host's certificate and the intermediates that
