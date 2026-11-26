@@ -245,6 +245,31 @@ pub enum Endpoint {
     Command(Vec<String>),
 }
 
+/// The pipe `name` for this user: as [`PipeName::named`], and where a service has neither `XDG_RUNTIME_DIR` nor `TMPDIR`
+/// (systemd sets only `RUNTIME_DIRECTORY` for `RuntimeDirectory=`), in the first directory `RUNTIME_DIRECTORY` names.
+/// `variable` reads an environment variable.
+fn pipe_named(
+    name: &str,
+    variable: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Result<PipeName, coqui_transport_pipe::Error> {
+    if cfg!(windows) {
+        return PipeName::named(name);
+    }
+    let absolute =
+        |text: std::ffi::OsString| Some(PathBuf::from(text)).filter(|path| path.is_absolute());
+    let directory = ["XDG_RUNTIME_DIR", "TMPDIR"]
+        .into_iter()
+        .filter_map(&variable)
+        .find_map(absolute)
+        .or_else(|| {
+            let listed = variable("RUNTIME_DIRECTORY")?;
+            let first = std::env::split_paths(&listed).next()?;
+            absolute(first.into_os_string())
+        })
+        .ok_or(coqui_transport_pipe::Error::NoRuntimeDirectory)?;
+    PipeName::named_in(directory, name)
+}
+
 impl Endpoint {
     /// Reads `scheme://address`; a name is resolved and its first address taken.
     ///
@@ -262,7 +287,7 @@ impl Endpoint {
                 let named = if rest.contains(['/', '\\']) {
                     PipeName::at(rest)
                 } else {
-                    PipeName::named(rest)
+                    pipe_named(rest, |name| std::env::var_os(name))
                 };
                 named
                     .map(Self::Pipe)
@@ -686,4 +711,41 @@ pub fn split_command(line: &str) -> Result<Vec<String>, String> {
         return Err("the command is empty".to_owned());
     }
     Ok(arguments)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::pipe_named;
+    use std::ffi::OsString;
+    use std::path::Path;
+
+    fn with(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<OsString> {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| OsString::from(value))
+        }
+    }
+
+    #[test]
+    fn a_service_with_only_a_runtime_directory_gets_its_socket_there() {
+        let name = pipe_named(
+            "bohio-abc",
+            with(&[("RUNTIME_DIRECTORY", "/run/bohio:/run/other")]),
+        )
+        .expect("a name");
+        assert_eq!(name.path(), Path::new("/run/bohio/bohio-abc.sock"));
+        let user = pipe_named(
+            "bohio-abc",
+            with(&[
+                ("XDG_RUNTIME_DIR", "/run/user/1"),
+                ("RUNTIME_DIRECTORY", "/run/bohio"),
+            ]),
+        )
+        .expect("a name");
+        assert_eq!(user.path(), Path::new("/run/user/1/bohio-abc.sock"));
+        assert!(pipe_named("bohio-abc", with(&[])).is_err());
+        assert!(pipe_named("bohio-abc", with(&[("RUNTIME_DIRECTORY", "relative")])).is_err());
+    }
 }

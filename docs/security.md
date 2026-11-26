@@ -53,7 +53,7 @@ A running node serves `bohio-via/1`, `bohio-links/1`, `bohio-providers/1` (which
 
 - **Who may connect.** With no `socket_mode`, `socket_group` or `security_descriptor`, only this account may: the pipe or socket admits this user alone, and a client the system does not report as this user is closed unread. Setting any of the three replaces that with the operator's choice, and every account it admits holds all of the above. The node and its clients log `non-default: [control] socket_mode, socket_group or security_descriptor is set` when one is.
 - **Who is serving.** A client (`bohio remote --via`, `bohio links`, `bohio pair`) checks that the endpoint is served by its own account before it sends anything, and refuses another account's. A pipe name is visible to every user on Windows, so another account could bind it first while the node is down, and the node then runs without its control endpoint (it logs a warning); such an account would otherwise read every request (an exec's arguments, a file being written) and could answer `bohio pair` with a key of its own as the one that paired. With access settings in `[control]` the node may run as another account, and the client does not check: who may bind that name is then the boundary.
-- On Unix the default socket is under `XDG_RUNTIME_DIR`, else `TMPDIR`; a directory others may write is refused by the node.
+- On Unix the default socket is under `XDG_RUNTIME_DIR`, else `TMPDIR`, else the first directory of `RUNTIME_DIRECTORY` (what systemd sets for the packaged unit's `RuntimeDirectory=bohio`; a client reaches it with that variable set, or with an endpoint that names the path); a directory others may write is refused by the node.
 
 ## Memory a peer can hold
 

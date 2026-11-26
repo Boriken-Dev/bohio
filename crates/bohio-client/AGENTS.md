@@ -403,7 +403,7 @@ pub fn split_command(line: &str) -> Result<Vec<String>, String>;                
 | Endpoint | Transport |
 | --- | --- |
 | `tcp://host:port` | a socket; a name is resolved and its first address taken; a socket that connected to itself is refused |
-| `pipe://NAME`, `pipe:///path/to.sock`, `pipe://\\.\pipe\NAME` | a Windows named pipe, a Unix domain socket (`NAME` in `$XDG_RUNTIME_DIR` or `$TMPDIR`); an endpoint never names another host's pipe |
+| `pipe://NAME`, `pipe:///path/to.sock`, `pipe://\\.\pipe\NAME` | a Windows named pipe, a Unix domain socket (`NAME` in `$XDG_RUNTIME_DIR`, else `$TMPDIR`, else the first directory of `$RUNTIME_DIRECTORY`); an endpoint never names another host's pipe |
 | `ws://host:port[/path]` | a WebSocket, binary messages, no TLS (plain beyond loopback too: the proof seals what follows) |
 | `wss://host:port[/path]` | the same over TLS, the host's certificate checked by the `ServerTrust`: the system's roots by default (`rustls-platform-verifier`), `ca_files` instead of them, `pins` accepted as they are whatever their name and issuer, either when both are set |
 | `webtransport://host:port[/path]` | WebTransport over QUIC, always TLS, the same trust; a hash pin is the certificate's SHA-256 whatever its key and validity (a browser's pin is stricter: ECDSA P-256, at most 14 days). With a fallback: a failure of the path (not a certificate, permission or protocol failure) before anything crossed dials the WebSocket endpoint, plain or on another host when it was named so |
