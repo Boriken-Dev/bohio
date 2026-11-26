@@ -2403,12 +2403,43 @@ fn power_command(
     let wait = client.reply.max(Duration::from_secs(90));
     let state = bohio_client::power::act(link, args.source.as_deref(), action, Some(wait))
         .map_err(|error| explain(&error))?;
-    println!(
+    println!("{}", power_text(&state, output::json())?);
+    Ok(ExitCode::SUCCESS)
+}
+
+/// What `remote power` prints: `{state, done}` for a program, else the state and whether it is final.
+fn power_text(state: &bohio_proto::power::State, json: bool) -> Result<String, String> {
+    if json {
+        return serde_json::to_string(state).map_err(|_| "the answer cannot be written".to_owned());
+    }
+    Ok(format!(
         "{}{}",
         state.state,
         if state.done { "" } else { " (not finished)" }
-    );
-    Ok(ExitCode::SUCCESS)
+    ))
+}
+
+/// What `remote media` prints: `{slots: [...]}` for a program, else one line for each slot.
+fn media_text(slots: &[bohio_proto::media::Slot], json: bool) -> Result<String, String> {
+    if json {
+        return serde_json::to_string(&serde_json::json!({ "slots": slots }))
+            .map_err(|_| "the answer cannot be written".to_owned());
+    }
+    Ok(slots
+        .iter()
+        .map(|slot| {
+            format!(
+                "{} {} {}",
+                slot.slot,
+                if slot.inserted { "inserted" } else { "empty" },
+                slot.image.as_deref().unwrap_or("-")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(
+            "
+",
+        ))
 }
 
 /// `bohio remote ... media`.
@@ -2434,13 +2465,9 @@ fn media_command(
         MediaOp::Eject(eject) => bohio_client::media::eject(link, source, &eject.slot, wait),
     }
     .map_err(|error| explain(&error))?;
-    for slot in slots {
-        println!(
-            "{} {} {}",
-            slot.slot,
-            if slot.inserted { "inserted" } else { "empty" },
-            slot.image.as_deref().unwrap_or("-")
-        );
+    let text = media_text(&slots, output::json())?;
+    if !text.is_empty() {
+        println!("{text}");
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -2940,5 +2967,37 @@ fn item_failure(path: Option<&str>, message: &str) {
         );
     } else {
         eprintln!("bohio: {}: {message}", path.unwrap_or(""));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{media_text, power_text};
+    use bohio_proto::media::Slot;
+    use bohio_proto::power::State;
+
+    #[test]
+    fn power_and_media_answer_as_objects_under_json_and_as_lines_otherwise() {
+        let state = State {
+            state: "on".to_owned(),
+            done: false,
+        };
+        assert_eq!(power_text(&state, false).unwrap(), "on (not finished)");
+        let json: serde_json::Value =
+            serde_json::from_str(&power_text(&state, true).unwrap()).unwrap();
+        assert_eq!(json["state"], "on");
+        assert_eq!(json["done"], false);
+
+        let slots = vec![Slot {
+            slot: "cd0".to_owned(),
+            inserted: true,
+            image: Some("boot.iso".to_owned()),
+            size: None,
+        }];
+        assert_eq!(media_text(&slots, false).unwrap(), "cd0 inserted boot.iso");
+        let json: serde_json::Value =
+            serde_json::from_str(&media_text(&slots, true).unwrap()).unwrap();
+        assert_eq!(json["slots"][0]["slot"], "cd0");
+        assert_eq!(json["slots"][0]["inserted"], true);
     }
 }

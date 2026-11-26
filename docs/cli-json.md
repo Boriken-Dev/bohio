@@ -7,8 +7,7 @@ no other format switch.
 Exit statuses do not change with `--json`: `0` success, `1` the operation failed, `2` the invocation was wrong (and, for
 `search`, `1` for no match and `2` for something that could not be read; `which` is `1` when a name was not found).
 
-Two commands do not follow the flag yet: `remote power` and `remote media` print their text lines whatever `--json` says (a
-script reads their exit status), and `remote console` is a terminal, so its bytes are its payload. Everything else on this page
+One command does not follow the flag: `remote console` is a terminal, so its bytes are its payload. Everything else on this page
 does what it says.
 
 ## The three kinds of command
@@ -58,6 +57,8 @@ remote stats | object | hostname,uptime_s,cpus,load,memory,swap,disks
 remote which | object | found
 remote write | object | written,hashes
 remote put | object | size,literal_bytes,copied_bytes,wire_bytes,delta,skipped
+remote power | object | state,done
+remote media | object | slots
 remote get | object | size,literal_bytes,copied_bytes,wire_bytes,delta,skipped
 remote sync | object | unchanged,bundled,bundles,singles,deltas,deleted,skipped,bytes,wire_bytes,dry_run,actions,failures
 remote sessions | object | sessions
