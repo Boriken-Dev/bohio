@@ -368,6 +368,10 @@ struct Live {
     streams: usize,
     controlling: bool,
     epoch: u64,
+    /// When the engagement ends if no stream has come back, once its last one closed.
+    due: Option<Instant>,
+    /// Whether a timer thread waits for `due`.
+    timer: bool,
 }
 
 /// The engagements of a node: who is on which session now, and when a notice is due.
@@ -425,6 +429,8 @@ impl Engagements {
                 streams: 0,
                 controlling: false,
                 epoch: 0,
+                due: None,
+                timer: false,
             });
             let fresh = entry.streams == 0 && entry.epoch == 0;
             let escalated = controlling && !entry.controlling;
@@ -447,7 +453,7 @@ impl Engagements {
     }
 
     fn leave(self: &Arc<Self>, key: &Key) {
-        let epoch = {
+        let start_timer = {
             let mut live = self.lock();
             let Some(entry) = live.get_mut(key) else {
                 return;
@@ -457,30 +463,66 @@ impl Engagements {
                 return;
             }
             entry.epoch += 1;
-            entry.epoch
+            if self.linger.is_zero() {
+                None
+            } else {
+                entry.due = Some(Instant::now() + self.linger);
+                // One timer for the engagement, whatever the number of streams that came and went: it looks at `due` again
+                // each time it wakes.
+                Some(!std::mem::replace(&mut entry.timer, true))
+            }
         };
-        if self.linger.is_zero() {
-            self.release(key, epoch);
-            return;
-        }
-        let (engagements, owned) = (Arc::clone(self), key.clone());
-        let started = thread::Builder::new()
-            .name("bohio-gui-presence".to_owned())
-            .spawn(move || {
-                thread::sleep(engagements.linger);
-                engagements.release(&owned, epoch);
-            });
-        if started.is_err() {
-            self.release(key, epoch);
+        match start_timer {
+            None => self.release(key),
+            Some(false) => {}
+            Some(true) => {
+                let (engagements, owned) = (Arc::clone(self), key.clone());
+                let started = thread::Builder::new()
+                    .name("bohio-gui-presence".to_owned())
+                    .spawn(move || engagements.time(&owned));
+                if started.is_err() {
+                    if let Some(entry) = self.lock().get_mut(key) {
+                        entry.timer = false;
+                    }
+                    self.release(key);
+                }
+            }
         }
     }
 
-    /// Ends the engagement when nothing happened to it since `epoch`.
-    fn release(&self, key: &Key, epoch: u64) {
+    /// Waits until the engagement's `due` time has passed with no stream, then ends it; stops when a stream came back.
+    fn time(&self, key: &Key) {
+        loop {
+            let wait = {
+                let mut live = self.lock();
+                let Some(entry) = live.get_mut(key) else {
+                    return;
+                };
+                match entry.due {
+                    Some(due) if entry.streams == 0 => {
+                        let now = Instant::now();
+                        if now >= due {
+                            break;
+                        }
+                        due - now
+                    }
+                    _ => {
+                        entry.timer = false;
+                        return;
+                    }
+                }
+            };
+            thread::sleep(wait);
+        }
+        self.release(key);
+    }
+
+    /// Ends the engagement when it has no stream.
+    fn release(&self, key: &Key) {
         let ended = {
             let mut live = self.lock();
             match live.get(key) {
-                Some(entry) if entry.streams == 0 && entry.epoch == epoch => live.remove(key),
+                Some(entry) if entry.streams == 0 => live.remove(key),
                 _ => None,
             }
         };
@@ -499,5 +541,75 @@ impl Drop for Hold {
         if let Some(engagements) = &self.engagements {
             engagements.leave(&self.key);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicUsize;
+
+    use super::*;
+
+    #[derive(Default)]
+    struct Counting {
+        engaged: AtomicUsize,
+        released: AtomicUsize,
+    }
+
+    impl Presence for Counting {
+        fn approve(&self, _: &ApprovalRequest<'_>) -> Approval {
+            Approval::Allow
+        }
+
+        fn engaged(&self, _: &Engagement) {
+            self.engaged.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn released(&self, _: &Engagement) {
+            self.released.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn peer() -> PeerId {
+        cabuya::auth::Identity::generate(cabuya::auth::Method::DEFAULT)
+            .expect("an identity")
+            .peer_id()
+    }
+
+    #[test]
+    fn many_short_streams_of_one_peer_wait_on_one_timer_and_end_once_after_the_last() {
+        let presence = Arc::new(Counting::default());
+        let linger = Duration::from_millis(300);
+        let engagements = Engagements::new(presence.clone(), linger, true);
+        let who = peer();
+        for _ in 0..1000 {
+            drop(engagements.enter(who, "default", false));
+        }
+        let timers = engagements
+            .lock()
+            .values()
+            .filter(|entry| entry.timer)
+            .count();
+        assert_eq!(timers, 1, "a timer for each close");
+        assert_eq!(presence.engaged.load(Ordering::SeqCst), 1);
+        assert_eq!(presence.released.load(Ordering::SeqCst), 0);
+        // A stream that comes back inside the linger keeps the engagement, and the one after it ends it, once.
+        thread::sleep(linger / 2);
+        let held = engagements.enter(who, "default", false);
+        thread::sleep(linger);
+        assert_eq!(
+            presence.released.load(Ordering::SeqCst),
+            0,
+            "ended under a stream"
+        );
+        drop(held);
+        let until = Instant::now() + Duration::from_secs(10);
+        while presence.released.load(Ordering::SeqCst) == 0 {
+            assert!(Instant::now() < until, "never released");
+            thread::sleep(Duration::from_millis(20));
+        }
+        thread::sleep(linger);
+        assert_eq!(presence.released.load(Ordering::SeqCst), 1);
+        assert_eq!(presence.engaged.load(Ordering::SeqCst), 1);
     }
 }
