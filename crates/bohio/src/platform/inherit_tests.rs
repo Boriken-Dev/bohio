@@ -42,6 +42,10 @@ fn connected() -> (TcpStream, TcpStream, TcpStream) {
 
 #[test]
 fn a_child_does_not_keep_a_connection_open_by_holding_a_clone_of_its_socket() {
+    #[cfg(windows)]
+    let _quiet = super::SPAWN_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let (mut client, server, clone) = connected();
     let child = spawn(sleeper()).expect("the child starts");
     drop(server);
@@ -70,6 +74,10 @@ fn a_child_does_not_keep_a_connection_open_by_holding_a_clone_of_its_socket() {
 
 #[test]
 fn killing_children_does_not_reset_the_connections_open_beside_them() {
+    #[cfg(windows)]
+    let _quiet = super::SPAWN_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // Each transfer ends with the server dropping its socket and a clone of it, as a host does with
     // a stream it served, while another thread starts children and ends them.
     let stop = std::sync::atomic::AtomicBool::new(false);

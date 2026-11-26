@@ -655,22 +655,14 @@ mod real_tests {
 
     #[test]
     fn the_security_api_reads_the_lists_icacls_writes() {
+        // `icacls` is a child of this process: not while a test holds connections open.
+        let _quiet = crate::platform::SPAWN_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let directory = tempfile::tempdir().expect("a directory");
         // A temporary directory inherits whatever groups the machine gives %TEMP% (a sandbox's, for one), so this one is
         // narrowed to this account, SYSTEM and the administrators before a file is made in it.
-        let me = crate::platform::winacl::read(directory.path())
-            .expect("the list")
-            .me;
-        icacls(
-            directory.path(),
-            &[
-                "/inheritance:r",
-                "/grant:r",
-                &format!("*{me}:(OI)(CI)F"),
-                "*S-1-5-18:(OI)(CI)F",
-                "*S-1-5-32-544:(OI)(CI)F",
-            ],
-        );
+        crate::private_dir::narrow(directory.path());
         let file = directory.path().join("layer.cfg");
         std::fs::write(&file, "# layer\n").expect("a file");
         let listed = crate::platform::winacl::read(&file).expect("the list");

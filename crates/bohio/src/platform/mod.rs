@@ -488,5 +488,10 @@ mod batch_tests {
 
 #[cfg(all(test, windows))]
 mod inherit_tests;
+
+/// Held by a unit test while it holds connections open (so no test starts a process meanwhile) and by one that starts
+/// a child with the standard library, which inherits every inheritable handle of this process.
+#[cfg(all(test, windows))]
+pub(crate) static SPAWN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[cfg(all(test, target_os = "linux"))]
 mod signal_tests;

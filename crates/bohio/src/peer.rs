@@ -653,6 +653,10 @@ mod tests {
 mod windows_tests {
     #[test]
     fn a_rewritten_layer_keeps_its_own_access_list() {
+        // `icacls` is a child of this process: not while a test holds connections open.
+        let _quiet = crate::platform::SPAWN_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let directory = tempfile::tempdir().expect("a directory");
         let file = directory.path().join("layer.cfg");
         std::fs::write(&file, "# layer\n").expect("the layer");
