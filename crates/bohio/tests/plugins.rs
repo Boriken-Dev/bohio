@@ -345,12 +345,11 @@ fn an_empty_path_and_a_layer_above_the_lowest_weakening_the_check_are_refused() 
     let above = dir.path().join("b.cfg");
     std::fs::write(&lowest, "").expect("a layer");
     std::fs::write(&above, "[providers]\ncheck_access = false\n").expect("a layer");
-    let Err(error) = bohio::config::Layers::load(&[lowest, above]) else {
-        panic!("a higher layer may not weaken the check");
-    };
+    // The key is ignored (and logged), not read: the check stays on.
+    let layered = bohio::config::Layers::load(&[lowest, above]).expect("the layers load");
     assert!(
-        matches!(&error, ConfigError::Invalid { key, .. } if key == "providers.check_access"),
-        "{error}"
+        layered.config.providers.check_access,
+        "a higher layer may not weaken the check"
     );
 }
 
@@ -414,12 +413,12 @@ fn the_loader_settings_default_to_the_strict_choice_and_only_the_lowest_layer_na
     ] {
         let above = dir.path().join("b.cfg");
         std::fs::write(&above, format!("[providers]\n{key}\n")).expect("a layer");
-        let Err(error) = bohio::config::Layers::load(&[lowest.clone(), above]) else {
-            panic!("a higher layer may not set {key}");
-        };
+        let layered = bohio::config::Layers::load(&[lowest.clone(), above])
+            .expect("the layers load: the key is ignored");
         assert!(
-            matches!(&error, ConfigError::Invalid { key: named, .. } if named.starts_with("providers.")),
-            "{error}"
+            layered.config.providers.ld_so.is_none()
+                && !layered.config.providers.allow_reserved_signal_handlers,
+            "a higher layer may not set {key}"
         );
     }
 }
