@@ -33,9 +33,16 @@ struct Host {
     id: PeerId,
     client: Arc<Node>,
     client_id: PeerId,
+    grants: Arc<MemoryGrants>,
     link: PeerLink,
     channels: [Arc<StreamChannel>; 2],
     threads: Vec<JoinHandle<()>>,
+}
+
+impl Host {
+    fn set_grant(&self, grant: Grant) {
+        self.grants.set(self.client_id, grant);
+    }
 }
 
 impl Drop for Host {
@@ -108,6 +115,7 @@ fn host(gui: GuiConfig, configure: impl FnOnce(Node) -> Node) -> Host {
         id,
         client,
         client_id,
+        grants,
         link,
         channels: [dial_end, answer_end],
         threads,
@@ -432,4 +440,58 @@ fn denying_and_the_timeout_are_not_approved_and_the_notice_action_allows() {
     stop.store(true, Ordering::SeqCst);
     serving.join().unwrap();
     let _ = host.client.links();
+}
+
+#[test]
+fn an_approval_covers_what_was_approved_and_not_more() {
+    let presence = Arc::new(Recording {
+        answer: Some(Approval::Allow),
+        ..Recording::default()
+    });
+    let local = GuiConfig {
+        approval: ApprovalMode::Local,
+        ..config()
+    };
+    let host = host(local, |node| node.with_presence(presence.clone()));
+    host.set_grant(Grant::allowing([
+        Permission::GuiView,
+        Permission::GuiInput,
+        Permission::GuiClipboard,
+    ]));
+    let asked = || presence.asked.load(Ordering::SeqCst);
+    assert!(Gui::open(&host.link, &GuiRequest::new([Want::View])).is_ok());
+    assert_eq!(asked(), 1);
+    // The same again, and a part of what was allowed, are not asked.
+    assert!(Gui::open(&host.link, &GuiRequest::new([Want::View])).is_ok());
+    assert_eq!(asked(), 1, "what was allowed was asked again");
+    // Control and the clipboard were never allowed: each is asked.
+    assert!(Gui::open(&host.link, &GuiRequest::new([Want::View, Want::Input])).is_ok());
+    assert_eq!(
+        asked(),
+        2,
+        "consent to view was spent as consent to control"
+    );
+    assert!(Gui::open(&host.link, &GuiRequest::new([Want::View, Want::Clipboard])).is_ok());
+    assert_eq!(
+        asked(),
+        3,
+        "consent to view was spent as consent to the clipboard"
+    );
+    // What has now been allowed is not asked again.
+    assert!(Gui::open(&host.link, &GuiRequest::new([Want::Input, Want::Clipboard])).is_ok());
+    assert_eq!(asked(), 3);
+}
+
+#[test]
+fn the_asking_notice_names_the_clipboard() {
+    let peer = Identity::generate(Method::DEFAULT)
+        .expect("an identity")
+        .peer_id();
+    let body = |want: &[Want]| bohio::gui::presence::asking_notice(&peer, want).body;
+    assert!(body(&[Want::View]).ends_with("asks to view this screen"));
+    assert!(
+        body(&[Want::View, Want::Clipboard])
+            .ends_with("asks to view this screen and its clipboard")
+    );
+    assert!(body(&[Want::Input]).ends_with("asks to control this screen"));
 }

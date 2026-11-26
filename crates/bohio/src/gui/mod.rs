@@ -101,6 +101,9 @@ use crate::stream::{chunk_size, send_waiting};
 use limits::{InputRate, PerPeerRate};
 use presence::{Engagements, NotifierCell};
 
+/// What the person allowed per peer and session, with when.
+type Allowed = HashMap<(String, String), Vec<(Want, Instant)>>;
+
 /// What a node holds for its desktop: the desktop itself, the bounds shared by every stream, the engagements and the
 /// approvals.
 pub struct GuiState {
@@ -113,7 +116,9 @@ pub struct GuiState {
     engagements: Arc<Engagements>,
     approvals: Arc<Approvals>,
     notifier: Arc<NotifierCell>,
-    allowed: Mutex<HashMap<(String, String), Instant>>,
+    /// What the person allowed, per peer and session, and when: a later open is not asked again only for what it already
+    /// allowed.
+    allowed: Mutex<Allowed>,
     helpers: helper::Helpers,
 }
 
@@ -188,18 +193,33 @@ impl GuiState {
         call()
     }
 
-    fn allowed_within(&self, peer: &PeerId, session: &str, ttl: Duration) -> bool {
+    /// Whether the person already allowed every item of `wants` to this peer on this session within `ttl`.
+    fn allowed_within(&self, peer: &PeerId, session: &str, wants: &[Want], ttl: Duration) -> bool {
         let mut allowed = self.allowed.lock().unwrap_or_else(PoisonError::into_inner);
         let now = Instant::now();
-        allowed.retain(|_, at| now.duration_since(*at) < ttl);
-        allowed.contains_key(&(peer.to_string(), session.to_owned()))
+        allowed.retain(|_, items| {
+            items.retain(|(_, at)| now.duration_since(*at) < ttl);
+            !items.is_empty()
+        });
+        allowed
+            .get(&(peer.to_string(), session.to_owned()))
+            .is_some_and(|items| {
+                wants
+                    .iter()
+                    .all(|want| items.iter().any(|(item, _)| item == want))
+            })
     }
 
-    fn remember(&self, peer: &PeerId, session: &str) {
-        self.allowed
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert((peer.to_string(), session.to_owned()), Instant::now());
+    fn remember(&self, peer: &PeerId, session: &str, wants: &[Want]) {
+        let now = Instant::now();
+        let mut allowed = self.allowed.lock().unwrap_or_else(PoisonError::into_inner);
+        let items = allowed
+            .entry((peer.to_string(), session.to_owned()))
+            .or_default();
+        for want in wants {
+            items.retain(|(item, _)| item != want);
+            items.push((*want, now));
+        }
     }
 
     /// What `info` says of the desktop to a peer with `grant`: the sessions only when it holds `gui.view` or
@@ -542,7 +562,7 @@ fn approve(channel: &dyn Channel, context: &Context<'_>, wants: &[Want]) -> Resu
         return Ok(());
     }
     let state = context.state;
-    if state.allowed_within(&context.peer, context.session, config.approval_ttl.0) {
+    if state.allowed_within(&context.peer, context.session, wants, config.approval_ttl.0) {
         return Ok(());
     }
     let cancelled = AtomicBool::new(false);
@@ -572,7 +592,7 @@ fn approve(channel: &dyn Channel, context: &Context<'_>, wants: &[Want]) -> Resu
     });
     match decision {
         Approval::Allow => {
-            state.remember(&context.peer, context.session);
+            state.remember(&context.peer, context.session, wants);
             Ok(())
         }
         Approval::Deny => Err(denied("not approved")),

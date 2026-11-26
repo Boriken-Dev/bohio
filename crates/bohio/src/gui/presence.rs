@@ -147,10 +147,15 @@ pub fn released_notice(engagement: &Engagement) -> Notice {
 /// The notice of a request that waits for the person.
 pub fn asking_notice(peer: &PeerId, want: &[Want]) -> Notice {
     let controlling = want.contains(&Want::Input);
+    let clipboard = if want.contains(&Want::Clipboard) {
+        " and its clipboard"
+    } else {
+        ""
+    };
     Notice {
         title: "Bohío".to_owned(),
         body: format!(
-            "peer {} asks to {} this screen",
+            "peer {} asks to {} this screen{clipboard}",
             short_id(peer),
             if controlling { "control" } else { "view" }
         ),
