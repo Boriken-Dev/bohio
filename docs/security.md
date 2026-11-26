@@ -262,7 +262,7 @@ A desktop helper that the node starts through an exec source (a session named `e
   run on that machine, and a peer holding the source's files reads and writes whatever that account can: the node's own grants (program
   list, roots) are decided on the node, but the machine's own permissions are the only limit behind them. The node holds the means to log in
   (an agent's signing, a key file, a password), so every peer that reaches the source acts as that account; give a source to a peer as you
-  would give it that account. Under a program list the program is the one the host finds at that name on the account's `PATH`, not the node's.
+  would give it that account. A source that logs in as `user = root` is logged `non-default:` at start (it is not refused: a cross-site run may need it), because every peer with `exec` on it then acts as root on that machine. Under a program list the program is the one the host finds at that name on the account's `PATH`, not the node's.
   Every word of a command is quoted for a POSIX shell, so the account's login shell must be one: `login_shell_check` (`true`) runs a probe line once
   and refuses the start (`unsupported`) under `fish`, `cmd.exe` or PowerShell, where a peer's argument could end its quote and run another command.
   `login_shell_check = false` skips the probe (logged `non-default:`) and is right only where the shell is known to be POSIX. A variable name that is

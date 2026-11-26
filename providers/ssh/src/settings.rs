@@ -635,6 +635,9 @@ impl SshSettings {
                 self.host_key_check
             ));
         }
+        if self.user.as_deref() == Some("root") {
+            found.push("user = root: every peer of this source acts as root there".to_owned());
+        }
         if span(&self.keepalive).is_some_and(|keepalive| keepalive.is_zero()) {
             found.push(
                 "keepalive = 0s: a dead connection is found only when something is sent".to_owned(),
@@ -691,6 +694,32 @@ mod tests {
         assert_eq!(span("2"), Some(Duration::from_secs(2)));
         assert_eq!(span("1h"), Some(Duration::from_secs(3600)));
         assert_eq!(span("soon"), None);
+    }
+
+    #[test]
+    fn a_source_that_logs_in_as_root_says_so() {
+        let mut settings = super::SshSettings::new("host.invalid");
+        assert!(
+            settings
+                .non_default()
+                .iter()
+                .all(|line| !line.starts_with("user"))
+        );
+        settings.user = Some("root".to_owned());
+        let lines = settings.non_default();
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "user = root: every peer of this source acts as root there"),
+            "{lines:?}"
+        );
+        settings.user = Some("someone".to_owned());
+        assert!(
+            settings
+                .non_default()
+                .iter()
+                .all(|line| !line.starts_with("user"))
+        );
     }
 
     #[test]
