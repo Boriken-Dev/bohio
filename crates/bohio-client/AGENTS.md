@@ -237,6 +237,7 @@ impl Gui {
     pub fn screen(&self) -> Option<Screen>;   // Screen { width, height, rgb }: the frame the updates built (feature `screen`, on with the host crate `gui`; None without it)
     pub fn ack(&self, frame: u64) -> Result<(), Error>;   pub fn set_auto_ack(&self, on: bool);   pub fn updates(&self) -> u64;
     pub fn set_screen_limits(&self, max_rect_bytes: u64, max_frame_pixels: u64);   // feature `screen`; defaults 32 MiB each (`[gui] max_rect_bytes`, `max_snapshot_pixels`)
+    pub fn set_image_limit(&self, max_bytes: u64);   // a snapshot whose announced length is over it is Error::Screen at the header; default 32 MiB (`[gui] max_rect_bytes`); `bohio remote gui` sets it from that key
     pub fn close(&self);
 }
 pub struct SnapshotOptions { display, region, format, quality, max_width, max_height, cursor, settle }   // Default
