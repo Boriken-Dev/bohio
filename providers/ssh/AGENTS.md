@@ -34,7 +34,7 @@ Provider id `ssh`. `[source.<name>] provider = "ssh"` and:
 | `user` | `USER` / `USERNAME` | the account on the host |
 | `identity` | first of `~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa` that exists | a private key file (`~/` expanded) |
 | `agent` | `true` | try the keys an agent holds first: the OpenSSH agent's pipe `\\.\pipe\openssh-ssh-agent` (or the pipe `SSH_AUTH_SOCK` names) then Pageant on Windows, `SSH_AUTH_SOCK` elsewhere; no agent is not an error |
-| `password`, `passphrase` | none | **references** (`file:PATH`, `credential:NAME`, `keyring:SERVICE/ACCOUNT`), never the secret; the node reads them when it builds the source |
+| `password`, `passphrase` | none | **references** (`file:PATH` or `credential:NAME`), never the secret; the node reads them when it builds the source |
 | `host_key` | none | `sha256:HEX` of the host's public key blob; a pinned key is the only one accepted (except under `off`) |
 | `known_hosts` | `~/.ssh/known_hosts` | read by `strict` and `tofu` |
 | `host_key_check` | `strict` | `strict` (pinned or in known_hosts), `tofu` (a host with no entry is trusted at first contact and that key is held for the life of the source), `off` (any key) |

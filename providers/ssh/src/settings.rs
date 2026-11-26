@@ -42,7 +42,7 @@ pub struct SshSettings {
     #[map(default = true)]
     #[schema(advanced)]
     pub agent: bool,
-    /// Where the account's password is kept (`file:PATH`, `credential:NAME`, `keyring:SERVICE/ACCOUNT`), never the
+    /// Where the account's password is kept (`file:PATH` or `credential:NAME`), never the
     /// password. Tried after the keys.
     #[schema(sensitive)]
     pub password: Option<String>,

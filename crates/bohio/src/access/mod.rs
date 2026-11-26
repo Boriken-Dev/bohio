@@ -1159,7 +1159,7 @@ fn settings_of<K: ?Sized + bohio_api::guatiao::library::Kind>(
             // Never quote what was written: it may be the secret itself.
             return Err((
                 at,
-                "is a secret and must name where it is kept (`file:PATH`, `credential:NAME` or `keyring:SERVICE/ACCOUNT`), never hold it (`[secrets] allow_literal = true` allows a literal)".to_owned(),
+                "is a secret and must name where it is kept (`file:PATH` or `credential:NAME`), never hold it (`[secrets] allow_literal = true` allows a literal)".to_owned(),
             ));
         };
         let resolved = match mode {

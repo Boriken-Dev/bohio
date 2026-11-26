@@ -634,7 +634,7 @@ impl Node {
         self
     }
 
-    /// Says how the references of sensitive source settings are read (`file:`, `credential:`, `keyring:`): the library reads
+    /// Says how the references of sensitive source settings are read (`file:`, `credential:`): the library reads
     /// no file and no environment variable, so the embedder's resolver does. Sources that were waiting for it are built.
     ///
     /// # Errors

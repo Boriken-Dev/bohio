@@ -260,10 +260,10 @@ A desktop helper that the node starts through an exec source (a session named `e
   newer attach supersedes an older one, and what the far end echoes of what one peer typed (a password a serial login does not hide) is in the scrollback the next peer reads (`[sessions] scrollback`).
   Give a console only to peers that may see each other's session.
 - **Secrets are references.** A setting a provider's schema marks sensitive (`#[schema(sensitive)]`) must hold `file:PATH`,
-  `credential:NAME` or `keyring:SERVICE/ACCOUNT`; a literal is refused naming the key and never quoted. The `bohio` command reads
+  `credential:NAME`; a literal is refused naming the key and never quoted. The `bohio` command reads
   `file:` references only from a file that no other account may read, judged on the file once it is open and by the process's effective user (mode `0600` and its owner, on Unix; no access entry for
   others on Windows) and `credential:` from a file of `$CREDENTIALS_DIRECTORY`, none larger than `[secrets] max_bytes` (`65536`);
-  this build has no keyring and refuses `keyring:`. A secret is resolved when its source is built, held in a `Secret` that prints
+  there is no keyring kind. A secret is resolved when its source is built, held in a `Secret` that prints
   `[redacted]`, and handed to the provider, which then holds it: a provider's own care for it is the provider's.
 - **Where a `file:` secret may live.** By default it must be the node's own account's and closed to the group and others (mode `0600`; on Windows an access list that admits no other user). `[secrets] check_access = false` (lowest layer only, logged `non-default:`) reads one that is another account's or open: its owner then chooses the secret a provider sends, and anyone it admits can read it. `[secrets] group_readable = true` (lowest layer only, logged `non-default:`; Unix) also accepts `0640` owned by the node's account or root, for the `root:bohio 0640` pattern: every member of the file's group can read the secret.
 - **Literal secrets are refused.** A sensitive setting holds a reference, never the secret. `[secrets] allow_literal = true` (lowest layer only, logged `non-default:`) lets it hold the secret itself: the secret is then in the configuration file and every backup of it, readable by whoever can read them.

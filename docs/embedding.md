@@ -53,7 +53,7 @@ providers, and `with_access(Capability, names)` says which serve each capability
 gives the node its sources (call it first), `Node::with_desktop(desktop)` is the shortcut that adds the application's own desktop
 as the source `app` and makes it the default, `Node::sources()` reaches them for `Sources::reconfigure` (a source whose table did
 not change keeps its instance; one that changed is built anew, the old one retired, and what runs on it ends `unavailable`), and
-`Node::with_secrets(resolver)` says how a sensitive setting's `file:`, `credential:` or `keyring:` reference is read: the
+`Node::with_secrets(resolver)` says how a sensitive setting's `file:` or `credential:` reference is read: the
 library reads no file and no environment variable, so a source whose settings hold a reference waits for it. `[access] fs` and
 `exec` are read when the node is built. [Sources and providers](providers.md) shows how to write one.
 

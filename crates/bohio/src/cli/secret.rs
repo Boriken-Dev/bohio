@@ -175,9 +175,6 @@ impl SecretResolver for CommandSecrets {
                     "the credential",
                 )
             }
-            Some(("keyring", _)) => Err(SecretError::new(
-                "this build has no keyring: use file: or credential:",
-            )),
             _ => Err(SecretError::new("that is not a reference to a secret")),
         }
     }

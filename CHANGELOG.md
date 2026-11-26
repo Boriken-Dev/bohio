@@ -136,6 +136,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- `keyring:` secret references are removed: the kind was refused by every build and is no longer a name `split` knows, so `keyring:x` is a literal like any other text. Use `file:` or `credential:`.
 - `[secrets] allow_literal` (default `false`, lowest layer only, logged `non-default:`) lets a sensitive setting hold the secret itself; a literal stays refused otherwise, and the refusal now says how to allow it.
 - `[secrets] check_access` (default `true`) and `[secrets] group_readable` (default `false`), lowest layer only, let a `file:` secret be another account's or readable by its group, logged `non-default:`; neither could be weakened before.
 - A `file:` secret reference is judged on the file once it is open, by the effective user, so a file swapped in at the path between the check and the read is not the one that was approved.

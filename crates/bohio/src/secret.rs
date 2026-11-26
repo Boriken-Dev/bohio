@@ -52,7 +52,7 @@ impl SecretError {
     }
 }
 
-/// Turns a reference (`file:PATH`, `credential:NAME`, `keyring:SERVICE/ACCOUNT`) into its secret.
+/// Turns a reference (`file:PATH` or `credential:NAME`) into its secret.
 pub trait SecretResolver: Send + Sync {
     /// The secret `reference` names, of at most `max_bytes` bytes (`[secrets] max_bytes`).
     ///
@@ -76,7 +76,7 @@ impl SecretResolver for NoSecrets {
 }
 
 /// The kinds of reference, as `kind:rest`.
-pub const KINDS: [&str; 3] = ["file", "credential", "keyring"];
+pub const KINDS: [&str; 2] = ["file", "credential"];
 
 /// Splits a reference into its kind and the rest, `None` when the text is not one (a secret written out is not).
 #[must_use]
@@ -103,5 +103,6 @@ mod tests {
         assert_eq!(split("hunter2"), None);
         assert_eq!(split("file:"), None);
         assert_eq!(split("other:thing"), None);
+        assert_eq!(split("keyring:svc/me"), None, "there is no keyring kind");
     }
 }
