@@ -157,6 +157,8 @@ pub(super) struct Entry {
     user: Option<String>,
     /// The exec source that runs the helper, when one does: a peer reaches the session only with that source.
     source: Option<String>,
+    /// The peers with a relayed stream on this helper now, and how many each: the only ones whose audit events it may report.
+    relaying: Mutex<std::collections::HashMap<String, (usize, usize)>>,
     opener: Opener,
     state: Mutex<State>,
 }
@@ -180,11 +182,62 @@ impl Entry {
         }
     }
 
+    /// Notes a relayed stream of `peer`; the helper may report events for it while the stream runs, and until its `ended`.
+    pub(super) fn relay(self: &Arc<Self>, peer: String) -> Relaying {
+        let mut relaying = self.relaying.lock().unwrap_or_else(PoisonError::into_inner);
+        let counts = relaying.entry(peer.clone()).or_default();
+        counts.0 += 1;
+        counts.1 += 1;
+        drop(relaying);
+        Relaying {
+            entry: Arc::clone(self),
+            peer,
+        }
+    }
+
+    /// Whether the helper may report an event for `peer` now. `last` is an event that ends a stream, which is the last
+    /// one it owes for it.
+    fn accepts_event(&self, peer: &str, last: bool) -> bool {
+        let mut relaying = self.relaying.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(counts) = relaying.get_mut(peer) else {
+            return false;
+        };
+        if last {
+            counts.1 = counts.1.saturating_sub(1);
+            if *counts == (0, 0) {
+                relaying.remove(peer);
+            }
+        }
+        true
+    }
+
     fn active(&self) -> bool {
         self.state
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .active
+    }
+}
+
+/// A relayed stream of one peer on a helper, noted while it runs.
+pub(super) struct Relaying {
+    entry: Arc<Entry>,
+    peer: String,
+}
+
+impl Drop for Relaying {
+    fn drop(&mut self) {
+        let mut relaying = self
+            .entry
+            .relaying
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(counts) = relaying.get_mut(&self.peer) {
+            counts.0 -= 1;
+            if *counts == (0, 0) {
+                relaying.remove(&self.peer);
+            }
+        }
     }
 }
 
@@ -481,6 +534,7 @@ fn relayed(
         .opener
         .open_stream(protocol::GUI, &open)
         .map_err(|_| session_ended())?;
+    let _relaying = entry.relay(context.peer.to_string());
     let poll = config.poll_interval.0.max(Duration::from_millis(1));
     let done = AtomicBool::new(false);
     let gone = Gone::default();
@@ -587,6 +641,7 @@ pub struct HelperListener {
     listener: PipeListener,
     endpoint: Endpoint,
     accounts: Vec<String>,
+    refused_log: Duration,
 }
 
 impl HelperListener {
@@ -633,6 +688,7 @@ impl HelperListener {
             listener,
             endpoint: Endpoint::Pipe(name),
             accounts,
+            refused_log: config.refused_log_interval.0,
         }))
     }
 
@@ -709,6 +765,7 @@ impl Node {
     ///
     /// The listener's error.
     pub fn serve_helpers(&self, helpers: &HelperListener, stop: &AtomicBool) -> io::Result<()> {
+        let (mut logged, mut unlisted) = (None, 0_u64);
         let parts = self.gui_parts();
         thread::scope(|scope| {
             while !stop.load(Ordering::SeqCst) {
@@ -722,17 +779,24 @@ impl Node {
                 };
                 let identity = connection.peer().ok();
                 let Some(account) = admitted(identity.as_ref(), &helpers.accounts) else {
-                    tracing::info!(
-                        "a connection to the helper endpoint from an account that is not listed was closed unread"
-                    );
-                    parts.events.event(&NodeEvent::Gui {
-                        peer: parts.host,
-                        session: "helper".to_owned(),
-                        change: GuiChange::Refused {
-                            reason: "a helper connection from an account that is not listed was closed unread"
-                                .to_owned(),
-                        },
-                    });
+                    unlisted += 1;
+                    if logged.is_none_or(|at: Instant| at.elapsed() >= helpers.refused_log) {
+                        logged = Some(Instant::now());
+                        tracing::info!(
+                            count = unlisted,
+                            "connections to the helper endpoint from an account that is not listed were closed unread"
+                        );
+                        parts.events.event(&NodeEvent::Gui {
+                            peer: parts.host,
+                            session: "helper".to_owned(),
+                            change: GuiChange::Refused {
+                                reason: format!(
+                                    "{unlisted} helper connection(s) from an account that is not listed were closed unread"
+                                ),
+                            },
+                        });
+                        unlisted = 0;
+                    }
                     continue;
                 };
                 let Some(permit) = parts.state.helpers.slots.acquire() else {
@@ -866,6 +930,7 @@ fn hello(held: &Held<'_>, stream: &dyn LinkStream, accepted: &Accepted) {
         id: format!("{}:{}", held.account, hello.session),
         user: hello.user,
         source: held.account.strip_prefix("exec:").map(str::to_owned),
+        relaying: Mutex::default(),
         opener: held.opener.clone(),
         state: Mutex::new(hello.state),
     });
@@ -877,7 +942,14 @@ fn hello(held: &Held<'_>, stream: &dyn LinkStream, accepted: &Accepted) {
                     *entry.state.lock().unwrap_or_else(PoisonError::into_inner) = state;
                 }
                 Ok(HelperMessage::Event { peer, change }) => {
-                    if let Ok(peer) = peer.parse::<PeerId>() {
+                    // A helper reports what it served for a peer that has a stream on it now, and no other peer's.
+                    let last = matches!(
+                        change,
+                        HelperChange::Ended { .. } | HelperChange::Refused { .. }
+                    );
+                    if !entry.accepts_event(&peer, last) {
+                        tracing::debug!("a helper reported an event for a peer it is not serving");
+                    } else if let Ok(peer) = peer.parse::<PeerId>() {
                         held.events.event(&NodeEvent::Gui {
                             peer,
                             session: entry.id.clone(),
@@ -1326,6 +1398,7 @@ mod tests {
             id: "1000:main".to_owned(),
             user: None,
             source: None,
+            relaying: Mutex::default(),
             opener,
             state: Mutex::new(State::default()),
         }));
@@ -1333,6 +1406,43 @@ mod tests {
         assert!(
             helpers.find("main", |_| true).is_none(),
             "the helper's own name alone names nothing"
+        );
+    }
+}
+
+#[cfg(test)]
+mod relaying_tests {
+    use super::*;
+
+    fn entry() -> Arc<Entry> {
+        let (opener, _opens) = Opener::pair(&Settings::default());
+        Arc::new(Entry {
+            id: "1000:main".to_owned(),
+            user: None,
+            source: None,
+            relaying: Mutex::default(),
+            opener,
+            state: Mutex::new(State::default()),
+        })
+    }
+
+    #[test]
+    fn a_helper_may_report_only_for_a_peer_it_is_serving_and_the_last_event_of_its_stream() {
+        let entry = entry();
+        assert!(
+            !entry.accepts_event("stranger", false),
+            "no stream, no word"
+        );
+        let stream = entry.relay("peer".to_owned());
+        assert!(entry.accepts_event("peer", false));
+        assert!(!entry.accepts_event("stranger", true));
+        drop(stream);
+        // The stream ended on the node's side; the helper's `ended` can still arrive, once.
+        assert!(entry.accepts_event("peer", false));
+        assert!(entry.accepts_event("peer", true));
+        assert!(
+            !entry.accepts_event("peer", false),
+            "nothing is owed any more"
         );
     }
 }

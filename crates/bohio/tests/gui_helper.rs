@@ -821,3 +821,33 @@ fn a_peer_reaches_the_helper_of_an_exec_source_only_with_that_source() {
         let _ = handle.join();
     }
 }
+
+#[test]
+fn the_events_of_a_relayed_stream_reach_the_owner_including_the_last() {
+    let mut world = World::new(&[me()], all(), false);
+    let (stop, helper) = world.helper(&me(), GuiConfig::default());
+    let gui = world.open(&[Want::View]).expect("opens");
+    let snapshot = gui
+        .snapshot(&SnapshotOptions::default(), Some(WAIT))
+        .expect("a snapshot");
+    assert_eq!(snapshot.header.width, 320);
+    gui.close();
+    // The events of the stream the node relayed reach the owner, the last one too (it can arrive after the stream ended).
+    let until = Instant::now() + WAIT;
+    let ended = loop {
+        let events = world.host.events.gui();
+        if let Some(ended) = events
+            .iter()
+            .find(|change| matches!(change, GuiChange::Ended { .. }))
+        {
+            break ended.clone();
+        }
+        assert!(Instant::now() < until, "no ended event: {events:?}");
+        thread::sleep(Duration::from_millis(50));
+    };
+    assert!(
+        matches!(ended, GuiChange::Ended { snapshots: 1, .. }),
+        "{ended:?}"
+    );
+    stop_helper(&stop, helper);
+}

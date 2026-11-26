@@ -167,6 +167,9 @@ pub struct GuiConfig {
     pub helper_endpoint: Option<String>,
     /// The most helper connections the node holds at once; one past it is closed unread. At least 1. Default `8`.
     pub max_helpers: usize,
+    /// How often the node logs (and tells its owner) that it closed a helper connection unread: once in this long, with how
+    /// many there were, so an account that keeps connecting cannot flood the log. Not zero. Default `1m`.
+    pub refused_log_interval: Span,
     /// What `bohio gui-helper` accepts as the account that runs the node: a SID or name (Windows), a uid or name (Unix).
     /// Default `NT AUTHORITY\LocalService` (`S-1-5-19`) on Windows and `bohio` on Unix. Read from the lowest layer only.
     pub node_account: Option<String>,
@@ -249,6 +252,7 @@ impl Default for GuiConfig {
             helper_accounts: Vec::new(),
             helper_endpoint: None,
             max_helpers: 8,
+            refused_log_interval: Span(Duration::from_secs(60)),
             node_account: None,
             source: Vec::new(),
             source_retry: Span(Duration::from_secs(10)),
@@ -327,6 +331,10 @@ impl GuiConfig {
             ("gui.state_interval", self.state_interval.0.is_zero()),
             ("gui.idle_timeout", self.idle_timeout.0.is_zero()),
             ("gui.approval_timeout", self.approval_timeout.0.is_zero()),
+            (
+                "gui.refused_log_interval",
+                self.refused_log_interval.0.is_zero(),
+            ),
             ("gui.refine_after", self.refine_after.0.is_zero()),
         ] {
             if zero {
