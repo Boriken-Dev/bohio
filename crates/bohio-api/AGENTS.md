@@ -106,7 +106,7 @@ A failure starts its message with a word (`files::word`: `not_found`, `denied`, 
 `not_empty`, `invalid`, `unsupported`, `io`, `crosses_devices`): `files::failure(word, text)` makes one, `files::failure_kind` reads it,
 `files::io_error` and `files::failure_of` turn it into and from a `std::io::Error` so a host and a source agree on what each word means.
 `OpenModel { read, write, create, create_new, truncate, append, mode }` (`append`: every write goes to the end, whatever its offset);
-`FileStat { kind, size, modified, accessed, created, mode, readonly, attributes, device, inode, links }` (`kind` is `file`, `dir`,
+`FileStat { kind, size, modified, accessed, created, mode, readonly, attributes, device, inode, links, owner /* Option<u64>: the user id on Unix, from the SFTP attributes for ssh */ }` (`kind` is `file`, `dir`,
 `symlink` or `other`, `vocab::file_kind`); `DirEntryModel { name, stat, unnamed }` (`stat` is absent when the listing does not carry it;
 `unnamed` says the name is not text and the host skips it); `TimeModel { secs, nanos }`; `VfsStat`. Offers and lacks (`vocab::files`):
 `read`, `write`, `confined`, `symlink`, `hard_link`, `set_times`, `set_mode`, `set_readonly`, `statvfs`, `atomic_replace`, `sync`,

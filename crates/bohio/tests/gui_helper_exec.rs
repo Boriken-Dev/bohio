@@ -668,3 +668,30 @@ fn a_node_puts_its_own_helper_on_a_real_sshd_and_serves_the_x_display_through_it
         .count();
     assert_eq!(put, 1, "the helper is on the machine");
 }
+
+/// The temporary file of an upload is made new: a link planted at its name is removed, not written through.
+#[cfg(unix)]
+#[test]
+fn a_link_planted_at_the_temporary_name_is_not_written_through() {
+    let Some(program) = helper_program() else {
+        eprintln!("SKIPPED: build the helper first");
+        return;
+    };
+    let sources = native_sources();
+    let stop = AtomicBool::new(false);
+    let dir = tempfile::tempdir().expect("a directory");
+    let upload = upload_into(dir.path(), Some(program.into()));
+    let path = helper_upload::upload(&sources, "native", &upload, &stop).expect("the first put");
+    let name = std::path::Path::new(&path)
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    std::fs::remove_file(&path).unwrap();
+    let victim = dir.path().join("victim");
+    std::fs::write(&victim, b"mine").unwrap();
+    std::os::unix::fs::symlink(&victim, dir.path().join(format!(".{name}.part"))).unwrap();
+    helper_upload::upload(&sources, "native", &upload, &stop).expect("the second put");
+    assert_eq!(std::fs::read(&victim).unwrap(), b"mine");
+    assert!(std::path::Path::new(&path).exists());
+}

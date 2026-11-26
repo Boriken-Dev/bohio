@@ -358,6 +358,8 @@ pub struct FileStat {
     pub inode: Option<u64>,
     /// Names the file has.
     pub links: Option<u64>,
+    /// The account that owns the file, as the system numbers it (a user id on Unix); absent where the system has none.
+    pub owner: Option<u64>,
 }
 
 /// One entry of a listing.

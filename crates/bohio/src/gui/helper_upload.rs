@@ -426,18 +426,36 @@ pub fn upload(
         Err(error) => return Err(text(&error)),
     }
 
+    // A stale `.part` is removed by name (a link there is removed, never followed), and the new one is made with
+    // `create_new` so nothing already at that name is opened.
+    let _ = dir.remove_file(&part);
     let target = dir
         .open_file(
             &part,
             OpenModel {
                 write: true,
-                create: true,
-                truncate: true,
+                create_new: true,
                 mode: Some(0o700),
                 ..OpenModel::default()
             },
         )
         .map_err(|error| text(&error))?;
+    // The file just made belongs to the account the source logs in as: the directory must too (or root), or its owner
+    // can replace the helper before it runs.
+    if !upload.shared_dir
+        && let (Some(directory), Ok(made)) = (stat.owner, target.stat())
+        && let Some(mine) = made.owner
+        && directory != mine
+        && directory != 0
+    {
+        drop(target);
+        let _ = dir.remove_file(&part);
+        return Err(format!(
+            "{} is owned by another account: it could replace the helper before it runs; \
+             `[gui] helper_upload_shared_dir = true` accepts that",
+            upload.dir
+        ));
+    }
     let mut source_file = LocalFile::open(&binary).map_err(shown)?;
     let mut buffer = vec![0_u8; CHUNK];
     let mut at = 0_u64;

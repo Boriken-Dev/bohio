@@ -116,6 +116,13 @@ pub(crate) fn stat_of(meta: &cap_std::fs::Metadata, by_handle: bool) -> FileStat
     #[cfg(not(any(unix, windows)))]
     let (device, inode, links) = (None::<u64>, None::<u64>, None::<u64>);
     #[cfg(unix)]
+    let owner = {
+        use cap_std::fs::MetadataExt;
+        Some(u64::from(meta.uid()))
+    };
+    #[cfg(not(unix))]
+    let owner = None::<u64>;
+    #[cfg(unix)]
     let _ = by_handle;
     FileStat {
         kind: kind.to_owned(),
@@ -129,6 +136,7 @@ pub(crate) fn stat_of(meta: &cap_std::fs::Metadata, by_handle: bool) -> FileStat
         device,
         inode,
         links,
+        owner,
     }
 }
 

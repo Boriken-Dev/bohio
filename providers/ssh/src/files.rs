@@ -302,6 +302,7 @@ fn stat_of(attrs: &FileAttributes) -> FileStat {
         device: None,
         inode: None,
         links: None,
+        owner: attrs.uid.map(u64::from),
     }
 }
 
