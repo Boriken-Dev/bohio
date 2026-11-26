@@ -298,7 +298,11 @@ fn load_one(
                 let _ = write!(detail, "; {skipped}");
             }
             library.detail = detail;
-            library.digest = loaded.digest().ok().flatten().or_else(|| digest_of(file));
+            let (digest, why) = vouched(loaded.digest());
+            library.digest = digest;
+            if let Some(why) = why {
+                let _ = write!(library.detail, "; {why}");
+            }
         }
         Ok(Loading::Skipped(why)) => {
             library.detail = why.to_string();
@@ -313,6 +317,14 @@ fn load_one(
         }
     }
     (library, false)
+}
+
+/// The digest the loader vouches for, or none and why: the file at the path now is not shown as the one that was mapped.
+fn vouched(answer: Result<Option<String>, std::io::Error>) -> (Option<String>, Option<String>) {
+    match answer {
+        Ok(digest) => (digest, None),
+        Err(error) => (None, Some(format!("digest not vouched for: {error}"))),
+    }
 }
 
 /// `sha256:` and the digest of the file, or `None` when it cannot be read.
@@ -335,5 +347,23 @@ fn log(library: &Library) {
     match library.state {
         LibraryState::Loaded | LibraryState::Skipped => tracing::info!("{line}"),
         LibraryState::Failed => tracing::warn!("{line}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::vouched;
+
+    #[test]
+    fn a_digest_the_loader_cannot_vouch_for_is_not_replaced_by_the_file_as_it_is_now() {
+        let changed = std::io::Error::other("the file changed since it was loaded");
+        let (digest, why) = vouched(Err(changed));
+        assert_eq!(digest, None);
+        assert!(why.is_some_and(|why| why.contains("not vouched for") && why.contains("changed")),);
+        assert_eq!(
+            vouched(Ok(Some("sha256:ab".to_owned()))),
+            (Some("sha256:ab".to_owned()), None)
+        );
+        assert_eq!(vouched(Ok(None)), (None, None));
     }
 }
