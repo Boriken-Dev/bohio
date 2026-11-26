@@ -2004,10 +2004,6 @@ pub struct MediaConfig {
     pub action_timeout: Span,
     /// The most media requests at once, across peers; one past it is `busy`. At least 1. Default `4`.
     pub max_streams: usize,
-    /// Whether `status` and the answers to insert and eject show an image as the source reports it. By default a URL is
-    /// shown as `scheme://host/path`, with its user, password, query and fragment taken out: whoever holds `media` reads it, and
-    /// those parts are often a credential another peer inserted. `true` shows it whole, logged `non-default:`. Default `false`.
-    pub show_image_urls: bool,
 }
 
 impl Default for MediaConfig {
@@ -2016,7 +2012,6 @@ impl Default for MediaConfig {
             enabled: false,
             action_timeout: Span(Duration::from_secs(60)),
             max_streams: 4,
-            show_image_urls: false,
         }
     }
 }

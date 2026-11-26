@@ -136,7 +136,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Security
 
-- A virtual-media image URL is shown to peers as `scheme://host/path`, its user, password, query and fragment removed, so one peer's token is not read back by another; `[media] show_image_urls = true` (default `false`, logged `non-default:`) shows it whole.
 - `[gui] helper_upload_sticky_dir` (default `false`, lowest layer only): a sticky upload directory other accounts can write to (such as `/tmp`) is refused even with `helper_upload_shared_dir = true`, as `docs/security.md` said it was; the setting accepts one, logged `non-default:`.
 - `[source.native] own_runtime_dir_check` (default `true`, logged `non-default:` when `false`) keeps the own session's runtime-directory link and directory test and drops the uid and mode tests.
 - `[gui] helper_shared_dir` (default `false`, lowest layer only, logged `non-default:`) lets the helper socket be bound in a directory the node's account does not own or another account may write.

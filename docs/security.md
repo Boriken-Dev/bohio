@@ -253,7 +253,6 @@ told, and an `info`-only peer's call makes no source describe itself).
 
 A desktop helper that the node starts through an exec source (a session named `exec:NAME:...`) is behind that source: the peer must reach `NAME` like any other source (the default exec source, or `sources = ["NAME"]`). Another peer is not told the session, cannot open it by name or by default, and a frame of a stream whose grant lost the source is answered `denied`.
 
-- **A media image is shown without its credentials.** Every peer holding `media` on a source reads the image back with `status`, so a URL is shown as `scheme://host/path`: its user, password, query and fragment are taken out. `[media] show_image_urls = true` shows it whole, logged `non-default:`; the cost is that a token another peer put in the URL is read by every peer holding `media`.
 - **Power and media are separate permissions**, `power` and `media`, each off in the node until `[power] enabled` or `[media]
   enabled`. Switching a machine off is the owner's to grant; the image a machine boots decides what it runs. An agent gets only
   `power_status` and `media_status`: actions stay off the tool surface. The node's event names the peer, the source, the action and

@@ -61,27 +61,13 @@ impl BlockReader for Confined {
     }
 }
 
-fn slot_of(slot: MediaSlot, show_urls: bool) -> Slot {
+fn slot_of(slot: MediaSlot) -> Slot {
     Slot {
         slot: slot.slot,
         inserted: slot.inserted,
-        image: slot
-            .image
-            .map(|image| if show_urls { image } else { redacted(&image) }),
+        image: slot.image,
         size: slot.size,
     }
-}
-
-/// An image text with the user, password, query and fragment of a URL taken out (`scheme://host/path`): any peer holding
-/// `media` reads it back with `status`, and what follows a `?` or an `@` is often a credential. Text that is no URL is as it was.
-fn redacted(image: &str) -> String {
-    let Some((scheme, rest)) = image.split_once("://") else {
-        return image.to_owned();
-    };
-    let rest = rest.split(['?', '#']).next().unwrap_or("");
-    let (authority, path) = rest.find('/').map_or((rest, ""), |at| rest.split_at(at));
-    let host = authority.rsplit('@').next().unwrap_or("");
-    format!("{scheme}://{host}{path}")
 }
 
 fn provider(error: &ProviderError) -> ErrorBody {
@@ -229,10 +215,7 @@ fn run(request: &Request, context: &Context<'_>) -> Result<Slots, ErrorBody> {
     )?;
     let slots = answered.map_err(|error| provider(&error))?;
     Ok(Slots {
-        slots: slots
-            .into_iter()
-            .map(|slot| slot_of(slot, context.config.show_image_urls))
-            .collect(),
+        slots: slots.into_iter().map(slot_of).collect(),
     })
 }
 
@@ -240,21 +223,4 @@ fn run(request: &Request, context: &Context<'_>) -> Result<Slots, ErrorBody> {
 enum Picked {
     Url(String),
     Reader(Confined, String),
-}
-
-#[cfg(test)]
-mod tests {
-    use super::redacted;
-
-    #[test]
-    fn a_url_loses_its_user_password_query_and_fragment_and_other_text_is_kept() {
-        assert_eq!(
-            redacted("https://u:p@h.invalid:8443/i/x.iso?t=s#frag"),
-            "https://h.invalid:8443/i/x.iso"
-        );
-        assert_eq!(redacted("https://h.invalid"), "https://h.invalid");
-        assert_eq!(redacted("https://tok@h.invalid?x=1"), "https://h.invalid");
-        assert_eq!(redacted("installer.iso"), "installer.iso");
-        assert_eq!(redacted("/srv/images/a b.iso"), "/srv/images/a b.iso");
-    }
 }
