@@ -591,6 +591,9 @@ fn a_live_machine_serves_programs_and_files_through_the_ssh_source() {
         .ok()
         .and_then(|text| text.parse().ok())
         .unwrap_or(4 * 1024 * 1024);
+    // Quoted for a TOML string: the environment's text is not trusted to hold no quote or backslash.
+    let quoted = |text: &str| text.replace('\\', "\\\\").replace('"', "\\\"");
+    let (host, user) = (quoted(host), quoted(user));
     let source = format!(
         "[source.remote]\nprovider = \"ssh\"\nhost = \"{host}\"\nuser = \"{user}\"\nagent = true\nconnect_timeout = \"30s\"\noperation_timeout = \"120s\"\n"
     );
@@ -626,8 +629,23 @@ fn a_live_machine_serves_programs_and_files_through_the_ssh_source() {
 
     let remote = bohio_client::Sourced::new(&world.link, "remote");
     let fs = bohio_client::fs::Fs::connect(&remote).expect("the control stream opens");
-    let work = format!("{dir}/live");
-    fs.mkdir(&work, true).expect("mkdir");
+    // A directory of this run's own, made without `parents` so one that exists is an error, and removed however the test ends:
+    // nothing already under REMOTE_DIR is touched.
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    let work = format!("{dir}/live-{}-{unique}", std::process::id());
+    fs.mkdir(&work, false)
+        .expect("mkdir of a directory that must not exist");
+    struct Cleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Cleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = Cleanup(|| {
+        let _ = fs.remove(&work, true);
+    });
     let here = tempfile::tempdir().unwrap();
     let content: Vec<u8> = (0..bytes).map(|n| (n % 251) as u8).collect();
     std::fs::write(here.path().join("up.bin"), &content).unwrap();
@@ -650,7 +668,6 @@ fn a_live_machine_serves_programs_and_files_through_the_ssh_source() {
     .expect("get");
     let down = started.elapsed();
     let same = std::fs::read(here.path().join("down.bin")).unwrap() == content;
-    fs.remove(&work, true).expect("remove");
     #[allow(clippy::cast_precision_loss, reason = "a printed rate")]
     let rate = |time: Duration| bytes as f64 / (1024.0 * 1024.0) / time.as_secs_f64();
     eprintln!(
