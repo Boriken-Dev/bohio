@@ -87,13 +87,11 @@ fn world_limited(
             enabled: power,
             action_timeout: Span(timeout),
             max_streams,
-            ..PowerConfig::default()
         },
         media: MediaConfig {
             enabled: media,
             action_timeout: Span(timeout),
             max_streams,
-            ..MediaConfig::default()
         },
         ..NodeConfig::default()
     };
