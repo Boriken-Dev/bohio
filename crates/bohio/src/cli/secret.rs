@@ -33,9 +33,12 @@ impl CommandSecrets {
     }
 }
 
-fn read_bounded(path: &Path, max_bytes: usize, what: &str) -> Result<Secret, SecretError> {
-    let file = std::fs::File::open(path)
-        .map_err(|error| SecretError::new(format!("{what} cannot be opened: {}", error.kind())))?;
+fn open(path: &Path, what: &str) -> Result<std::fs::File, SecretError> {
+    std::fs::File::open(path)
+        .map_err(|error| SecretError::new(format!("{what} cannot be opened: {}", error.kind())))
+}
+
+fn read_bounded(file: std::fs::File, max_bytes: usize, what: &str) -> Result<Secret, SecretError> {
     let mut bytes = Vec::new();
     file.take(
         u64::try_from(max_bytes)
@@ -55,16 +58,18 @@ fn read_bounded(path: &Path, max_bytes: usize, what: &str) -> Result<Secret, Sec
     Ok(Secret::new(text.trim_end_matches(['\r', '\n'])))
 }
 
+/// Whether the open `file` is the node's own account's and closed to the group and others. The answer is about the file that is
+/// read, not about a path that can be swapped between the check and the read.
 #[cfg(unix)]
-fn only_the_owner(path: &Path) -> Result<(), SecretError> {
+fn only_the_owner(file: &std::fs::File, _path: &Path) -> Result<(), SecretError> {
     use std::os::unix::fs::MetadataExt;
-    let meta = std::fs::metadata(path).map_err(|error| {
+    let meta = file.metadata().map_err(|error| {
         SecretError::new(format!(
             "the secret file cannot be looked at: {}",
             error.kind()
         ))
     })?;
-    if meta.uid() != rustix::process::getuid().as_raw() {
+    if meta.uid() != rustix::process::geteuid().as_raw() {
         return Err(SecretError::new(
             "the secret file belongs to another account",
         ));
@@ -78,13 +83,13 @@ fn only_the_owner(path: &Path) -> Result<(), SecretError> {
 }
 
 #[cfg(windows)]
-fn only_the_owner(path: &Path) -> Result<(), SecretError> {
+fn only_the_owner(_file: &std::fs::File, path: &Path) -> Result<(), SecretError> {
     crate::ownership::check(path, crate::ownership::Guarded::DataDir)
         .map_err(|_| SecretError::new("the secret file may be read or changed by other accounts"))
 }
 
 #[cfg(not(any(unix, windows)))]
-fn only_the_owner(_path: &Path) -> Result<(), SecretError> {
+fn only_the_owner(_file: &std::fs::File, _path: &Path) -> Result<(), SecretError> {
     Ok(())
 }
 
@@ -93,8 +98,9 @@ impl SecretResolver for CommandSecrets {
         match split(reference) {
             Some(("file", path)) => {
                 let path = Path::new(path);
-                only_the_owner(path)?;
-                read_bounded(path, max_bytes, "the secret file")
+                let file = open(path, "the secret file")?;
+                only_the_owner(&file, path)?;
+                read_bounded(file, max_bytes, "the secret file")
             }
             Some(("credential", name)) => {
                 let dir = self.credentials.as_deref().ok_or_else(|| {
@@ -108,7 +114,11 @@ impl SecretResolver for CommandSecrets {
                         "a credential is named by a file name that stays in the credentials directory",
                     ));
                 }
-                read_bounded(&dir.join(name), max_bytes, "the credential")
+                read_bounded(
+                    open(&dir.join(name), "the credential")?,
+                    max_bytes,
+                    "the credential",
+                )
             }
             Some(("keyring", _)) => Err(SecretError::new(
                 "this build has no keyring: use file: or credential:",
@@ -147,6 +157,23 @@ mod tests {
                 .expose(),
             "hunter2"
         );
+    }
+
+    /// The check is about the file that was opened: a different file put at the path afterwards is not what was judged.
+    #[cfg(unix)]
+    #[test]
+    fn the_owner_check_judges_the_open_file_and_not_the_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("a directory");
+        let path = dir.path().join("pw");
+        std::fs::write(&path, "kept\n").expect("written");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("mode");
+        let opened = open(&path, "the secret file").expect("opened");
+        std::fs::rename(&path, dir.path().join("moved")).expect("moved");
+        std::fs::write(&path, "swapped\n").expect("a swapped file");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("mode");
+        assert!(only_the_owner(&opened, &path).is_ok());
+        assert!(only_the_owner(&open(&path, "the secret file").unwrap(), &path).is_err());
     }
 
     #[test]

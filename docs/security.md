@@ -261,7 +261,7 @@ A desktop helper that the node starts through an exec source (a session named `e
   Give a console only to peers that may see each other's session.
 - **Secrets are references.** A setting a provider's schema marks sensitive (`#[schema(sensitive)]`) must hold `file:PATH`,
   `credential:NAME` or `keyring:SERVICE/ACCOUNT`; a literal is refused naming the key and never quoted. The `bohio` command reads
-  `file:` references only from a file that no other account may read (mode `0600` and its owner, on Unix; no access entry for
+  `file:` references only from a file that no other account may read, judged on the file once it is open and by the process's effective user (mode `0600` and its owner, on Unix; no access entry for
   others on Windows) and `credential:` from a file of `$CREDENTIALS_DIRECTORY`, none larger than `[secrets] max_bytes` (`65536`);
   this build has no keyring and refuses `keyring:`. A secret is resolved when its source is built, held in a `Secret` that prints
   `[redacted]`, and handed to the provider, which then holds it: a provider's own care for it is the provider's.
