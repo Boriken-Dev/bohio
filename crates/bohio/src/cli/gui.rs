@@ -214,8 +214,10 @@ pub(super) fn run(
 ) -> Result<ExitCode, String> {
     let wait = client.gui;
     let want = |wants: &[Want]| {
-        Gui::open_within(link, &GuiRequest::new(wants.iter().copied()), Some(wait))
-            .map_err(|error| explain(&error))
+        let gui = Gui::open_within(link, &GuiRequest::new(wants.iter().copied()), Some(wait))
+            .map_err(|error| explain(&error))?;
+        gui.set_image_limit(client.screen.0);
+        Ok::<_, String>(gui)
     };
     let fail = |error| explain(&error);
     match &args.action {

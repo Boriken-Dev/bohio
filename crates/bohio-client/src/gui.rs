@@ -125,6 +125,8 @@ pub struct Gui {
     updates: AtomicU64,
     /// The most bytes of one update this side reads.
     update_limit: AtomicU64,
+    /// The most bytes of one image this side reads.
+    image_limit: AtomicU64,
     #[cfg(feature = "screen")]
     screen: Mutex<bohio_transfer::screen::Compositor>,
 }
@@ -195,6 +197,7 @@ impl Gui {
                         auto_ack: AtomicBool::new(true),
                         updates: AtomicU64::new(0),
                         update_limit: AtomicU64::new(DEFAULT_UPDATE_BYTES),
+                        image_limit: AtomicU64::new(DEFAULT_UPDATE_BYTES),
                         #[cfg(feature = "screen")]
                         screen: Mutex::new(bohio_transfer::screen::Compositor::new(
                             bohio_transfer::screen::Limits::default(),
@@ -250,6 +253,11 @@ impl Gui {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             match GuiOutput::decode(&bytes) {
                 Ok(GuiOutput::Image(header)) => {
+                    if header.length > self.image_limit.load(Ordering::Relaxed) {
+                        return Err(Error::Screen(
+                            "an image holds more bytes than this side accepts".to_owned(),
+                        ));
+                    }
                     if header.length == 0 {
                         return Ok(Item::Image(header, Vec::new()));
                     }
@@ -480,6 +488,12 @@ impl Gui {
             });
     }
 
+    /// Holds an image (a snapshot) to `max_bytes`: a host that announces more is refused at the header, so it cannot grow
+    /// this side. The default is `[gui] max_rect_bytes` of a host that sets nothing.
+    pub fn set_image_limit(&self, max_bytes: u64) {
+        self.image_limit.store(max_bytes, Ordering::Relaxed);
+    }
+
     /// How many updates this side has applied.
     pub fn updates(&self) -> u64 {
         self.updates.load(Ordering::Relaxed)
@@ -623,7 +637,7 @@ impl Drop for Gui {
     }
 }
 
-/// What a rectangle, and an update's rectangles together, may hold when the caller sets no limit: `[gui] max_rect_bytes`.
+/// What a rectangle, an update's rectangles together, and an image may hold when the caller sets no limit: `[gui] max_rect_bytes`.
 const DEFAULT_UPDATE_BYTES: u64 = 32 * 1024 * 1024;
 
 /// The pointer position of a snapshot, when the host reported one.
