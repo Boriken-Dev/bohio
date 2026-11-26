@@ -15,12 +15,14 @@ use std::{mem, ptr};
 
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, LocalFree};
 use windows_sys::Win32::Security::Authorization::{
-    ConvertSidToStringSidW, GetNamedSecurityInfoW, SE_FILE_OBJECT,
+    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+    GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT, SetNamedSecurityInfoW,
 };
 use windows_sys::Win32::Security::{
     ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
-    DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, GetTokenInformation,
-    OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TOKEN_USER, TokenUser,
+    DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, GetSecurityDescriptorDacl,
+    GetTokenInformation, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+    PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TOKEN_USER, TokenUser,
 };
 use windows_sys::Win32::Storage::FileSystem::{REPLACEFILE_IGNORE_MERGE_ERRORS, ReplaceFileW};
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
@@ -258,4 +260,67 @@ pub(crate) fn replace_keeping_access(replaced: &Path, replacement: &Path) -> io:
         }
         return Err(error);
     }
+}
+
+/// Makes `path` private to this account: a protected access list of this account, SYSTEM and the administrators, each
+/// with full control and passed on to what is made inside, and nothing inherited from the parent. No child process is
+/// started, so no handle of this process is inherited by one.
+///
+/// # Errors
+///
+/// The operating system's error.
+pub(crate) fn make_private(path: &Path) -> io::Result<()> {
+    let account = me().map_err(io::Error::other)?;
+    let sddl: Vec<u16> = format!("D:PAI(A;OICI;FA;;;{account})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
+        .encode_utf16()
+        .chain([0])
+        .collect();
+    let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
+    // SAFETY: `sddl` is NUL-terminated and `descriptor` is a place for the allocated descriptor.
+    if unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &raw mut descriptor,
+            ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let _descriptor = Local(descriptor);
+    let (mut present, mut defaulted) = (0_i32, 0_i32);
+    let mut dacl: *mut ACL = ptr::null_mut();
+    // SAFETY: `descriptor` is the valid descriptor just made, and the out pointers are places for what the call returns.
+    if unsafe {
+        GetSecurityDescriptorDacl(
+            descriptor,
+            &raw mut present,
+            &raw mut dacl,
+            &raw mut defaulted,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let mut name = wide(path);
+    // SAFETY: `name` is NUL-terminated and writable, `dacl` points into the descriptor kept alive above, and the owner,
+    // group and system list are not set (null).
+    let status = unsafe {
+        SetNamedSecurityInfoW(
+            name.as_mut_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            dacl,
+            ptr::null_mut(),
+        )
+    };
+    if status != 0 {
+        return Err(io::Error::from_raw_os_error(
+            i32::try_from(status).unwrap_or(i32::MAX),
+        ));
+    }
+    Ok(())
 }
