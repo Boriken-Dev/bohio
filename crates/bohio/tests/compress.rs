@@ -1074,3 +1074,19 @@ fn prepared_files_belong_to_the_service_account_alone_whatever_the_umask() {
         assert_eq!(mode_of(&fixture.prepared.join(&name)), 0o600, "{name}");
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn a_link_to_an_excluded_name_is_not_compressed_either() {
+    let fixture = fixture(CompressionConfig::default());
+    let data = text(200_000);
+    std::fs::write(fixture.root.join("id_rsa"), &data).unwrap();
+    std::os::unix::fs::symlink("id_rsa", fixture.root.join("notes.txt")).unwrap();
+    std::fs::create_dir(fixture.root.join("d")).unwrap();
+    std::os::unix::fs::symlink("../notes.txt", fixture.root.join("d/more.txt")).unwrap();
+    for name in ["notes.txt", "d/more.txt"] {
+        let reader = Reader::start(&fixture.link, &ask(codecs().remove(0), name), WAIT).unwrap();
+        assert_eq!(reader.compression(), None, "{name} was compressed");
+        assert_eq!(reader.read_to_end(WAIT).unwrap(), data);
+    }
+}

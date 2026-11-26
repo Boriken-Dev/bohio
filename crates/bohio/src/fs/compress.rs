@@ -105,6 +105,16 @@ impl<'a> Settings<'a> {
             .map_err(|error| ErrorBody::new(ErrorCode::Unsupported, error.to_string()))
     }
 
+    /// As [`Settings::skips`], for a path that may be a link: it is also never compressed when what a link on the
+    /// way names is, so `notes.txt -> id_rsa` is held to the rule `id_rsa` is.
+    pub(crate) fn skips_through(&self, roots: &super::ops::Roots<'_>, path: &str) -> bool {
+        self.skips(path)
+            || roots
+                .link_names(path)
+                .iter()
+                .any(|reached| self.skips(reached))
+    }
+
     /// Whether a file is never compressed: its extension is on `skip_extensions`, or its path or name
     /// matches an `exclude` glob.
     pub(crate) fn skips(&self, path: &str) -> bool {

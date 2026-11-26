@@ -169,13 +169,18 @@ fn run(
             poll,
             idle,
         };
-        return delta::pull(&job, &mut file, hasher, settings.skips(&request.path));
+        return delta::pull(
+            &job,
+            &mut file,
+            hasher,
+            settings.skips_through(&roots, &request.path),
+        );
     }
 
     if request.prepare {
         // A file `[compression] exclude` names is never compressed, so there is nothing to prepare: the size of the
         // compressed copy would show a path observer what the file holds.
-        if settings.skips(&request.path) {
+        if settings.skips_through(&roots, &request.path) {
             return Err(ErrorBody::new(
                 ErrorCode::BadRequest,
                 "a file `[compression] exclude` or `skip_extensions` names is not prepared compressed",
@@ -208,7 +213,7 @@ fn run(
     let mut encoder = None;
     if let Some(compression) = &resolved
         && length > 0
-        && !settings.skips(&request.path)
+        && !settings.skips_through(&roots, &request.path)
         && !sampled_as_raw(&settings, compression, &mut file, length, request.offset)?
     {
         encoder = Some(

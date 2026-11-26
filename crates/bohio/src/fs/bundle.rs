@@ -202,7 +202,7 @@ fn read_item(
     let compressed = match job.compression {
         Some(compression)
             if length > 0
-                && !job.settings.skips(&item.path)
+                && !job.settings.skips_through(&roots, &item.path)
                 && !sampled_as_raw(job.settings, compression, &mut file, length, item.offset)? =>
         {
             encoder.is_some()

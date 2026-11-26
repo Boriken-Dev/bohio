@@ -44,6 +44,30 @@ impl<'a> Roots<'a> {
     }
 
     /// As [`Roots::resolve`], for an operation that cannot act on a root itself.
+    /// The paths `text` leads to through links, the first link's target first: what a link names is what a read of it
+    /// reaches, so a rule about names holds for those as well. At most 40 links are followed, each judged by its text
+    /// alone (a link made by a peer is held inside the roots when it is made).
+    pub(crate) fn link_names(&self, text: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut current = text.to_owned();
+        for _ in 0..40 {
+            let Ok((dir, relative)) = self.resolve_entry(&current) else {
+                break;
+            };
+            let Ok(target) = dir.read_link(&relative) else {
+                break;
+            };
+            current = if target.starts_with('/') || target.contains(':') {
+                target
+            } else {
+                let beside = current.rfind(['/', '\\']).map_or("", |at| &current[..=at]);
+                format!("{beside}{target}")
+            };
+            names.push(current.clone());
+        }
+        names
+    }
+
     pub(crate) fn resolve_entry(&self, text: &str) -> Result<(Dir, PathBuf), ErrorBody> {
         let (dir, relative) = self.resolve(text)?;
         if relative.as_os_str().is_empty() {
