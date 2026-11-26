@@ -21,6 +21,32 @@ use serde::{Deserialize, Serialize};
 
 use super::io_error;
 
+/// Makes `dir` and its parents, and leaves `dir` readable by this account alone (Unix): a prepared file is a
+/// compressed copy of a file only the service could read, whatever the process's umask says.
+fn make_private_dir(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)?;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+    }
+    #[cfg(not(unix))]
+    {
+        fs::create_dir_all(dir)
+    }
+}
+
+/// Creates `path` for writing, truncating it, readable by this account alone (Unix).
+fn create_private(path: &Path) -> std::io::Result<File> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path)
+}
 /// What a prepared file records about itself.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Meta {
@@ -136,11 +162,11 @@ pub(crate) fn make(
     mut hasher: Hasher,
     progress: &mut dyn FnMut(u64) -> bool,
 ) -> Result<Prepared, ErrorBody> {
-    fs::create_dir_all(job.dir).map_err(|error| io_error(&error))?;
+    make_private_dir(job.dir).map_err(|error| io_error(&error))?;
     let token = token()?;
     let part = job.dir.join(format!("{token}.part"));
     let mut cleanup = Cleanup(vec![part.clone(), bin(job.dir, &token)]);
-    let mut out = File::create(&part).map_err(|error| io_error(&error))?;
+    let mut out = create_private(&part).map_err(|error| io_error(&error))?;
     let used = encoder.used().clone();
     let mut buffer = vec![0_u8; job.chunk.max(1)];
     let (mut remaining, mut done, mut stored) = (job.length, 0_u64, 0_u64);
@@ -208,7 +234,9 @@ pub(crate) fn make(
         .map_err(|_| ErrorBody::new(ErrorCode::Internal, "the record cannot be written"))?;
     cleanup.0.push(meta(job.dir, &token));
     fs::rename(&part, bin(job.dir, &token)).map_err(|error| io_error(&error))?;
-    fs::write(meta(job.dir, &token), bytes).map_err(|error| io_error(&error))?;
+    create_private(&meta(job.dir, &token))
+        .and_then(|mut file| file.write_all(&bytes))
+        .map_err(|error| io_error(&error))?;
     // Made: only the removal of an expired file is left for later.
     cleanup.0.clear();
     let file = File::open(bin(job.dir, &token)).map_err(|error| io_error(&error))?;

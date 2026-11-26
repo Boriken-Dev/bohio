@@ -1056,3 +1056,21 @@ fn a_prepared_read_of_an_excluded_name_is_refused_and_an_ordinary_one_is_made() 
     assert!(reader.header().token.is_some());
 }
 
+#[cfg(unix)]
+#[test]
+fn prepared_files_belong_to_the_service_account_alone_whatever_the_umask() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = fixture(CompressionConfig::default());
+    std::fs::write(fixture.root.join("notes.txt"), text(200_000)).unwrap();
+    let before = rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o022));
+    let reader = Reader::start(&fixture.link, &prepared_request("notes.txt"), WAIT);
+    rustix::process::umask(before);
+    let reader = reader.unwrap();
+    let mode_of =
+        |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode_of(&fixture.prepared), 0o700);
+    let token = reader.header().token.unwrap();
+    for name in [format!("{token}.bin"), format!("{token}.meta")] {
+        assert_eq!(mode_of(&fixture.prepared.join(&name)), 0o600, "{name}");
+    }
+}
