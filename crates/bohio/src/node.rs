@@ -180,9 +180,14 @@ impl Shared {
         let ttl = config.filesystem.resume_ttl.0;
         if config.filesystem.enabled && !ttl.is_zero() {
             // What interrupted resumable writes left, in every root a peer may write to: once, off the start's path.
-            let roots = grants.roots();
-            let limit = config.filesystem.max_tree_entries;
-            std::thread::spawn(move || crate::fs::sweep_resumable(&roots, ttl, limit));
+            // Through the default files source, whose directories the roots are named in.
+            if let Ok(source) = sources.files(None) {
+                let (roots, source) = (grants.roots(), source.arc());
+                let limit = config.filesystem.max_tree_entries;
+                std::thread::spawn(move || {
+                    crate::fs::sweep_resumable(&source, &roots, ttl, limit);
+                });
+            }
         }
         let mut capabilities = info::collect(config, &path);
         capabilities.host_id = Some(host.to_string());

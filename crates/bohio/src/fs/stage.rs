@@ -77,13 +77,23 @@ fn sweep(parent: &Dir, ttl: Duration) {
     }
 }
 
-/// Removes the expired kept temporaries of a resumable write from every directory under `roots` (links are not
-/// followed), looking at no more than `limit` entries (`0`: all). The host calls it once at start.
-pub fn sweep_roots(roots: &[std::path::PathBuf], ttl: Duration, limit: usize) {
+/// Removes the expired kept temporaries of a resumable write from every directory under `roots`, which name
+/// directories of `files`, looking at no more than `limit` entries (`0`: all). Every level is a directory handle, so a
+/// directory swapped for a link while the sweep runs is not followed, and a link is never entered. The host calls it once
+/// at start.
+pub fn sweep_roots(
+    files: &std::sync::Arc<dyn bohio_api::FilesSource>,
+    roots: &[std::path::PathBuf],
+    ttl: Duration,
+    limit: usize,
+) {
     let mut looked = 0_usize;
-    let mut stack: Vec<std::path::PathBuf> = roots.to_vec();
+    let mut stack: Vec<Dir> = roots
+        .iter()
+        .filter_map(|root| Dir::open_root(files, root).ok())
+        .collect();
     while let Some(directory) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&directory) else {
+        let Ok(entries) = directory.read_dir(Path::new(".")) else {
             continue;
         };
         for entry in entries.flatten() {
@@ -91,27 +101,67 @@ pub fn sweep_roots(roots: &[std::path::PathBuf], ttl: Duration, limit: usize) {
             if limit != 0 && looked > limit {
                 return;
             }
-            let Ok(kind) = entry.file_type() else {
+            let name = entry.file_name();
+            let Ok(meta) = entry.metadata() else {
                 continue;
             };
-            if kind.is_dir() {
-                stack.push(entry.path());
+            if meta.is_dir() {
+                if let Ok(child) = directory.open_dir(Path::new(&name)) {
+                    stack.push(child);
+                }
                 continue;
             }
-            let name = entry.file_name();
             let Some(text) = name.to_str() else { continue };
-            if kind.is_file() && text.starts_with(RESUME_PREFIX) && text.ends_with(".tmp") {
-                let old = entry
-                    .metadata()
-                    .and_then(|meta| meta.modified())
+            if meta.is_file() && text.starts_with(RESUME_PREFIX) && text.ends_with(".tmp") {
+                let old = meta
+                    .modified()
                     .ok()
                     .and_then(|made| SystemTime::now().duration_since(made).ok())
                     .is_some_and(|age| age >= ttl);
                 if old {
-                    let _ = std::fs::remove_file(entry.path());
+                    let _ = directory.remove_file_or_symlink(Path::new(&name));
                 }
             }
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod sweep_tests {
+    use std::time::Duration;
+
+    use super::{RESUME_PREFIX, sweep_roots};
+
+    /// The expired kept temporaries of a tree are removed, a fresh file is kept, and a link to a directory is not
+    /// entered, so what lies behind it is left alone.
+    #[test]
+    fn the_sweep_removes_expired_temporaries_in_the_roots_and_never_through_a_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (root, outside) = (tmp.path().join("root"), tmp.path().join("outside"));
+        std::fs::create_dir_all(root.join("a/b")).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let old = |name: &str| format!("{RESUME_PREFIX}{name}.tmp");
+        std::fs::write(root.join("a/b").join(old("x-1")), b"part").unwrap();
+        std::fs::write(root.join(old("x-2")), b"part").unwrap();
+        std::fs::write(root.join("keep.txt"), b"keep").unwrap();
+        std::fs::write(outside.join(old("x-3")), b"part").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+        let sources = crate::access::Sources::default();
+        let files = sources.files(None).expect("native files").arc();
+        std::thread::sleep(Duration::from_millis(50));
+        sweep_roots(
+            &files,
+            std::slice::from_ref(&root),
+            Duration::from_millis(10),
+            0,
+        );
+        assert!(!root.join("a/b").join(old("x-1")).exists());
+        assert!(!root.join(old("x-2")).exists());
+        assert!(root.join("keep.txt").exists());
+        assert!(
+            outside.join(old("x-3")).exists(),
+            "the sweep went through a link"
+        );
     }
 }
 
