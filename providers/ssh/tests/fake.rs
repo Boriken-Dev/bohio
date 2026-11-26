@@ -1064,6 +1064,8 @@ fn an_openssh_exit_of_255_says_it_may_be_sshs_own_failure_and_what_ssh_said() {
     settings.user = Some(USER.to_owned());
     settings.client = "openssh".to_owned();
     settings.ssh_program = program.to_string_lossy().into_owned();
+    // The stand-in answers no login-shell probe: the test is about the status of the program it runs.
+    settings.login_shell_check = false;
     let done = run(&ssh(settings), &["true"]);
     assert_eq!(done.exit.code, Some(255));
     let said = String::from_utf8_lossy(&done.stderr).into_owned();
