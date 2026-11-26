@@ -269,7 +269,7 @@ pub(crate) fn layer_problems(file: &Path) -> Vec<Problem> {
 }
 
 /// What [`library_problems`] already found out about directories, so one that holds several libraries is checked once
-/// (on Windows a check starts a PowerShell).
+/// (on Windows a check reads the access list through the security API).
 pub(crate) type Checked = std::collections::HashMap<std::path::PathBuf, Option<Problem>>;
 
 /// The problems of the provider library `file` and of the directory that holds it, `checked` remembering directories.
@@ -386,34 +386,6 @@ mod windows {
         pub(super) allowed: Vec<(String, u32, u32)>,
     }
 
-    /// Reads the output of the PowerShell lines in `list`.
-    pub(super) fn parse(text: &str) -> Result<Listed, String> {
-        let mut listed = Listed::default();
-        for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
-            let fields: Vec<&str> = line.split('|').collect();
-            match fields.as_slice() {
-                ["me", sid] => listed.me = (*sid).to_owned(),
-                ["owner", sid] => listed.owner = (*sid).to_owned(),
-                ["ace", sid, "Allow", rights, propagation] => {
-                    let rights = u32::from_str_radix(rights, 16)
-                        .map_err(|_| format!("an access right that is not hex: {rights}"))?;
-                    let propagation = propagation.parse::<u32>().map_err(|_| {
-                        format!("propagation flags that are not a number: {propagation}")
-                    })?;
-                    listed
-                        .allowed
-                        .push(((*sid).to_owned(), rights, propagation));
-                }
-                ["ace", _, _, _, _] => {}
-                _ => return Err(format!("an unexpected line: {line}")),
-            }
-        }
-        if listed.me.is_empty() || listed.owner.is_empty() {
-            return Err("the owner or this account was not reported".to_owned());
-        }
-        Ok(listed)
-    }
-
     /// Why `listed` is not safe for `what`: who owns it, or who may change or read it.
     pub(super) fn judge(
         listed: &Listed,
@@ -467,111 +439,52 @@ mod windows {
         Ok(())
     }
 
-    /// How long the PowerShell that reads an access list is waited for once its output has ended: the process is closing
-    /// its pipes, so this is a guard against a stuck one, not a wait anyone shortens or lengthens.
-    #[cfg(windows)]
-    const EXIT_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
-
-    /// How often that wait looks at the process.
-    #[cfg(windows)]
-    const EXIT_POLL: std::time::Duration = std::time::Duration::from_millis(10);
-
     /// The owner and the allow entries of `path`, and this process's account, as security ids.
     #[cfg(windows)]
     pub(super) fn list(path: &std::path::Path) -> Result<Listed, String> {
-        // The path travels in the environment, never inside the script, so no text of it is run.
-        // .NET's calls need no module, so a module path inherited from another PowerShell is not used.
-        const SCRIPT: &str = r#"$ErrorActionPreference = 'Stop'
-$sid = [System.Security.Principal.SecurityIdentifier]
-$path = $env:BOHIO_CHECKED_PATH
-if ([System.IO.Directory]::Exists($path)) { $acl = [System.IO.Directory]::GetAccessControl($path) }
-else { $acl = [System.IO.File]::GetAccessControl($path) }
-"me|" + [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-"owner|" + $acl.GetOwner($sid).Value
-foreach ($rule in $acl.GetAccessRules($true, $true, $sid)) {
-  "ace|{0}|{1}|{2:X}|{3}" -f $rule.IdentityReference.Value, $rule.AccessControlType, $rule.FileSystemRights.value__, $rule.PropagationFlags.value__
-}"#;
-        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
-        let shell = std::path::Path::new(&root)
-            .join("System32")
-            .join("WindowsPowerShell")
-            .join("v1.0")
-            .join("powershell.exe");
-        // Through the host's own process start, which hands the child nothing but its standard streams: a
-        // connection this process is serving must not be held by a PowerShell that outlives it.
-        let mut env = bohio_proto::exec::Env::default();
-        env.set.insert(
-            "BOHIO_CHECKED_PATH".to_owned(),
-            path.to_string_lossy().into_owned(),
-        );
-        env.remove.push("PSModulePath".to_owned());
-        let started = crate::platform::spawn(crate::platform::Spec {
-            program: shell.into_os_string(),
-            args: [
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                SCRIPT,
-            ]
-            .map(std::ffi::OsString::from)
-            .to_vec(),
-            raw_args: None,
-            cwd: None,
-            env,
-            stdin: false,
-            on_host_death: crate::config::HostDeath::default(),
-            reset_signals: true,
+        let acl = crate::platform::winacl::read(path)?;
+        Ok(Listed {
+            me: acl.me,
+            owner: acl.owner,
+            allowed: acl.allowed,
         })
-        .map_err(|error| format!("PowerShell could not be started: {error}"))?;
-        let crate::platform::Spawned {
-            control,
-            stdout,
-            stderr,
-            ..
-        } = started;
-        let read = |mut stream: crate::platform::Stdout| {
-            std::thread::spawn(move || {
-                let mut bytes = Vec::new();
-                let _ = std::io::Read::read_to_end(&mut stream, &mut bytes);
-                bytes
-            })
-        };
-        let (out, err) = (read(stdout), read(stderr));
-        let (out, err) = (
-            out.join().unwrap_or_default(),
-            err.join().unwrap_or_default(),
-        );
-        // Both streams ended, so the process has or is about to; the tree ends with the handle either way.
-        let until = std::time::Instant::now() + EXIT_WAIT;
-        let exit = loop {
-            match control.try_wait() {
-                Ok(Some(exit)) => break Some(exit),
-                Ok(None) if std::time::Instant::now() < until => {
-                    std::thread::sleep(EXIT_POLL);
-                }
-                _ => break None,
-            }
-        };
-        if exit.is_none_or(|exit| exit.code != Some(0)) {
-            let said = String::from_utf8_lossy(&err);
-            let first = said
-                .lines()
-                .find(|line| !line.trim().is_empty())
-                .unwrap_or("");
-            return Err(format!(
-                "PowerShell could not read its access list: {}",
-                first.trim()
-            ));
-        }
-        parse(&String::from_utf8_lossy(&out))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::Guarded;
-    use super::windows::{judge, parse};
+    use super::windows::judge;
+
+    use super::windows::Listed;
+
+    /// Reads `me|`, `owner|` and `ace|` lines into a list.
+    fn parse(text: &str) -> Result<Listed, String> {
+        let mut listed = Listed::default();
+        for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+            let fields: Vec<&str> = line.split('|').collect();
+            match fields.as_slice() {
+                ["me", sid] => listed.me = (*sid).to_owned(),
+                ["owner", sid] => listed.owner = (*sid).to_owned(),
+                ["ace", sid, "Allow", rights, propagation] => {
+                    let rights = u32::from_str_radix(rights, 16)
+                        .map_err(|_| format!("an access right that is not hex: {rights}"))?;
+                    let propagation = propagation.parse::<u32>().map_err(|_| {
+                        format!("propagation flags that are not a number: {propagation}")
+                    })?;
+                    listed
+                        .allowed
+                        .push(((*sid).to_owned(), rights, propagation));
+                }
+                ["ace", _, _, _, _] => {}
+                _ => return Err(format!("an unexpected line: {line}")),
+            }
+        }
+        if listed.me.is_empty() || listed.owner.is_empty() {
+            return Err("the owner or this account was not reported".to_owned());
+        }
+        Ok(listed)
+    }
 
     const ME: &str = "S-1-5-21-1-2-3-1001";
 
@@ -721,5 +634,69 @@ mod link_tests {
         );
         mode(&open, 0o700);
         assert!(layer_problems(&link).is_empty());
+    }
+}
+
+/// The real access lists of files this test makes, read through the security API.
+#[cfg(all(test, windows))]
+mod real_tests {
+    use super::{Guarded, Kind, check};
+    use std::path::Path;
+
+    fn icacls(path: &Path, args: &[&str]) {
+        let status = std::process::Command::new("icacls")
+            .arg(path)
+            .args(args)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .expect("icacls runs");
+        assert!(status.success(), "icacls {args:?}");
+    }
+
+    #[test]
+    fn the_security_api_reads_the_lists_icacls_writes() {
+        let directory = tempfile::tempdir().expect("a directory");
+        // A temporary directory inherits whatever groups the machine gives %TEMP% (a sandbox's, for one), so this one is
+        // narrowed to this account, SYSTEM and the administrators before a file is made in it.
+        let me = crate::platform::winacl::read(directory.path())
+            .expect("the list")
+            .me;
+        icacls(
+            directory.path(),
+            &[
+                "/inheritance:r",
+                "/grant:r",
+                &format!("*{me}:(OI)(CI)F"),
+                "*S-1-5-18:(OI)(CI)F",
+                "*S-1-5-32-544:(OI)(CI)F",
+            ],
+        );
+        let file = directory.path().join("layer.cfg");
+        std::fs::write(&file, "# layer\n").expect("a file");
+        let listed = crate::platform::winacl::read(&file).expect("the list");
+        assert_eq!(listed.owner, listed.me, "this account made it");
+        assert!(listed.me.starts_with("S-1-5-"), "{}", listed.me);
+        assert!(
+            listed.allowed.iter().any(|(sid, _, _)| sid == "S-1-5-18"),
+            "SYSTEM is in a user's temporary directory: {listed:?}"
+        );
+        check(&file, Guarded::Config).expect("a file this account made passes");
+
+        // Another named group that may write is refused, as the owner decided; one that may only read is not.
+        icacls(&file, &["/grant", "*S-1-5-32-551:(R)"]);
+        check(&file, Guarded::Config).expect("a reader is harmless");
+        icacls(&file, &["/grant", "*S-1-5-32-551:(W)"]);
+        let refused = check(&file, Guarded::Config).expect_err("a group that may write");
+        assert_eq!(refused.kind, Kind::Open, "{}", refused.text);
+        assert!(refused.text.contains("S-1-5-32-551"), "{}", refused.text);
+        icacls(&file, &["/remove:g", "*S-1-5-32-551"]);
+        check(&file, Guarded::Config).expect("passes again");
+
+        // Everyone with write, and a directory the same way.
+        icacls(&file, &["/grant", "*S-1-1-0:(M)"]);
+        let refused = check(&file, Guarded::Config).expect_err("every user may change it");
+        assert_eq!(refused.kind, Kind::Open, "{}", refused.text);
+        let missing = directory.path().join("absent.cfg");
+        assert!(crate::platform::winacl::read(&missing).is_err());
     }
 }

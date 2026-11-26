@@ -13,6 +13,8 @@ mod pty;
 mod reap;
 mod tree;
 #[cfg(windows)]
+pub(crate) mod winacl;
+#[cfg(windows)]
 pub(crate) mod winfs;
 #[cfg_attr(
     not(windows),

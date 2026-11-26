@@ -869,8 +869,8 @@ written the line). On Windows they refuse to start (exit 1, one line naming the 
 configuration layer they read is owned by another account than the one running `bohio`, SYSTEM or the administrators, or when Everyone,
 Authenticated Users, Users, INTERACTIVE, Guests, ANONYMOUS LOGON or Domain Users may change it; and when the data directory is so owned or
 any of those may change it or read what is made in it. A folder made under `%ProgramData%` is open to Users that way unless its access list
-is narrowed. The check reads the access list through Windows PowerShell (`%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`); a
-host that cannot run it does not start.
+is narrowed. The check reads the access list through the security API (`platform/winacl.rs`: `GetNamedSecurityInfoW`; no child process), and a
+file or directory whose list cannot be read is refused as unknown.
 
 `remote` trusts the `[peer.<id>]` tables of the layers (the keys `join` and `peer approve` wrote), or only `--server ID`. A host that ends the link before the proof is reported as "may not be listening, may not
 trust this key yet, or this side does not trust the host"; a stream the host refuses or ends for lost access is "the host refused or ended the stream".

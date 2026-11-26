@@ -121,6 +121,22 @@ const ALLOWED: &[Allowed] = &[
                swapped for a junction while the calls run) on Windows",
     },
     Allowed {
+        file: "crates/bohio/src/platform/winacl.rs",
+        reason: "reading who owns a file or directory and which accounts its access list allows \
+                 (GetNamedSecurityInfoW, GetAclInformation, GetAce, ConvertSidToStringSidW, and the \
+                 process token's account), and replacing a file while keeping the replaced file's own \
+                 access list (ReplaceFileW). Ruled out: std has no call for either; the access check \
+                 used to start a PowerShell for each path (about 200 ms each, found through the \
+                 node's own SystemRoot variable), which is the safe alternative this replaces; \
+                 std::fs::rename and coqui_peer's replace give the new file its folder's inherited \
+                 list; no maintained crate reads a security descriptor without a larger tree of \
+                 Windows bindings, and windows-sys is already a dependency",
+        miri: "not reachable: every unsafe call is a Win32 security call, which Miri does not run; \
+               covered by the ownership tests, which read the access lists of files and directories \
+               the test makes (icacls sets them) and check the PowerShell-free path starts no \
+               process, on Windows",
+    },
+    Allowed {
         file: "crates/bohio/src/platform/winproc.rs",
         reason: "starting a process on Windows with a handle list and a job list (CreateProcessW, \
              STARTUPINFOEX, PROC_THREAD_ATTRIBUTE_HANDLE_LIST and PROC_THREAD_ATTRIBUTE_JOB_LIST), so \
