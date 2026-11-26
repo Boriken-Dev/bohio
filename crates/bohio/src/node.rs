@@ -148,6 +148,22 @@ impl Shared {
                 "non-default: [execution] reset_signals is false: programs keep the signal dispositions this host inherited, so an `interrupt` or `quit` does nothing to one that ignores them"
             );
         }
+        if config.execution.enabled {
+            use crate::config::ReapOrphans;
+            let is_init = std::process::id() == 1;
+            match config.execution.reap_orphans {
+                ReapOrphans::Always => {
+                    crate::platform::collect_adopted_guardians(config.execution.reap_interval.0);
+                }
+                ReapOrphans::Auto if is_init => {
+                    crate::platform::collect_adopted_guardians(config.execution.reap_interval.0);
+                }
+                ReapOrphans::Never if is_init => tracing::warn!(
+                    "non-default: [execution] reap_orphans is never and this host is process 1: each program that ends leaves its guardian as a zombie of this host"
+                ),
+                _ => {}
+            }
+        }
         if let Some(dir) = &config.compression.prepare_dir {
             crate::fs::sweep_prepared(dir, config.compression.prepare_ttl.0);
         }

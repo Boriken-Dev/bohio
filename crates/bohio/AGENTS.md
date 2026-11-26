@@ -165,6 +165,8 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[execution] drain_timeout` | `500ms` | wait for a process's remaining output after it exits, before the rest of its tree is ended |
 | `[execution] host_death` | `kill` | Unix: what happens to a process's group when the host dies without ending it: `kill` (SIGKILL), `term` (SIGTERM) or `leave` |
 | `[execution] reset_signals` | `true` | Unix: a program starts with SIGINT, SIGQUIT and SIGHUP at their default action; `false` keeps what the host inherited and is logged `non-default:` |
+| `[execution] reap_orphans` | `auto` | Linux: the host collects the guardians it adopts when its programs end; `auto` does so when it is process 1, `always` and `never` decide whatever its id is (`never` as process 1 is logged `non-default:`). A program's own orphans still need an init |
+| `[execution] reap_interval` | `1s` | how often the host looks for ended guardians to collect; not zero |
 | `[shell] host_death` | `kill` | Unix: what happens to a session's tree when the host dies without ending it: `kill`, `term` or `leave` |
 | `[sessions] enabled` | `true` | whether detached sessions run; a peer still needs `session` |
 | `[sessions] max_detached` | `16` | sessions across peers, the exited ones kept included; at least 1 |

@@ -9,6 +9,8 @@
 mod guard;
 pub(crate) mod gui;
 mod pty;
+#[cfg(target_os = "linux")]
+mod reap;
 mod tree;
 #[cfg(windows)]
 pub(crate) mod winfs;
@@ -21,6 +23,7 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use bohio_proto::exec::Env;
 
@@ -171,6 +174,16 @@ pub struct Spawned {
     pub stdout: Stdout,
     /// Standard error.
     pub stderr: Stderr,
+}
+
+/// Starts the thread that collects, every `interval`, the ended guardians this process adopted: where the host is
+/// process 1 (a container's entrypoint) each ended program leaves its guardian as a zombie otherwise. Does nothing
+/// off Linux. It collects only guardians, never a process the host started and waits for.
+pub fn collect_adopted_guardians(interval: Duration) {
+    #[cfg(target_os = "linux")]
+    reap::start(interval);
+    #[cfg(not(target_os = "linux"))]
+    let _ = interval;
 }
 
 /// Starts `spec` in a tree of its own.

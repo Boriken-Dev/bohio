@@ -1163,6 +1163,28 @@ pub struct ExecutionConfig {
     /// across `exec`: the programs it starts would then never act on `interrupt` or `quit` unless they install a
     /// handler. `false` keeps what the host inherited and is logged `non-default:`. Default `true`.
     pub reset_signals: bool,
+    /// Whether the host collects the guardians (see `host_death`) it adopts when its programs end (Linux). The host is
+    /// their parent only where it is process 1, a container's entrypoint, and there each ended program would leave
+    /// one as a zombie for good, until the process table is full. `auto` collects when the host is process 1,
+    /// `always` and `never` decide whatever its id is; `never` is logged `non-default:` when the host is process 1.
+    /// Only guardians are collected: a program's own orphans still need an init (`--init` of the container runtime).
+    /// Default `auto`.
+    pub reap_orphans: ReapOrphans,
+    /// How often the host looks for ended guardians when it collects them. Not zero. Default `1s`.
+    pub reap_interval: Span,
+}
+
+/// `[execution] reap_orphans`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReapOrphans {
+    /// Collect when this host is process 1.
+    #[default]
+    Auto,
+    /// Collect whatever this host's process id is.
+    Always,
+    /// Never collect.
+    Never,
 }
 
 /// `[execution] host_death`: what a host does about its processes when it dies.
@@ -1200,6 +1222,8 @@ impl Default for ExecutionConfig {
             drain_timeout: Span(Duration::from_millis(500)),
             host_death: HostDeath::default(),
             reset_signals: true,
+            reap_orphans: ReapOrphans::default(),
+            reap_interval: Span(Duration::from_secs(1)),
         }
     }
 }
@@ -2240,6 +2264,9 @@ impl NodeConfig {
         }
         if self.execution.poll_interval.0.is_zero() {
             return Err(invalid("execution.poll_interval", "must not be zero"));
+        }
+        if self.execution.reap_interval.0.is_zero() {
+            return Err(invalid("execution.reap_interval", "must not be zero"));
         }
         if self.filesystem.max_transfers == 0 {
             return Err(invalid("filesystem.max_transfers", "must be at least 1"));

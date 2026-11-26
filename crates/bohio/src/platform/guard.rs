@@ -35,6 +35,13 @@ use libc::c_int;
 
 use crate::config::HostDeath;
 
+/// The name a guardian gives itself (`PR_SET_NAME`), by which a host that adopts it as process 1 recognises it when it
+/// ends: nothing else is collected there.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub(super) const NAME: &str = "bohio-guard";
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const NAME_C: &std::ffi::CStr = c"bohio-guard";
+
 /// The pipe whose write end this process alone holds, and the read end each program's guardian
 /// waits on. Both ends close on `exec`, so no program holds either.
 struct Lifeline {
@@ -211,6 +218,11 @@ fn fork_guardian(read: c_int, signal: c_int, target: Target) -> io::Result<()> {
 /// Called only in a process forked from the one whose group or session `target` names, with `read`
 /// open, and never returns. It makes only system calls.
 unsafe fn guardian(read: c_int, signal: c_int, target: Target) -> ! {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    // SAFETY: `NAME_C` is a NUL-terminated string that outlives the call; the remaining arguments are unused.
+    unsafe {
+        libc::prctl(libc::PR_SET_NAME, NAME_C.as_ptr(), 0, 0, 0);
+    }
     close_all_but(read);
     let mut byte = 0_u8;
     loop {
@@ -446,4 +458,46 @@ fn close_range(first: u32, last: u32) -> bool {
         -1_i64
     };
     result == 0
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use std::ffi::OsString;
+    use std::time::{Duration, Instant};
+
+    use bohio_proto::exec::Env;
+
+    use crate::platform::reap::{ended_guardians, sweep};
+    use crate::platform::{Spec, spawn};
+
+    /// A process that adopts orphans, as process 1 does, collects the guardians that ended and nothing else.
+    #[test]
+    fn an_adopted_guardian_that_ended_is_collected_by_the_sweep() {
+        // SAFETY: `prctl` with `PR_SET_CHILD_SUBREAPER` takes one integer and no pointer.
+        let set = unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) };
+        assert_eq!(set, 0, "this process cannot adopt orphans");
+        let me = std::process::id();
+        let started = spawn(Spec {
+            program: OsString::from("sleep"),
+            args: vec![OsString::from("30")],
+            raw_args: None,
+            cwd: None,
+            env: Env::default(),
+            stdin: false,
+            on_host_death: crate::config::HostDeath::Kill,
+            reset_signals: true,
+        })
+        .expect("sleep starts");
+        started.control.kill().expect("the program ends");
+        let until = Instant::now() + Duration::from_secs(10);
+        while ended_guardians(me).is_empty() {
+            assert!(
+                Instant::now() < until,
+                "the ended guardian never became this process's zombie"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(sweep(me) >= 1);
+        assert!(ended_guardians(me).is_empty());
+    }
 }
