@@ -341,11 +341,46 @@ A desktop helper that the node starts through an exec source (a session named `e
   checks the name as one component, so a files source without its own check (a plugin or a program) is not confined there. Use an ssh
   files source from a Windows node only with a source that checks names itself, which the built-in ssh source does.
 
+## Ending a program's tree
+
+A program of `exec` runs in a tree the host ends after it exits, when its stream closes and at its deadline. On Windows the tree is a job
+object, and the program starts inside it (`PROC_THREAD_ATTRIBUTE_JOB_LIST`), so nothing it starts at once is outside; a job object also ends
+the tree when the host dies. A shell's pseudo-console starts its child itself and the host puts it in the job as soon as the start returns.
+On Unix the tree is the program's process group, and on Linux the host also walks `/proc` for processes that left it.
+
+When the host dies without ending a Unix tree (`SIGKILL`, the operating system's out-of-memory killer, power loss), each program of `exec`
+and each shell session has a guardian: a small process in the program's group that waits on a pipe only the host holds the write end of.
+The kernel closes the pipe, the guardian reads the end of it and signals the program's process group, and on Linux every process of a
+shell's session (a shell that gives each background job a group of its own keeps it out of the group). `[execution] host_death` and
+`[shell] host_death` choose `kill` (the default), `term` (SIGTERM, which a program may ignore) or `leave` (the old behavior: the trees keep
+running). What a guardian cannot reach is under Known limits.
+
 ## Filesystem confinement
 
 Every path resolves against a directory handle of a peer's `fs_roots`: `..` and an absolute path outside a root are `outside_root`, and so is a symbolic link that leaves a root, whether at the end of a path or in the middle. On Linux each lookup is one `openat2` with `RESOLVE_BENEATH` (kernel 5.6 and later), and elsewhere an `openat` walk that refuses to follow a link at each component, so a link swapped in while a call runs cannot lead out.
 
+On Windows `list`, `readlink`, `mkdir`, `remove`, `rename`, `symlink` and `set_attributes` act on the last name through the handle of the directory that holds it (`NtCreateFile` with `RootDirectory`, reparse points not followed, then `SetFileInformationByHandle`), as `stat`, hashes, reads and the opens of writes always did, so a local user who swaps a directory inside the root for a junction while a call runs cannot redirect it outside.
+
 The root's owner is trusted: a hard link another local user makes to a file outside a root exposes that file, and a bind mount or junction an administrator places inside a root is part of the root.
+
+## Memory safety
+
+`unsafe` code is in six files of the `bohio` crate. `crates/bohio/tests/unsafe_files.rs` lists them with what needed it and what was ruled
+out, and fails for a file that holds `unsafe` and is not listed, or that lifts the crate's `unsafe_code` lint and is not listed:
+
+| File | What it calls |
+| --- | --- |
+| `platform/guard.rs` | `fork`, `waitpid`, `close_range` and `/proc`: the Unix guardian |
+| `platform/winproc.rs` | `CreateProcessW` with a handle list and a job list, and console events |
+| `platform/winfs.rs` | the NT calls that act on a name inside a directory handle |
+| `platform/gui/windows.rs` | `SendInput`, the session and desktop queries, the clipboard |
+| `platform/gui/windows_capture.rs` | DXGI duplication and GDI |
+| `platform/gui/macos.rs` | ScreenCaptureKit and Core Graphics |
+
+Every other module of `bohio` forbids `unsafe_code`, and so does every other crate. The buffers `winfs` hands to the system (a rename, a link's
+data) and parses (a link, a directory listing) are built in `platform/winfs_layout.rs`, which forbids it and is tested on every platform.
+Miri cannot run the listed files, since each `unsafe` in them is an operating-system call. The plugin crates (`providers/*/plugin`) export
+their entry symbols through guatiao's `providers!` macro, whose generated code is `unsafe` and is guatiao's: the scan above does not see it.
 
 ## Container isolation
 
@@ -378,10 +413,10 @@ The risk grows with the account. A service run as `root`, `SYSTEM`, or any accou
 These are recorded and not fixed. Each is a platform limit, a window that needs a local attacker, or a bound on what cleanup can promise.
 
 - **Ending a process tree is cleanup, not containment.** The host ends what a program leaves behind by accident; a peer that may run any program and means to leave one running can. On Unix a double fork with `setsid` leaves both the process group and the parent chain the host walks; on Windows a program can ask the WMI or Task Scheduler services to start one outside its job object. Such a process runs as the service's account until it exits, and while it holds the output pipe of the program that started it, one host thread waits on that pipe. Only a peer trusted with `exec` without a program list (or with a listed program that starts others on request) can do this; `KillMode=control-group` ends them with the unit.
-- **A root is opened by its path.** On every platform the configured root is opened by its path once per call, so what lies above it is the administrator's to protect. On Windows `list`, `readlink`, `mkdir`, `remove`, `rename`, `symlink` and `set_attributes` act on the last name through the handle of the directory that holds it (`NtCreateFile` with `RootDirectory`, reparse points not followed, then `SetFileInformationByHandle`), as `stat`, hashes, reads and the opens of writes always did, so a local user who swaps a directory inside the root for a junction while a call runs cannot redirect it outside.
+- **A root is opened by its path.** On every platform the configured root is opened by its path once per call, so what lies above it is the administrator's to protect.
 - **On Unix a chain of links a peer makes can lead out of its root for other programs.** Each link's target must stay inside the root by its words, but `sub/d` naming `..` and `esc` naming `sub/d/..` together name the root's parent, because the kernel resolves `..` after following `sub/d`. The host's own calls refuse such a path; a program that follows links in a root without a directory handle (a backup job, a web server serving it, a process a peer starts) does not. Do not point such a program at a root a peer may write.
 - **A Windows shell session's process starts a moment before it joins its job object.** A program of `exec` starts inside its job (`PROC_THREAD_ATTRIBUTE_JOB_LIST`), so nothing it starts at once is outside the tree. A shell's pseudo-console starts its child itself, and the host puts it in the job as soon as the start returns: a process the shell starts in that instant is outside the tree and survives an ended session, a `kill` frame or a deadline.
-- **A killed `serve` on Unix ends the trees it started, except what left their group.** Each program of `exec`, and each shell session, has a guardian: a small process in the program's group that waits on a pipe only the host holds the write end of. When the host dies (`SIGKILL`, the operating system's out-of-memory killer, power loss) the kernel closes the pipe, and the guardian signals the program's process group, and on Linux every process of a shell's session (a shell that gives each background job a group of its own keeps it out of the group; on macOS and FreeBSD such a job is not reached). `[execution] host_death` and `[shell] host_death` choose `kill` (the default), `term` (SIGTERM, which a program may ignore) or `leave` (the old behavior: the trees keep running). A process that left the group and session (a double fork with `setsid`) is out of reach and runs on; the systemd unit's `KillMode=control-group` ends it with the unit. A shell's guardian is made right after the shell starts, so a host killed in that instant leaves the session. A guardian that has ended is a zombie of the process that adopted it, which is the host only where it is process 1 (a container's entrypoint): there the host collects its guardians (`[execution] reap_orphans`, `auto` by default; `never` is logged `non-default:`, and each ended program then leaves a zombie in the host's table) every `reap_interval`. A program's own orphans are not the host's to collect: start the container with an init (`--init`) for those. A Windows host's job object ends the tree when the process dies.
+- **A killed `serve` on Unix cannot end what left the program's group.** A process that left the group and session (a double fork with `setsid`) runs on; the systemd unit's `KillMode=control-group` ends it with the unit. On macOS and FreeBSD a shell's background job in a group of its own is not reached either. A shell's guardian is made right after the shell starts, so a host killed in that instant leaves the session. A guardian that has ended is a zombie of the process that adopted it, which is the host only where it is process 1 (a container's entrypoint): there the host collects its guardians (`[execution] reap_orphans`, `auto` by default; `never` is logged `non-default:`, and each ended program then leaves a zombie in the host's table) every `reap_interval`. A program's own orphans are not the host's to collect: start the container with an init (`--init`) for those.
 - **A serial line has one peer at a time, and a reconnect can lose a message.** The host opens the port, serves one link and opens it again about 250 ms later, discarding what arrived before. A client whose first message arrives before the host has reopened the port, such as a second `remote` right behind the first, is dropped and must try again. Each failed attempt costs the proof timeout.
 - **`peer approve` and `peer revoke` edit a layer in place** (only the peer's table changes; the file's comments and layout stay) and replace the file atomically; two such commands at the same instant can lose one change. A layer the account cannot write is skipped by `approve`, and `revoke` names it: the key stays accepted there.
 - **Only `[peer.*]` is read live.** Every other section is read when the host starts. A layer that cannot be read or parsed refuses every peer (logged once per distinct error) until it is fixed.

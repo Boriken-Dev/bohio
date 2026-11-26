@@ -81,9 +81,11 @@ built `bohio` binary (cargo builds it for the test): `bohio serve` runs as a chi
 - Tests that start processes use the `exec_helper` example, read with timeouts, and kill what they start.
 - Nothing logs a key, a PIN or a token; argument vectors are never logged.
 - `unsafe` is used only where no safe API does the job, and only in the files `crates/bohio/tests/unsafe_files.rs` lists with the reason each
-  needed it, what was ruled out and whether Miri reaches it (none of the current files is Miri-reachable: they are system calls). Every other
-  crate forbids it; `bohio` denies it crate-wide and each of its modules that needs none forbids it (`platform/mod.rs` only denies, because
-  the listed files are its children). A file that gains or loses `unsafe` changes that list in the same commit.
+  needed it, what was ruled out and whether Miri reaches it (none of the current files is Miri-reachable: every `unsafe` in them is a system
+  call; the buffer layouts of `platform/winfs.rs` are in `platform/winfs_layout.rs`, which forbids `unsafe`). Every other crate forbids it;
+  `bohio` denies it crate-wide and each of its modules that needs none forbids it (`platform/mod.rs` and `platform/gui/mod.rs` only deny,
+  because listed files are their children). A file that gains or loses `unsafe` changes that list in the same commit.
+  Miri, run locally, has nothing in the listed files to reach: no CI job runs it.
 - Only text and images are committed.
 
 ## CI and release

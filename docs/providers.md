@@ -244,7 +244,7 @@ path = "/dev/ttyUSB0"
     layer only: `ld_so` names a file the node maps and enters.
 - **Making one.** `providers/terminal/serial/plugin/` is a provider as a library in one line,
   `bohio_api::guatiao::providers!(bohio_provider_serial::Serial);` in a crate of type `cdylib` that depends on nothing else
-  (the entry symbols it writes are `no_mangle`, so it does not take the workspace's `unsafe_code = "forbid"`). A node built with
+  (the entry symbols it writes are `no_mangle` and the macro's generated code is `unsafe`, guatiao's and not seen by `tests/unsafe_files.rs`, so it does not take the workspace's `unsafe_code = "forbid"`). A node built with
   feature `serial` already has `serial`; build without it (`--no-default-features --features cli`) to serve it from the library.
 
 ### Provider programs
