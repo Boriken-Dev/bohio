@@ -230,7 +230,7 @@ pub fn serve_listen(stream: &dyn LinkStream, metadata: &[u8], context: &Context<
         );
     };
     let options = config.options();
-    let (bound, address) = match bind(&request.bind, config, &options) {
+    let (bound, address) = match bind(&request.bind, config, context.grant, &options) {
         Ok(pair) => pair,
         Err(body) => return refuse_listen(stream, context, &text, body),
     };
@@ -412,9 +412,11 @@ fn refuse_listen(stream: &dyn LinkStream, context: &Context<'_>, bind: &str, bod
 }
 
 /// Binds what `request` names; the listener and its address in [`Bind`]'s spelling.
+#[cfg_attr(not(unix), allow(unused_variables))]
 fn bind(
     request: &Bind,
     config: &ForwardConfig,
+    grant: &Grant,
     options: &cabuya::forward::Options,
 ) -> Result<(Bound, String), ErrorBody> {
     match request {
@@ -438,7 +440,14 @@ fn bind(
             Ok((Bound::Tcp(listener), text))
         }
         #[cfg(unix)]
-        Bind::Unix { path } => bind_ipc(PipeName::at(path), request, config, options),
+        Bind::Unix { path } => {
+            let at = if config.follow_links {
+                path.clone()
+            } else {
+                resolved_bind(path, grant)?
+            };
+            bind_ipc(PipeName::at(at), request, config, options)
+        }
         #[cfg(windows)]
         Bind::Pipe { name } => bind_ipc(
             PipeName::at(format!(r"\\.\pipe\{name}")),
@@ -451,6 +460,34 @@ fn bind(
             "this host does not offer that kind of listener",
         )),
     }
+}
+
+/// Where a socket the peer asked for would be made once its directory is resolved: the same path, or one a rule of the
+/// peer's grant also covers. A link in the directory's path that leads elsewhere is refused, as the rule was written for
+/// the text.
+#[cfg(unix)]
+fn resolved_bind(path: &str, grant: &Grant) -> Result<String, ErrorBody> {
+    let as_path = std::path::Path::new(path);
+    let (Some(parent), Some(name)) = (as_path.parent(), as_path.file_name()) else {
+        return Ok(path.to_owned());
+    };
+    if parent.as_os_str().is_empty() {
+        return Ok(path.to_owned());
+    }
+    let parent = std::fs::canonicalize(parent).map_err(|_| {
+        ErrorBody::new(ErrorCode::NotFound, "the socket's directory does not exist")
+    })?;
+    let resolved = parent.join(name);
+    let denied = || ErrorBody::new(ErrorCode::Denied, "this peer may not bind there");
+    let text = resolved.to_str().ok_or_else(denied)?;
+    if text != path
+        && !grant.permits_listen(&Bind::Unix {
+            path: text.to_owned(),
+        })
+    {
+        return Err(denied());
+    }
+    Ok(text.to_owned())
 }
 
 fn bind_ipc(

@@ -147,7 +147,7 @@ pub fn serve_connect(stream: &dyn LinkStream, metadata: &[u8], context: &Context
             cabuya::forward::pump_with(stream, &connection, &options);
         }
         Target::Unix { .. } | Target::Pipe { .. } => {
-            let connection = match connect_ipc(&target, &options) {
+            let connection = match connect_ipc(&target, &options, context) {
                 Ok(connection) => connection,
                 Err(body) => return refuse(stream, context, &text, body),
             };
@@ -308,17 +308,37 @@ fn connect_tcp(target: &Target, timeout: Duration) -> Result<(TcpStream, SocketA
 }
 
 /// Connects to a Unix socket or a named pipe.
+#[cfg_attr(not(unix), allow(unused_variables))]
 fn connect_ipc(
     target: &Target,
     options: &cabuya::forward::Options,
+    context: &Context<'_>,
 ) -> Result<coqui_transport_pipe::Stream, ErrorBody> {
     let name = match target {
         #[cfg(unix)]
         Target::Unix { path } => {
-            if !std::path::Path::new(path).exists() {
+            let Ok(resolved) = std::fs::canonicalize(path) else {
                 return Err(ErrorBody::new(ErrorCode::NotFound, "no such socket"));
+            };
+            if context.config.follow_links {
+                PipeName::at(path)
+            } else {
+                // The rule was written for the text: the resolved path must be covered too, and is the one connected to.
+                let resolved = resolved.to_str().map(str::to_owned);
+                let allowed = resolved.as_deref().filter(|resolved| {
+                    *resolved == path.as_str()
+                        || context.grant.permits_connect(&Target::Unix {
+                            path: (*resolved).to_owned(),
+                        })
+                });
+                let Some(resolved) = allowed else {
+                    return Err(ErrorBody::new(
+                        ErrorCode::Denied,
+                        "this peer may not reach that target",
+                    ));
+                };
+                PipeName::at(resolved)
             }
-            PipeName::at(path)
         }
         #[cfg(windows)]
         Target::Pipe { name } => PipeName::at(format!(r"\\.\pipe\{name}")),

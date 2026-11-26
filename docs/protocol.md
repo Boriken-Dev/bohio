@@ -769,7 +769,7 @@ resets the ones already handed over, and the peer hears `revoked` on every strea
 every interface of the host; the bind is the peer's, within its rule. A Unix socket is created with `[forward] socket_mode`
 (`0o600`: the host's own account) and a Windows pipe with the access list `coqui-transport-pipe` gives its creator alone;
 whichever the mode, `[forward] ipc_same_user` (default on) closes, unread, a connection to a socket or pipe listener from
-another account, as the operating system names it. An address, socket or pipe that is taken is `in_use`; a bind past
+another account, as the operating system names it. A `unix:` bind or target is resolved first and refused (`denied`) when a link leads it to a path no rule of the peer's grant covers, unless `[forward] follow_links` is on. An address, socket or pipe that is taken is `in_use`; a bind past
 `[forward] max_listeners` or `max_listeners_per_peer` is `busy`; a kind the host does not offer is `unsupported`.
 
 **Arrivals.** Each connection the listener takes is held and announced with `0x02`, its `id` counting up from 1 within the

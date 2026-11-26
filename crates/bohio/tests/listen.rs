@@ -1265,6 +1265,114 @@ mod other_account {
     }
 }
 
+// A symbolic link in a path a rule names.
+
+#[cfg(unix)]
+mod links {
+    use super::*;
+    use std::os::unix::fs::symlink;
+    use std::os::unix::net::UnixListener;
+
+    /// A directory whose own path holds no link, so a rule can name it.
+    fn plain_dir() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("a directory");
+        let path = dir.path().canonicalize().expect("a real path");
+        (dir, path)
+    }
+
+    fn arrived(listener: &UnixListener) -> bool {
+        let until = Instant::now() + Duration::from_secs(2);
+        loop {
+            match listener.accept() {
+                Ok(_) => return true,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= until {
+                        return false;
+                    }
+                    thread::sleep(Duration::from_millis(20));
+                }
+                Err(error) => panic!("accept: {error}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_connect_through_a_link_reaches_only_what_a_rule_names() {
+        let _deadline = Deadline::start();
+        let (_keep, base) = plain_dir();
+        std::fs::create_dir(base.join("real")).unwrap();
+        let other = base.join("real").join("other.sock");
+        let engine = UnixListener::bind(&other).expect("a socket");
+        engine.set_nonblocking(true).unwrap();
+        // A link at the allowed path, and one in a directory above it.
+        symlink(&other, base.join("allowed.sock")).unwrap();
+        symlink(base.join("real"), base.join("via")).unwrap();
+        for (path, label) in [
+            (base.join("allowed.sock"), "a link at the path"),
+            (base.join("via").join("other.sock"), "a link above the path"),
+        ] {
+            let rule = format!("unix:{}", path.display());
+            let target: Target = rule.parse().expect("a target");
+            for follow_links in [false, true] {
+                let node = Running::with(ForwardConfig {
+                    follow_links,
+                    ..ForwardConfig::default()
+                });
+                let (link, _) = node.link(connect_grant(&[rule.as_str()]));
+                let result = connect(&link, &target, &ForwardSettings::default());
+                if follow_links {
+                    let _tunnel = result.unwrap_or_else(|error| panic!("{label}: {error:?}"));
+                    assert!(
+                        arrived(&engine),
+                        "{label}: nothing arrived with follow_links"
+                    );
+                } else {
+                    let error = result.err().unwrap_or_else(|| panic!("{label}: connected"));
+                    assert!(is_remote(&error, ErrorCode::Denied), "{label}: {error:?}");
+                    assert!(!arrived(&engine), "{label}: the socket was reached");
+                }
+            }
+        }
+        // A path with no link is as before.
+        let rule = format!("unix:{}", other.display());
+        let target: Target = rule.parse().unwrap();
+        let node = Running::start();
+        let (link, _) = node.link(connect_grant(&[rule.as_str()]));
+        let _tunnel = connect(&link, &target, &ForwardSettings::default()).expect("connected");
+        assert!(arrived(&engine));
+    }
+
+    #[test]
+    fn a_listen_in_a_directory_that_is_a_link_is_bound_only_where_a_rule_names() {
+        let _deadline = Deadline::start();
+        let (_keep, base) = plain_dir();
+        std::fs::create_dir(base.join("real")).unwrap();
+        symlink(base.join("real"), base.join("via")).unwrap();
+        let rule = format!("unix:{}/via/*.sock", base.display());
+        let bind: Bind = format!("unix:{}/via/a.sock", base.display())
+            .parse()
+            .expect("a bind");
+        for follow_links in [false, true] {
+            let node = Running::with(ForwardConfig {
+                follow_links,
+                ..ForwardConfig::default()
+            });
+            let (link, _) = node.link(listen_grant(&[rule.as_str()]));
+            let result = listen(&link, &bind, None, &ForwardSettings::default());
+            let made = base.join("real").join("a.sock").exists();
+            if follow_links {
+                let _listener = result.expect("listening through the link");
+                assert!(made, "the socket is where the link leads");
+            } else {
+                let error = result.err().expect("refused");
+                assert!(is_remote(&error, ErrorCode::Denied), "{error:?}");
+                assert!(!made, "a socket was made where the link leads");
+            }
+            let _ = std::fs::remove_file(base.join("real").join("a.sock"));
+        }
+    }
+}
+
 // The command line.
 
 #[test]

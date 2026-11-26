@@ -413,8 +413,15 @@ mod tests {
         let listen_rule = "unix:/run/*/docker.sock".parse::<ListenRule>().unwrap();
         assert!(rule("unix:/run/*/docker.sock").matches(&unix("/run/user/docker.sock")));
         assert!(listen_rule.matches(&listen("/run/user/docker.sock")));
-        for path in ["/run/./docker.sock", "/run//docker.sock", "/run/user/docker.sock/"] {
-            assert!(!rule("unix:/run/*/docker.sock").matches(&unix(path)), "{path}");
+        for path in [
+            "/run/./docker.sock",
+            "/run//docker.sock",
+            "/run/user/docker.sock/",
+        ] {
+            assert!(
+                !rule("unix:/run/*/docker.sock").matches(&unix(path)),
+                "{path}"
+            );
             assert!(!listen_rule.matches(&listen(path)), "{path}");
         }
         assert!(!rule("unix:/run/*").matches(&unix("/run/./")));

@@ -1409,6 +1409,11 @@ pub struct ForwardConfig {
     /// it: the peer's user id on Unix, its SID on Windows). `false` serves any account that can reach the socket or pipe,
     /// which the mode, or on Windows the pipe's access list, would then be the only guard of. Default `true`.
     pub ipc_same_user: bool,
+    /// Whether a `unix:` target or bind may lead through a symbolic link. `false` resolves the path first and requires the
+    /// resolved path to match a rule as well as the text, so a link a rule did not name cannot reach another socket; a rule
+    /// then names the real path (`/run/docker.sock`, not `/var/run/docker.sock` where `/var/run` is a link). `true` follows
+    /// links and is logged `non-default:`: whoever can write the directory chooses which socket a rule reaches. Default `false`.
+    pub follow_links: bool,
 }
 
 impl Default for ForwardConfig {
@@ -1436,6 +1441,7 @@ impl Default for ForwardConfig {
             accept_timeout: Span(Duration::from_secs(10)),
             socket_mode: Mode(0o600),
             ipc_same_user: true,
+            follow_links: false,
         }
     }
 }
