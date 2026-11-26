@@ -167,6 +167,11 @@ impl Client {
                 )),
             };
         }
+        if settings.known_hosts.as_os_str().is_empty() {
+            return Err(format!(
+                "the host presented key {presented}, and the node has no home directory to find a known_hosts file in; set `known_hosts` or pin it with `host_key = \"{presented}\"` (after checking it with the host's owner)"
+            ));
+        }
         Err(format!(
             "the host presented key {presented}, which neither `host_key` nor {} holds for it; pin it with `host_key = \"{presented}\"` (after checking it with the host's owner), add it to known_hosts, or set host_key_check = \"tofu\" to trust it at first contact",
             settings.known_hosts.display()

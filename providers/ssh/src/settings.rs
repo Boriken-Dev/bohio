@@ -474,6 +474,11 @@ impl SshSettings {
 
     /// Checks every key and parses the values; nothing touches the network or a file.
     pub(crate) fn read(&self) -> Result<Settings, ProviderError> {
+        self.read_with(home())
+    }
+
+    /// As [`SshSettings::read`], with `home` as the account's home directory.
+    pub(crate) fn read_with(&self, home: Option<PathBuf>) -> Result<Settings, ProviderError> {
         if self.host.trim().is_empty() {
             return Err(refuse("host names no machine".to_owned()));
         }
@@ -530,7 +535,10 @@ impl SshSettings {
             .map_err(refuse)?;
         let known_hosts = match self.known_hosts.as_deref() {
             Some(path) => expand(path).map_err(refuse)?,
-            None => home().unwrap_or_default().join(".ssh").join("known_hosts"),
+            // With no home there is no default file: an empty path names nothing, and never one under the working directory.
+            None => home
+                .map(|home| home.join(".ssh").join("known_hosts"))
+                .unwrap_or_default(),
         };
         let user = self
             .user
@@ -683,6 +691,30 @@ mod tests {
         assert_eq!(span("2"), Some(Duration::from_secs(2)));
         assert_eq!(span("1h"), Some(Duration::from_secs(3600)));
         assert_eq!(span("soon"), None);
+    }
+
+    #[test]
+    fn with_no_home_there_is_no_default_known_hosts_file() {
+        let settings = super::SshSettings::new("host.invalid");
+        let mut explicit = settings.clone();
+        explicit.known_hosts = Some("/etc/ssh/known_hosts".to_owned());
+        let read = settings.read_with(None).unwrap();
+        assert!(
+            read.known_hosts.as_os_str().is_empty(),
+            "{:?}",
+            read.known_hosts
+        );
+        let read = settings
+            .read_with(Some(std::path::PathBuf::from("/home/a")))
+            .unwrap();
+        assert!(
+            read.known_hosts.ends_with("known_hosts")
+                && read.known_hosts.is_absolute() == cfg!(unix)
+        );
+        assert_eq!(
+            explicit.read_with(None).unwrap().known_hosts,
+            std::path::PathBuf::from("/etc/ssh/known_hosts")
+        );
     }
 
     #[test]
