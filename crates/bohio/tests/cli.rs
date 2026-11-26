@@ -158,6 +158,27 @@ fn help_lists_the_environment_variables_the_program_reads() {
 }
 
 #[test]
+fn peer_approve_help_names_every_permission() {
+    let output = bohio(&["peer", "approve", "--help"]);
+    assert_eq!(output.status.code(), Some(0));
+    let help = text(&output.stdout)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    // The help wraps, so each name is looked for as a word of its own.
+    let words: Vec<&str> = help
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '.' || c == '_'))
+        .collect();
+    for permission in bohio::policy::Permission::ALL {
+        assert!(
+            words.contains(&permission.name()),
+            "`peer approve --help` names {}: {help}",
+            permission.name()
+        );
+    }
+}
+
+#[test]
 fn the_argument_definition_is_consistent() {
     bohio::cli::Cli::command().debug_assert();
     assert!(bohio::cli::Cli::try_parse_from(["bohio", "info"]).is_ok());

@@ -180,6 +180,18 @@ pub enum PeerAction {
     Revoke(RevokeArgs),
 }
 
+/// The help of `--allow`: every permission the grant knows, from the enum.
+fn allow_help() -> String {
+    let names: Vec<&str> = crate::policy::Permission::ALL
+        .into_iter()
+        .map(crate::policy::Permission::name)
+        .collect();
+    format!(
+        "What the peer may do: {} (repeat or separate with commas). Setting any of `--allow`, `--fs-root`, `--program`, `--connect` and `--listen` replaces the peer's whole table; without them an existing table stays and a new peer holds nothing",
+        names.join(", ")
+    )
+}
+
 /// `bohio peer approve`.
 #[derive(Debug, Args)]
 pub struct ApproveArgs {
@@ -188,11 +200,7 @@ pub struct ApproveArgs {
     pub config: ConfigOption,
     /// The peer's id, as `bohio peer list` prints it.
     pub id: String,
-    /// What the peer may do: info, fs.read, fs.write, exec, shell, admin, forward.connect, forward.listen, session (repeat or
-    /// separate with commas). Setting any of `--allow`, `--fs-root`, `--program`, `--connect` and `--listen` replaces the
-    /// peer's whole table;
-    /// without them an existing table stays and a new peer holds nothing.
-    #[arg(long, value_delimiter = ',', value_name = "PERMISSION")]
+    #[arg(long, value_delimiter = ',', value_name = "PERMISSION", help = allow_help())]
     pub allow: Vec<String>,
     /// A directory file operations are confined to (repeat).
     #[arg(long, value_name = "DIR")]
