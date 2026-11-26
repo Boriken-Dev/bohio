@@ -83,6 +83,8 @@ pub struct GuiConfig {
     pub settle_quiet: Span,
     /// How long a settle waits at most, when a request names none. Not zero. Default `5s`.
     pub settle_timeout: Span,
+    /// The longest `quiet_ms` or `timeout_ms` a request may name; more is `bad_request`. Not zero. Default `30s`.
+    pub max_settle_wait: Span,
     /// How many 64 by 64 tiles may change between two captures of a settle without counting as a change (a blinking
     /// cursor is one). Default `1`.
     pub settle_ignore_tiles: u32,
@@ -208,6 +210,7 @@ impl Default for GuiConfig {
             settle_interval: Span(Duration::from_millis(100)),
             settle_quiet: Span(Duration::from_millis(300)),
             settle_timeout: Span(Duration::from_secs(5)),
+            max_settle_wait: Span(Duration::from_secs(30)),
             settle_ignore_tiles: 1,
             clipboard_max_bytes: 1024 * 1024,
             chunk_size: 64 * 1024,
@@ -311,6 +314,7 @@ impl GuiConfig {
             ("gui.settle_interval", self.settle_interval.0.is_zero()),
             ("gui.settle_quiet", self.settle_quiet.0.is_zero()),
             ("gui.settle_timeout", self.settle_timeout.0.is_zero()),
+            ("gui.max_settle_wait", self.max_settle_wait.0.is_zero()),
             ("gui.poll_interval", self.poll_interval.0.is_zero()),
             ("gui.state_interval", self.state_interval.0.is_zero()),
             ("gui.idle_timeout", self.idle_timeout.0.is_zero()),

@@ -777,6 +777,10 @@ impl Stream<'_> {
         let config = self.config();
         let time = |ms: Option<u64>, default: Duration, what: &str| match ms {
             Some(0) => Err(bad(&format!("{what} must not be zero"))),
+            Some(ms) if Duration::from_millis(ms) > config.max_settle_wait.0 => Err(bad(&format!(
+                "{what} is longer than the {:?} this host waits ([gui] max_settle_wait)",
+                config.max_settle_wait.0
+            ))),
             Some(ms) => Ok(Duration::from_millis(ms)),
             None => Ok(default),
         };
@@ -930,10 +934,12 @@ impl Stream<'_> {
                     1
                 }
                 InputEvent::Text { text } => {
-                    if text.chars().count() > config.max_text {
+                    let characters = text.chars().count();
+                    if characters > config.max_text {
                         return Err(bad("the text is longer than this host types at once"));
                     }
-                    1
+                    // A key press and release for each character: the cost is what the desktop is held for.
+                    u32::try_from(characters).unwrap_or(u32::MAX).max(1)
                 }
                 InputEvent::Wait { ms } => {
                     waits = waits.saturating_add(Duration::from_millis(*ms));
@@ -946,9 +952,15 @@ impl Stream<'_> {
                     state.display(display.as_ref())?;
                     count.unwrap_or(1)
                 }
-                InputEvent::Move { display, .. } | InputEvent::Scroll { display, .. } => {
+                InputEvent::Move { display, .. } => {
                     state.display(display.as_ref())?;
                     1
+                }
+                InputEvent::Scroll {
+                    display, dx, dy, ..
+                } => {
+                    state.display(display.as_ref())?;
+                    dx.unsigned_abs().saturating_add(dy.unsigned_abs()).max(1)
                 }
             });
         }

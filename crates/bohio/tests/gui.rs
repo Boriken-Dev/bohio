@@ -693,3 +693,54 @@ fn input_is_refused_while_the_lock_state_is_unknown_unless_the_host_allows_it() 
     let gui = open(&known, &[Want::Input]);
     assert_eq!(gui.input(&[text()], Some(WAIT)).unwrap(), 1);
 }
+
+#[test]
+fn input_is_costed_by_what_it_holds_the_desktop_for_and_a_settle_wait_is_bounded() {
+    let config = GuiConfig {
+        max_input_rate: 100,
+        max_settle_wait: bohio::config::Span(Duration::from_secs(2)),
+        ..gui_config()
+    };
+    let world = world(config, all());
+    let gui = open(&world, &[Want::View, Want::Input]);
+    // One text event of more characters than a second's input is busy, and so is a wheel of many notches.
+    let long = InputEvent::Text {
+        text: "a".repeat(101),
+    };
+    assert_eq!(
+        remote(&gui.input(&[long], Some(WAIT)).unwrap_err()).code,
+        ErrorCode::Busy
+    );
+    let wheel = InputEvent::Scroll {
+        display: None,
+        x: None,
+        y: None,
+        dx: -60,
+        dy: 60,
+    };
+    assert_eq!(
+        remote(&gui.input(&[wheel], Some(WAIT)).unwrap_err()).code,
+        ErrorCode::Busy
+    );
+    assert!(world.desktop.log().is_empty());
+    // A settle that waits ten times what the host allows is refused naming the key; the allowed wait is served.
+    let greedy = Settle {
+        timeout_ms: Some(20_000),
+        ..Settle::default()
+    };
+    let refused = gui.settle(&greedy, Some(WAIT)).unwrap_err();
+    assert_eq!(remote(&refused).code, ErrorCode::BadRequest);
+    assert!(
+        remote(&refused).message.contains("timeout_ms"),
+        "{refused:?}"
+    );
+    assert!(
+        remote(&refused).message.contains("max_settle_wait"),
+        "{refused:?}"
+    );
+    let fine = Settle {
+        timeout_ms: Some(1_000),
+        ..Settle::default()
+    };
+    assert!(gui.settle(&fine, Some(WAIT)).is_ok());
+}
