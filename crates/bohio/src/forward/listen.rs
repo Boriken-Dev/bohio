@@ -500,9 +500,6 @@ fn bind_ipc(
         .map_err(|_| ErrorBody::new(ErrorCode::BadRequest, "that is not a socket or pipe name"))?;
     let listener = ipc::listener(&name, options, Some(config.socket_mode.0))
         .map_err(|error| pipe_bind_failure(&error))?;
-    if config.socket_mode.0 != 0o600 {
-        tracing::info!(mode = ?config.socket_mode, "a socket listener is made with a mode other than 0o600");
-    }
     Ok((Bound::Ipc(listener), request.to_string()))
 }
 

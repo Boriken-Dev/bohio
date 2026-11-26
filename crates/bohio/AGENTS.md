@@ -51,6 +51,7 @@ impl Config {
     pub fn from_toml(text: &str, path: &str) -> Result<Self, ConfigError>;       // one layer of text; `path` only labels errors
     pub fn load(path: &Path) -> Result<Self, ConfigError>;                       // one layer, a file
     pub fn data_dir(&self, environment: &Environment) -> PathBuf;
+    pub fn non_default(&self, listeners: &[ListenConfig]) -> Vec<String>;         // one `non-default: [section] key = value: cost` line for each weakened link or forward check (`[forward] socket_mode`, `ipc_same_user`, `follow_links`, `[pairing] max_attempts = 0`, `[[listen]] socket_mode`, `remote_clients`, `origins` with `*`); `bohio serve` logs them at start
 }
 pub struct Layers;                                                // the library reads the files it is given and nothing else; the command finds them
 impl Layers {

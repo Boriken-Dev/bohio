@@ -146,6 +146,7 @@ pub(super) fn serve(args: &ServeArgs, environment: &Environment) -> Result<(), S
         }
         // Standard output is the link: nothing else is written to it, and [[listen]] entries are not bound.
         let watch = guard(&found, environment)?;
+        log_non_default(config, &[]);
         let (server, _) = node(&found, watch, environment)?;
         tracing::info!(host = %server.host(), "serving standard input and output");
         return server.serve_stdio().map_err(|error| error.to_string());
@@ -156,6 +157,13 @@ pub(super) fn serve(args: &ServeArgs, environment: &Environment) -> Result<(), S
         ..ListenConfig::default()
     }));
     serve_endpoints(&found, environment, &entries, &AtomicBool::new(false))
+}
+
+/// Says at start, once each, which link and forward checks the configuration weakens.
+fn log_non_default(config: &Config, entries: &[ListenConfig]) {
+    for line in config.non_default(entries) {
+        tracing::warn!("{line}");
+    }
 }
 
 /// Refuses to serve from a layer or a data directory another user may change, unless `[service]
@@ -244,6 +252,7 @@ pub(super) fn serve_endpoints(
         );
     }
     let watch = guard(found, environment)?;
+    log_non_default(config, entries);
     let (server, peers) = node(found, watch, environment)?;
     let server = server.with_events(Arc::new(Printed));
     let settings = config.link.settings();

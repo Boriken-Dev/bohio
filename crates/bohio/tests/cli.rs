@@ -201,6 +201,11 @@ fn service_install_refuses_a_bad_name_before_it_touches_the_service_manager() {
 /// Whether `bohio serve --config LAYER...` starts serving (it is then stopped), or else what it said
 /// on standard error when it gave up.
 fn serves(layers: &[&Path]) -> Result<(), String> {
+    served(layers).0
+}
+
+/// As [`serves`], with everything the host said on standard error up to the end.
+fn served(layers: &[&Path]) -> (Result<(), String>, String) {
     use std::io::Read;
     use std::process::Stdio;
     use std::time::{Duration, Instant};
@@ -240,9 +245,6 @@ fn serves(layers: &[&Path]) -> Result<(), String> {
             let first = reader.join().unwrap();
             let _ = child.0.kill();
             let status = child.0.wait().unwrap();
-            if first.as_deref().is_ok_and(|bytes| bytes == b"listening") {
-                return Ok(());
-            }
             let mut err = String::new();
             child
                 .0
@@ -251,13 +253,60 @@ fn serves(layers: &[&Path]) -> Result<(), String> {
                 .unwrap()
                 .read_to_string(&mut err)
                 .unwrap();
-            return Err(format!("{status}: {err}"));
+            if first.as_deref().is_ok_and(|bytes| bytes == b"listening") {
+                return (Ok(()), err);
+            }
+            return (Err(format!("{status}: {err}")), err);
         }
         if Instant::now() >= until {
             panic!("bohio serve neither served nor gave up");
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// A host started with weakened link and forward settings says so on standard error, one `non-default:` line for each.
+#[test]
+fn serve_logs_each_weakened_link_or_forward_check() {
+    let directory = scratch("nondefault");
+    let data = directory.join("data");
+    let config = directory.join("host.cfg");
+    std::fs::write(
+        &config,
+        format!(
+            "[service]
+data_dir = '{}'
+[forward]
+ipc_same_user = false
+follow_links = true
+[pairing]
+max_attempts = 0
+[[listen]]
+endpoint = \"ws://127.0.0.1:0\"
+origins = [\"*\"]
+",
+            data.display()
+        ),
+    )
+    .unwrap();
+    // Unix configuration files must not be writable by others.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let (started, err) = served(&[&config]);
+    started.expect("the host serves");
+    for key in [
+        "non-default: [forward] ipc_same_user = false",
+        "non-default: [forward] follow_links = true",
+        "non-default: [pairing] max_attempts = 0",
+        "non-default: [[listen]] origins includes \"*\" on ws://127.0.0.1:0",
+    ] {
+        assert!(err.contains(key), "{key}: {err}");
+    }
+    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[cfg(windows)]

@@ -11,6 +11,7 @@ mod access;
 mod gui;
 mod hosts;
 mod layers;
+mod weakened;
 
 pub use access::{AccessConfig, NATIVE, SourceTable, SourceTables};
 pub use gui::{ApprovalMode, GuiConfig, Indicator, LadderStep, WindowsCapture};
