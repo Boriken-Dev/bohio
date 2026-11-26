@@ -528,11 +528,18 @@ fn remove_peer(document: &mut DocumentMut, name: &str) -> bool {
 }
 
 /// Replaces `path` (or makes it) with `text`, atomically through a temporary sibling. A new file is readable
-/// by its owner alone; a replaced one keeps its mode on Unix and takes its directory's inherited access list
-/// on Windows.
+/// by its owner alone; a replaced one keeps its mode, owner and group on Unix (as far as this account may give them back;
+/// a link is written through to its target) and takes its directory's inherited access list on Windows.
 fn write_document(path: &Path, text: &str, made: bool) -> Result<(), PeerError> {
     #[cfg(unix)]
-    let mode = std::fs::metadata(path).ok().map(|meta| meta.permissions());
+    let linked = path
+        .is_symlink()
+        .then(|| std::fs::canonicalize(path).ok())
+        .flatten();
+    #[cfg(unix)]
+    let path = linked.as_deref().unwrap_or(path);
+    #[cfg(unix)]
+    let before = std::fs::metadata(path).ok();
     coqui_peer::file::replace(path, text.as_bytes(), coqui_peer::file::Access::OwnerOnly).map_err(
         |error| {
             PeerError::Write(format!(
@@ -543,10 +550,74 @@ fn write_document(path: &Path, text: &str, made: bool) -> Result<(), PeerError> 
         },
     )?;
     #[cfg(unix)]
-    if !made && let Some(mode) = mode {
-        let _ = std::fs::set_permissions(path, mode);
+    if !made && let Some(before) = before {
+        use std::os::unix::fs::MetadataExt as _;
+        // Best effort: a caller that is not root may give the file back only a group it belongs to.
+        let _ = std::os::unix::fs::chown(path, Some(before.uid()), Some(before.gid()));
+        let _ = std::fs::set_permissions(path, before.permissions());
     }
     #[cfg(not(unix))]
     let _ = made;
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    /// A group of the caller other than its effective one, when it has one.
+    fn another_group() -> Option<u32> {
+        let own = rustix::process::getegid().as_raw();
+        rustix::process::getgroups()
+            .ok()?
+            .into_iter()
+            .map(rustix::process::Gid::as_raw)
+            .find(|group| *group != own)
+    }
+
+    #[test]
+    fn a_layer_keeps_its_group_and_mode_when_it_is_rewritten_and_a_link_is_written_through() {
+        let Some(group) = another_group() else {
+            eprintln!("SKIPPED: the account belongs to no group besides its own");
+            return;
+        };
+        let directory = tempfile::tempdir().expect("a directory");
+        let file = directory.path().join("layer.cfg");
+        std::fs::write(
+            &file, "# layer
+",
+        )
+        .expect("the layer");
+        std::os::unix::fs::chown(&file, None, Some(group)).expect("a group of the account");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o640)).expect("mode");
+
+        super::write_document(
+            &file,
+            "# layer
+[peer.x]
+",
+            false,
+        )
+        .expect("written");
+        let meta = std::fs::metadata(&file).expect("the layer");
+        assert_eq!(meta.gid(), group, "the group is kept");
+        assert_eq!(meta.mode() & 0o777, 0o640, "the mode is kept");
+
+        let link = directory.path().join("link.cfg");
+        std::os::unix::fs::symlink(&file, &link).expect("a link");
+        super::write_document(
+            &link,
+            "# layer
+[peer.y]
+",
+            false,
+        )
+        .expect("written");
+        assert!(link.is_symlink(), "the link stays a link");
+        assert!(
+            std::fs::read_to_string(&file)
+                .expect("read")
+                .contains("peer.y")
+        );
+    }
 }
