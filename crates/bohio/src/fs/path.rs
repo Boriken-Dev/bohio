@@ -177,6 +177,13 @@ fn parse_posix(text: &str) -> Result<Parsed, ErrorBody> {
                     return Err(outside_root());
                 }
             }
+            // On a Windows node a name is turned into a path of the node's own kind, which splits at a backslash: a name
+            // that holds one cannot be carried as one name.
+            name if cfg!(windows) && name.contains('\\') => {
+                return Err(bad(
+                    "a POSIX name cannot hold a backslash on a Windows node",
+                ));
+            }
             name => parsed.names.push(OsString::from(name)),
         }
     }
@@ -247,12 +254,33 @@ pub(crate) fn locate_in(
 /// absolute, and never more `..` than the directories above it inside the root.
 ///
 /// `depth` is how many names lie between the root and the directory that holds the link.
-pub(crate) fn check_link_target(target: &str, depth: usize) -> Result<(), ErrorBody> {
+pub(crate) fn check_link_target(target: &str, depth: usize, posix: bool) -> Result<(), ErrorBody> {
     if target.is_empty() {
         return Err(bad("the link target is empty"));
     }
     if target.contains('\0') {
         return Err(bad("the link target holds a NUL"));
+    }
+    if posix {
+        // A source that names its files as POSIX does is told the text as it is written, and judged by POSIX rules,
+        // whatever this node's own syntax is.
+        if target.starts_with('/') {
+            return Err(outside_root());
+        }
+        let mut depth = i64::try_from(depth).unwrap_or(i64::MAX);
+        for part in target.split('/') {
+            match part {
+                "" | "." => {}
+                ".." => {
+                    depth -= 1;
+                    if depth < 0 {
+                        return Err(outside_root());
+                    }
+                }
+                _ => depth = depth.saturating_add(1),
+            }
+        }
+        return Ok(());
     }
     let text = if cfg!(windows) {
         target.replace('/', "\\")
@@ -348,24 +376,35 @@ mod tests {
 
     #[test]
     fn a_link_target_may_not_be_absolute_or_climb_out() {
-        assert!(check_link_target("sibling", 0).is_ok());
-        assert!(check_link_target("../up", 1).is_ok());
+        // A POSIX source is judged by POSIX rules whatever the node's own are.
+        assert!(check_link_target("a/b", 0, true).is_ok());
+        assert!(check_link_target("../up", 1, true).is_ok());
         assert_eq!(
-            check_link_target("../up", 0).unwrap_err().code,
+            check_link_target("../up", 0, true).unwrap_err().code,
             ErrorCode::OutsideRoot
         );
         assert_eq!(
-            check_link_target("a/../../up", 0).unwrap_err().code,
+            check_link_target("/etc", 3, true).unwrap_err().code,
+            ErrorCode::OutsideRoot
+        );
+        assert!(check_link_target("sibling", 0, false).is_ok());
+        assert!(check_link_target("../up", 1, false).is_ok());
+        assert_eq!(
+            check_link_target("../up", 0, false).unwrap_err().code,
+            ErrorCode::OutsideRoot
+        );
+        assert_eq!(
+            check_link_target("a/../../up", 0, false).unwrap_err().code,
             ErrorCode::OutsideRoot
         );
         #[cfg(unix)]
         assert_eq!(
-            check_link_target("/etc", 3).unwrap_err().code,
+            check_link_target("/etc", 3, false).unwrap_err().code,
             ErrorCode::OutsideRoot
         );
         #[cfg(windows)]
         assert_eq!(
-            check_link_target("C:\\Windows", 3).unwrap_err().code,
+            check_link_target("C:\\Windows", 3, false).unwrap_err().code,
             ErrorCode::OutsideRoot
         );
     }
@@ -497,11 +536,14 @@ mod posix_tests {
     fn the_host_syntax_reads_a_drive_and_the_posix_one_does_not() {
         let list = roots(&[r"C:\data"]);
         assert!(locate_in(&list, r"C:\data\x", Syntax::Host).is_ok());
-        // In POSIX a backslash is part of a name, so this is one relative name below the first root.
-        let found = locate_in(&list, r"C:\data\x", Syntax::Posix).unwrap();
+        // In POSIX a backslash is part of a name, which a Windows node cannot carry as one: it would be split into
+        // components (`..\..\x` would climb out) when the name is made a path.
         assert_eq!(
-            found.relative.as_os_str(),
-            std::ffi::OsStr::new(r"C:\data\x")
+            locate_in(&list, r"C:\data\x", Syntax::Posix)
+                .unwrap_err()
+                .code,
+            ErrorCode::BadRequest
         );
+        assert!(locate_in(&list, r"/srv/..\..\x", Syntax::Posix).is_err());
     }
 }

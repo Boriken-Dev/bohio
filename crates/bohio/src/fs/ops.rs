@@ -22,6 +22,11 @@ pub(crate) struct Roots<'a> {
 }
 
 impl<'a> Roots<'a> {
+    /// Whether the source names its files as POSIX does.
+    pub(crate) fn posix(&self) -> bool {
+        self.syntax == path::Syntax::Posix
+    }
+
     pub(crate) fn new(roots: &'a [PathBuf], files: super::FilesRef<'_>) -> Self {
         Self {
             roots,
@@ -254,18 +259,29 @@ pub(crate) fn rename(
 pub(crate) fn symlink(roots: &Roots<'_>, target: &str, link: &str) -> Result<(), ErrorBody> {
     let (dir, relative) = roots.resolve_entry(link)?;
     let depth = relative.components().count().saturating_sub(1);
-    check_link_target(target, depth)?;
-    make_link(&dir, &relative, target).map_err(|error| io_error(&error))
+    let posix = roots.posix();
+    check_link_target(target, depth, posix)?;
+    make_link(&dir, &relative, target, posix).map_err(|error| io_error(&error))
 }
 
-/// Makes `relative` a link to `target`, a Windows link to a directory when the target is one.
-pub(crate) fn make_link(dir: &Dir, relative: &Path, target: &str) -> std::io::Result<()> {
+/// Makes `relative` a link to `target`, a Windows link to a directory when the target is one. A source that names its
+/// files as POSIX does is given the text as written.
+pub(crate) fn make_link(
+    dir: &Dir,
+    relative: &Path,
+    target: &str,
+    posix: bool,
+) -> std::io::Result<()> {
     #[cfg(not(windows))]
     {
+        let _ = posix;
         dir.symlink(target, relative, false)
     }
     #[cfg(windows)]
     {
+        if posix {
+            return dir.symlink(target, relative, false);
+        }
         let native_text = target.replace('/', "\\");
         let beside = relative.parent().map_or_else(
             || PathBuf::from(&native_text),

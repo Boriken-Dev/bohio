@@ -136,7 +136,7 @@ fn copy_entry(
         return copy_tree(context, from, to, options);
     }
     if meta.is_symlink() && options.recursive {
-        return copy_link(from, to, options.overwrite);
+        return copy_link(from, to, options.overwrite, context.source.posix);
     }
     copy_file(context, from, to, options)
 }
@@ -181,13 +181,18 @@ fn copy_file(
 }
 
 /// A symbolic link made again at `to` with the same text, which must still stay inside the root.
-fn copy_link(from: &Place<'_>, to: &Place<'_>, overwrite: bool) -> Result<(), ErrorBody> {
+fn copy_link(
+    from: &Place<'_>,
+    to: &Place<'_>,
+    overwrite: bool,
+    posix: bool,
+) -> Result<(), ErrorBody> {
     let text = from
         .dir
         .read_link(from.relative)
         .map_err(|error| io_error(&error))?;
     let depth = to.relative.components().count().saturating_sub(1);
-    check_link_target(&text, depth)?;
+    check_link_target(&text, depth, posix)?;
     if overwrite
         && to
             .dir
@@ -198,7 +203,7 @@ fn copy_link(from: &Place<'_>, to: &Place<'_>, overwrite: bool) -> Result<(), Er
             .remove_file_or_symlink(to.relative)
             .map_err(|error| io_error(&error))?;
     }
-    make_link(to.dir, to.relative, &text).map_err(|error| io_error(&error))
+    make_link(to.dir, to.relative, &text, posix).map_err(|error| io_error(&error))
 }
 
 /// A directory copied with everything in it, depth first and without recursion. Links are made again as
@@ -267,6 +272,7 @@ fn copy_tree(
                     &Place::new(from.dir, &child_source),
                     &Place::new(to.dir, &child_target),
                     options.overwrite,
+                    context.source.posix,
                 )?;
             } else if kind.is_file() {
                 copy_file(
