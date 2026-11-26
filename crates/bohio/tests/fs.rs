@@ -1568,3 +1568,41 @@ fn allow_id_bits_lets_a_peer_set_the_bits_and_a_copy_still_strips_them() {
     fs.copy("tool", "copied", false).unwrap();
     assert_eq!(mode_of("copied") & 0o6000, 0, "the copy keeps a set-ID bit");
 }
+
+/// A named pipe in a root is not a file to transfer: opening one must answer, not wait for a peer on the other end while
+/// holding a transfer slot.
+#[cfg(unix)]
+#[test]
+fn a_named_pipe_in_a_root_is_refused_at_once_by_a_read_and_a_write() {
+    let fixture = std::sync::Arc::new(fixture(&RW));
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        fixture.root.join("p"),
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+    std::os::unix::fs::symlink("p", fixture.root.join("l")).unwrap();
+    let (done, answered) = std::sync::mpsc::channel();
+    let held = std::sync::Arc::clone(&fixture);
+    std::thread::spawn(move || {
+        let link = &held.link;
+        let read = Reader::start(link, &ReadRequest::whole("l"), WAIT).map(|_| ());
+        let request = WriteRequest {
+            mode: WriteMode::Append,
+            ..WriteRequest::replace("p")
+        };
+        let write = Writer::start(link, &request, WAIT)
+            .and_then(|writer| {
+                writer.write(b"x")?;
+                writer.finish(WAIT)
+            })
+            .map(|_| ());
+        let _ = done.send((read, write));
+    });
+    let (read, write) = answered
+        .recv_timeout(Duration::from_secs(5))
+        .expect("a named pipe made a transfer wait");
+    assert!(read.is_err() && write.is_err(), "{read:?} {write:?}");
+}

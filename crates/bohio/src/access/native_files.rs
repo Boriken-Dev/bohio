@@ -241,14 +241,28 @@ impl Directory for NativeDir {
             .create_new(options.create_new)
             .truncate(options.truncate);
         #[cfg(unix)]
-        if let Some(bits) = options.mode {
+        {
             use cap_std::fs::OpenOptionsExt;
-            open.mode(bits & 0o7777);
+            if let Some(bits) = options.mode {
+                open.mode(bits & 0o7777);
+            }
+            // A named pipe opened for reading would wait for a writer for good, holding the caller's slot: open without
+            // waiting, and refuse what is not a regular file below.
+            open.custom_flags(rustix::fs::OFlags::NONBLOCK.bits().cast_signed());
         }
         let file = self
             .dir
             .open_with(Path::new(relative), &open)
             .map_err(|error| failed(&error))?;
+        #[cfg(unix)]
+        if !file
+            .metadata()
+            .map_err(|error| failed(&error))?
+            .file_type()
+            .is_file()
+        {
+            return Err(bad_text("not a regular file"));
+        }
         Ok(Handle {
             file: file.into_std(),
             append: options.append,
