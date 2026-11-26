@@ -692,8 +692,7 @@ impl HelperListener {
             // Interactive users may connect; the system and the node's own account have it all.
             let me = coqui_transport_pipe::current_user()
                 .map_err(|error| fail(format!("the node's account is not known: {error}")))?;
-            builder = builder
-                .security_descriptor(Some(format!("D:P(A;;GA;;;SY)(A;;GA;;;{me})(A;;GRGW;;;IU)")));
+            builder = builder.security_descriptor(Some(pipe_descriptor(&me)));
         }
         let listener = builder.build().map_err(|error| fail(error.to_string()))?;
         Ok(Some(Self {
@@ -761,6 +760,15 @@ fn only_this_account_writes(socket: &std::path::Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The helper pipe's security descriptor: the system and the node's account (`me`) have all access; interactive users may
+/// read and write but not add an instance of the pipe (`0x12019b` is read and write without `FILE_CREATE_PIPE_INSTANCE`).
+/// The descriptor belongs to the pipe, not to an instance, so an account that could add one would be taken for the node by the
+/// helper's owner check and receive other accounts' helpers.
+#[cfg(windows)]
+fn pipe_descriptor(me: &str) -> String {
+    format!("D:P(A;;GA;;;SY)(A;;GA;;;{me})(A;;0x12019b;;;IU)")
 }
 
 /// The store of a node's helper connection: the one protocol a helper opens.
@@ -1362,6 +1370,41 @@ mod tests {
     #[test]
     fn an_empty_account_is_not_one() {
         assert!(resolve_account("  ").is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn interactive_users_cannot_add_an_instance_of_the_helper_pipe() {
+        const FILE_CREATE_PIPE_INSTANCE: u32 = 0x4;
+        let sddl = pipe_descriptor("S-1-5-21-1-2-3-1001");
+        let aces: Vec<&str> = sddl
+            .strip_prefix("D:P")
+            .expect("a protected DACL")
+            .split(')')
+            .filter_map(|ace| ace.strip_prefix('('))
+            .collect();
+        let interactive: Vec<&&str> = aces.iter().filter(|ace| ace.ends_with(";;;IU")).collect();
+        assert_eq!(
+            interactive.len(),
+            1,
+            "one entry for interactive users: {sddl}"
+        );
+        let rights = interactive[0].split(';').nth(2).expect("a rights field");
+        let grants_instance = match rights.strip_prefix("0x") {
+            Some(hex) => {
+                u32::from_str_radix(hex, 16).expect("a hex mask") & FILE_CREATE_PIPE_INSTANCE != 0
+            }
+            // A generic right (GA, GW) or the whole file right (FA) holds it.
+            None => rights
+                .as_bytes()
+                .chunks(2)
+                .any(|right| matches!(right, b"GA" | b"GW" | b"FA")),
+        };
+        assert!(
+            !grants_instance,
+            "interactive users may add an instance of the pipe: {sddl}"
+        );
+        assert_eq!(rights, "0x12019b", "read and write, nothing more");
     }
 
     #[cfg(unix)]
