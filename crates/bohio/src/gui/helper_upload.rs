@@ -382,25 +382,17 @@ pub fn upload(
                     upload.dir
                 ));
             }
-    if let Some(mode) = stat.mode
+        }
+    } else if let Some(mode) = stat.mode
         && mode & 0o022 != 0
+        && mode & 0o1000 != 0
+        && !upload.sticky_dir
     {
-        if !upload.shared_dir {
-            return Err(format!(
-                "{} is writable by other accounts (mode {:o}): one of them could replace the helper before it runs; \
-                 `[gui] helper_upload_shared_dir = true` accepts that",
-                upload.dir,
-                mode & 0o7777
-            ));
-        }
-        if mode & 0o1000 != 0 && !upload.sticky_dir {
-            return Err(format!(
-                "{} is a sticky directory writable by other accounts (mode {:o}), such as a shared temporary directory: \
-                 `[gui] helper_upload_sticky_dir = true` accepts that",
-                upload.dir,
-                mode & 0o7777
-            ));
-        }
+        return Err(format!(
+            "{} is a sticky directory writable by other accounts (mode {:o}), such as a shared temporary directory:              `[gui] helper_upload_sticky_dir = true` accepts that",
+            upload.dir,
+            mode & 0o7777
+        ));
     }
     for (weakened, key) in [
         (upload.overwrite, "helper_upload_overwrite"),

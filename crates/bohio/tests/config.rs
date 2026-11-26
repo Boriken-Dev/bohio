@@ -531,22 +531,43 @@ fn allow_id_bits_set_above_the_lowest_layer_is_ignored() {
     let files = layers(
         dir.path(),
         &[
-            ("system.cfg", "[filesystem]
+            (
+                "system.cfg",
+                "[filesystem]
 max_transfers = 4
-"),
-            ("user.cfg", "[filesystem]
+",
+            ),
+            (
+                "user.cfg",
+                "[filesystem]
 allow_id_bits = true
-"),
+",
+            ),
         ],
     );
-    assert!(!Layers::load(&files).unwrap().config.filesystem.allow_id_bits);
+    assert!(
+        !Layers::load(&files)
+            .unwrap()
+            .config
+            .filesystem
+            .allow_id_bits
+    );
     let files = layers(
         dir.path(),
-        &[("low.cfg", "[filesystem]
+        &[(
+            "low.cfg",
+            "[filesystem]
 allow_id_bits = true
-")],
+",
+        )],
     );
-    assert!(Layers::load(&files).unwrap().config.filesystem.allow_id_bits);
+    assert!(
+        Layers::load(&files)
+            .unwrap()
+            .config
+            .filesystem
+            .allow_id_bits
+    );
 }
 
 /// Whoever writes a higher layer must not set the keys that govern layering and weaken checks: the value is ignored, not
