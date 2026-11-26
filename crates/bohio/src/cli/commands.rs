@@ -48,6 +48,8 @@ pub(super) struct Found {
     pub watch: Vec<PathBuf>,
     /// The user file to make when `approve` finds no layer it can write.
     pub create: Option<PathBuf>,
+    /// The accounts the operator trusts on the command line or in `BOHIO_TRUST_OWNER`.
+    pub trust: Vec<String>,
 }
 
 impl Found {
@@ -92,6 +94,7 @@ fn found_in(named: &[PathBuf], system: PathBuf, user: Option<PathBuf>) -> Result
             layered,
             watch: named,
             create: None,
+            trust: access::trusted_from_environment(),
         });
     }
     let user_layer = if system.is_file() {
@@ -101,7 +104,11 @@ fn found_in(named: &[PathBuf], system: PathBuf, user: Option<PathBuf>) -> Result
             .service;
         // Every command reads the system file, the client's identity and the control endpoint included, so one
         // another account made or may change is refused before anything uses it.
-        access::decide(&access::layer_problems(&system), service.check_access)?;
+        access::decide(
+            &access::layer_problems(&system),
+            service.check_access,
+            &access::trusted_from_environment(),
+        )?;
         service.user_layer
     } else {
         true
@@ -122,6 +129,7 @@ fn found_in(named: &[PathBuf], system: PathBuf, user: Option<PathBuf>) -> Result
         layered,
         watch,
         create,
+        trust: access::trusted_from_environment(),
     })
 }
 

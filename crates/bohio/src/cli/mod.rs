@@ -149,6 +149,16 @@ pub struct ServeArgs {
     /// standard error, and no `[[listen]]` entry is bound.
     #[arg(long, conflicts_with = "listen")]
     pub stdio: bool,
+    /// An account (user id or name on Unix, security id on Windows) whose ownership of the configuration file or its
+    /// directory is accepted as the operator's, logged `non-default:`. The lowest file cannot vouch for its own owner, so
+    /// this is the only way to accept one. Also `BOHIO_TRUST_OWNER`, comma separated.
+    #[arg(
+        long,
+        value_name = "ACCOUNT",
+        env = "BOHIO_TRUST_OWNER",
+        value_delimiter = ','
+    )]
+    pub trust_owner: Vec<String>,
 }
 
 /// `bohio status`, `bohio id` and `bohio peer list`.

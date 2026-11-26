@@ -148,7 +148,8 @@ impl NodeEvents for Printed {
 
 /// `bohio serve`.
 pub(super) fn serve(args: &ServeArgs, environment: &Environment) -> Result<(), String> {
-    let found = found(&args.config.config)?;
+    let mut found = found(&args.config.config)?;
+    found.trust.clone_from(&args.trust_owner);
     let config = found.config();
     if args.stdio {
         if !args.listen.is_empty() {
@@ -182,11 +183,18 @@ fn log_non_default(config: &Config, entries: &[ListenConfig]) {
 fn guard(found: &Found, environment: &Environment) -> Result<Vec<PathBuf>, String> {
     let config = found.config();
     announce_unchecked(config.service.check_access);
-    let mut problems = Vec::new();
-    for file in &found.layered.files {
-        problems.extend(access::layer_problems(file));
+    // The lowest layer cannot vouch for its own owner: only the command line does. A higher layer, and the data
+    // directory, are judged by the lowest layer's `trusted_owners` too.
+    let mut trusted = found.trust.clone();
+    trusted.extend(config.service.trusted_owners.iter().cloned());
+    for (index, file) in found.layered.files.iter().enumerate() {
+        let who = if index == 0 { &found.trust } else { &trusted };
+        access::decide(
+            &access::layer_problems(file),
+            config.service.check_access,
+            who,
+        )?;
     }
-    access::decide(&problems, config.service.check_access)?;
     // The layers are the operator's, so the directory they name is made (as the node would make it) and checked.
     let data = config.data_dir(environment);
     let _ = std::fs::create_dir_all(&data);
@@ -194,7 +202,7 @@ fn guard(found: &Found, environment: &Environment) -> Result<Vec<PathBuf>, Strin
         .err()
         .into_iter()
         .collect();
-    access::decide(&problems, config.service.check_access)?;
+    access::decide(&problems, config.service.check_access, &trusted)?;
     Ok(watched(found))
 }
 
@@ -1112,23 +1120,24 @@ mod tests {
         Problem {
             kind,
             text: "the data directory is open to every user".to_owned(),
+            owner: Some("4242".to_owned()),
         }
     }
 
     #[test]
     fn an_access_problem_is_an_error_until_the_operator_turns_the_check_off() {
-        assert!(decide(&[problem(Kind::Open)], true).is_err());
-        assert!(decide(&[problem(Kind::Open)], false).is_ok());
-        assert!(decide(&[problem(Kind::Unknown)], false).is_ok());
-        assert!(decide(&[], true).is_ok());
+        assert!(decide(&[problem(Kind::Open)], true, &[]).is_err());
+        assert!(decide(&[problem(Kind::Open)], false, &[]).is_ok());
+        assert!(decide(&[problem(Kind::Unknown)], false, &[]).is_ok());
+        assert!(decide(&[], true, &[]).is_ok());
     }
 
     /// Whoever owns a layer wrote what it says, `check_access = false` included, so a layer another account owns
     /// cannot turn its own check off.
     #[test]
     fn a_path_another_account_owns_is_refused_even_when_the_check_is_off() {
-        assert!(decide(&[problem(Kind::Foreign)], false).is_err());
-        assert!(decide(&[problem(Kind::Open), problem(Kind::Foreign)], false).is_err());
+        assert!(decide(&[problem(Kind::Foreign)], false, &[]).is_err());
+        assert!(decide(&[problem(Kind::Open), problem(Kind::Foreign)], false, &[]).is_err());
     }
 
     fn native(settings: &crate::config::NodeConfig) -> toml::Table {

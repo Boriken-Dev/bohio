@@ -89,7 +89,7 @@ impl Layered {
 pub struct Layers;
 
 /// The keys that govern layering and the access checks: the lowest layer alone sets them.
-const LOWEST_ONLY: [&str; 2] = ["check_access", "user_layer"];
+const LOWEST_ONLY: [&str; 3] = ["check_access", "user_layer", "trusted_owners"];
 
 /// The `[filesystem]` keys that let a peer make a file run as the service's account: the lowest layer alone sets them.
 const FILESYSTEM_LOWEST_ONLY: [&str; 1] = ["allow_id_bits"];

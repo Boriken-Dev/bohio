@@ -226,6 +226,11 @@ pub struct ServiceConfig {
     /// Whether the user's file is read over the system's when neither `--config` nor `BOHIO_CONFIG`
     /// names the files. Set in the lowest layer only. Default `true`.
     pub user_layer: bool,
+    /// Accounts whose files count as the operator's: a layer, its directory or the data directory one of them owns is
+    /// not refused as another account's, and the node logs `non-default:` for each. A user id or account name on Unix,
+    /// a security id on Windows. Set in the lowest layer only; the lowest layer itself and its directory are judged by
+    /// `bohio serve --trust-owner` (or `BOHIO_TRUST_OWNER`) alone, as a file cannot vouch for its own owner. Default none.
+    pub trusted_owners: Vec<String>,
     /// Windows: how long the service manager is told a start or a stop may take, and how long `bohio service
     /// uninstall` waits for a running service to stop before it removes it. A host with many links to end may need
     /// longer; the manager's own limit still applies. Not zero. Default `10s`.
@@ -239,6 +244,7 @@ impl Default for ServiceConfig {
             data_dir: None,
             check_access: true,
             user_layer: true,
+            trusted_owners: Vec::new(),
             stop_wait: Span(Duration::from_secs(10)),
         }
     }

@@ -53,11 +53,22 @@ pub(crate) enum Kind {
 pub(crate) struct Problem {
     pub(crate) kind: Kind,
     pub(crate) text: String,
+    /// For [`Kind::Foreign`], who owns the path: a user id (Unix) or a security id (Windows).
+    pub(crate) owner: Option<String>,
 }
 
 impl Problem {
     fn new(kind: Kind, text: String) -> Self {
-        Self { kind, text }
+        Self {
+            kind,
+            text,
+            owner: None,
+        }
+    }
+
+    fn owned_by(mut self, owner: String) -> Self {
+        self.owner = Some(owner);
+        self
     }
 }
 
@@ -94,7 +105,8 @@ pub(crate) fn check(path: &Path, what: Guarded) -> Result<(), Problem> {
                 what.name(),
                 path.display()
             ),
-        ));
+        )
+        .owned_by(meta.uid().to_string()));
     }
     if meta.mode() & 0o022 != 0 {
         return Err(Problem::new(
@@ -138,14 +150,20 @@ pub(crate) fn check(path: &Path, what: Guarded) -> Result<(), Problem> {
     })?;
     match windows::judge(&listed, what) {
         Ok(()) => Ok(()),
-        Err((kind, who)) => Err(Problem::new(
-            kind,
-            format!(
-                "{} {} {who}: give it to the account that runs bohio, SYSTEM and the administrators alone",
-                what.name(),
-                path.display()
-            ),
-        )),
+        Err((kind, who, owner)) => {
+            let problem = Problem::new(
+                kind,
+                format!(
+                    "{} {} {who}: give it to the account that runs bohio, SYSTEM and the administrators alone",
+                    what.name(),
+                    path.display()
+                ),
+            );
+            Err(match owner {
+                Some(owner) => problem.owned_by(owner),
+                None => problem,
+            })
+        }
     }
 }
 
@@ -156,12 +174,30 @@ pub(crate) fn check(path: &Path, what: Guarded) -> Result<(), Problem> {
 /// # Errors
 ///
 /// Every refused problem, joined into one line.
-pub(crate) fn decide(problems: &[Problem], check_access: bool) -> Result<(), String> {
-    let (refused, waived): (Vec<&Problem>, Vec<&Problem>) = problems
-        .iter()
-        .partition(|problem| check_access || problem.kind == Kind::Foreign);
+pub(crate) fn decide(
+    problems: &[Problem],
+    check_access: bool,
+    trusted_owners: &[String],
+) -> Result<(), String> {
+    let (refused, waived): (Vec<&Problem>, Vec<&Problem>) = problems.iter().partition(|problem| {
+        if problem.kind == Kind::Foreign {
+            !problem
+                .owner
+                .as_deref()
+                .is_some_and(|owner| trusts(trusted_owners, owner))
+        } else {
+            check_access
+        }
+    });
     for problem in waived {
-        tracing::warn!("going on, as `check_access` is false: {}", problem.text);
+        if problem.kind == Kind::Foreign {
+            tracing::warn!(
+                "non-default: an account in `trusted_owners` (or `--trust-owner`) owns a path that decides who connects: {}",
+                problem.text
+            );
+        } else {
+            tracing::warn!("going on, as `check_access` is false: {}", problem.text);
+        }
     }
     if refused.is_empty() {
         Ok(())
@@ -172,6 +208,45 @@ pub(crate) fn decide(problems: &[Problem], check_access: bool) -> Result<(), Str
             .collect();
         Err(texts.join("; "))
     }
+}
+
+/// Whether `owner` (a user id on Unix, a security id on Windows) is one of `trusted`: the same id, or on Unix an
+/// account name whose id it is.
+fn trusts(trusted: &[String], owner: &str) -> bool {
+    trusted.iter().any(|entry| {
+        let entry = entry.trim();
+        entry.eq_ignore_ascii_case(owner) || user_id_of(entry).is_some_and(|id| id == owner)
+    })
+}
+
+/// The id `/etc/passwd` gives the account `name`.
+#[cfg(unix)]
+fn user_id_of(name: &str) -> Option<String> {
+    let table = std::fs::read_to_string("/etc/passwd").ok()?;
+    table.lines().find_map(|line| {
+        let mut fields = line.split(':');
+        (fields.next() == Some(name)).then(|| fields.nth(1).map(str::to_owned))?
+    })
+}
+
+/// Windows entries are security ids.
+#[cfg(not(unix))]
+fn user_id_of(_name: &str) -> Option<String> {
+    None
+}
+
+/// The accounts the operator trusts on the command line or in `BOHIO_TRUST_OWNER` (comma separated): the only
+/// source for the lowest layer itself, which cannot vouch for its own owner.
+pub(crate) fn trusted_from_environment() -> Vec<String> {
+    std::env::var("BOHIO_TRUST_OWNER")
+        .map(|value| {
+            value
+                .split(',')
+                .map(|entry| entry.trim().to_owned())
+                .filter(|entry| !entry.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The problems of the layer file `file` and of the directory that holds it.
@@ -314,12 +389,16 @@ mod windows {
     }
 
     /// Why `listed` is not safe for `what`: who owns it, or who may change or read it.
-    pub(super) fn judge(listed: &Listed, what: Guarded) -> Result<(), (Kind, String)> {
+    pub(super) fn judge(
+        listed: &Listed,
+        what: Guarded,
+    ) -> Result<(), (Kind, String, Option<String>)> {
         let trusted = |sid: &str| TRUSTED.contains(&sid) || sid == listed.me;
         if !trusted(&listed.owner) {
             return Err((
                 Kind::Foreign,
                 format!("is owned by another account ({})", listed.owner),
+                Some(listed.owner.clone()),
             ));
         }
         for (sid, rights, propagation) in &listed.allowed {
@@ -341,7 +420,7 @@ mod windows {
                 Guarded::DataDir => rights & (CHANGE | READ) != 0,
             };
             if reaches {
-                return Err((Kind::Open, format!("is open to every user ({sid})")));
+                return Err((Kind::Open, format!("is open to every user ({sid})"), None));
             }
         }
         Ok(())
@@ -518,5 +597,33 @@ mod tests {
         assert!(parse("owner|S-1-5-18\n").is_err());
         assert!(parse("me|x\nowner|y\nace|z|Allow|nothex|0\n").is_err());
         assert!(parse("me|x\nowner|y\nsomething else\n").is_err());
+    }
+}
+
+#[cfg(test)]
+mod trust_tests {
+    use super::{Kind, Problem, decide};
+
+    fn foreign(owner: &str) -> Problem {
+        Problem {
+            kind: Kind::Foreign,
+            text: "the configuration file is owned by another account".to_owned(),
+            owner: Some(owner.to_owned()),
+        }
+    }
+
+    #[test]
+    fn a_path_a_trusted_account_owns_is_served_and_another_accounts_is_not() {
+        let trusted = ["1234".to_owned()];
+        assert!(decide(&[foreign("1234")], true, &trusted).is_ok());
+        assert!(decide(&[foreign("1235")], true, &trusted).is_err());
+        assert!(decide(&[foreign("1234")], true, &[]).is_err());
+        // Ownership trusted is not the write check waived.
+        let open = Problem {
+            kind: Kind::Open,
+            text: "open".to_owned(),
+            owner: None,
+        };
+        assert!(decide(&[foreign("1234"), open], true, &trusted).is_err());
     }
 }

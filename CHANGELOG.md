@@ -134,6 +134,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   endpoint or source and what each end offers. `bohio_client::connect::Opened` and `Relay::end` carry a stream's end reason and text so a refusal or a revoke crosses
   `--via` unchanged. `bohio_proto::local` has the wire types.
 
+### Security
+
+- `[service] trusted_owners` (lowest layer only; none by default) and `bohio serve --trust-owner ACCOUNT` (`BOHIO_TRUST_OWNER`) accept a layer, directory or data directory another account owns as the operator's, logged `non-default:`; before, a path another account owned could not be accepted at all. `docs/security.md` has the cost.
+
 ### Changed
 
 - The `lan` profile sets `[compression] bundle_context = "shared"`, so the files of a bundle compress against each other on a trusted network. The host logs `non-default:` for it, and a key any file sets still wins; every other profile keeps `per_item`.
