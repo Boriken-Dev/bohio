@@ -283,7 +283,10 @@ provider = "program-echo"              # a provider a program offers is named li
   does any call on its old sessions; the node stays up. The next time a source is looked up (the next request that uses one),
   an entry that exited is started again, its sources are built anew, and a new session works. Starts are bounded by settings:
   at most `restart_limit` (default `5`; `0` never starts it again) in `restart_window` (`1m`), at least `restart_delay`
-  (`1s`) after it exited. Past the limit the entry stays `failed` until the node is restarted.
+  (`1s`) after it exited. Past the limit the entry stays `failed` until the node is restarted. Each start again repeats
+  the owner check (`check_access`) and compares the file's SHA-256 with the one first reported: a file that changed is not
+  started (`failed`, naming both digests) unless the entry sets `restart_if_changed = true`, which starts it, reports its new digest
+  and logs `non-default:`.
 - **A program that never speaks is ended.** `start_timeout` (`10s`) is how long it has to send its first message; the node
   starts all the same, with the entry `failed`. `stop_grace` (`500ms`) is how long it has to leave once the node closes its
   input, before it is ended. `call_timeout` (`30s`, `0` waits for good) bounds one call, `max_calls` (`64`) the calls running at

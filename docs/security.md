@@ -313,7 +313,7 @@ A desktop helper that the node starts through an exec source (a session named `e
   (`bohio providers` prints it too): use it only where the directory's write access is held some other way. The command's file is made absolute once (a relative one
   against the node's working directory) and that one path is checked, digested and started, so an entry's `cwd` or `PATH` cannot
   make it run another file. The check covers the file and
-  the directory that holds it, not every directory above, and a file is checked and then run, so a swap in between is possible
+  the directory that holds it, not every directory above, and a file is checked and then run (a restart repeats the check and refuses a file whose SHA-256 is no longer the one first reported, unless `restart_if_changed = true`, which logs `non-default:`), so a swap in between is possible
   for whoever may write there. A program is not a sandbox either way: it shares the node's account, files and network, and only
   its memory is apart, so a crash or a stuck call in it cannot take the node down (a call is bounded by `call_timeout`, a start
   by `start_timeout`, and a program that exits is started again at most `restart_limit` times in `restart_window`). A program

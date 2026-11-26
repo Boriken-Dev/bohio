@@ -286,7 +286,10 @@ struct Entry {
     source_name: String,
     config: ProgramConfig,
     file: PathBuf,
-    digest: Option<String>,
+    /// What the file was when the entry was first started (or last, under `restart_if_changed`).
+    digest: Mutex<Option<String>>,
+    /// `[providers] check_access`, asked again before each restart.
+    check_access: bool,
     /// `None` when the entry was refused before anything started.
     source: Option<RemoteSource>,
     current: Arc<Mutex<Arc<Run>>>,
@@ -326,7 +329,8 @@ impl Entry {
             name,
             config: config.clone(),
             file,
-            digest,
+            digest: Mutex::new(digest),
+            check_access: false,
             source: None,
             current: Arc::default(),
             library: None,
@@ -351,7 +355,7 @@ impl Entry {
             self.file.display(),
             status.state.name(),
             status.detail,
-            self.digest.as_deref().unwrap_or("no digest")
+            lock(&self.digest).as_deref().unwrap_or("no digest")
         );
         match status.state {
             ProgramState::Running => tracing::info!("{line}"),
@@ -367,7 +371,7 @@ impl Entry {
             path: self.file.clone(),
             state: status.state,
             detail: status.detail.clone(),
-            digest: self.digest.clone(),
+            digest: lock(&self.digest).clone(),
             restarts: status.restarts,
         }
     }
@@ -392,6 +396,37 @@ impl Entry {
             drop(status);
             self.log();
         }
+    }
+
+    /// Whether the file is still what the node vouched for, before it is started again: its owner check is asked again,
+    /// and its digest must be the one first reported unless `restart_if_changed` says another file may run.
+    fn recheck(&self) -> Result<(), String> {
+        if self.check_access {
+            let problems = ownership::program_problems(&self.file, &mut ownership::Checked::new());
+            if !problems.is_empty() {
+                let texts: Vec<String> = problems.into_iter().map(|problem| problem.text).collect();
+                return Err(format!("not started again, refused: {}", texts.join("; ")));
+            }
+        }
+        let now = digest_of(&self.file);
+        let mut first = lock(&self.digest);
+        if *first != now {
+            let (was, is) = (
+                first.as_deref().unwrap_or("no digest"),
+                now.as_deref().unwrap_or("no digest"),
+            );
+            if !self.config.restart_if_changed {
+                return Err(format!(
+                    "not started again: the file changed since it was first started ({was}, now {is}); `restart_if_changed = true` starts it anyway"
+                ));
+            }
+            tracing::warn!(
+                "non-default: provider program {} changed since it was first started ({was}, now {is}) and is started again, as `restart_if_changed` is true",
+                self.name
+            );
+            *first = now;
+        }
+        Ok(())
     }
 
     /// Whether the program may be started again now.
@@ -512,6 +547,19 @@ impl Programs {
             .entries
             .iter()
             .filter(|entry| entry.restartable(now))
+            .filter(|entry| match entry.recheck() {
+                Ok(()) => true,
+                Err(why) => {
+                    {
+                        let mut status = lock(&entry.status);
+                        status.detail = why;
+                        // Nothing starts it again: its file is not the one that was vouched for.
+                        status.ended = None;
+                    }
+                    entry.log();
+                    false
+                }
+            })
             .collect();
         if due.is_empty() {
             return Vec::new();
@@ -607,7 +655,8 @@ impl Entry {
             source_name: format!("program:{name}"),
             config: config.clone(),
             file,
-            digest,
+            digest: Mutex::new(digest),
+            check_access,
             source: Some(source.clone()),
             current,
             library: None,

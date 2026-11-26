@@ -231,6 +231,46 @@ fn restart_limit_bounds_the_starts_and_zero_never_starts_again() {
 }
 
 #[test]
+fn a_restart_runs_only_the_file_that_was_first_started_unless_restart_if_changed_says_otherwise() {
+    for allowed in [false, true] {
+        let (_dir, file) = program();
+        let table = if allowed {
+            "restart_if_changed = true"
+        } else {
+            ""
+        };
+        let node = build(config(&file, &[], table, "")).expect("the node starts");
+        let first = programs(&node).programs[0]
+            .digest
+            .clone()
+            .expect("a digest");
+        let _ = open(&node).write(b"crash");
+        // Another file is put where the program was, while it is down.
+        let mut bytes = std::fs::read(&file).expect("the program");
+        bytes.extend_from_slice(b"\0changed");
+        std::fs::write(&file, bytes).expect("replaced");
+        let source = node.sources().terminal(Some("echo")).expect("the source");
+        let opened = source.get().open(TerminalOpen::default());
+        let report = programs(&node);
+        let program = &report.programs[0];
+        if allowed {
+            assert!(opened.is_ok(), "{program:?}");
+            assert_ne!(
+                program.digest.as_deref(),
+                Some(first.as_str()),
+                "{program:?}"
+            );
+            assert_eq!(program.state, ProgramState::Running);
+        } else {
+            assert!(opened.is_err(), "the changed file ran: {program:?}");
+            assert_eq!(program.state, ProgramState::Failed);
+            assert!(program.detail.contains("changed"), "{}", program.detail);
+            assert_eq!(program.digest.as_deref(), Some(first.as_str()));
+        }
+    }
+}
+
+#[test]
 fn a_program_that_ends_at_once_or_never_speaks_is_failed_and_the_node_starts() {
     let (_dir, file) = program();
     // It ends at once: its exit code is in the report. The `[source.echo]` it should serve cannot be built, so the node refuses

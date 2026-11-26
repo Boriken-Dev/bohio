@@ -2091,6 +2091,9 @@ pub struct ProgramConfig {
     pub call_timeout: Span,
     /// How long a program has to send its first message once it is started, before it is ended; the link's own handshake cannot be bounded over a child's pipes. Default `10s`; not zero.
     pub start_timeout: Span,
+    /// Start the program again even when its file is no longer the one first started (its SHA-256 differs), logged
+    /// `non-default:`. Default `false`: a restart runs only the file that was reported.
+    pub restart_if_changed: bool,
     /// Calls one program may have running at once; at least 1. Default `64`.
     pub max_calls: usize,
     /// The largest frame read from the program, in bytes; at least 1. Default `67108864`.
@@ -2110,6 +2113,7 @@ impl Default for ProgramConfig {
             stop_grace: Span(Duration::from_millis(500)),
             call_timeout: Span(Duration::from_secs(30)),
             start_timeout: Span(Duration::from_secs(10)),
+            restart_if_changed: false,
             max_calls: 64,
             max_frame: 64 << 20,
         }
