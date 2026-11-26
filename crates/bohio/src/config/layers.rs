@@ -122,6 +122,7 @@ const LOWEST_ONLY: [(&str, &[&str]); 5] = [
             "helper_binary",
             "helper_upload_overwrite",
             "helper_upload_shared_dir",
+            "helper_upload_sticky_dir",
             "helper_upload_check_platform",
             "helper_upload_answer_max",
             "helper_socket_dir_check",

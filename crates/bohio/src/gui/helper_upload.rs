@@ -44,6 +44,8 @@ pub struct Upload {
     pub shared_dir: bool,
     /// The most bytes of the machine's answer to `uname -sm` that are read; more fails the upload.
     pub answer_max: usize,
+    /// Also accept a sticky directory other accounts can write to (such as `/tmp`), which `shared_dir` alone still refuses.
+    pub sticky_dir: bool,
 }
 
 /// The kind of executable a file is, and the processors it holds code for.
@@ -380,11 +382,30 @@ pub fn upload(
                     upload.dir
                 ));
             }
+    if let Some(mode) = stat.mode
+        && mode & 0o022 != 0
+    {
+        if !upload.shared_dir {
+            return Err(format!(
+                "{} is writable by other accounts (mode {:o}): one of them could replace the helper before it runs; \
+                 `[gui] helper_upload_shared_dir = true` accepts that",
+                upload.dir,
+                mode & 0o7777
+            ));
+        }
+        if mode & 0o1000 != 0 && !upload.sticky_dir {
+            return Err(format!(
+                "{} is a sticky directory writable by other accounts (mode {:o}), such as a shared temporary directory: \
+                 `[gui] helper_upload_sticky_dir = true` accepts that",
+                upload.dir,
+                mode & 0o7777
+            ));
         }
     }
     for (weakened, key) in [
         (upload.overwrite, "helper_upload_overwrite"),
         (upload.shared_dir, "helper_upload_shared_dir"),
+        (upload.sticky_dir, "helper_upload_sticky_dir"),
         (!upload.check_platform, "helper_upload_check_platform"),
     ] {
         if weakened {

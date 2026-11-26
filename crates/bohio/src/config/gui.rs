@@ -192,6 +192,9 @@ pub struct GuiConfig {
     /// Accept an upload directory another account can write to, where it could replace the helper before it runs. Default
     /// `false`. Lowest layer only.
     pub helper_upload_shared_dir: bool,
+    /// Also accept a sticky upload directory other accounts can write to (such as `/tmp`) when `helper_upload_shared_dir` is
+    /// `true`. Default `false`. Lowest layer only.
+    pub helper_upload_sticky_dir: bool,
     /// Ask the machine what it runs (`uname -sm` through the exec source) and refuse a helper built for another platform.
     /// Default `true`; `false` for a machine with no `uname`. Lowest layer only.
     pub helper_upload_check_platform: bool,
@@ -267,6 +270,7 @@ impl Default for GuiConfig {
             helper_binary: None,
             helper_upload_overwrite: false,
             helper_upload_shared_dir: false,
+            helper_upload_sticky_dir: false,
             helper_upload_check_platform: true,
             helper_upload_answer_max: 4096,
             helper_socket_dir_check: true,

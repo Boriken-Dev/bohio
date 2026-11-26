@@ -79,6 +79,7 @@ impl ExecHelper {
                     binary: gui.helper_binary.as_ref().map(std::path::PathBuf::from),
                     overwrite: gui.helper_upload_overwrite,
                     shared_dir: gui.helper_upload_shared_dir,
+                    sticky_dir: gui.helper_upload_sticky_dir,
                 },
             ));
         }
@@ -321,7 +322,9 @@ mod tests {
         let upload = helpers[0].upload.as_ref().expect("a has an upload");
         assert_eq!(upload.files.as_deref(), Some("files"));
         assert_eq!(upload.dir, "/home/me/.cache");
-        assert!(upload.check_platform && !upload.overwrite && !upload.shared_dir);
+        assert!(
+            upload.check_platform && !upload.overwrite && !upload.shared_dir && !upload.sticky_dir
+        );
         assert!(helpers[1].upload.is_none());
     }
 

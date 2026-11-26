@@ -287,6 +287,8 @@ fn upload_into(dir: &std::path::Path, binary: Option<std::path::PathBuf>) -> Upl
         overwrite: false,
         // A Windows source reports no permission bits, which the upload refuses unless the directory is accepted.
         shared_dir: cfg!(windows),
+        shared_dir: false,
+        sticky_dir: false,
     }
 }
 
@@ -402,6 +404,38 @@ fn a_directory_other_accounts_can_write_is_refused_unless_the_operator_accepts_i
     .expect("accepted");
     let mode = std::fs::metadata(path).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o700, "the file is the account alone");
+}
+
+/// A sticky directory other accounts can write to is refused although `shared_dir` accepts a plain one.
+#[cfg(unix)]
+#[test]
+fn a_sticky_shared_directory_is_refused_unless_the_sticky_setting_is_on() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let Some(program) = helper_program() else {
+        eprintln!("SKIPPED: build the helper first");
+        return;
+    };
+    let sources = native_sources();
+    let stop = AtomicBool::new(false);
+    let dir = tempfile::tempdir().expect("a directory");
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o1777)).unwrap();
+    let upload = Upload {
+        shared_dir: true,
+        ..upload_into(dir.path(), Some(program.into()))
+    };
+    let refused = helper_upload::upload(&sources, "native", &upload, &stop).unwrap_err();
+    assert!(refused.contains("sticky"), "{refused}");
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    helper_upload::upload(
+        &sources,
+        "native",
+        &Upload {
+            sticky_dir: true,
+            ..upload
+        },
+        &stop,
+    )
+    .expect("accepted");
 }
 
 /// The machine answers `uname -sm`: a file built for another platform is refused and nothing is put.
@@ -635,6 +669,7 @@ fn a_node_puts_its_own_helper_on_a_real_sshd_and_serves_the_x_display_through_it
         binary: Some(env!("CARGO_BIN_EXE_bohio").into()),
         overwrite: false,
         shared_dir: false,
+        sticky_dir: false,
     };
     let helper = ExecHelper {
         source: "remote".to_owned(),
