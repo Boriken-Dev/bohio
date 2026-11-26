@@ -136,6 +136,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- `[source.native] own_runtime_dir_check` (default `true`, logged `non-default:` when `false`) keeps the own session's runtime-directory link and directory test and drops the uid and mode tests.
+- `[gui] helper_shared_dir` (default `false`, lowest layer only, logged `non-default:`) lets the helper socket be bound in a directory the node's account does not own or another account may write.
 - On Windows a layer, library, program or data directory that any account but the owner, SYSTEM, the administrators or TrustedInstaller may change is refused (it was refused only for every user, Users or Guests); `check_access = false` weakens it.
 - A key only the lowest layer may set (the access checks, `[providers]` code keys, `[secrets]` checks and the `[gui]` helper keys) is now ignored and logged in a higher layer, where it refused the whole configuration; `[service] upper_layer_keys` (lowest layer only; none by default, logged `non-default:`) names the keys a higher layer may set.
 - `keyring:` secret references are removed: the kind was refused by every build and is no longer a name `split` knows, so `keyring:x` is a literal like any other text. Use `file:` or `credential:`.

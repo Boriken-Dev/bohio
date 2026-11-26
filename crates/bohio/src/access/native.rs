@@ -138,6 +138,11 @@ pub struct NativeSettings {
     /// Default `true`.
     #[map(default = true)]
     pub own_session_check_server: bool,
+    /// Whether that directory must belong to the node's uid and be exactly mode 0700. `false` keeps the test that it is a
+    /// directory and not a link and drops the other two, logged `non-default:`: another account that can enter the directory can
+    /// reach the compositor's and X server's sockets, so the desktop. Default `true`.
+    #[map(default = true)]
+    pub own_runtime_dir_check: bool,
     /// How long the macOS desktop waits for ScreenCaptureKit to answer one capture (`10s`; not `0s`: it would never
     /// capture). Default `10s`.
     #[map(default = String::from("10s"))]
@@ -178,6 +183,7 @@ impl Default for NativeSettings {
             own_session: "none".to_owned(),
             own_runtime_dir: None,
             own_session_check_server: true,
+            own_runtime_dir_check: true,
             macos_capture_wait: "10s".to_owned(),
             macos_max_repeat: 1_000,
         }
@@ -224,6 +230,11 @@ impl NativeSettings {
         }
         if !["none", "wayland", "x11"].contains(&self.own_session.as_str()) {
             return Err(refuse("own_session is none, wayland or x11"));
+        }
+        if self.own_session != "none" && !self.own_runtime_dir_check {
+            tracing::warn!(
+                "non-default: [source.native] own_runtime_dir_check is false: the own session's runtime directory is not checked for its owner or mode 0700, so another account that can enter it can reach the compositor's and X server's sockets and so the desktop"
+            );
         }
         if self.own_session != "none" && !cfg!(target_os = "linux") {
             return Err(refuse(
@@ -284,7 +295,7 @@ impl NativeSettings {
                     .as_deref()
                     .filter(|dir| !dir.is_empty())
                     .map_or_else(|| crate::gui::own_runtime_dir(uid), PathBuf::from);
-                crate::gui::check_runtime_dir(&dir, uid)
+                crate::gui::check_runtime_dir(&dir, uid, self.own_runtime_dir_check)
                     .map(|()| uid)
                     .map_err(|reason| format!("own_session = \"{}\": {reason}", self.own_session))
             });

@@ -58,8 +58,9 @@ pub fn display(uid: u32) -> String {
 ///
 /// # Errors
 ///
-/// The text to report when it is not.
-pub fn check_runtime_dir(dir: &Path, uid: u32) -> Result<(), String> {
+/// The text to report when it is not. With `check_owner` false (`own_runtime_dir_check = false`) only the link and directory
+/// test is made.
+pub fn check_runtime_dir(dir: &Path, uid: u32, check_owner: bool) -> Result<(), String> {
     let found = std::fs::symlink_metadata(dir).map_err(|error| {
         format!(
             "the runtime directory {} cannot be read ({error}): the account's user manager is not running, enable \
@@ -72,6 +73,9 @@ pub fn check_runtime_dir(dir: &Path, uid: u32) -> Result<(), String> {
             "{} is not a directory of the account's own",
             dir.display()
         ));
+    }
+    if !check_owner {
+        return Ok(());
     }
     if found.uid() != uid {
         return Err(format!(
@@ -214,7 +218,7 @@ mod tests {
     fn a_directory_of_the_account_with_mode_0700_is_the_account_s() {
         let uid = own_uid().expect("a uid");
         let dir = temporary(0o700);
-        assert_eq!(check_runtime_dir(dir.path(), uid), Ok(()));
+        assert_eq!(check_runtime_dir(dir.path(), uid, true), Ok(()));
     }
 
     #[test]
@@ -222,7 +226,7 @@ mod tests {
         let uid = own_uid().expect("a uid");
         for mode in [0o755, 0o710, 0o770, 0o777, 0o500] {
             let dir = temporary(mode);
-            let refused = check_runtime_dir(dir.path(), uid).unwrap_err();
+            let refused = check_runtime_dir(dir.path(), uid, true).unwrap_err();
             assert!(
                 refused.contains(&dir.path().display().to_string()),
                 "{refused}"
@@ -235,12 +239,27 @@ mod tests {
     fn a_directory_of_another_uid_is_refused_naming_it() {
         let uid = own_uid().expect("a uid");
         let dir = temporary(0o700);
-        let refused = check_runtime_dir(dir.path(), uid.wrapping_add(1)).unwrap_err();
+        let refused = check_runtime_dir(dir.path(), uid.wrapping_add(1), true).unwrap_err();
         assert!(
             refused.contains(&dir.path().display().to_string()),
             "{refused}"
         );
         assert!(refused.contains("belongs to uid"), "{refused}");
+    }
+
+    /// `own_runtime_dir_check = false` drops the owner and mode tests and keeps the link and directory test.
+    #[test]
+    fn the_owner_and_mode_tests_can_be_dropped_and_the_link_test_cannot() {
+        let uid = own_uid().expect("a uid");
+        let open = temporary(0o755);
+        assert_eq!(check_runtime_dir(open.path(), uid, false), Ok(()));
+        assert_eq!(
+            check_runtime_dir(open.path(), uid.wrapping_add(1), false),
+            Ok(())
+        );
+        let link = open.path().join("link");
+        std::os::unix::fs::symlink(open.path(), &link).expect("a link");
+        assert!(check_runtime_dir(&link, uid, false).is_err());
     }
 
     #[test]
@@ -249,10 +268,10 @@ mod tests {
         let dir = temporary(0o700);
         let link = dir.path().join("link");
         std::os::unix::fs::symlink(dir.path(), &link).expect("a link");
-        let refused = check_runtime_dir(&link, uid).unwrap_err();
+        let refused = check_runtime_dir(&link, uid, true).unwrap_err();
         assert!(refused.contains(&link.display().to_string()), "{refused}");
         let missing = dir.path().join("missing");
-        let refused = check_runtime_dir(&missing, uid).unwrap_err();
+        let refused = check_runtime_dir(&missing, uid, true).unwrap_err();
         assert!(
             refused.contains(&missing.display().to_string()),
             "{refused}"
