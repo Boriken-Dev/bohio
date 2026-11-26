@@ -173,6 +173,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The own desktop's X server is checked before the node sends it anything. The display's abstract socket name is host-wide, so another account could bind it first; the node now asks the kernel who listens (`SO_PEERCRED`) and refuses a server run by an account other than its own, naming both uids. `[source.native] own_session_check_server = false` serves whatever listens and is logged `non-default:`.
 - `bohio gui-helper --stdio` needs no runtime directory. It built a placeholder `pipe://` endpoint that wants `XDG_RUNTIME_DIR`, which a login through `sshd` does not set, so the helper a node started through an ssh source exited at once on such a machine.
 - Windows filesystem calls stay on handles. `list`, `readlink`, `mkdir`, `remove` (a tree too), `rename`, `symlink` and `set_attributes` no longer turn the parent's handle into a path and act on the path joined with the name: they open the name relative to the handle of the directory that holds it (`NtCreateFile` with `RootDirectory`, reparse points not followed) and act through the handle they get, so a directory swapped for a junction between two steps cannot redirect a call outside a root. A rename without `overwrite` is `FileRenameInfoEx` through the source's handle; `platform/winfs.rs` replaces `platform/rename.rs` in `tests/unsafe_files.rs`, and these calls refuse a name that holds a separator or a stream suffix.
 

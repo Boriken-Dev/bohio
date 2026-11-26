@@ -102,11 +102,34 @@ impl Default for X11Settings {
     }
 }
 
+/// The connection to an X server a [`Connector`] hands over.
+#[derive(Debug)]
+pub enum WireStream {
+    /// A TCP connection (the loopback of a tunnel).
+    Tcp(std::net::TcpStream),
+    /// A Unix socket, abstract or in the file system.
+    #[cfg(unix)]
+    Unix(std::os::unix::net::UnixStream),
+}
+
+impl From<std::net::TcpStream> for WireStream {
+    fn from(stream: std::net::TcpStream) -> Self {
+        Self::Tcp(stream)
+    }
+}
+
+#[cfg(unix)]
+impl From<std::os::unix::net::UnixStream> for WireStream {
+    fn from(stream: std::os::unix::net::UnixStream) -> Self {
+        Self::Unix(stream)
+    }
+}
+
 /// The authorization an X server asked for, and the stream to it, for a display that is not reached by its name.
 #[derive(Debug)]
 pub struct Wire {
     /// The connection to the X server, already open.
-    pub stream: std::net::TcpStream,
+    pub stream: WireStream,
     /// The authorization protocol (`MIT-MAGIC-COOKIE-1`), empty for none.
     pub auth_name: Vec<u8>,
     /// The authorization data (the cookie), empty for none.
@@ -133,8 +156,12 @@ pub(crate) fn open_connection(
         return RustConnection::connect(Some(display)).map_err(|error| error.to_string());
     };
     let wire = connector.connect().map_err(|error| error.to_string())?;
-    let (stream, _) =
-        DefaultStream::from_tcp_stream(wire.stream).map_err(|error| error.to_string())?;
+    let opened = match wire.stream {
+        WireStream::Tcp(stream) => DefaultStream::from_tcp_stream(stream),
+        #[cfg(unix)]
+        WireStream::Unix(stream) => DefaultStream::from_unix_stream(stream),
+    };
+    let (stream, _) = opened.map_err(|error| error.to_string())?;
     RustConnection::connect_to_stream_with_auth_info(stream, 0, wire.auth_name, wire.auth_data)
         .map(|connection| (connection, 0))
         .map_err(|error| error.to_string())

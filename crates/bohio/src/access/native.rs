@@ -132,6 +132,12 @@ pub struct NativeSettings {
     pub own_session: String,
     /// The runtime directory of the own session, when it is not `/run/user/UID`.
     pub own_runtime_dir: Option<String>,
+    /// Whether the node refuses the own desktop's X server unless the kernel says the node's own account runs it
+    /// (`SO_PEERCRED` on the abstract socket). The socket's name is host-wide, so another account could bind it first and
+    /// be sent what peers type and be asked for pictures. `false` serves whatever listens and is logged `non-default:`.
+    /// Default `true`.
+    #[map(default = true)]
+    pub own_session_check_server: bool,
     /// How long the macOS desktop waits for ScreenCaptureKit to answer one capture (`10s`; not `0s`: it would never
     /// capture). Default `10s`.
     #[map(default = String::from("10s"))]
@@ -171,6 +177,7 @@ impl Default for NativeSettings {
             wayland_max_repeat: 1_000,
             own_session: "none".to_owned(),
             own_runtime_dir: None,
+            own_session_check_server: true,
             macos_capture_wait: "10s".to_owned(),
             macos_max_repeat: 1_000,
         }
@@ -222,6 +229,11 @@ impl NativeSettings {
             return Err(refuse(
                 "own_session is for a Linux node: a service account's own desktop",
             ));
+        }
+        if self.own_session != "none" && !self.own_session_check_server {
+            tracing::warn!(
+                "non-default: [source.native] own_session_check_server is false: the own desktop's X server is not checked to be run by the node's account, so another account that binds its socket first is sent what peers type"
+            );
         }
         if !["none", "node", "always"].contains(&self.wayland_persist.as_str()) {
             return Err(refuse("wayland_persist is none, node or always"));
@@ -302,6 +314,9 @@ impl NativeSettings {
             Ok(uid) => {
                 if settings.display.is_none() {
                     settings.display = Some(crate::gui::own_display(uid));
+                    if self.own_session_check_server {
+                        settings.connector = Some(Arc::new(crate::gui::OwnServer::new(uid)));
+                    }
                 }
                 settings.hint = Some(format!(
                     "this node's own desktop is not up: as the account with uid {uid} look at `systemctl --user status \
@@ -858,3 +873,29 @@ bohio_api::guatiao::local_providers!(
     version = env!("CARGO_PKG_VERSION"),
     providers = [Native]
 );
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    use super::NativeSettings;
+
+    fn own_desktop(check: bool) -> bool {
+        let dir = tempfile::tempdir().expect("a directory");
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("its mode");
+        let settings = NativeSettings {
+            own_session: "x11".to_owned(),
+            own_runtime_dir: Some(dir.path().display().to_string()),
+            own_session_check_server: check,
+            ..NativeSettings::default()
+        };
+        settings.x11().connector.is_some()
+    }
+
+    #[test]
+    fn the_own_desktop_is_reached_through_the_check_of_who_runs_it_unless_the_setting_is_off() {
+        assert!(own_desktop(true));
+        assert!(!own_desktop(false));
+    }
+}

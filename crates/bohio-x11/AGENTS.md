@@ -14,7 +14,7 @@ Header-file-style reference for `bohio-x11`: the desktop trait, the X11 backend 
   with the feature), `key_wait`, `clipboard_wait`, `clipboard_max_bytes`, `selection`, `headless` (never locked, never asks logind),
   `refused`, `hint`, `max_repeat`, `connector`. `Default` is the node's own display settings with no display.
 - `Connector` (trait, `Debug + Send + Sync`): `connect() -> io::Result<Wire>`, a new connection per call (the screen holds one and each
-  clipboard question makes one). `Wire { stream: TcpStream, auth_name, auth_data }`: a stream to the X server, already open, and the
+  clipboard question makes one). `Wire { stream: WireStream, auth_name, auth_data }` (`WireStream::Tcp(TcpStream)`, or on Unix `WireStream::Unix(UnixStream)`): a stream to the X server, already open, and the
   authorization the server wants (empty for none).
 - `source::DesktopOf::new(Arc<dyn Desktop>)`: a `DesktopSource`; `source::{code_of, gui_error, rect_model, display_of, input_model}`: the
   conversions between the kind's models and the desktop's types.

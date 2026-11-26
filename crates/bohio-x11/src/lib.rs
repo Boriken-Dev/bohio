@@ -18,4 +18,6 @@ mod x11;
 mod x11_clipboard;
 
 pub use desktop::{Capabilities, Desktop, DesktopState, Frame, GuiError};
-pub use x11::{Connector, Wire, X11Desktop, X11Settings, display_id, keysym_of, one_primary};
+pub use x11::{
+    Connector, Wire, WireStream, X11Desktop, X11Settings, display_id, keysym_of, one_primary,
+};

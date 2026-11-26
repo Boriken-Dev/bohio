@@ -90,11 +90,118 @@ pub fn check_runtime_dir(dir: &Path, uid: u32) -> Result<(), String> {
     Ok(())
 }
 
+/// The connection to the own desktop's X server: its abstract socket, and a check that the account running it is the node's.
+///
+/// The abstract name is host-wide, so any account can bind it first; the node would then send typed text to it and take its
+/// pictures. The kernel's answer about the peer of the socket (`SO_PEERCRED`) is the account that listens, whatever it says.
+#[derive(Debug)]
+pub struct OwnServer {
+    /// The abstract socket's name, without the leading NUL: `/tmp/.X11-unix/X<uid>`.
+    name: String,
+    /// The account that must run the server.
+    uid: u32,
+}
+
+impl OwnServer {
+    /// The server of the display `:uid`, which only the account `uid` may run.
+    #[must_use]
+    pub fn new(uid: u32) -> Self {
+        Self {
+            name: format!("/tmp/.X11-unix/X{uid}"),
+            uid,
+        }
+    }
+
+    /// As [`OwnServer::new`], for a socket of another name (a test's).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn named(name: &str, uid: u32) -> Self {
+        Self {
+            name: name.to_owned(),
+            uid,
+        }
+    }
+}
+
+impl bohio_x11::Connector for OwnServer {
+    fn connect(&self) -> std::io::Result<bohio_x11::Wire> {
+        use std::os::linux::net::SocketAddrExt as _;
+        use std::os::unix::net::{SocketAddr, UnixStream};
+        let address = SocketAddr::from_abstract_name(&self.name)?;
+        let stream = UnixStream::connect_addr(&address)?;
+        let found = rustix::net::sockopt::socket_peercred(&stream)?;
+        if found.uid.as_raw() != self.uid {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "the X server on @{} is run by uid {}, not by the node's uid {}: another account holds the display's name \
+                     (`own_session_check_server = false` serves it anyway)",
+                    self.name,
+                    found.uid.as_raw(),
+                    self.uid
+                ),
+            ));
+        }
+        Ok(bohio_x11::Wire {
+            stream: stream.into(),
+            auth_name: Vec::new(),
+            auth_data: Vec::new(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
 
+    use bohio_x11::Connector as _;
+
     use super::*;
+
+    /// Listens on an abstract name only this test uses.
+    fn listening(tag: &str) -> (String, std::os::unix::net::UnixListener) {
+        use std::os::linux::net::SocketAddrExt as _;
+        let name = format!("/tmp/.X11-unix/bohio-test-{}-{tag}", std::process::id());
+        let address = std::os::unix::net::SocketAddr::from_abstract_name(&name).expect("a name");
+        let listener = std::os::unix::net::UnixListener::bind_addr(&address).expect("listens");
+        (name, listener)
+    }
+
+    #[test]
+    fn a_server_run_by_the_nodes_account_is_connected() {
+        let (name, listener) = listening("own");
+        let uid = own_uid().expect("a uid");
+        OwnServer::named(&name, uid)
+            .connect()
+            .expect("the node's own account serves it");
+        drop(listener);
+    }
+
+    #[test]
+    fn a_server_run_by_another_account_is_refused_naming_both() {
+        let (name, listener) = listening("other");
+        let uid = own_uid().expect("a uid");
+        // The listener is this account's: a node of another uid sees a stranger.
+        let error = OwnServer::named(&name, uid.wrapping_add(1))
+            .connect()
+            .expect_err("a stranger holds the name");
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        let text = error.to_string();
+        assert!(text.contains(&format!("run by uid {uid}")), "{text}");
+        assert!(
+            text.contains(&format!("node's uid {}", uid.wrapping_add(1))),
+            "{text}"
+        );
+        drop(listener);
+    }
+
+    #[test]
+    fn nothing_listening_is_an_error_not_a_stranger() {
+        let error = OwnServer::new(own_uid().expect("a uid").wrapping_add(4_000_000))
+            .connect()
+            .expect_err("no server");
+        assert_ne!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    }
 
     fn temporary(mode: u32) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("a directory");

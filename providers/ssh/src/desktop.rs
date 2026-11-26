@@ -169,7 +169,7 @@ impl Connector for Channels {
         })?;
         let (auth_name, auth_data) = self.cookie().unwrap_or_default();
         Ok(bohio_x11::Wire {
-            stream,
+            stream: stream.into(),
             auth_name,
             auth_data,
         })
