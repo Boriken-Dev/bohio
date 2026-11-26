@@ -259,6 +259,10 @@ A desktop helper that the node starts through an exec source (a session named `e
   list, roots) are decided on the node, but the machine's own permissions are the only limit behind them. The node holds the means to log in
   (an agent's signing, a key file, a password), so every peer that reaches the source acts as that account; give a source to a peer as you
   would give it that account. Under a program list the program is the one the host finds at that name on the account's `PATH`, not the node's.
+  Every word of a command is quoted for a POSIX shell, so the account's login shell must be one: `login_shell_check` (`true`) runs a probe line once
+  and refuses the start (`unsupported`) under `fish`, `cmd.exe` or PowerShell, where a peer's argument could end its quote and run another command.
+  `login_shell_check = false` skips the probe (logged `non-default:`) and is right only where the shell is known to be POSIX. A variable name that is
+  not letters, digits and `_` (or starts with a digit) is refused, since `env` would read a leading `-` as an option.
 - **`client = "openssh"` hands the login to the system's ssh program.** The source runs `ssh` as the node's account with the account's
   own `ssh_config`, agent and known hosts, in batch mode: the host key is checked by ssh (`strict` is `StrictHostKeyChecking=yes`,
   `tofu` is `accept-new`, `off` is `no` with no known_hosts file), a `host_key` pin is refused because ssh cannot check one, and
