@@ -106,7 +106,7 @@ mode never asks), `x11_display` and `x11_forward` (they need channels of one con
 terminal `resize` (a pty starts at the client's default size, and the new size is not passed on) and `signals` and exec `signals`
 (`interrupt` on a terminal is still the control byte; `kill` ends the ssh process and the host's program is left to its own hangup).
 A program's exit status is the client's: `255` is ssh's own failure, and its message is on the standard error (merged into the
-output under a terminal). A desktop through the helper (`[gui] helper_exec`) needs nothing more, since it is an exec session. The
+output under a terminal). A desktop through the helper (`[gui] source`) needs nothing more, since it is an exec session. The
 test suites run against it with `BOHIO_TEST_SSH_CLIENT=openssh`; tests of what only the russh client does print `SKIPPED`.
 
 ## Desktop (X11)

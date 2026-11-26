@@ -38,18 +38,18 @@ pub struct ExecHelper {
 pub const HELPER_WORD: &str = "{helper}";
 
 impl ExecHelper {
-    /// The helpers `[gui]` names: each `helper_exec` entry, with the upload `helper_upload` gives its source.
+    /// The helpers `[gui]` names: each `source` entry, with the upload `helper_upload` gives its source.
     ///
     /// # Errors
     ///
     /// The key and what is wrong with it.
     pub fn list(gui: &crate::config::GuiConfig) -> Result<Vec<Self>, (&'static str, String)> {
         let mut helpers = Vec::new();
-        for text in &gui.helper_exec {
+        for text in &gui.source {
             helpers.push(Self::parse(text).map_err(|why| {
                 (
-                    "gui.helper_exec",
-                    format!("must be SOURCE=COMMAND, a source name and the command line that starts the helper: {why}"),
+                    "gui.source",
+                    format!("must be NAME, an exec source, or NAME=COMMAND with the command line that starts the helper: {why}"),
                 )
             })?);
         }
@@ -85,20 +85,30 @@ impl ExecHelper {
             if !helpers.iter().any(|helper| &helper.source == source) {
                 return Err((
                     "gui.helper_upload",
-                    format!("names the source `{source}`, which has no gui.helper_exec entry"),
+                    format!("names the source `{source}`, which has no gui.source entry"),
                 ));
             }
         }
         for helper in &mut helpers {
-            let names_it = helper.command.iter().any(|word| word.contains(HELPER_WORD));
             helper.upload = uploads
                 .iter()
                 .find(|(source, _)| source == &helper.source)
                 .map(|(_, upload)| upload.clone());
+            if helper.command.is_empty() {
+                let program = if helper.upload.is_some() {
+                    HELPER_WORD
+                } else {
+                    "bohio"
+                };
+                helper.command = [program, "gui-helper", "--stdio"]
+                    .map(str::to_owned)
+                    .to_vec();
+            }
+            let names_it = helper.command.iter().any(|word| word.contains(HELPER_WORD));
             match (names_it, helper.upload.is_some()) {
                 (true, false) => {
                     return Err((
-                        "gui.helper_exec",
+                        "gui.source",
                         format!(
                             "the command of `{}` names {HELPER_WORD} and gui.helper_upload puts nothing on that source",
                             helper.source
@@ -109,7 +119,7 @@ impl ExecHelper {
                     return Err((
                         "gui.helper_upload",
                         format!(
-                            "puts a helper on `{}` and its gui.helper_exec command never names {HELPER_WORD}",
+                            "puts a helper on `{}` and its gui.source command never names {HELPER_WORD}",
                             helper.source
                         ),
                     ));
@@ -120,20 +130,31 @@ impl ExecHelper {
         Ok(helpers)
     }
 
-    /// Reads `SOURCE=COMMAND LINE`.
+    /// Reads `NAME` or `NAME=COMMAND LINE`. A name alone leaves the command empty: [`ExecHelper::list`] fills in the default,
+    /// `bohio gui-helper --stdio`, or the same with `{helper}` for the program when an upload puts the helper there.
     ///
     /// # Errors
     ///
     /// Why the text is not one.
     pub fn parse(text: &str) -> Result<Self, String> {
-        let (source, line) = text
-            .split_once('=')
-            .ok_or_else(|| format!("`{text}` is not SOURCE=COMMAND"))?;
+        let (source, line) = match text.split_once('=') {
+            Some((source, line)) => (source, Some(line)),
+            None => (text, None),
+        };
         let source = source.trim();
         if source.is_empty() {
             return Err(format!("`{text}` names no source"));
         }
-        let command = bohio_client::dial::split_command(line)?;
+        let command = match line {
+            Some(line) => {
+                let words = bohio_client::dial::split_command(line)?;
+                if words.is_empty() {
+                    return Err(format!("`{text}` names no command"));
+                }
+                words
+            }
+            None => Vec::new(),
+        };
         Ok(Self {
             source: source.to_owned(),
             upload: None,
@@ -280,7 +301,7 @@ mod tests {
 
     fn gui(exec: &[&str], upload: &[&str]) -> GuiConfig {
         GuiConfig {
-            helper_exec: exec.iter().map(|text| (*text).to_owned()).collect(),
+            source: exec.iter().map(|text| (*text).to_owned()).collect(),
             helper_upload: upload.iter().map(|text| (*text).to_owned()).collect(),
             ..GuiConfig::default()
         }
@@ -304,14 +325,39 @@ mod tests {
     }
 
     #[test]
+    fn the_keys_are_source_and_source_retry_and_the_old_names_are_gone() {
+        let read = |text: &str| toml::from_str::<GuiConfig>(text);
+        let config = read(
+            "source = [\"a\", \"b=bohio gui-helper --stdio\"]
+source_retry = \"3s\"",
+        )
+        .expect("the new keys");
+        assert_eq!(config.source, ["a", "b=bohio gui-helper --stdio"]);
+        assert_eq!(config.source_retry.0, std::time::Duration::from_secs(3));
+        assert!(read("helper_exec = [\"a=x\"]").is_err());
+        assert!(read("helper_exec_retry = \"3s\"").is_err());
+    }
+
+    #[test]
+    fn a_name_alone_starts_the_helper_by_its_default_command() {
+        let helpers = ExecHelper::list(&gui(&["plain", "put"], &["put=/home/me/.cache"]))
+            .expect("names alone");
+        assert_eq!(helpers[0].command, ["bohio", "gui-helper", "--stdio"]);
+        assert!(helpers[0].upload.is_none());
+        assert_eq!(helpers[1].command, ["{helper}", "gui-helper", "--stdio"]);
+        assert!(helpers[1].upload.is_some());
+    }
+
+    #[test]
     fn a_configuration_that_cannot_work_is_named_by_its_key() {
         let key =
             |exec: &[&str], upload: &[&str]| ExecHelper::list(&gui(exec, upload)).unwrap_err().0;
-        assert_eq!(key(&["a={helper} x"], &[]), "gui.helper_exec");
+        assert_eq!(key(&["a={helper} x"], &[]), "gui.source");
         assert_eq!(key(&["a=bohio x"], &["a=/d"]), "gui.helper_upload");
         assert_eq!(key(&["a={helper}"], &["b=/d"]), "gui.helper_upload");
         assert_eq!(key(&["a={helper}"], &["a"]), "gui.helper_upload");
         assert_eq!(key(&["a={helper}"], &["a="]), "gui.helper_upload");
-        assert_eq!(key(&["nonsense"], &[]), "gui.helper_exec");
+        assert_eq!(key(&["=x"], &[]), "gui.source");
+        assert_eq!(key(&["a="], &[]), "gui.source");
     }
 }

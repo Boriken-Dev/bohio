@@ -162,16 +162,16 @@ pub struct GuiConfig {
     /// What `bohio gui-helper` accepts as the account that runs the node: a SID or name (Windows), a uid or name (Unix).
     /// Default `NT AUTHORITY\LocalService` (`S-1-5-19`) on Windows and `bohio` on Unix. Read from the lowest layer only.
     pub node_account: Option<String>,
-    /// Helpers that run on another machine, each `SOURCE=COMMAND`: the node starts COMMAND (`bohio gui-helper --stdio`) with
-    /// the exec source SOURCE (an ssh source) and serves that machine's desktop as a session of its own. What authenticates the
-    /// helper is the source's login, so the machine's account is the one the source logs in as. Read from the lowest layer
-    /// only. Default empty.
-    pub helper_exec: Vec<String>,
-    /// How long after a remote helper ends or fails to start the node starts it again. Not zero. Default `10s`.
-    pub helper_exec_retry: Span,
-    /// Put the node's own helper on a machine before `helper_exec` runs it, each `SOURCE=DIRECTORY` or `SOURCE@FILES=DIRECTORY`:
+    /// The exec sources whose machines' desktops the node serves, each `NAME` or `NAME=COMMAND`: the node starts the helper
+    /// there (`bohio gui-helper --stdio` unless COMMAND says otherwise; `{helper} gui-helper --stdio` when `helper_upload`
+    /// names NAME) and serves that machine's desktop as a session of its own. What authenticates the helper is the source's
+    /// login, so the machine's account is the one the source logs in as. Read from the lowest layer only. Default empty.
+    pub source: Vec<String>,
+    /// How long after a helper of `source` ends or fails to start the node starts it again. Not zero. Default `10s`.
+    pub source_retry: Span,
+    /// Put the node's own helper on a machine before `source` runs it, each `SOURCE=DIRECTORY` or `SOURCE@FILES=DIRECTORY`:
     /// the file goes through the files source FILES (default: SOURCE) into DIRECTORY, in that source's own syntax, and the
-    /// source's `helper_exec` command names it as `{helper}`. Read from the lowest layer only. Default empty: nothing is put anywhere.
+    /// source's command names it as `{helper}` (the default command does). Read from the lowest layer only. Default empty: nothing is put anywhere.
     pub helper_upload: Vec<String>,
     /// The file `helper_upload` puts: an executable built for the machine. Default the node's own executable. Read from the
     /// lowest layer only.
@@ -239,8 +239,8 @@ impl Default for GuiConfig {
             helper_endpoint: None,
             max_helpers: 8,
             node_account: None,
-            helper_exec: Vec::new(),
-            helper_exec_retry: Span(Duration::from_secs(10)),
+            source: Vec::new(),
+            source_retry: Span(Duration::from_secs(10)),
             helper_upload: Vec::new(),
             helper_binary: None,
             helper_upload_overwrite: false,
@@ -279,7 +279,7 @@ impl GuiConfig {
             ("gui.max_streams", self.max_streams == 0),
             ("gui.max_streams_per_peer", self.max_streams_per_peer == 0),
             ("gui.max_helpers", self.max_helpers == 0),
-            ("gui.helper_exec_retry", self.helper_exec_retry.0.is_zero()),
+            ("gui.source_retry", self.source_retry.0.is_zero()),
             ("gui.snapshots_per_minute", self.snapshots_per_minute == 0),
             ("gui.max_snapshot_pixels", self.max_snapshot_pixels == 0),
             ("gui.max_input_rate", self.max_input_rate == 0),

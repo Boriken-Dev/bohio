@@ -338,7 +338,7 @@ pub(super) fn serve_endpoints(
         }
         if !exec_helpers.is_empty() {
             let (server, exec_helpers) = (&server, &exec_helpers);
-            let retry = config.gui.helper_exec_retry.0;
+            let retry = config.gui.source_retry.0;
             scope.spawn(move || server.serve_exec_helpers(exec_helpers, retry, stop));
         }
         for (id, endpoint, dial) in &dials {

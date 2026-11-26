@@ -114,17 +114,21 @@ Two settings of an ssh source serve a desktop, with nothing of Bohío on the mac
 ### The machine's desktop through Bohío's helper
 
 For a machine that is not an X server (a Windows or macOS desktop, a Wayland session) the node can run Bohío's GUI helper there
-through the source: `[gui] helper_exec = ["build=bohio gui-helper --stdio"]` (a source name, `=`, the command; read from the lowest
-layer only) makes the node start the command on the machine with the exec source `build`, speak `bohio-gui-helper/1` over its
-standard input and output, and serve the machine's desktop as a session of the node (listed as `exec:build`, then the helper's
-`--session` name). SSH's login replaces the pipe's account check (`docs/security.md`). The node starts it again `helper_exec_retry`
-(`10s`) after it ends or could not start. `bohio` must already be on the machine, or the node puts it there:
+through the source: `[gui] source = ["build"]` (the name of an exec source; `"build=COMMAND"` names another command line than the
+default `bohio gui-helper --stdio`; read from the lowest layer only) makes the node start the helper on the machine with the exec
+source `build`, speak `bohio-gui-helper/1` over its standard input and output, and serve the machine's desktop as a session of
+the node (listed as `exec:build`, then the helper's `--session` name). SSH's login replaces the pipe's account check
+(`docs/security.md`). The node starts it again `source_retry` (`10s`) after it ends or could not start. `bohio` must already be on
+the machine, or the node puts it there:
 
 ```toml
 [gui]
-helper_exec = ["build={helper} gui-helper --stdio"]
+source = ["build"]
 helper_upload = ["build=/home/me/.cache/bohio"]
 ```
+
+With a `helper_upload` entry for the source the default command is `{helper} gui-helper --stdio`, and a command of your own names
+the file as `{helper}`.
 
 `helper_upload` (`SOURCE=DIRECTORY`, or `SOURCE@FILES=DIRECTORY` to put the file through another files source; lowest layer only; empty by default, and then nothing is put anywhere) copies the node's own executable (`helper_binary` names another file) into the directory, in the files source's own syntax, each time the helper starts, and `{helper}` in the command is where it went. It is not an ssh feature: any `bohio_files` source can receive the file and any `bohio_exec` source runs it. The file is named for its SHA-256 (`bohio-helper-<16 hex digits>`), written as `.part` with mode `0700` and renamed, and a file of that name that holds the same bytes is used as it is. Three checks are strict by default and each has a setting that weakens it (logged `non-default:`; the cost of each is in `docs/security.md`): the file must be built for what the machine runs, found by comparing its header (ELF, Mach-O or PE) with `uname -sm` run through the exec source (`helper_upload_check_platform = false` for a machine with no `uname`); the directory must not be writable by another account (`helper_upload_shared_dir = true`); and a file of that name that is not the helper is not replaced (`helper_upload_overwrite = true`). The directory must exist.
 
