@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bohio::access::{LibraryState, ProvidersReport};
-use bohio::config::{Config, ConfigError, DlopenChoice, NodeConfig, ProvidersConfig};
+use bohio::config::{Config, DlopenChoice, NodeConfig, ProvidersConfig};
 use bohio::node::{MemoryGrants, MemoryKeys, Node, NodeError};
 use cabuya::auth::{Identity, Method};
 use sha2::{Digest, Sha256};
