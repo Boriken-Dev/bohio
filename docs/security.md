@@ -304,7 +304,7 @@ A desktop helper that the node starts through an exec source (a session named `e
 - **An ssh source's desktop is the machine's X display.** With `x11_display` set, a peer holding `gui.view` sees the machine's X screen
   and a peer holding `gui.input` types and clicks on it, as the account the source logs in as could; the cookie `xauth list` gives is
   read through the login and used only to connect. The node does not ask the machine's login session whether its screen is locked
-  (the source `lacks` `lock_detection`), so a lock screen is shown and typed at like any window. The X socket's own permissions are the
+  (the source `lacks` `lock_detection`), so the lock state is unknown, and input is refused (`unavailable`, "the lock state is not known") until `[gui] input_when_lock_unknown = true` says to type anyway, which is logged `non-default:` and then types at a lock screen like any window; the same holds for any desktop that cannot read the lock state (an X display with no logind, Wayland without it, WSLg). The own desktop reports `locked: false` and is not affected. The X socket's own permissions are the
   account's. The backend reaches the display through a loopback connection of the node, made and accepted in one step and bridged only
   if the connection that arrives is the node's own, so another account on the node cannot take it.
 - **X forwarding gives a program on the machine the node's display.** `x11_forward = true` is an error unless `x11_trusted = true` is set too: untrusted forwarding (how `-X` restricts a client) cannot work in this build, because the X SECURITY extension has no binding in x11rb, so every forwarded program is a trusted one (as with `-Y`). With both set

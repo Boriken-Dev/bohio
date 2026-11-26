@@ -662,3 +662,34 @@ fn the_owners_events_hold_counts_and_never_what_was_typed() {
     let text = format!("{events:?}");
     assert!(!text.contains(secret), "an event carried what was typed");
 }
+
+#[test]
+fn input_is_refused_while_the_lock_state_is_unknown_unless_the_host_allows_it() {
+    let text = || InputEvent::Text { text: "pw".into() };
+    let unknown = world(gui_config(), all());
+    unknown.desktop.set_locked(None);
+    let gui = open(&unknown, &[Want::View, Want::Input]);
+    let refused = gui.input(&[text()], Some(WAIT)).unwrap_err();
+    assert_eq!(remote(&refused).code, ErrorCode::Unavailable);
+    assert!(
+        remote(&refused).message.contains("not known"),
+        "{refused:?}"
+    );
+    assert!(unknown.desktop.log().is_empty());
+
+    // The same desktop, once the host says to type anyway, and a desktop that says it is not locked, with the default.
+    let allowed = world(
+        GuiConfig {
+            input_when_lock_unknown: true,
+            ..gui_config()
+        },
+        all(),
+    );
+    allowed.desktop.set_locked(None);
+    let gui = open(&allowed, &[Want::Input]);
+    assert_eq!(gui.input(&[text()], Some(WAIT)).unwrap(), 1);
+    let known = world(gui_config(), all());
+    known.desktop.set_locked(Some(false));
+    let gui = open(&known, &[Want::Input]);
+    assert_eq!(gui.input(&[text()], Some(WAIT)).unwrap(), 1);
+}

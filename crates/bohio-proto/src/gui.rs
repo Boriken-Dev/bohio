@@ -1232,6 +1232,8 @@ pub struct HelperPolicy {
     pub indicator_notify: bool,
     /// The node's `[gui] input_when_locked`.
     pub input_when_locked: bool,
+    /// The node's `[gui] input_when_lock_unknown`.
+    pub input_when_lock_unknown: bool,
     /// The node's `[gui] max_input_rate`.
     pub max_input_rate: u32,
     /// The node's `[gui] max_snapshot_pixels`.

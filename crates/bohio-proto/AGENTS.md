@@ -179,7 +179,7 @@ pub struct ClipboardGet { seq }   pub struct ClipboardSet { seq, text }   pub st
 #[non_exhaustive] pub enum GuiInput { Snapshot, Watch, Unwatch, Ack, Input, Settle, ClipboardGet, ClipboardSet }                                  // tags 0x10 0x11 0x12 0x13 0x14 0x15 0x16 0x17
 pub struct GuiInfo { enabled, available, reason, backend, input, clipboard, lock_detection, formats, sessions: Vec<GuiSession> }   // `info.gui`
 pub enum ApproveOutput { Pending { requests: Vec<PendingRequest> }, Decided { id, found } }   pub enum ApproveInput { Decide { id, allow } }   // `bohio-gui-approve/1` (`local::GUI_APPROVE`)
-pub struct HelperHello { session, user, state }   pub struct HelperPolicy { indicator_notify, input_when_locked, max_input_rate, max_snapshot_pixels, max_batch_events, max_text, clipboard_max_bytes, max_fps }
+pub struct HelperHello { session, user, state }   pub struct HelperPolicy { indicator_notify, input_when_locked, input_when_lock_unknown, max_input_rate, max_snapshot_pixels, max_batch_events, max_text, clipboard_max_bytes, max_fps }
 pub struct HelperOpen { request: GuiRequest, peer, session, granted: Vec<Want>, policy }   pub enum HelperMessage { State { state }, Event { peer, change: HelperChange } }   pub enum HelperChange { Started, Ended, ClipboardRead, ClipboardWritten, Refused }
                                                        // `bohio-gui-helper/1` (`local::GUI_HELPER`): the helper's first stream, and the open metadata of the `bohio-gui/1` streams a node opens on it
 ```

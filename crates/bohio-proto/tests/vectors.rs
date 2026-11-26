@@ -2559,6 +2559,7 @@ fn gui_cases() -> Vec<Case> {
                 policy: HelperPolicy {
                     indicator_notify: true,
                     input_when_locked: false,
+                    input_when_lock_unknown: false,
                     max_input_rate: 1000,
                     max_snapshot_pixels: 33_554_432,
                     max_batch_events: 256,

@@ -318,6 +318,7 @@ fn policy_of(config: &GuiConfig) -> HelperPolicy {
     HelperPolicy {
         indicator_notify: config.indicator == Indicator::Notify,
         input_when_locked: config.input_when_locked,
+        input_when_lock_unknown: config.input_when_lock_unknown,
         max_input_rate: config.max_input_rate,
         max_snapshot_pixels: config.max_snapshot_pixels,
         max_batch_events: config.max_batch_events as u64,
@@ -339,6 +340,8 @@ pub fn narrowed(user: &GuiConfig, policy: &HelperPolicy) -> GuiConfig {
         config.indicator = Indicator::Notify;
     }
     config.input_when_locked = config.input_when_locked && policy.input_when_locked;
+    config.input_when_lock_unknown =
+        config.input_when_lock_unknown && policy.input_when_lock_unknown;
     config.max_input_rate = config.max_input_rate.min(policy.max_input_rate);
     config.max_snapshot_pixels = config.max_snapshot_pixels.min(policy.max_snapshot_pixels);
     config.max_batch_events = config

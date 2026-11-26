@@ -134,6 +134,11 @@ pub const DEFAULT_SESSION: &str = "default";
 impl GuiState {
     /// The state of a node whose settings are `config`: no desktop yet, [`LocalPresence`] for its presence.
     pub fn new(config: &GuiConfig, sources: Arc<Sources>) -> Arc<Self> {
+        if config.input_when_lock_unknown {
+            tracing::warn!(
+                "non-default: [gui] input_when_lock_unknown is true: input is applied to a desktop that cannot say whether its screen is locked, so a lock screen may be typed at"
+            );
+        }
         let notifier = Arc::new(NotifierCell::default());
         let approvals = Arc::new(Approvals::default());
         let presence: Arc<dyn Presence> = Arc::new(LocalPresence::new(
@@ -962,6 +967,12 @@ impl Stream<'_> {
             return Err(ErrorBody::new(
                 ErrorCode::Unavailable,
                 "the screen is locked",
+            ));
+        }
+        if state.locked.is_none() && !config.input_when_lock_unknown {
+            return Err(ErrorBody::new(
+                ErrorCode::Unavailable,
+                "the lock state is not known",
             ));
         }
         if !self.rate.admit(cost, Instant::now()) {

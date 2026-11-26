@@ -74,6 +74,9 @@ pub struct GuiConfig {
     /// Whether input is applied while the screen is locked. Default `false`: typing into a lock screen guesses the user's
     /// password.
     pub input_when_locked: bool,
+    /// Whether input is applied when the desktop cannot say whether the screen is locked (an X display with no logind, a
+    /// session whose lock hint is not read). Default `false`: the lock screen may be what is showing.
+    pub input_when_lock_unknown: bool,
     /// How often a settle captures the screen. Not zero. Default `100ms`.
     pub settle_interval: Span,
     /// How long the screen must stay unchanged to count as settled, when a request names none. Not zero. Default `300ms`.
@@ -201,6 +204,7 @@ impl Default for GuiConfig {
             max_text: 4096,
             max_batch_wait: Span(Duration::from_secs(5)),
             input_when_locked: false,
+            input_when_lock_unknown: false,
             settle_interval: Span(Duration::from_millis(100)),
             settle_quiet: Span(Duration::from_millis(300)),
             settle_timeout: Span(Duration::from_secs(5)),
