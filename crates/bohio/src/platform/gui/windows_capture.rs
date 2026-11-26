@@ -242,10 +242,8 @@ fn open(device: &str) -> Result<Output, GuiError> {
     }
 }
 
-/// # Safety
-///
-/// Called only from `open`, which passes interfaces it just obtained.
-unsafe fn duplicate(adapter: &IDXGIAdapter1, output: &IDXGIOutput1) -> Result<Output, GuiError> {
+/// The duplication of `output`, with a Direct3D device made on `adapter`.
+fn duplicate(adapter: &IDXGIAdapter1, output: &IDXGIOutput1) -> Result<Output, GuiError> {
     let mut device: Option<ID3D11Device> = None;
     let mut context: Option<ID3D11DeviceContext> = None;
     // SAFETY: the out pointers are to locals; the adapter is a live interface.

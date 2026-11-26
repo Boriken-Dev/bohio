@@ -385,3 +385,29 @@ fn the_modules_that_only_deny_are_the_ones_with_listed_children() {
         assert!(root.join(parent).is_file(), "{parent} does not exist");
     }
 }
+
+#[test]
+fn unsafe_marks_the_functions_with_a_caller_obligation_and_only_those() {
+    // `close_all_but` and `close_range` close every descriptor of the process, which only a process that
+    // ends right after may do; the others take numbers or live interfaces and promise nothing to their callers.
+    let root = workspace().join("crates/bohio/src/platform");
+    let guard = fs::read_to_string(root.join("guard.rs")).expect("guard.rs");
+    for name in ["close_all_but", "close_range"] {
+        assert!(
+            guard.contains(&format!("\nunsafe fn {name}(")),
+            "{name} closes descriptors the process may still own and must be an unsafe fn"
+        );
+    }
+    for name in ["signal_session", "in_session"] {
+        assert!(
+            !guard.contains(&format!("unsafe fn {name}(")),
+            "{name} has no precondition and must be a safe fn"
+        );
+    }
+    let capture =
+        fs::read_to_string(root.join("gui/windows_capture.rs")).expect("windows_capture.rs");
+    assert!(
+        !capture.contains("unsafe fn duplicate("),
+        "duplicate has no precondition and must be a safe fn"
+    );
+}

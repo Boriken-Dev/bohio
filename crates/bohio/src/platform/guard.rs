@@ -223,7 +223,8 @@ unsafe fn guardian(read: c_int, signal: c_int, target: Target) -> ! {
     unsafe {
         libc::prctl(libc::PR_SET_NAME, NAME_C.as_ptr(), 0, 0, 0);
     }
-    close_all_but(read);
+    // SAFETY: this process ends with `_exit` below and uses no descriptor but `read` until then.
+    unsafe { close_all_but(read) };
     let mut byte = 0_u8;
     loop {
         // SAFETY: `byte` is one valid byte and `read` is open.
@@ -245,10 +246,8 @@ unsafe fn guardian(read: c_int, signal: c_int, target: Target) -> ! {
         },
         Target::Session(session) => {
             // SAFETY: a negative id names a process group; `session` is a process id.
-            unsafe {
-                libc::kill(-session, signal);
-                signal_session(session, signal);
-            }
+            unsafe { libc::kill(-session, signal) };
+            signal_session(session, signal);
         }
     }
     // SAFETY: `_exit` takes a status and never returns.
@@ -256,13 +255,10 @@ unsafe fn guardian(read: c_int, signal: c_int, target: Target) -> ! {
 }
 
 /// Signals every process whose session is `session`, found through `/proc`; with SIGKILL it looks
-/// again until a pass finds none, since a process may start another while it is ended.
-///
-/// # Safety
-///
-/// Makes only system calls and allocates nothing.
+/// again until a pass finds none, since a process may start another while it is ended. Called in a guardian,
+/// so it makes only system calls and allocates nothing.
 #[cfg(any(target_os = "linux", target_os = "android"))]
-unsafe fn signal_session(session: c_int, signal: c_int) {
+fn signal_session(session: c_int, signal: c_int) {
     loop {
         let mut found = false;
         // SAFETY: a NUL-terminated path.
@@ -302,8 +298,7 @@ unsafe fn signal_session(session: c_int, signal: c_int) {
                 };
                 let name = record.get(19..length).unwrap_or(&[]);
                 if let Some(pid) = process_number(name)
-                    // SAFETY: only reads `/proc/<pid>/stat` into a stack buffer.
-                    && unsafe { in_session(pid, session) }
+                    && in_session(pid, session)
                     // SAFETY: `kill` takes a process id and a signal.
                     && unsafe { libc::kill(pid, signal) } == 0
                 {
@@ -321,12 +316,8 @@ unsafe fn signal_session(session: c_int, signal: c_int) {
 }
 
 /// Without `/proc` there is no session to walk: the group alone is signalled.
-///
-/// # Safety
-///
-/// Makes no call.
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
-unsafe fn signal_session(_session: c_int, _signal: c_int) {}
+fn signal_session(_session: c_int, _signal: c_int) {}
 
 /// The process number a `/proc` entry names, when it is one.
 #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -350,13 +341,9 @@ fn process_number(name: &[u8]) -> Option<c_int> {
 
 /// Whether `pid` is in `session` and is not a zombie: read from `/proc/<pid>/stat`, whose fields
 /// after the command name (which may hold spaces and parentheses) are the state, parent, group and
-/// session.
-///
-/// # Safety
-///
-/// Makes only system calls and allocates nothing.
+/// session. Called in a guardian, so it makes only system calls and allocates nothing.
 #[cfg(any(target_os = "linux", target_os = "android"))]
-unsafe fn in_session(pid: c_int, session: c_int) -> bool {
+fn in_session(pid: c_int, session: c_int) -> bool {
     let mut path = [0_u8; 32];
     let mut at = 0;
     for byte in b"/proc/" {
@@ -409,13 +396,20 @@ unsafe fn in_session(pid: c_int, session: c_int) -> bool {
 
 /// Closes every descriptor but `keep`, so the guardian holds no pipe, socket or file of the host:
 /// a connection the guardian held would not close when the host closed it.
-fn close_all_but(keep: c_int) {
+///
+/// # Safety
+///
+/// Only in a process that ends with `_exit` and uses no descriptor but `keep` afterwards: every descriptor of
+/// the process is closed, including those an `OwnedFd` elsewhere owns.
+unsafe fn close_all_but(keep: c_int) {
     let below = u32::try_from(keep).unwrap_or(0);
     let mut closed = true;
     if below > 0 {
-        closed &= close_range(0, below - 1);
+        // SAFETY: the caller's contract.
+        closed &= unsafe { close_range(0, below - 1) };
     }
-    closed &= close_range(below + 1, u32::MAX);
+    // SAFETY: the caller's contract.
+    closed &= unsafe { close_range(below + 1, u32::MAX) };
     if closed {
         return;
     }
@@ -445,7 +439,11 @@ fn close_all_but(keep: c_int) {
 }
 
 /// Closes the descriptors `first` to `last`; whether the system call exists and worked.
-fn close_range(first: u32, last: u32) -> bool {
+///
+/// # Safety
+///
+/// As [`close_all_but`]: no descriptor in the range is used afterwards.
+unsafe fn close_range(first: u32, last: u32) -> bool {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     // SAFETY: `close_range` takes two numbers and a flag word and touches only this process's descriptors.
     let result = unsafe { libc::syscall(libc::SYS_close_range, first, last, 0) };
