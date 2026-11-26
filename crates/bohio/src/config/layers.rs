@@ -88,35 +88,45 @@ impl Layered {
 #[derive(Debug, Clone, Copy)]
 pub struct Layers;
 
-/// The keys that govern layering and the access checks: the lowest layer alone sets them.
-const LOWEST_ONLY: [&str; 3] = ["check_access", "user_layer", "trusted_owners"];
-
-/// The `[filesystem]` keys that let a peer make a file run as the service's account: the lowest layer alone sets them.
-const FILESYSTEM_LOWEST_ONLY: [&str; 1] = ["allow_id_bits"];
-
-/// The `[providers]` keys that weaken a check on a library or name code the node maps: the lowest layer alone sets them, as
-/// `[service] check_access`.
-const PROVIDERS_LOWEST_ONLY: [&str; 3] =
-    ["check_access", "ld_so", "allow_reserved_signal_handlers"];
-
-/// The `[secrets]` keys that weaken what a `file:` secret must be: the lowest layer alone sets them.
-const SECRETS_LOWEST_ONLY: [&str; 3] = ["check_access", "group_readable", "allow_literal"];
-
-/// The `[gui]` keys that say whose helper a node serves, and which account a helper trusts as the node: the lowest layer
-/// alone sets them, so a layer an account can write for itself cannot lend the desktop to another or name its own node.
-const GUI_LOWEST_ONLY: [&str; 12] = [
-    "helper_accounts",
-    "helper_endpoint",
-    "node_account",
-    "source",
-    "source_retry",
-    "helper_upload",
-    "helper_binary",
-    "helper_upload_overwrite",
-    "helper_upload_shared_dir",
-    "helper_upload_check_platform",
-    "helper_upload_answer_max",
-    "helper_socket_dir_check",
+/// The keys the lowest layer alone sets, by table: those that govern layering and the access checks, weaken a check on code
+/// the node runs or on a secret, or say whose desktop helper a node serves. A higher layer's value for one is ignored and
+/// logged unless the lowest layer names the key in `[service] upper_layer_keys` (as `section.key`).
+const LOWEST_ONLY: [(&str, &[&str]); 5] = [
+    (
+        "service",
+        &[
+            "check_access",
+            "user_layer",
+            "trusted_owners",
+            "upper_layer_keys",
+        ],
+    ),
+    ("filesystem", &["allow_id_bits"]),
+    (
+        "providers",
+        &["check_access", "ld_so", "allow_reserved_signal_handlers"],
+    ),
+    (
+        "secrets",
+        &["check_access", "group_readable", "allow_literal"],
+    ),
+    (
+        "gui",
+        &[
+            "helper_accounts",
+            "helper_endpoint",
+            "node_account",
+            "source",
+            "source_retry",
+            "helper_upload",
+            "helper_binary",
+            "helper_upload_overwrite",
+            "helper_upload_shared_dir",
+            "helper_upload_check_platform",
+            "helper_upload_answer_max",
+            "helper_socket_dir_check",
+        ],
+    ),
 ];
 
 /// One layer as read.
@@ -271,63 +281,78 @@ fn merge(previous: &mut Value, next: Value, strategy: Merge, depth: usize) -> Re
     }
 }
 
-/// Each layer's own value, its syntax checked; the second layer on may not set a governing key.
+/// Each layer's own value, its syntax checked.
 fn values(formats: &Formats<Value>, inputs: &[Input]) -> Result<Vec<Value>, ConfigError> {
     let mut values = Vec::new();
-    for (index, input) in inputs.iter().enumerate() {
+    for input in inputs {
         let value = formats
             .from_slice(&input.bytes, Options::new().format("toml"))
             .map_err(|error| layer_error(input, &error))?;
-        if index > 0 {
-            for key in LOWEST_ONLY {
-                if has_path(&value, &["service", key]) {
-                    return Err(ConfigError::Invalid {
-                        path: input.label.clone(),
-                        key: format!("service.{key}"),
-                        message: "is read from the lowest layer only: remove it here".to_owned(),
-                    });
-                }
-            }
-            for key in FILESYSTEM_LOWEST_ONLY {
-                if has_path(&value, &["filesystem", key]) {
-                    return Err(ConfigError::Invalid {
-                        path: input.label.clone(),
-                        key: format!("filesystem.{key}"),
-                        message: "is read from the lowest layer only: remove it here".to_owned(),
-                    });
-                }
-            }
-            for key in PROVIDERS_LOWEST_ONLY {
-                if has_path(&value, &["providers", key]) {
-                    return Err(ConfigError::Invalid {
-                        path: input.label.clone(),
-                        key: format!("providers.{key}"),
-                        message: "is read from the lowest layer only: remove it here".to_owned(),
-                    });
-                }
-            }
-            for key in SECRETS_LOWEST_ONLY {
-                if has_path(&value, &["secrets", key]) {
-                    return Err(ConfigError::Invalid {
-                        path: input.label.clone(),
-                        key: format!("secrets.{key}"),
-                        message: "is read from the lowest layer only: remove it here".to_owned(),
-                    });
-                }
-            }
-            for key in GUI_LOWEST_ONLY {
-                if has_path(&value, &["gui", key]) {
-                    return Err(ConfigError::Invalid {
-                        path: input.label.clone(),
-                        key: format!("gui.{key}"),
-                        message: "is read from the lowest layer only: remove it here".to_owned(),
-                    });
-                }
-            }
-        }
         values.push(value);
     }
     Ok(values)
+}
+
+/// Drops from every layer above the lowest the keys only the lowest layer may set, logging each, except those the lowest
+/// layer's `[service] upper_layer_keys` names. A layer that lost one is read back from what is left of it, so a line
+/// number in a later error about it can be off.
+fn ignore_upper(
+    inputs: &[Input],
+    mut values: Vec<Value>,
+) -> Result<(Vec<Input>, Vec<Value>), ConfigError> {
+    let known = |dotted: &str| {
+        dotted != "service.upper_layer_keys"
+            && LOWEST_ONLY
+                .iter()
+                .any(|(section, keys)| keys.iter().any(|key| dotted == format!("{section}.{key}")))
+    };
+    let mut allowed: Vec<String> = Vec::new();
+    if let Some(Value::Array(named)) = values
+        .first()
+        .and_then(|value| value.get("service"))
+        .and_then(|service| service.get("upper_layer_keys"))
+    {
+        for name in named {
+            let name = name.as_str().unwrap_or_default();
+            if !known(name) {
+                return Err(ConfigError::Invalid {
+                    path: inputs[0].label.clone(),
+                    key: "service.upper_layer_keys".to_owned(),
+                    message: "names a key that is not one only the lowest layer may set (`section.key`, such as `secrets.check_access`)".to_owned(),
+                });
+            }
+            allowed.push(name.to_owned());
+        }
+    }
+    let mut kept = inputs.to_vec();
+    for index in 1..kept.len() {
+        let mut dropped = false;
+        for (section, keys) in LOWEST_ONLY {
+            for key in keys {
+                if allowed.contains(&format!("{section}.{key}")) {
+                    continue;
+                }
+                if let Some(Value::Table(table)) = values[index].get_mut(section)
+                    && table.remove(*key).is_some()
+                {
+                    tracing::warn!(
+                        "{}: {section}.{key} is read from the lowest layer only and is ignored here (the lowest layer's `[service] upper_layer_keys` can allow it)",
+                        kept[index].label
+                    );
+                    dropped = true;
+                }
+            }
+        }
+        if dropped && let Ok(text) = toml::to_string(&values[index]) {
+            kept[index].bytes = text.into_bytes();
+        }
+    }
+    for name in &allowed {
+        tracing::warn!(
+            "non-default: [service] upper_layer_keys names {name}: whoever writes a higher layer, the node's own account and a peer that can write that file included, may set it"
+        );
+    }
+    Ok((kept, values))
 }
 
 /// The layers merged and read as `T`.
@@ -572,6 +597,8 @@ fn build(inputs: &[Input]) -> Result<Layered, ConfigError> {
             .map_err(|error| layer_error(input, &error))?;
     }
     let values = values(&formats, inputs)?;
+    let (inputs, values) = ignore_upper(inputs, values)?;
+    let inputs = &inputs[..];
     let profile = named_profile(inputs, &values)?;
     // The profile is the lowest layer under the files: its table is checked alone like any layer, and an error in
     // a value only it supplied names it.

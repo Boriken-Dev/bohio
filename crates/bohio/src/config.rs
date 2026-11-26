@@ -231,6 +231,10 @@ pub struct ServiceConfig {
     /// a security id on Windows. Set in the lowest layer only; the lowest layer itself and its directory are judged by
     /// `bohio serve --trust-owner` (or `BOHIO_TRUST_OWNER`) alone, as a file cannot vouch for its own owner. Default none.
     pub trusted_owners: Vec<String>,
+    /// Keys (`section.key`, such as `secrets.check_access`) that a layer above the lowest may set although they govern layering
+    /// or weaken a check; a higher layer's value for any other of those keys is ignored and logged. Whoever writes a higher
+    /// layer, a peer holding `fs.write` on it included, may then weaken the check. Lowest layer only. Default none.
+    pub upper_layer_keys: Vec<String>,
     /// Windows: how long the service manager is told a start or a stop may take, and how long `bohio service
     /// uninstall` waits for a running service to stop before it removes it. A host with many links to end may need
     /// longer; the manager's own limit still applies. Not zero. Default `10s`.
@@ -245,6 +249,7 @@ impl Default for ServiceConfig {
             check_access: true,
             user_layer: true,
             trusted_owners: Vec::new(),
+            upper_layer_keys: Vec::new(),
             stop_wait: Span(Duration::from_secs(10)),
         }
     }

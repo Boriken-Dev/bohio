@@ -136,6 +136,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- A key only the lowest layer may set (the access checks, `[providers]` code keys, `[secrets]` checks and the `[gui]` helper keys) is now ignored and logged in a higher layer, where it refused the whole configuration; `[service] upper_layer_keys` (lowest layer only; none by default, logged `non-default:`) names the keys a higher layer may set.
 - `keyring:` secret references are removed: the kind was refused by every build and is no longer a name `split` knows, so `keyring:x` is a literal like any other text. Use `file:` or `credential:`.
 - `[secrets] allow_literal` (default `false`, lowest layer only, logged `non-default:`) lets a sensitive setting hold the secret itself; a literal stays refused otherwise, and the refusal now says how to allow it.
 - `[secrets] check_access` (default `true`) and `[secrets] group_readable` (default `false`), lowest layer only, let a `file:` secret be another account's or readable by its group, logged `non-default:`; neither could be weakened before.

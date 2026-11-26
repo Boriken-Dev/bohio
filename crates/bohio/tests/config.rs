@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use bohio::config::{Config, ConfigError, Environment, Layers, Span};
+use bohio::config::{Config, ConfigError, Environment, Layers, ServiceConfig, Span};
 use bohio::policy::Permission;
 use cabuya::auth::{Identity, Method};
 
@@ -524,26 +524,88 @@ fn a_peer_is_accepted_while_any_layer_holds_its_table() {
     );
 }
 
+/// `[filesystem] allow_id_bits` lets a peer make a file that runs as the service's account: only the lowest layer sets it.
 #[test]
-fn a_governing_key_set_above_the_lowest_layer_is_refused_naming_the_layer() {
+fn allow_id_bits_set_above_the_lowest_layer_is_ignored() {
     let dir = tempfile::tempdir().unwrap();
-    for key in ["check_access = false", "user_layer = false"] {
+    let files = layers(
+        dir.path(),
+        &[
+            ("system.cfg", "[filesystem]
+max_transfers = 4
+"),
+            ("user.cfg", "[filesystem]
+allow_id_bits = true
+"),
+        ],
+    );
+    assert!(!Layers::load(&files).unwrap().config.filesystem.allow_id_bits);
+    let files = layers(
+        dir.path(),
+        &[("low.cfg", "[filesystem]
+allow_id_bits = true
+")],
+    );
+    assert!(Layers::load(&files).unwrap().config.filesystem.allow_id_bits);
+}
+
+/// Whoever writes a higher layer must not set the keys that govern layering and weaken checks: the value is ignored, not
+/// the configuration refused, unless the lowest layer allows the key.
+#[test]
+fn a_governing_key_set_above_the_lowest_layer_is_ignored_unless_the_lowest_layer_allows_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let keys = [
+        ("service", "check_access = false"),
+        ("service", "user_layer = false"),
+        ("secrets", "check_access = false"),
+        ("secrets", "group_readable = true"),
+        ("secrets", "allow_literal = true"),
+        ("providers", "check_access = false"),
+        ("gui", "node_account = \"someone\""),
+    ];
+    for (table, line) in keys {
+        let dotted = format!("{table}.{}", line.split(' ').next().unwrap());
+        let user = format!("[{table}]\n{line}\n");
         let files = layers(
             dir.path(),
             &[
                 ("system.cfg", "[service]\nname = \"s\"\n"),
-                ("user.cfg", &format!("[service]\n{key}\n")),
+                ("user.cfg", &user),
             ],
         );
-        match Layers::load(&files) {
-            Err(ConfigError::Invalid {
-                path, key: found, ..
-            }) => {
-                assert!(path.ends_with("user.cfg"), "{path}");
-                assert_eq!(found, format!("service.{}", key.split(' ').next().unwrap()));
-            }
-            other => panic!("{key}: expected Invalid, got {other:?}"),
-        }
+        let layered = Layers::load(&files).unwrap_or_else(|error| panic!("{dotted}: {error}"));
+        assert_eq!(
+            layered.config.service,
+            ServiceConfig {
+                name: "s".to_owned(),
+                ..ServiceConfig::default()
+            },
+            "{dotted} was read from a higher layer"
+        );
+        assert!(layered.config.secrets.check_access && !layered.config.secrets.allow_literal);
+        assert!(layered.config.providers.check_access);
+        // The lowest layer can allow it.
+        let system = format!("[service]\nupper_layer_keys = [\"{dotted}\"]\n");
+        let files = layers(dir.path(), &[("system.cfg", &system), ("user.cfg", &user)]);
+        let layered = Layers::load(&files).unwrap_or_else(|error| panic!("{dotted}: {error}"));
+        let defaults = Layers::load(&layers(
+            dir.path(),
+            &[("d.cfg", "[service]\nname = \"bohio\"\n")],
+        ))
+        .unwrap();
+        assert_ne!(
+            (
+                &layered.config.service,
+                &layered.config.secrets,
+                &layered.config.providers
+            ),
+            (
+                &defaults.config.service,
+                &defaults.config.secrets,
+                &defaults.config.providers
+            ),
+            "{dotted} was not read although the lowest layer allows it"
+        );
     }
     // The lowest layer may set them.
     let files = layers(
@@ -555,84 +617,18 @@ fn a_governing_key_set_above_the_lowest_layer_is_refused_naming_the_layer() {
     );
     let layered = Layers::load(&files).unwrap();
     assert!(!layered.config.service.check_access && !layered.config.service.user_layer);
-}
-
-#[test]
-fn allow_id_bits_is_read_from_the_lowest_layer_only() {
-    let dir = tempfile::tempdir().unwrap();
-    let files = layers(
-        dir.path(),
-        &[
-            ("system.cfg", "[filesystem]\nmax_transfers = 4\n"),
-            ("user.cfg", "[filesystem]\nallow_id_bits = true\n"),
-        ],
-    );
-    match Layers::load(&files) {
-        Err(ConfigError::Invalid { path, key, .. }) => {
-            assert!(path.ends_with("user.cfg"), "{path}");
-            assert_eq!(key, "filesystem.allow_id_bits");
-        }
-        other => panic!("expected Invalid, got {other:?}"),
-    }
-    let files = layers(
-        dir.path(),
-        &[("low.cfg", "[filesystem]\nallow_id_bits = true\n")],
-    );
-    assert!(
-        Layers::load(&files)
-            .unwrap()
-            .config
-            .filesystem
-            .allow_id_bits
-    );
-}
-
-#[test]
-fn the_secret_checks_are_set_by_the_lowest_layer_alone() {
-    let dir = tempfile::tempdir().unwrap();
-    for key in [
-        "check_access = false",
-        "group_readable = true",
-        "allow_literal = true",
-    ] {
-        let files = layers(
-            dir.path(),
-            &[
-                (
-                    "system.cfg",
-                    "[service]
-name = \"s\"
-",
-                ),
-                (
-                    "user.cfg",
-                    &format!(
-                        "[secrets]
-{key}
-"
-                    ),
-                ),
-            ],
-        );
-        match Layers::load(&files) {
-            Err(ConfigError::Invalid { key: found, .. }) => {
-                assert_eq!(found, format!("secrets.{}", key.split(' ').next().unwrap()));
-            }
-            other => panic!("{key}: expected Invalid, got {other:?}"),
-        }
-    }
+    // A name that is no such key cannot work.
     let files = layers(
         dir.path(),
         &[(
             "low.cfg",
-            "[secrets]
-check_access = false
-group_readable = true
-",
+            "[service]\nupper_layer_keys = [\"service.name\"]\n",
         )],
     );
-    let secrets = Layers::load(&files).unwrap().config.secrets;
-    assert!(!secrets.check_access && secrets.group_readable);
+    assert!(matches!(
+        Layers::load(&files),
+        Err(ConfigError::Invalid { key, .. }) if key == "service.upper_layer_keys"
+    ));
 }
 
 #[test]
