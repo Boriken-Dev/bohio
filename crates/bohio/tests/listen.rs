@@ -1364,7 +1364,7 @@ mod links {
                 let _listener = result.expect("listening through the link");
                 assert!(made, "the socket is where the link leads");
             } else {
-                let error = result.err().expect("refused");
+                let error = result.expect_err("refused");
                 assert!(is_remote(&error, ErrorCode::Denied), "{error:?}");
                 assert!(!made, "a socket was made where the link leads");
             }
