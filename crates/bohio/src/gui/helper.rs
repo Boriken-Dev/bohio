@@ -155,11 +155,20 @@ pub(super) struct Entry {
     /// How a request names the session: the verified account, then the helper's own name.
     pub(super) id: String,
     user: Option<String>,
+    /// The exec source that runs the helper, when one does: a peer reaches the session only with that source.
+    source: Option<String>,
     opener: Opener,
     state: Mutex<State>,
 }
 
 impl Entry {
+    /// Whether `grant` may use the machine behind this session: the source that runs the helper, when there is one.
+    pub(super) fn reachable(&self, sources: &Sources, grant: &Grant) -> bool {
+        self.source
+            .as_deref()
+            .is_none_or(|name| sources.permits(grant, name))
+    }
+
     fn session(&self) -> GuiSession {
         let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         GuiSession {
@@ -215,31 +224,35 @@ impl Helpers {
             .retain(|known| !Arc::ptr_eq(known, entry));
     }
 
-    pub(super) fn sessions(&self) -> Vec<GuiSession> {
+    /// The sessions of the helpers `visible` admits.
+    pub(super) fn sessions(&self, visible: impl Fn(&Entry) -> bool) -> Vec<GuiSession> {
         self.entries
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .iter()
-            .filter(|entry| entry.opener.is_up())
+            .filter(|entry| entry.opener.is_up() && visible(entry))
             .map(|entry| entry.session())
             .collect()
     }
 
-    fn find(&self, id: &str) -> Option<Arc<Entry>> {
+    fn find(&self, id: &str, visible: impl Fn(&Entry) -> bool) -> Option<Arc<Entry>> {
         self.entries
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .iter()
-            .find(|entry| entry.id == id && entry.opener.is_up())
+            .find(|entry| entry.id == id && entry.opener.is_up() && visible(entry))
             .cloned()
     }
 
     /// The helper a request without a session names: the one at the screen, else the only one.
-    fn default_for(&self) -> Result<Option<Arc<Entry>>, ErrorBody> {
+    fn default_for(
+        &self,
+        visible: impl Fn(&Entry) -> bool,
+    ) -> Result<Option<Arc<Entry>>, ErrorBody> {
         let entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
         let up: Vec<&Arc<Entry>> = entries
             .iter()
-            .filter(|entry| entry.opener.is_up())
+            .filter(|entry| entry.opener.is_up() && visible(entry))
             .collect();
         match up.as_slice() {
             [] => Ok(None),
@@ -273,23 +286,24 @@ pub(super) enum Chosen {
 impl GuiState {
     /// Decides where a `bohio-gui/1` open goes: a session a request names that a helper serves goes to it; otherwise the node's
     /// own desktop when it answers; otherwise the helper at the screen, or the only one.
-    pub(super) fn choose(&self, config: &GuiConfig, metadata: &[u8]) -> Chosen {
+    pub(super) fn choose(&self, config: &GuiConfig, grant: &Grant, metadata: &[u8]) -> Chosen {
         let Ok(request) = GuiRequest::from_metadata(metadata) else {
             return Chosen::InProcess;
         };
         if !config.enabled || request.source.is_some() {
             return Chosen::InProcess;
         }
+        let visible = |entry: &Entry| entry.reachable(&self.sources, grant);
         match request.session.as_deref() {
             Some(id) if id != DEFAULT_SESSION => self
                 .helpers
-                .find(id)
+                .find(id, visible)
                 .map_or(Chosen::InProcess, Chosen::Helper),
             _ => {
                 if self.in_process_available() {
                     return Chosen::InProcess;
                 }
-                match self.helpers.default_for() {
+                match self.helpers.default_for(visible) {
                     Ok(Some(entry)) => Chosen::Helper(entry),
                     Ok(None) => Chosen::InProcess,
                     Err(error) => Chosen::Refuse(error),
@@ -353,9 +367,9 @@ fn grant_of(granted: &[Want]) -> Grant {
     }))
 }
 
-/// A client frame the peer's grant no longer allows, answered at once and not passed on: the permission the frame needs, read
-/// now, as the engine does for each request.
-fn refused_now(frame: &[u8], context: &Context<'_>) -> Option<RequestError> {
+/// A client frame the peer's grant no longer allows, answered at once and not passed on: the permission the frame needs and
+/// the helper's source, read now, as the engine does for each request.
+fn refused_now(frame: &[u8], context: &Context<'_>, entry: &Entry) -> Option<RequestError> {
     let (seq, want) = match GuiInput::decode(frame).ok()? {
         GuiInput::Snapshot(request) => (request.seq, Want::View),
         GuiInput::Settle(request) => (request.seq, Want::View),
@@ -376,6 +390,12 @@ fn refused_now(frame: &[u8], context: &Context<'_>) -> Option<RequestError> {
         return Some(RequestError::new(
             seq,
             denied(&format!("this peer may no longer {want} the desktop")),
+        ));
+    }
+    if !entry.reachable(&context.state.sources, &now) {
+        return Some(RequestError::new(
+            seq,
+            denied("this peer may no longer use that desktop source"),
         ));
     }
     if matches!(want, Want::View)
@@ -431,6 +451,9 @@ fn relayed(
     if let Some(missing) = wants.iter().find(|want| !permits(context.grant, **want)) {
         return Err(denied(&format!("this peer may not {missing} the desktop")));
     }
+    if !entry.reachable(&context.state.sources, context.grant) {
+        return Err(denied("this peer may not use that desktop source"));
+    }
     let _slot = context.state.slots.acquire().ok_or_else(busy)?;
     let _mine = context
         .state
@@ -470,7 +493,7 @@ fn relayed(
             context,
             &done,
             poll,
-            &entry.opener,
+            entry,
             &gone,
         );
         done.store(true, Ordering::SeqCst);
@@ -494,16 +517,16 @@ fn upstream(
     context: &Context<'_>,
     done: &AtomicBool,
     poll: Duration,
-    helper: &Opener,
+    entry: &Entry,
     gone: &Gone,
 ) {
     while !done.load(Ordering::SeqCst) {
-        if !helper.is_up() {
+        if !entry.opener.is_up() {
             return gone.ended.store(true, Ordering::SeqCst);
         }
         match from.receive(Some(poll)) {
             Ok(Some(frame)) => {
-                if let Some(refusal) = refused_now(&frame, context) {
+                if let Some(refusal) = refused_now(&frame, context, entry) {
                     let reply = GuiOutput::RequestError(refusal)
                         .encode()
                         .unwrap_or_else(|_| vec![0x05]);
@@ -839,6 +862,7 @@ fn hello(held: &Held<'_>, stream: &dyn LinkStream, accepted: &Accepted) {
     let entry = Arc::new(Entry {
         id: format!("{}:{}", held.account, hello.session),
         user: hello.user,
+        source: held.account.strip_prefix("exec:").map(str::to_owned),
         opener: held.opener.clone(),
         state: Mutex::new(hello.state),
     });
@@ -1298,12 +1322,13 @@ mod tests {
         helpers.register(Arc::new(Entry {
             id: "1000:main".to_owned(),
             user: None,
+            source: None,
             opener,
             state: Mutex::new(State::default()),
         }));
-        assert!(helpers.find("1000:main").is_some());
+        assert!(helpers.find("1000:main", |_| true).is_some());
         assert!(
-            helpers.find("main").is_none(),
+            helpers.find("main", |_| true).is_none(),
             "the helper's own name alone names nothing"
         );
     }

@@ -209,7 +209,9 @@ impl GuiState {
         if config.enabled
             && (grant.allows(Permission::GuiView) || grant.allows(Permission::GuiInput))
         {
-            let helpers = self.helpers.sessions();
+            let helpers = self
+                .helpers
+                .sessions(|entry| entry.reachable(&self.sources, grant));
             if !helpers.is_empty() {
                 info.available = true;
                 info.reason = None;
@@ -340,7 +342,24 @@ pub fn covers(grant: &Grant, metadata: &[u8]) -> bool {
                 .source
                 .as_deref()
                 .is_none_or(|source| grant.permits_source(source))
+            && request
+                .session
+                .as_deref()
+                .is_none_or(|session| exec_session_permitted(grant, session))
     })
+}
+
+/// Whether `grant` reaches the exec source behind the helper session `session` (`exec:SOURCE:NAME`); any other session is
+/// not behind a source. A source name can hold a colon, so a grant naming any leading part of the text covers it: the open
+/// has already checked the exact source, and this only ends a stream whose grant was narrowed.
+fn exec_session_permitted(grant: &Grant, session: &str) -> bool {
+    let Some(rest) = session.strip_prefix("exec:") else {
+        return true;
+    };
+    rest.match_indices(':')
+        .map(|(at, _)| &rest[..at])
+        .chain(std::iter::once(rest))
+        .any(|name| grant.permits_source(name))
 }
 
 fn denied(message: &str) -> ErrorBody {
@@ -376,7 +395,10 @@ pub fn serve(
 /// the node has no desktop of its own and a helper has (see [`helper`]); everything else is the node's own desktop. The stream
 /// is left open for the caller to close.
 pub fn serve_chosen(channel: &Arc<dyn Channel>, metadata: &[u8], context: &Context<'_>) {
-    match context.state.choose(context.config, metadata) {
+    match context
+        .state
+        .choose(context.config, context.grant, metadata)
+    {
         helper::Chosen::InProcess => match serve(Arc::clone(channel), metadata, context) {
             Ok(ended) => tracing::debug!(snapshots = ended.snapshots, "gui ended"),
             Err(error) => tracing::info!(code = ?error.code, "gui refused"),

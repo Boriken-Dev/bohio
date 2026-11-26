@@ -716,3 +716,108 @@ fn a_peer_that_may_not_look_is_not_told_which_sessions_a_helper_serves() {
     assert!(info.gui.sessions.is_empty(), "{:?}", info.gui.sessions);
     stop_helper(&stop, helper);
 }
+
+/// Serves a helper of the exec source `name` to the node of `world`, over a memory pipe: the account the node lists it under is
+/// `exec:NAME`, as when the node starts the helper through that source.
+fn exec_helper(world: &World, name: &str) -> (Arc<AtomicBool>, Vec<JoinHandle<()>>) {
+    let settings = Settings::default();
+    let (one, two) = memory::pipe(1024 * 1024);
+    let node_end = Arc::new(stream(one, &settings).expect("a channel"));
+    let helper_end = Arc::new(stream(two, &settings).expect("a channel"));
+    let stop = Arc::new(AtomicBool::new(false));
+    let helper = helper_settings(&world.endpoint, &me(), GuiConfig::default());
+    let sources = sources_of(&world.desktop);
+    let threads = vec![
+        thread::spawn({
+            let (host, stop, end, account) = (
+                world.host.clone(),
+                stop.clone(),
+                node_end.clone(),
+                format!("exec:{name}"),
+            );
+            move || {
+                host.node.serve_helper_channel(&*end, &account, Some(&stop));
+                end.close();
+            }
+        }),
+        thread::spawn({
+            let (stop, end) = (stop.clone(), helper_end.clone());
+            move || {
+                bohio::gui::helper::serve_node(&*end, &helper, sources, &stop);
+                end.close();
+            }
+        }),
+    ];
+    (stop, threads)
+}
+
+#[test]
+fn a_peer_reaches_the_helper_of_an_exec_source_only_with_that_source() {
+    let world = World::new(&[me()], Grant::none(), false);
+    let (stop, threads) = exec_helper(&world, "build");
+    let looking = Grant::allowing([Permission::Info, Permission::GuiView, Permission::GuiInput]);
+    let session = "exec:build:main";
+
+    // Positive control: with the source named, the session is listed and opens (and the helper is surely up by then).
+    world
+        .host
+        .grants
+        .set(world.client.id, looking.clone().with_sources(["build"]));
+    let gui = world.open(&[Want::View]).expect("the named source opens");
+    assert_eq!(gui.session(), session);
+    let info = Control::open(&world.link)
+        .expect("a control stream")
+        .info(Some(WAIT))
+        .expect("info");
+    assert_eq!(info.gui.sessions.len(), 1);
+
+    // Without the source: not listed, not opened, by name or by default.
+    world.host.grants.set(world.client.id, looking.clone());
+    let info = Control::open(&world.link)
+        .expect("a control stream")
+        .info(Some(WAIT))
+        .expect("info");
+    assert!(info.gui.sessions.is_empty(), "{:?}", info.gui.sessions);
+    for request in [
+        GuiRequest::new([Want::View]),
+        GuiRequest {
+            session: Some(session.to_owned()),
+            ..GuiRequest::new([Want::View])
+        },
+    ] {
+        let error = Gui::open(&world.link, &request).expect_err("the source is not the peer's");
+        // The link refuses a named session outright; a request that names none finds no desktop.
+        assert!(
+            matches!(error, Error::Transport(_))
+                || matches!(
+                    &error,
+                    Error::Remote(body)
+                        if matches!(body.code, ErrorCode::NotFound | ErrorCode::Unavailable)
+                ),
+            "{error:?}"
+        );
+    }
+
+    // Narrowing the grant ends the stream that was open.
+    world
+        .host
+        .grants
+        .set(world.client.id, looking.with_sources(["build"]));
+    let open = world.open(&[Want::View]).expect("opens again");
+    world.host.grants.set(
+        world.client.id,
+        Grant::allowing([Permission::Info, Permission::GuiView]),
+    );
+    let until = Instant::now() + WAIT;
+    while open
+        .snapshot(&SnapshotOptions::default(), Some(Duration::from_secs(2)))
+        .is_ok()
+    {
+        assert!(Instant::now() < until, "the stream outlived its source");
+        thread::sleep(RECHECK);
+    }
+    stop.store(true, Ordering::SeqCst);
+    for handle in threads {
+        let _ = handle.join();
+    }
+}
