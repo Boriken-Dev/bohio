@@ -527,6 +527,35 @@ fn remove_peer(document: &mut DocumentMut, name: &str) -> bool {
     removed
 }
 
+/// Writes `text` over `path`. A replaced file on Windows goes through `ReplaceFileW`, which keeps its own access list
+/// (a layer narrowed below its folder stays narrowed); everything else is `coqui_peer`'s atomic replace.
+fn replace_file(path: &Path, text: &str, made: bool) -> std::io::Result<()> {
+    #[cfg(windows)]
+    if !made && path.is_file() {
+        use std::io::Write as _;
+        let mut name = path.as_os_str().to_owned();
+        name.push(format!(".{}.part", std::process::id()));
+        let temporary = std::path::PathBuf::from(name);
+        let written = (|| {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)?;
+            file.write_all(text.as_bytes())?;
+            file.sync_all()
+        })();
+        let done = written
+            .and_then(|()| crate::platform::winacl::replace_keeping_access(path, &temporary));
+        if done.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+        return done;
+    }
+    #[cfg(not(windows))]
+    let _ = made;
+    coqui_peer::file::replace(path, text.as_bytes(), coqui_peer::file::Access::OwnerOnly)
+}
+
 /// Replaces `path` (or makes it) with `text`, atomically through a temporary sibling. A new file is readable
 /// by its owner alone; a replaced one keeps its mode, owner and group on Unix (as far as this account may give them back;
 /// a link is written through to its target) and takes its directory's inherited access list on Windows.
@@ -540,7 +569,7 @@ fn write_document(path: &Path, text: &str, made: bool) -> Result<(), PeerError> 
     let path = linked.as_deref().unwrap_or(path);
     #[cfg(unix)]
     let before = std::fs::metadata(path).ok();
-    coqui_peer::file::replace(path, text.as_bytes(), coqui_peer::file::Access::OwnerOnly).map_err(
+    replace_file(path, text, made).map_err(
         |error| {
             PeerError::Write(format!(
                 "{} cannot be written: {}",
@@ -619,5 +648,55 @@ mod tests {
                 .expect("read")
                 .contains("peer.y")
         );
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    #[test]
+    fn a_rewritten_layer_keeps_its_own_access_list() {
+        let directory = tempfile::tempdir().expect("a directory");
+        let file = directory.path().join("layer.cfg");
+        std::fs::write(&file, "# layer\n").expect("the layer");
+        let me = crate::platform::winacl::read(&file).expect("the list").me;
+        // Narrowed below its folder: no inheritance, this account and one named group only.
+        let icacls = |args: &[&str]| {
+            let status = std::process::Command::new("icacls")
+                .arg(&file)
+                .args(args)
+                .stdout(std::process::Stdio::null())
+                .status()
+                .expect("icacls runs");
+            assert!(status.success(), "icacls {args:?}");
+        };
+        let mine = format!("*{me}:F");
+        icacls(&[
+            "/inheritance:r",
+            "/grant:r",
+            &mine,
+            "/grant",
+            "*S-1-5-32-551:(R)",
+        ]);
+        let before = crate::platform::winacl::read(&file)
+            .expect("the list")
+            .allowed;
+        assert!(
+            before.iter().any(|(sid, _, _)| sid == "S-1-5-32-551"),
+            "{before:?}"
+        );
+
+        super::write_document(&file, "# layer\n[peer.x]\n", false).expect("written");
+        assert!(
+            std::fs::read_to_string(&file)
+                .expect("read")
+                .contains("peer.x")
+        );
+        let after = crate::platform::winacl::read(&file)
+            .expect("the list")
+            .allowed;
+        assert_eq!(before, after, "the file's own access list is kept");
+        let leftovers: Vec<_> = std::fs::read_dir(directory.path())
+            .expect("a listing")
+            .filter_map(Result::ok)
+            .collect();
+        assert_eq!(leftovers.len(), 1, "no temporary file stays: {leftovers:?}");
     }
 }
