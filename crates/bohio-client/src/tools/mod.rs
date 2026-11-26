@@ -537,11 +537,11 @@ impl Tools {
                 };
                 match need {
                     Need::FsRead | Need::FsWrite if info.access.fs.is_empty() => {
-                        Some("this node serves no files".to_owned())
+                        Some("this node serves no files (or this peer may not use them)".to_owned())
                     }
-                    Need::Exec if info.access.exec.is_empty() => {
-                        Some("this node runs no programs".to_owned())
-                    }
+                    Need::Exec if info.access.exec.is_empty() => Some(
+                        "this node runs no programs (or this peer may not use them)".to_owned(),
+                    ),
                     Need::FsRead | Need::FsWrite => off(info.filesystem.enabled, "files"),
                     Need::Exec => off(info.exec.enabled, "running programs"),
                     Need::Session => off(info.sessions.enabled, "detached sessions"),

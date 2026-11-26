@@ -522,8 +522,9 @@ fn a_tool_the_grant_lacks_is_a_result_with_is_error_and_the_reason() {
         "readable"
     );
     let exec = client.refused("exec", json!({"argv": [helper()]}));
+    // `info.access` lists no exec source to a peer without `exec`, so the tool is unavailable before the host is asked.
     assert!(
-        exec.starts_with("denied") && exec.contains("exec"),
+        exec.starts_with("unavailable") && exec.contains("exec"),
         "{exec}"
     );
     let write = client.refused("write", json!({"path": world.path("b.txt"), "text": "x"}));
