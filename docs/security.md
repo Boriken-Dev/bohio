@@ -271,7 +271,8 @@ A desktop helper that the node starts through an exec source (a session named `e
   this client cannot be signalled (only killed by ending the ssh process), and a terminal's interrupt is the control byte.
 - **Host-key checking weakens only by choice.** `host_key_check` is `strict` by default (the key is pinned by `host_key`, or is in
   `known_hosts`); `tofu` trusts the first key a host with no entry presents and holds it for the life of the source, so an attacker present at
-  first contact is trusted; `off` accepts any key, so anyone on the path can pose as the host and be given every command, input and secret
+  first contact is trusted (a host `known_hosts` lists under any other key, or under another key type, is not a host with no entry and is
+  refused, as is a `known_hosts` the node cannot read or parse); `off` accepts any key, so anyone on the path can pose as the host and be given every command, input and secret
   sent through it. Each weaker choice is logged at start as `non-default:`.
 - **Limits are settings, and a larger one costs the host.** `max_channels` (default 8, below the server's 10) bounds the sessions one source
   holds open; raising it past the server's `MaxSessions` makes the server refuse the extra ones. `keepalive = "0s"` finds a dead connection

@@ -124,6 +124,37 @@ impl Client {
             Err(_) => {}
         }
         if settings.check == HostKeyCheck::Tofu {
+            // First contact means no entry at all: a host the file lists under another key (or key type) is not new, and a
+            // file that cannot be read cannot say that it is.
+            let path = &settings.known_hosts;
+            if path.exists() && std::fs::File::open(path).is_err() {
+                return Err(format!(
+                    "{} exists but cannot be read, so trust on first use cannot tell whether the host is known",
+                    path.display()
+                ));
+            }
+            match russh::keys::known_hosts::known_host_keys_path(
+                &settings.host,
+                settings.port,
+                path,
+            ) {
+                Err(error) => {
+                    return Err(format!(
+                        "{} cannot be read as known_hosts ({error}), so trust on first use cannot tell whether the host is known",
+                        path.display()
+                    ));
+                }
+                Ok(listed) if !listed.is_empty() => {
+                    let lines: Vec<String> =
+                        listed.iter().map(|(line, _)| line.to_string()).collect();
+                    return Err(format!(
+                        "the host presented key {presented}, but line {} of {} lists another key for it; trust on first use accepts only a host the file does not list",
+                        lines.join(", "),
+                        path.display()
+                    ));
+                }
+                Ok(_) => {}
+            }
             let mut trusted = lock(&self.keys.trusted);
             return match trusted.as_deref() {
                 None => {

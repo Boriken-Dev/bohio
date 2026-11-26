@@ -992,3 +992,58 @@ fn with_probe_every_zero_each_info_of_an_openssh_source_logs_in() {
     }
     assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 3);
 }
+
+/// A `known_hosts` line for `server`'s address holding a key of another type than the server's (an RSA key).
+fn line_with_another_key_type(server: &FakeSsh) -> String {
+    let other = russh::keys::PrivateKey::random(
+        &mut rand::rng(),
+        russh::keys::Algorithm::Rsa { hash: None },
+    )
+    .expect("a key");
+    format!(
+        "[127.0.0.1]:{} {}\n",
+        server.port,
+        other.public_key().to_openssh().unwrap()
+    )
+}
+
+#[test]
+fn trust_on_first_use_refuses_a_host_known_under_another_key_type() {
+    need_shell!();
+    let server = FakeSsh::start();
+    let file = server.dir.path().join("known_hosts");
+    let mut tofu = server.unpinned_settings();
+    tofu.host_key_check = "tofu".to_owned();
+    tofu.known_hosts = Some(file.to_string_lossy().into_owned());
+    // Control: no entry for the host, and the first key is trusted.
+    assert_eq!(run(&ssh(tofu.clone()), &["true"]).exit.code, Some(0));
+
+    let other = FakeSsh::start();
+    let mut tofu = other.unpinned_settings();
+    tofu.host_key_check = "tofu".to_owned();
+    tofu.known_hosts = Some(file.to_string_lossy().into_owned());
+    std::fs::write(&file, line_with_another_key_type(&other)).unwrap();
+    let message = first_error(&ssh(tofu));
+    assert!(message.contains("known_hosts"), "{message}");
+    assert!(
+        other.seen.lock().unwrap().commands.is_empty(),
+        "a host listed under another key was trusted"
+    );
+}
+
+#[test]
+fn trust_on_first_use_refuses_a_known_hosts_it_cannot_read() {
+    let server = FakeSsh::start();
+    let file = server.dir.path().join("known_hosts");
+    std::fs::write(
+        &file,
+        format!("[127.0.0.1]:{} ssh-ed25519 !!not-base64!!\n", server.port),
+    )
+    .unwrap();
+    let mut tofu = server.unpinned_settings();
+    tofu.host_key_check = "tofu".to_owned();
+    tofu.known_hosts = Some(file.to_string_lossy().into_owned());
+    let message = first_error(&ssh(tofu));
+    assert!(message.contains("known_hosts"), "{message}");
+    assert!(server.seen.lock().unwrap().commands.is_empty());
+}
