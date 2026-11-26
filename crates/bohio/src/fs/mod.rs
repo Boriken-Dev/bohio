@@ -404,7 +404,9 @@ fn under_a_root(grant: &Grant, text: &str) -> bool {
         path::locate_in(grant.fs_roots(), text, syntax)
             .map_or_else(|error| error.code != ErrorCode::OutsideRoot, |_| true)
     };
-    !grant.fs_roots().is_empty() && (under(path::Syntax::Host) || under(path::Syntax::Posix))
+    // A POSIX name is one that starts with `/`: on a Windows node `C:\other\x` is not one relative name under a root.
+    !grant.fs_roots().is_empty()
+        && (under(path::Syntax::Host) || (text.starts_with('/') && under(path::Syntax::Posix)))
 }
 
 /// The set-user-ID and set-group-ID bits: a file carrying one runs as its owner or group, the service's
@@ -517,5 +519,83 @@ pub fn absent() -> std::sync::Arc<dyn bohio_api::FilesSource> {
 impl core::fmt::Debug for Picked {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Picked").finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod recheck_tests {
+    use bohio_proto::fs::{DeltaBase, WriteMode, WriteRequest};
+
+    use super::{covers_read, covers_write};
+    use crate::policy::{Grant, Permission};
+
+    fn write_of(mode: WriteMode) -> Vec<u8> {
+        WriteRequest {
+            mode,
+            ..WriteRequest::replace("f")
+        }
+        .to_metadata()
+        .unwrap()
+    }
+
+    fn delta() -> WriteMode {
+        WriteMode::Delta {
+            block_size: 4096,
+            base: DeltaBase {
+                size: 1,
+                modified: None,
+                hashes: Default::default(),
+            },
+        }
+    }
+
+    /// The recheck ends a delta write whose peer lost `fs.read`, and a write with a `base`, which reads the target too.
+    #[test]
+    fn a_delta_write_is_no_longer_covered_once_the_peer_lost_fs_read() {
+        let root = std::env::temp_dir();
+        let writer = Grant::allowing([Permission::FsWrite]).with_fs_roots([root.clone()]);
+        let both = Grant::allowing([Permission::FsWrite, Permission::FsRead]).with_fs_roots([root]);
+        assert!(!covers_write(&writer, &write_of(delta())));
+        assert!(covers_write(&both, &write_of(delta())));
+        let based = WriteRequest {
+            base: Some(Default::default()),
+            ..WriteRequest::replace("f")
+        }
+        .to_metadata()
+        .unwrap();
+        assert!(!covers_write(&writer, &based));
+        assert!(covers_write(&both, &based));
+        // A plain replace needs only `fs.write`.
+        assert!(covers_write(&writer, &write_of(WriteMode::Replace)));
+    }
+
+    /// On a Windows node a path on another drive is not read as one relative name under the first root.
+    #[cfg(windows)]
+    #[test]
+    fn a_path_on_another_drive_is_not_covered_by_a_narrowed_root() {
+        let grant = Grant::allowing([Permission::FsRead])
+            .with_fs_roots([std::path::PathBuf::from(r"C:\a")]);
+        let read = |path: &str| {
+            bohio_proto::fs::ReadRequest::whole(path)
+                .to_metadata()
+                .unwrap()
+        };
+        assert!(covers_read(&grant, &read(r"C:\a\x")));
+        assert!(!covers_read(&grant, &read(r"C:\b\x")));
+        assert!(!covers_read(&grant, &read(r"D:\a\x")));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn a_path_outside_the_roots_is_not_covered() {
+        let grant = Grant::allowing([Permission::FsRead])
+            .with_fs_roots([std::path::PathBuf::from("/srv/a")]);
+        let read = |path: &str| {
+            bohio_proto::fs::ReadRequest::whole(path)
+                .to_metadata()
+                .unwrap()
+        };
+        assert!(covers_read(&grant, &read("/srv/a/x")));
+        assert!(!covers_read(&grant, &read("/srv/b/x")));
     }
 }
