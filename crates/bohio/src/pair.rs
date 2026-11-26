@@ -66,7 +66,8 @@ struct SlotState {
     running: usize,
     /// Failed attempts, in all and by source: how many, and when the source may try again.
     failed: u32,
-    sources: HashMap<IpAddr, (u32, Instant)>,
+    /// `None` is every listener that names no address (a pipe, a Unix socket, a serial line, standard input): one source.
+    sources: HashMap<Option<IpAddr>, (u32, Instant)>,
 }
 
 /// One armed PIN.
@@ -109,27 +110,23 @@ impl Slot {
     pub(crate) fn failed(&self, source: Option<IpAddr>) -> u32 {
         let mut state = self.state();
         state.failed = state.failed.saturating_add(1);
-        if let Some(source) = source {
-            let count = state.sources.get(&source).map_or(0, |(count, _)| *count);
-            let wait = self
-                .delay
-                .saturating_mul(2_u32.saturating_pow(count.min(30)))
-                .min(self.delay_max);
-            state
-                .sources
-                .insert(source, (count.saturating_add(1), Instant::now() + wait));
-        }
+        let count = state.sources.get(&source).map_or(0, |(count, _)| *count);
+        let wait = self
+            .delay
+            .saturating_mul(2_u32.saturating_pow(count.min(30)))
+            .min(self.delay_max);
+        state
+            .sources
+            .insert(source, (count.saturating_add(1), Instant::now() + wait));
         state.failed
     }
 
     /// Whether `source` is still within the wait a wrong guess of its own earned.
     fn waiting(&self, source: Option<IpAddr>) -> bool {
-        source.is_some_and(|source| {
-            self.state()
-                .sources
-                .get(&source)
-                .is_some_and(|(_, until)| Instant::now() < *until)
-        })
+        self.state()
+            .sources
+            .get(&source)
+            .is_some_and(|(_, until)| Instant::now() < *until)
     }
 
     /// Whether it still takes connections; one that begins is counted until [`Slot::attempted`], so the PIN is not
@@ -399,5 +396,39 @@ impl PairState {
         };
         // A source that is waiting is refused without a try: no host is offered to it.
         body((!waiting).then_some(host), slot.as_deref(), waiting)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn slot() -> Slot {
+        Slot {
+            desk: pairing::desk().unwrap(),
+            lifetime: Duration::from_secs(60),
+            until: Instant::now() + Duration::from_secs(60),
+            delay: Duration::from_secs(5),
+            delay_max: Duration::from_secs(60),
+            state: Mutex::new(SlotState::default()),
+            changed: Condvar::new(),
+        }
+    }
+
+    #[test]
+    fn a_wrong_guess_from_a_listener_with_no_source_address_earns_a_wait() {
+        // A pipe, a Unix socket, a serial line or standard input names no address: they share one source.
+        let slot = slot();
+        assert!(!slot.waiting(None));
+        slot.failed(None);
+        assert!(
+            slot.waiting(None),
+            "the second guess would be tried at once"
+        );
+        // Another source is unaffected.
+        let other: IpAddr = "192.0.2.7".parse().unwrap();
+        assert!(!slot.waiting(Some(other)));
+        slot.failed(Some(other));
+        assert!(slot.waiting(Some(other)));
     }
 }
