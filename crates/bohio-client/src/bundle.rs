@@ -35,6 +35,9 @@ pub struct BundleOptions {
     pub chunk: usize,
     /// The largest zstd window a read accepts, as a power of two; 27 when absent.
     pub window_log_max: Option<u32>,
+    /// How many times the compressed bytes received the output of a read may grow to, once it passes 1 MiB; `Some(0)`
+    /// is no check. Default [`crate::fs::DEFAULT_MAX_EXPANSION`].
+    pub max_expansion: Option<u32>,
     /// How long a step may wait for the host; `None` waits without limit. Default five minutes.
     pub timeout: Option<Duration>,
 }
@@ -50,6 +53,7 @@ impl Default for BundleOptions {
             },
             chunk: crate::fs::Writer::DEFAULT_CHUNK,
             window_log_max: None,
+            max_expansion: None,
             timeout: Some(Duration::from_secs(300)),
         }
     }
@@ -161,7 +165,9 @@ fn receive_reads(
                             &Bounds {
                                 window_log_max: options.window_log_max.unwrap_or(27),
                                 max_output: None,
-                                max_expansion: 0,
+                                max_expansion: options
+                                    .max_expansion
+                                    .unwrap_or(crate::fs::DEFAULT_MAX_EXPANSION),
                             },
                         )
                         .map_err(|error| Error::Compression(error.to_string()))?,

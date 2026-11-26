@@ -1663,6 +1663,7 @@ fn walk_command(
         exclude: args.exclude.clone(),
         hashes,
         compression,
+        ..bohio_client::walk::WalkOptions::default()
     };
     let roots: Vec<&str> = args.paths.iter().map(String::as_str).collect();
     let iter = bohio_client::walk::walk_with(link, &roots, &options, Some(client.reply))

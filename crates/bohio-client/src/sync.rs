@@ -103,6 +103,9 @@ pub struct SyncOptions {
     pub transfer: Option<TransferInfo>,
     /// The largest zstd window a read accepts, as a power of two; 27 when absent.
     pub window_log_max: Option<u32>,
+    /// How many times the compressed bytes received the output of a read may grow to, once it passes 1 MiB; `Some(0)`
+    /// is no check. Default [`crate::fs::DEFAULT_MAX_EXPANSION`].
+    pub max_expansion: Option<u32>,
 }
 
 impl Default for SyncOptions {
@@ -124,6 +127,7 @@ impl Default for SyncOptions {
             read_size: 1 << 20,
             transfer: None,
             window_log_max: None,
+            max_expansion: None,
         }
     }
 }
@@ -709,6 +713,7 @@ fn pull_whole(
         options.timeout,
         ReadOptions {
             window_log_max: options.window_log_max,
+            max_expansion: options.max_expansion,
             ..ReadOptions::default()
         },
     )?;
@@ -893,7 +898,9 @@ fn rebuild(
                 &Bounds {
                     window_log_max: options.window_log_max.unwrap_or(27),
                     max_output: Some(header.length),
-                    max_expansion: 0,
+                    max_expansion: options
+                        .max_expansion
+                        .unwrap_or(crate::fs::DEFAULT_MAX_EXPANSION),
                 },
             )
             .map_err(|error| Error::Compression(error.to_string()))?,

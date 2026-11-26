@@ -111,6 +111,28 @@ pub fn hash_blocks(
     algorithms: &[Algorithm],
     options: &BlockOptions,
 ) -> Result<Blocks, Error> {
+    hash_blocks_within(
+        link,
+        item,
+        algorithms,
+        options,
+        crate::fs::DEFAULT_MAX_SIGNATURE_BYTES,
+    )
+}
+
+/// As [`hash_blocks`], taking at most `max_signature_bytes` of weak values and strong hashes from the host
+/// (`hash_blocks` takes [`crate::fs::DEFAULT_MAX_SIGNATURE_BYTES`]); `0` takes any amount.
+///
+/// # Errors
+///
+/// As [`hash_blocks`]; [`Error::Local`] when the host sends more than the bound.
+pub fn hash_blocks_within(
+    link: &dyn Open,
+    item: HashItem,
+    algorithms: &[Algorithm],
+    options: &BlockOptions,
+    max_signature_bytes: u64,
+) -> Result<Blocks, Error> {
     let strong = algorithms
         .first()
         .cloned()
@@ -145,6 +167,13 @@ pub fn hash_blocks(
                     }
                     weak.extend_from_slice(&batch.weak);
                     hashes.extend_from_slice(&batch.strong);
+                    let held = (weak.len() as u64 * 4).saturating_add(hashes.len() as u64);
+                    if max_signature_bytes > 0 && held > max_signature_bytes {
+                        return Err(Error::Local(
+                            "the host's block signature is larger than this client takes"
+                                .to_owned(),
+                        ));
+                    }
                 }
                 Ok(HashOutput::Result(found)) => result = Some(found),
                 Ok(HashOutput::ItemError(failure)) => return Err(Error::Remote(failure.body())),

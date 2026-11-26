@@ -381,12 +381,19 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// cannot decode the algorithm.
 fn decode_error(error: &DecodeError) -> Error {
     match error {
-        DecodeError::Unsupported(_) | DecodeError::Setup(_) => {
+        DecodeError::Unsupported(_) | DecodeError::Setup(_) | DecodeError::Expansion => {
             Error::Compression(error.to_string())
         }
         _ => Error::Protocol(bohio_proto::Error::Decode),
     }
 }
+
+/// How many times the compressed bytes received the output of a decoder may grow to (once it passes the first
+/// mebibyte), unless a request says otherwise: a host cannot make the client hold more than this times what it sent.
+pub const DEFAULT_MAX_EXPANSION: u32 = 1024;
+
+/// The most bytes of block signature a client takes from a host for one file, unless a request says otherwise.
+pub const DEFAULT_MAX_SIGNATURE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// What a read does beyond the request.
 #[derive(Default)]
@@ -394,6 +401,10 @@ pub struct ReadOptions {
     /// The largest zstd window the reader accepts, as a power of two; a stream asking for more is refused
     /// before it costs memory. Default `27` (128 MiB), zstd's own.
     pub window_log_max: Option<u32>,
+    /// How many times the compressed bytes received the decoded output may grow to once it passes 1 MiB; past it the
+    /// read fails with [`Error::Compression`]. `Some(0)` turns the check off (a file of zeros compresses a thousand to
+    /// one and more). Default [`DEFAULT_MAX_EXPANSION`].
+    pub max_expansion: Option<u32>,
     /// Hand out the bytes as they travel instead of decoding them: the compressed stream of a prepared
     /// read, to save and decode later. A read that resumes is always this way, since a decoder cannot
     /// start in the middle of a stream.
@@ -490,7 +501,9 @@ impl Reader {
                                 &Bounds {
                                     window_log_max: options.window_log_max.unwrap_or(27),
                                     max_output: Some(header.length),
-                                    max_expansion: 0,
+                                    max_expansion: options
+                                        .max_expansion
+                                        .unwrap_or(DEFAULT_MAX_EXPANSION),
                                 },
                             )
                             .map_err(|error| decode_error(&error))?,

@@ -269,7 +269,7 @@ pub fn compare_file(link: &dyn Open, local: &Path, remote: &str, how: Compare, o
 pub enum DeltaMode { Auto /* default */, Always, Never }    // Auto: a delta when the destination's copy is at least the host's [delta] min_size
 pub struct SyncOptions { delta, compression: Option<Compression>, compare: Option<Compare> /* skip a file that is the same */, caps: Caps, block_size: Option<u32>,
                          strong: Algorithm /* blake3 */, strong_len: Option<usize>, verify: Option<Algorithm> /* blake3, else sha256 */, chunk: usize /* 64 KiB */,
-                         timeout: Option<Duration> /* 5 min */, read_size: usize /* 1 MiB: local reads and the downloaded file's buffer */, transfer: Option<TransferInfo> /* the host's, when the caller has it */, window_log_max: Option<u32> }   // Default; PutOptions and GetOptions are this type
+                         timeout: Option<Duration> /* 5 min */, read_size: usize /* 1 MiB: local reads and the downloaded file's buffer */, transfer: Option<TransferInfo> /* the host's, when the caller has it */, window_log_max: Option<u32>, max_expansion: Option<u32> /* 1024 */ }   // Default; PutOptions and GetOptions are this type
 pub struct Moved { size, literal_bytes, copied_bytes, wire_bytes: u64, delta: bool, skipped: bool }   // wire_bytes: frames in both directions, signature included, as they travelled
 pub fn put(link: &dyn Open, local: &Path, remote: &str, options: &PutOptions) -> Result<Moved, Error>;   // replaces the host's file atomically; a delta needs fs.read as well as fs.write; `changed` when the host's copy moved meanwhile
 pub fn get(link: &dyn Open, remote: &str, local: &Path, options: &GetOptions) -> Result<Moved, Error>;   // rebuilds into a temporary sibling, checks the host's digest (Error::Mismatch), renames
@@ -283,13 +283,13 @@ rebuilds as the host's copies and data arrive. `Error::Local` is a local file fa
 
 ```rust
 pub fn walk(link: &dyn Open, roots: &[&str], options: &WalkOptions) -> Result<WalkIter, Error>;   // walk_with(.., timeout) too; roots are sent while entries come back; one stream
-#[derive(Default)] pub struct WalkOptions { pub depth: Option<u64>, pub follow: bool, pub include: Vec<String>, pub exclude: Vec<String>, pub hashes: Vec<Algorithm>, pub compression: Option<Compression> }
+#[derive(Default)] pub struct WalkOptions { pub depth: Option<u64>, pub follow: bool, pub include: Vec<String>, pub exclude: Vec<String>, pub hashes: Vec<Algorithm>, pub compression: Option<Compression>, pub window_log_max: Option<u32> /* 27 */, pub max_expansion: Option<u32> /* 1024; 0 off */ }
 pub enum WalkItem { Entry { root: u64, entry: Box<WalkEntry> }, Failure(WalkItemError) }
 pub struct WalkIter;   // Iterator<Item = Result<WalkItem, Error>>; done() -> Option<WalkDone>; wire_bytes(); compression(); dropping it closes the stream
 pub fn read_bundle(link, items: &[ReadItem], &BundleOptions, on: &mut dyn FnMut(Fetch<'_>) -> Result<(), Error>) -> Result<BundleStats, Error>;   // Fetch::{Begin(&ReadHeader), Data(&[u8]), End { index, hashes }, Failed { index, error }}: a Failed after a Begin discards what came
 pub fn get_many(link, items: &[ReadItem], &BundleOptions) -> Result<(Vec<Result<Fetched, ErrorBody>>, BundleStats), Error>;   // Fetched { header, data, hashes }; all in memory
 pub fn put_many(link, files: &mut [BundleFile<'_>], &BundleOptions) -> Result<Put, Error>;   // BundleFile { item: WriteItem, source: &mut (dyn Read + Send) } (BundleFile::replace(path, source)); Put { results: Vec<Result<WriteDone, ErrorBody>>, stats }
-pub struct BundleOptions { pub compression: Option<Compression>, pub hashes: Option<Vec<Algorithm>>, pub caps: Caps, pub chunk: usize /*64 KiB*/, pub window_log_max: Option<u32>, pub timeout: Option<Duration> /*5 min*/ }   // Default
+pub struct BundleOptions { pub compression: Option<Compression>, pub hashes: Option<Vec<Algorithm>>, pub caps: Caps, pub chunk: usize /*64 KiB*/, pub window_log_max: Option<u32>, pub max_expansion: Option<u32> /* 1024 */, pub timeout: Option<Duration> /*5 min*/ }   // Default
 pub struct BundleStats { pub items: u64, pub wire_bytes: u64 }
 pub struct RangeReader<'a>;   // RangeReader::open(link, path, &RangeOptions) -> Read + Seek; len(), position(); each range is one read stream of `range` bytes with `prefetch` more open ahead; a seek inside the range held or to the start of one open is free, any other closes what is ahead
 pub struct RangeOptions { pub range: u64 /*1 MiB*/, pub prefetch: usize /*2*/, pub compression: Option<Compression>, pub timeout: Option<Duration> }   // Default
@@ -315,6 +315,7 @@ pub fn hash_items(link: &dyn Open, request: &HashRequest, items: &[HashItem]) ->
 ```rust
 pub struct Blocks { pub result: HashResult, pub signature: Signature, pub wire_bytes: u64 }   // a file's signature as the host made it, and what it cost on the wire
 pub fn hash_blocks(link: &dyn Open, item: HashItem, algorithms: &[Algorithm], options: &BlockOptions) -> Result<Blocks, Error>;   // the strong hash is algorithms[0] cut to options.strong_len; the host chooses the block size when options.size is None
+pub fn hash_blocks_within(link: &dyn Open, item: HashItem, algorithms: &[Algorithm], options: &BlockOptions, max_signature_bytes: u64) -> Result<Blocks, Error>;   // hash_blocks takes fs::DEFAULT_MAX_SIGNATURE_BYTES (64 MiB); past the bound Error::Local; 0 takes any
 ```
 
 One `bohio-hash/1` stream each. Items are sent on one scoped thread and results read on another, so a long batch cannot stop on a full stream. A refusal of
@@ -361,16 +362,16 @@ impl Writer {
 ```
 
 ```rust
-pub struct ReadOptions { pub window_log_max: Option<u32> /* 27 */, pub raw: bool /* hand out the compressed stream undecoded */, pub on_progress: Option<Box<dyn FnMut(u64) + Send>> }   // Default
+pub struct ReadOptions { pub window_log_max: Option<u32> /* 27 */, pub max_expansion: Option<u32> /* fs::DEFAULT_MAX_EXPANSION, 1024: the decoded bytes may not pass that many times the compressed ones received once past 1 MiB (Error::Compression); Some(0) off */, pub raw: bool /* hand out the compressed stream undecoded */, pub on_progress: Option<Box<dyn FnMut(u64) + Send>> }   // Default
 pub struct PutOptions { pub compression: Option<Compression>, pub prepare: bool, pub caps: Caps, pub temp_dir: Option<PathBuf>, pub chunk: Option<usize> }   // Default
 pub fn put(link: &dyn Open, request: &WriteRequest, source: &mut dyn Read, options: &PutOptions, timeout: Option<Duration>) -> Result<WriteDone, Error>;   // prepare: one context into a temp file, then sent
 pub fn resolve_auto(info: &Info, wanted: &Compression) -> Option<Compression>;        // `auto` -> the host's compression_default (a client names what it sends)
 ```
 
 `Reader` decodes `compressed` frames as they arrive (cargo feature `zstd`, on in `bohio`, decodes zstd; without it a zstd header is `Error::Compression`) and stops with
-`Error::Protocol` when the output would pass `header.length`; a read that `resume`s, or `raw: true`, hands out the compressed bytes as they travelled. `Writer`
+`Error::Protocol` when the output would pass `header.length` and with `Error::Compression` when it grows past `max_expansion` times the compressed bytes received; a read that `resume`s, or `raw: true`, hands out the compressed bytes as they travelled. `Writer`
 compresses with the same per-frame raw fallback (a raw frame ends the context). `Exec::start_with(link, request, caps)` does the same for standard input and
-decodes both outputs; `Exec::compression()` is what `started` reported. `Error::Compression(text)`: an algorithm this build lacks, or `auto` where the client names one.
+decodes both outputs, each held to `Exec::max_expansion(times)` (default 1024; 0 off); `Exec::compression()` is what `started` reported. `Error::Compression(text)`: an algorithm this build lacks, or `auto` where the client names one.
 
 A refusal (`denied`, `outside_root`, `not_found`, `exists`, `busy`, ...) comes from `Reader::start` and `Writer::start` as
 `Error::Remote`, before any data moves. `next_chunk` ends with `Error::Closed` when the stream finishes with a different number of

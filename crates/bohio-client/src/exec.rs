@@ -55,6 +55,7 @@ pub struct Exec {
     /// The encoder of standard input, when the request declared it compressed.
     encoder: Mutex<Option<Encoder>>,
     window_log_max: u32,
+    max_expansion: u32,
     /// The session's id, once `started` said the request made one (or the stream attached to one).
     session: Mutex<Option<String>>,
 }
@@ -117,8 +118,18 @@ impl Exec {
             decoders: Mutex::new((None, None)),
             encoder: Mutex::new(encoder),
             window_log_max: caps.window_log_max,
+            max_expansion: crate::fs::DEFAULT_MAX_EXPANSION,
             session: Mutex::new(None),
         })
+    }
+
+    /// How many times the compressed bytes received the output may grow to, once it passes 1 MiB (the output of a
+    /// process that prints a long run of one byte compresses a thousand to one and more); `0` turns the check off.
+    /// Default [`crate::fs::DEFAULT_MAX_EXPANSION`]. Set it before the first event is read.
+    #[must_use]
+    pub const fn max_expansion(mut self, times: u32) -> Self {
+        self.max_expansion = times;
+        self
     }
 
     /// Attaches to the detached session `session` of an exec on `link` (`bohio-attach/1`), reading its output from the
@@ -151,6 +162,7 @@ impl Exec {
             decoders: Mutex::new((None, None)),
             encoder: Mutex::new(None),
             window_log_max: 27,
+            max_expansion: crate::fs::DEFAULT_MAX_EXPANSION,
             session: Mutex::new(Some(session.to_owned())),
         }
     }
@@ -214,7 +226,7 @@ impl Exec {
         let bounds = Bounds {
             window_log_max: self.window_log_max,
             max_output: None,
-            max_expansion: 0,
+            max_expansion: self.max_expansion,
         };
         let make = || Decoder::new(used, &bounds).map_err(|error| self.decode(&error));
         *lock(&self.decoders) = (Some(make()?), Some(make()?));

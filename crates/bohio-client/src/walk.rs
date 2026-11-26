@@ -32,6 +32,11 @@ pub struct WalkOptions {
     pub hashes: Vec<Algorithm>,
     /// How the host compresses the entries; `None` sends them raw. `auto` is the host's default.
     pub compression: Option<Compression>,
+    /// The largest zstd window the walk accepts, as a power of two; 27 when absent.
+    pub window_log_max: Option<u32>,
+    /// How many times the compressed bytes received the entries may grow to, once they pass 1 MiB; `Some(0)` is no
+    /// check. Default [`crate::fs::DEFAULT_MAX_EXPANSION`].
+    pub max_expansion: Option<u32>,
 }
 
 /// One thing a walk found.
@@ -127,9 +132,11 @@ pub fn walk_with(
             Decoder::new(
                 used,
                 &Bounds {
-                    window_log_max: 27,
+                    window_log_max: options.window_log_max.unwrap_or(27),
                     max_output: None,
-                    max_expansion: 0,
+                    max_expansion: options
+                        .max_expansion
+                        .unwrap_or(crate::fs::DEFAULT_MAX_EXPANSION),
                 },
             )
         })

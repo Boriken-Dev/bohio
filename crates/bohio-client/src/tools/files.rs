@@ -532,6 +532,7 @@ fn walked(
             .map(|name| Algorithm::from_name(name))
             .collect(),
         compression: None,
+        ..WalkOptions::default()
     };
     let mut iter = walk_with(tools.link(), &roots, &options, tools.transfer_wait())?;
     let (mut entries, mut failures, mut seen) = (Vec::new(), Vec::new(), 0_u64);
