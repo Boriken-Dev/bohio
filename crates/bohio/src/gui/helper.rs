@@ -728,6 +728,26 @@ fn only_this_account_writes(socket: &std::path::Path) -> Result<(), String> {
             directory.display()
         ));
     }
+    // Each directory above it can be swapped by whoever may write it, unless the sticky bit keeps others from renaming what is
+    // not theirs: they are the node's, root's, or sticky.
+    let real = std::fs::canonicalize(directory)
+        .map_err(|error| format!("{}: {error}", directory.display()))?;
+    for ancestor in real.ancestors().skip(1) {
+        let found = std::fs::metadata(ancestor)
+            .map_err(|error| format!("{}: {error}", ancestor.display()))?;
+        if found.uid() != 0 && found.uid().to_string() != me {
+            return Err(format!(
+                "{} above the helper socket belongs to another account: it could replace the directory that holds the socket",
+                ancestor.display()
+            ));
+        }
+        if found.mode() & 0o022 != 0 && found.mode() & 0o1000 == 0 {
+            return Err(format!(
+                "{} above the helper socket may be written by another account and is not sticky: it could replace the directory that holds the socket",
+                ancestor.display()
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -1444,5 +1464,41 @@ mod relaying_tests {
             !entry.accepts_event("peer", false),
             "nothing is owed any more"
         );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod socket_directory_tests {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    use super::*;
+
+    fn directory(parent: &std::path::Path, name: &str, mode: u32) -> std::path::PathBuf {
+        let path = parent.join(name);
+        std::fs::create_dir(&path).expect("a directory");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).expect("its mode");
+        path
+    }
+
+    #[test]
+    fn a_directory_above_the_sockets_that_others_can_write_and_is_not_sticky_is_refused() {
+        let root = tempfile::tempdir().expect("a directory");
+        let open = directory(root.path(), "open", 0o777);
+        let held = directory(&open, "held", 0o755);
+        let refused = only_this_account_writes(&held.join("gui.sock")).unwrap_err();
+        let open = std::fs::canonicalize(&open).expect("its real path");
+        assert!(refused.contains(&open.display().to_string()), "{refused}");
+        assert!(refused.contains("not sticky"), "{refused}");
+    }
+
+    #[test]
+    fn a_sticky_ancestor_and_a_private_chain_are_accepted() {
+        let root = tempfile::tempdir().expect("a directory");
+        let sticky = directory(root.path(), "sticky", 0o1777);
+        let held = directory(&sticky, "held", 0o755);
+        only_this_account_writes(&held.join("gui.sock")).expect("sticky is safe from renames");
+        let private = directory(root.path(), "private", 0o755);
+        let held = directory(&private, "held", 0o700);
+        only_this_account_writes(&held.join("gui.sock")).expect("a chain only this account writes");
     }
 }
