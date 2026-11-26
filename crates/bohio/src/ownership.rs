@@ -23,6 +23,8 @@ pub(crate) enum Guarded {
     Program,
     /// The data directory: no other user may change it or read what is made in it.
     DataDir,
+    /// The node's key file: no other user may change or read it.
+    Identity,
 }
 
 impl Guarded {
@@ -32,6 +34,7 @@ impl Guarded {
             Self::Library => "the provider library",
             Self::Program => "the provider program",
             Self::DataDir => "the data directory",
+            Self::Identity => "the identity file",
         }
     }
 }
@@ -75,7 +78,8 @@ impl Problem {
 /// Refuses `path` when a user other than the host's own account, SYSTEM or the administrators owns it
 /// or may change it (for the data directory, also read what is made in it). On Unix a configuration
 /// layer or its directory is refused when another account than the running one or root owns it, or its
-/// group or others may write it; the data directory is not checked there.
+/// group or others may write it. The data directory is held to the same rule, and its key file must also be
+/// closed to the group and others.
 ///
 /// # Errors
 ///
@@ -83,9 +87,6 @@ impl Problem {
 #[cfg(unix)]
 pub(crate) fn check(path: &Path, what: Guarded) -> Result<(), Problem> {
     use std::os::unix::fs::MetadataExt;
-    if what == Guarded::DataDir {
-        return Ok(());
-    }
     let meta = std::fs::metadata(path).map_err(|error| {
         Problem::new(
             Kind::Unknown,
@@ -108,11 +109,16 @@ pub(crate) fn check(path: &Path, what: Guarded) -> Result<(), Problem> {
         )
         .owned_by(meta.uid().to_string()));
     }
-    if meta.mode() & 0o022 != 0 {
+    let forbidden = if what == Guarded::Identity {
+        0o077
+    } else {
+        0o022
+    };
+    if meta.mode() & forbidden != 0 {
         return Err(Problem::new(
             Kind::Open,
             format!(
-                "{} {} can be changed by its group or by others: remove their write access",
+                "{} {} can be changed (or, for a key, read) by its group or by others: remove their access",
                 what.name(),
                 path.display()
             ),
@@ -417,7 +423,7 @@ mod windows {
                 Guarded::Config | Guarded::Library | Guarded::Program => {
                     on_object && rights & CHANGE != 0
                 }
-                Guarded::DataDir => rights & (CHANGE | READ) != 0,
+                Guarded::DataDir | Guarded::Identity => rights & (CHANGE | READ) != 0,
             };
             if reaches {
                 return Err((Kind::Open, format!("is open to every user ({sid})"), None));

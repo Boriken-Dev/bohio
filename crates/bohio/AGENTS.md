@@ -70,7 +70,7 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `[service] name` | `"bohio"` | name shown in `info` |
-| `[service] check_access` | `true` | refuse to start when another account may change a layer, the directory that holds it or (Windows) the data directory; `false` logs it and serves, except for a path another account owns, which is refused either way; lowest layer only |
+| `[service] check_access` | `true` | refuse to start when another account may change a layer, the directory that holds it or the data directory (or, on Unix, its key file `identity` is readable by the group or others); `false` logs it and serves, except for a path another account owns, which is refused either way; lowest layer only |
 | `[service] user_layer` | `true` | whether the user's file is read over the system's when no layers are named; lowest layer only |
 | `[service] trusted_owners` | none | accounts (a user id or name on Unix, a security id on Windows) whose ownership of a higher layer or the data directory is accepted as the operator's, logged `non-default:`; the lowest layer and its directory are judged by `bohio serve --trust-owner ACCOUNT` (or `BOHIO_TRUST_OWNER`) alone; lowest layer only |
 | `[service] stop_wait` | `10s` | Windows: how long the service manager is told a start or a stop may take, and how long `service uninstall` waits for a running service to stop (`--wait` overrides); not zero |

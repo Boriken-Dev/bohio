@@ -197,11 +197,15 @@ fn guard(found: &Found, environment: &Environment) -> Result<Vec<PathBuf>, Strin
     }
     // The layers are the operator's, so the directory they name is made (as the node would make it) and checked.
     let data = config.data_dir(environment);
-    let _ = std::fs::create_dir_all(&data);
-    let problems: Vec<_> = access::check(&data, Guarded::DataDir)
+    make_private_dir(&data);
+    let mut problems: Vec<_> = access::check(&data, Guarded::DataDir)
         .err()
         .into_iter()
         .collect();
+    let identity = data.join("identity");
+    if identity.exists() {
+        problems.extend(access::check(&identity, Guarded::Identity).err());
+    }
     access::decide(&problems, config.service.check_access, &trusted)?;
     Ok(watched(found))
 }
@@ -1059,6 +1063,20 @@ fn say_paired(peer: &str) {
         say!("paired {peer}");
         say!("it holds nothing until `bohio peer approve {peer} --allow ...`");
     }
+}
+
+/// Makes the data directory (and what is missing above it) closed to other accounts where the platform has modes.
+fn make_private_dir(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        let _ = std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path);
+    }
+    #[cfg(not(unix))]
+    let _ = std::fs::create_dir_all(path);
 }
 
 #[cfg(test)]

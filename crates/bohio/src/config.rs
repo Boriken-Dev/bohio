@@ -218,10 +218,10 @@ pub struct ServiceConfig {
     /// The directory holding the identity and the waiting list. Default: `bohio`
     /// under the user's data directory (`%LOCALAPPDATA%` or `$XDG_DATA_HOME`, else `~/.local/share`).
     pub data_dir: Option<PathBuf>,
-    /// Windows: whether the host refuses to start when another user's account owns or may change its
-    /// configuration file or data directory, which would let that user decide who may connect. With
-    /// `false` the host starts, logs what it found once, and the operator vouches for the directory.
-    /// Elsewhere nothing is checked. Default `true`.
+    /// Whether the host refuses to start when another user's account owns or may change its configuration file or data
+    /// directory (on Unix its group or others may write it, or read the key file), which would let that user decide who
+    /// may connect. With `false` the host starts, logs what it found once, and the operator vouches for the directory.
+    /// Default `true`.
     pub check_access: bool,
     /// Whether the user's file is read over the system's when neither `--config` nor `BOHIO_CONFIG`
     /// names the files. Set in the lowest layer only. Default `true`.

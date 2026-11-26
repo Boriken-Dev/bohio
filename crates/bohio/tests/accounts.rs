@@ -287,3 +287,90 @@ fn a_helper_connection_from_another_account_is_closed_unread_unless_it_is_listed
         let _ = std::fs::remove_file(&socket);
     }
 }
+
+/// Starts `serve` on the layer `config` and answers what it said first: `listening` or a refusal on standard error.
+fn serve_said(config: &Path) -> (bool, String) {
+    let path = config.to_string_lossy().into_owned();
+    let serving = Proc::start(
+        &["serve", "--config", &path, "--listen", "tcp://127.0.0.1:0"],
+        "warn",
+    );
+    let until = Instant::now() + DEADLINE;
+    loop {
+        if serving.stdout().contains("listening ") {
+            return (true, serving.stderr());
+        }
+        if serving.stderr().contains("bohio: ") {
+            return (false, serving.stderr());
+        }
+        assert!(Instant::now() < until, "serve neither served nor gave up");
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Whoever may write the data directory replaces the node's key and adds waiting entries, so the node does not serve
+/// from one; `check_access = false` serves from it and says so.
+#[test]
+fn a_data_directory_others_may_write_is_refused_unless_the_check_is_off() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let data = dir.path().join("data");
+    std::fs::create_dir(&data).expect("the data directory");
+    mode(&data, 0o777);
+    let config = dir.path().join("bohio.cfg");
+    let write = |extra: &str| {
+        std::fs::write(
+            &config,
+            format!("[service]\ndata_dir = '{}'\n{extra}", data.display()),
+        )
+        .expect("the layer is written");
+    };
+    write("");
+    let (served, said) = serve_said(&config);
+    assert!(!served, "a data directory others may write was served");
+    assert!(said.contains("the data directory"), "{said}");
+    write("check_access = false\n");
+    let (served, said) = serve_said(&config);
+    assert!(served, "check_access = false serves: {said}");
+    assert!(
+        said.contains("going on, as `check_access` is false"),
+        "{said}"
+    );
+}
+
+/// The node makes its data directory closed to other accounts.
+#[test]
+fn a_data_directory_the_node_makes_is_private() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let data = dir.path().join("made").join("data");
+    let config = dir.path().join("bohio.cfg");
+    std::fs::write(
+        &config,
+        format!("[service]\ndata_dir = '{}'\n", data.display()),
+    )
+    .expect("the layer is written");
+    let (served, said) = serve_said(&config);
+    assert!(served, "{said}");
+    let bits = std::fs::metadata(&data).expect("made").permissions().mode();
+    assert_eq!(bits & 0o077, 0, "the data directory is mode {bits:o}");
+}
+
+/// The key file is the node's identity: one the group or others can read or write is refused.
+#[test]
+fn an_identity_file_others_can_read_is_refused() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let data = dir.path().join("data");
+    let config = dir.path().join("bohio.cfg");
+    std::fs::write(
+        &config,
+        format!("[service]\ndata_dir = '{}'\n", data.display()),
+    )
+    .expect("the layer is written");
+    let (served, said) = serve_said(&config);
+    assert!(served, "{said}");
+    let identity = data.join("identity");
+    assert!(identity.exists(), "the first start made the key");
+    mode(&identity, 0o644);
+    let (served, said) = serve_said(&config);
+    assert!(!served, "a readable key was served");
+    assert!(said.contains("the identity file"), "{said}");
+}
