@@ -14,7 +14,7 @@ use bohio_proto::search::{
 use bohio_proto::{ErrorBody, ErrorCode};
 use coqui_transport::Channel;
 use globset::GlobSet;
-use regex::{Regex, RegexBuilder};
+use regex::bytes::{Regex, RegexBuilder};
 
 use super::bundle::grant_now;
 use super::ops::{self, Roots};
@@ -416,8 +416,11 @@ impl Searcher<'_> {
     /// The file's bytes, unless it is binary or grew past `max_file_bytes` while it was read.
     fn load(&self, dir: &Dir, relative: &Path) -> Result<Loaded, ErrorBody> {
         let settings = self.context.search;
-        let (mut file, _) = ops::open_regular_in(dir, relative)?;
-        let mut content = Vec::new();
+        let (mut file, meta) = ops::open_regular_in(dir, relative)?;
+        // The size is known: one allocation, not a buffer that doubles (and is held twice while it is copied).
+        let mut content = Vec::with_capacity(
+            usize::try_from(meta.len().min(settings.max_file_bytes).saturating_add(1)).unwrap_or(0),
+        );
         let probe = u64::try_from(settings.binary_probe).unwrap_or(u64::MAX);
         file.by_ref()
             .take(probe)
@@ -458,12 +461,12 @@ impl Searcher<'_> {
                 break;
             }
             let raw = raw.strip_suffix(b"\r").unwrap_or(raw);
-            let line = String::from_utf8_lossy(raw);
-            let (shown, cut) = cut(&line, self.line_cap);
+            // The pattern is matched against the bytes; only the part that is shown is made text.
+            let (shown, cut) = cut(raw, self.line_cap);
             // The lines this one follows complete the matches waiting for context.
             for waiting in &mut pending {
                 if waiting.after.len() < context {
-                    waiting.after.push(shown.to_owned());
+                    waiting.after.push(shown.to_string());
                 }
             }
             while pending
@@ -479,10 +482,10 @@ impl Searcher<'_> {
             if self.failed {
                 return;
             }
-            if !self.truncated && self.pattern.is_match(&line) {
+            if !self.truncated && self.pattern.is_match(raw) {
                 let found = Pending {
                     line: number,
-                    text: shown.to_owned(),
+                    text: shown.to_string(),
                     truncated: cut,
                     before: before.iter().cloned().collect(),
                     after: Vec::new(),
@@ -502,7 +505,7 @@ impl Searcher<'_> {
                 }
             }
             if context > 0 {
-                before.push_back(shown.to_owned());
+                before.push_back(shown.to_string());
                 if before.len() > context {
                     before.pop_front();
                 }
@@ -533,13 +536,14 @@ impl Searcher<'_> {
 }
 
 /// `line` cut to at most `cap` bytes at a character boundary, and whether it was.
-fn cut(line: &str, cap: usize) -> (&str, bool) {
+fn cut(line: &[u8], cap: usize) -> (std::borrow::Cow<'_, str>, bool) {
     if line.len() <= cap {
-        return (line, false);
+        return (String::from_utf8_lossy(line), false);
     }
+    // Not in the middle of a UTF-8 sequence.
     let mut end = cap;
-    while !line.is_char_boundary(end) {
+    while end > 0 && line[end] & 0xC0 == 0x80 {
         end -= 1;
     }
-    (&line[..end], true)
+    (String::from_utf8_lossy(&line[..end]), true)
 }
