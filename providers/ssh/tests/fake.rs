@@ -937,3 +937,58 @@ fn the_direct_runner_takes_a_command_line_of_the_providers_shape_apart() {
     assert!(support::parse_line("echo hi; rm x").is_none());
     assert!(support::parse_line("exec 'unterminated").is_none());
 }
+
+/// A stand-in for the system's `ssh` that records each login and succeeds.
+#[cfg(unix)]
+fn counting_ssh(dir: &std::path::Path) -> (String, std::path::PathBuf) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let log = dir.join("logins");
+    let program = dir.join("fake-ssh");
+    std::fs::write(
+        &program,
+        format!("#!/bin/sh\necho login >> '{}'\nexit 0\n", log.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    (program.to_string_lossy().into_owned(), log)
+}
+
+#[cfg(unix)]
+#[test]
+fn each_info_of_an_openssh_source_does_not_log_in_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let (program, log) = counting_ssh(dir.path());
+    let mut settings = SshSettings::new("host.invalid");
+    settings.user = Some(USER.to_owned());
+    settings.client = "openssh".to_owned();
+    settings.ssh_program = program;
+    settings.probe_every = "1h".to_owned();
+    let source = ssh(settings);
+    std::thread::scope(|scope| {
+        for _ in 0..10 {
+            scope.spawn(|| {
+                assert!(ExecSource::describe(&source).unwrap().available);
+                assert!(TerminalSource::describe(&source).unwrap().available);
+            });
+        }
+    });
+    let logins = std::fs::read_to_string(&log).unwrap().lines().count();
+    assert_eq!(logins, 1, "twenty describes made {logins} logins");
+}
+
+#[cfg(unix)]
+#[test]
+fn with_probe_every_zero_each_info_of_an_openssh_source_logs_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let (program, log) = counting_ssh(dir.path());
+    let mut settings = SshSettings::new("host.invalid");
+    settings.user = Some(USER.to_owned());
+    settings.client = "openssh".to_owned();
+    settings.ssh_program = program;
+    settings.probe_every = "0s".to_owned();
+    let source = ssh(settings);
+    for _ in 0..3 {
+        assert!(ExecSource::describe(&source).unwrap().available);
+    }
+    assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 3);
+}

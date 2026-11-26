@@ -276,7 +276,7 @@ A desktop helper that the node starts through an exec source (a session named `e
 - **Limits are settings, and a larger one costs the host.** `max_channels` (default 8, below the server's 10) bounds the sessions one source
   holds open; raising it past the server's `MaxSessions` makes the server refuse the extra ones. `keepalive = "0s"` finds a dead connection
   only when something is sent on it. `operation_timeout`, `connect_timeout`, `exit_grace` and `reconnect_after` bound how long a stuck
-  server holds a request; a larger value holds a node thread that long. A source that cannot connect is reported `unavailable` with the
+  server holds a request; a larger value holds a node thread that long. With `client = "openssh"`, each `info` of a peer asks the source whether the host answers, and each answer is a full `ssh` login: the source keeps the answer for `probe_every` (`30s`) and lets concurrent asks share one login, so a peer that holds `info` cannot make the host see a login storm (`MaxStartups`, fail2ban). `probe_every = "0s"` logs in for each ask, one at a time. A source that cannot connect is reported `unavailable` with the
   reason (never with a secret) and the node starts all the same.
 - **What loading a library costs.** `[providers] paths` is empty by default, and then nothing is read or mapped. A library named
   there is the node's own code: it is mapped into the process, runs its initialisers and its provider calls as the account that

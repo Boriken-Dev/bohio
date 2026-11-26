@@ -42,6 +42,7 @@ Provider id `ssh`. `[source.<name>] provider = "ssh"` and:
 | `keepalive`, `keepalive_max` | `30s`, `3` | probe an idle connection; `0s` sends none; drop it after that many unanswered |
 | `max_channels` | `8` | session channels open at once (the server's `MaxSessions` is 10 in OpenSSH); a request past it waits `operation_timeout`, then is `busy` naming this key; a server that refuses sooner says so |
 | `reconnect`, `reconnect_after` | `true`, `5s` | make the connection again on the next use; after a failed connect the source is `unavailable` without trying for this long (`0s` tries every use) |
+| `probe_every` | `30s` | with `client = "openssh"`, how long a login probe's answer is kept (each probe is a full `ssh` login, one at a time); `0s` logs in for each probe |
 | `operation_timeout` | `30s` | waiting for a slot, for the server to open a channel or answer a request, and for a write; not zero |
 | `exit_grace` | `1s` | how long output and the end of a channel are awaited after the program exited (a descendant can hold the channel open) |
 | `queue_chunks` | `16` | chunks of output held ahead of the reader |

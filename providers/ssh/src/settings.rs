@@ -79,6 +79,12 @@ pub struct SshSettings {
     /// every use). Default `5s`.
     #[map(default = String::from("5s"))]
     pub reconnect_after: String,
+    /// With `client = "openssh"`, how long what a login to the host answered is kept before the next `info` logs in
+    /// again (`30s`): each probe is a full `ssh` login, so a short time makes every `info` a login, and a peer that holds
+    /// `info` then makes the host see one for each. `0s` logs in for each probe (concurrent probes still share one).
+    /// Default `30s`.
+    #[map(default = String::from("30s"))]
+    pub probe_every: String,
     /// How long a request waits for a channel, the server's answer to opening one and a write to the server (`30s`).
     /// Not zero. Default `30s`.
     #[map(default = String::from("30s"))]
@@ -215,6 +221,7 @@ pub(crate) struct Settings {
     pub max_channels: usize,
     pub reconnect: bool,
     pub reconnect_after: Duration,
+    pub probe_every: Duration,
     pub operation_timeout: Duration,
     pub exit_grace: Duration,
     pub queue_chunks: usize,
@@ -279,6 +286,7 @@ impl SshSettings {
             max_channels: 8,
             reconnect: true,
             reconnect_after: "5s".to_owned(),
+            probe_every: "30s".to_owned(),
             operation_timeout: "30s".to_owned(),
             exit_grace: "1s".to_owned(),
             queue_chunks: 16,
@@ -423,6 +431,7 @@ impl SshSettings {
             max_channels: count("max_channels", self.max_channels)?,
             reconnect: self.reconnect,
             reconnect_after: time("reconnect_after", &self.reconnect_after, true)?,
+            probe_every: time("probe_every", &self.probe_every, true)?,
             operation_timeout: time("operation_timeout", &self.operation_timeout, false)?,
             exit_grace: time("exit_grace", &self.exit_grace, true)?,
             queue_chunks: count("queue_chunks", self.queue_chunks)?,

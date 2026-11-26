@@ -6,7 +6,7 @@
 //! own `ssh_config` (Kerberos, `ProxyJump`, an agent of its own), and never asks a question: `BatchMode` is always on.
 
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bohio_api::guatiao::Status;
 use bohio_api::guatiao::library::ProviderError;
@@ -97,8 +97,21 @@ pub(crate) fn command(
     Ok(command)
 }
 
-/// Whether the host can be reached now: runs `true` on it, for at most `limit`.
+/// Whether the host can be reached now: runs `true` on it, for at most `limit`. One login at a time, and its answer is kept
+/// for `probe_every`, so a caller that asks often (each `info` of a peer) does not log in each time.
 pub(crate) async fn probe(link: &Link, limit: Duration) -> Result<(), String> {
+    let mut last = link.probed.lock().await;
+    if let Some((when, outcome)) = last.as_ref()
+        && when.elapsed() < link.settings.probe_every
+    {
+        return outcome.clone();
+    }
+    let outcome = login(link, limit).await;
+    *last = Some((Instant::now(), outcome.clone()));
+    outcome
+}
+
+async fn login(link: &Link, limit: Duration) -> Result<(), String> {
     let mut command =
         command(link, &["-T"], &["true"]).map_err(|error| error.message().to_string())?;
     command.stdin(Stdio::null());

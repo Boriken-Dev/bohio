@@ -213,6 +213,8 @@ pub(crate) struct Link {
     pub(crate) rt: Arc<Rt>,
     keys: Arc<HostKeys>,
     state: tokio::sync::Mutex<State>,
+    /// What the latest login probe of the system's ssh client found, and when: one probe at a time, kept `probe_every`.
+    pub(crate) probed: tokio::sync::Mutex<Option<(Instant, Result<(), String>)>>,
     permits: Arc<Semaphore>,
     /// What X forwarding needs; `None` when the source does not forward.
     pub(crate) forward: Option<Arc<Forward>>,
@@ -237,6 +239,7 @@ impl Link {
                 failed: None,
                 lost: false,
             }),
+            probed: tokio::sync::Mutex::new(None),
             permits,
             forward,
         })
