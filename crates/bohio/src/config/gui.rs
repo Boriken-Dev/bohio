@@ -169,6 +169,21 @@ pub struct GuiConfig {
     pub helper_exec: Vec<String>,
     /// How long after a remote helper ends or fails to start the node starts it again. Not zero. Default `10s`.
     pub helper_exec_retry: Span,
+    /// Put the node's own helper on a machine before `helper_exec` runs it, each `SOURCE=DIRECTORY` or `SOURCE@FILES=DIRECTORY`:
+    /// the file goes through the files source FILES (default: SOURCE) into DIRECTORY, in that source's own syntax, and the
+    /// source's `helper_exec` command names it as `{helper}`. Read from the lowest layer only. Default empty: nothing is put anywhere.
+    pub helper_upload: Vec<String>,
+    /// The file `helper_upload` puts: an executable built for the machine. Default the node's own executable. Read from the
+    /// lowest layer only.
+    pub helper_binary: Option<String>,
+    /// Replace a file of the upload's name that is not the helper. Default `false`: it is refused. Lowest layer only.
+    pub helper_upload_overwrite: bool,
+    /// Accept an upload directory another account can write to, where it could replace the helper before it runs. Default
+    /// `false`. Lowest layer only.
+    pub helper_upload_shared_dir: bool,
+    /// Ask the machine what it runs (`uname -sm` through the exec source) and refuse a helper built for another platform.
+    /// Default `true`; `false` for a machine with no `uname`. Lowest layer only.
+    pub helper_upload_check_platform: bool,
 }
 
 impl Default for GuiConfig {
@@ -226,6 +241,11 @@ impl Default for GuiConfig {
             node_account: None,
             helper_exec: Vec::new(),
             helper_exec_retry: Span(Duration::from_secs(10)),
+            helper_upload: Vec::new(),
+            helper_binary: None,
+            helper_upload_overwrite: false,
+            helper_upload_shared_dir: false,
+            helper_upload_check_platform: true,
         }
     }
 }
@@ -306,14 +326,6 @@ impl GuiConfig {
             .any(|account| account.trim().is_empty())
         {
             return Err(("gui.helper_accounts", "must not hold an empty account"));
-        }
-        for text in &self.helper_exec {
-            if crate::gui::helper_exec::ExecHelper::parse(text).is_err() {
-                return Err((
-                    "gui.helper_exec",
-                    "must be SOURCE=COMMAND, a source name and the command line that starts the helper",
-                ));
-            }
         }
         if cfg!(unix) && !self.helper_accounts.is_empty() && self.helper_endpoint.is_none() {
             return Err((

@@ -312,12 +312,8 @@ pub(super) fn serve_endpoints(
             say!("dialing {endpoint} peer {id}");
         }
     }
-    let exec_helpers: Vec<_> = config
-        .gui
-        .helper_exec
-        .iter()
-        .filter_map(|text| crate::gui::helper_exec::ExecHelper::parse(text).ok())
-        .collect();
+    let exec_helpers = crate::gui::helper_exec::ExecHelper::list(&config.gui)
+        .map_err(|(key, why)| format!("{key}: {why}"))?;
     tracing::info!(host = %server.host(), "serving");
     thread::scope(|scope| {
         let handles: Vec<_> = listeners

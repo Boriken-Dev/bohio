@@ -17,6 +17,7 @@ use bohio_api::guatiao::library::Object;
 use bohio_api::model::ExecStart;
 use coqui_transport::{Channel as _, Duplex};
 
+use super::helper_upload::{self, Upload};
 use crate::node::Node;
 
 /// How long one read of the process waits before it looks at the stop flag again.
@@ -29,9 +30,96 @@ pub struct ExecHelper {
     pub source: String,
     /// The helper's program and arguments, run directly (never through a shell of the node).
     pub command: Vec<String>,
+    /// Put the node's own helper on the machine first: the command's `{helper}` is where it went.
+    pub upload: Option<Upload>,
 }
 
+/// What a command word names where the uploaded helper is.
+pub const HELPER_WORD: &str = "{helper}";
+
 impl ExecHelper {
+    /// The helpers `[gui]` names: each `helper_exec` entry, with the upload `helper_upload` gives its source.
+    ///
+    /// # Errors
+    ///
+    /// The key and what is wrong with it.
+    pub fn list(gui: &crate::config::GuiConfig) -> Result<Vec<Self>, (&'static str, String)> {
+        let mut helpers = Vec::new();
+        for text in &gui.helper_exec {
+            helpers.push(Self::parse(text).map_err(|why| {
+                (
+                    "gui.helper_exec",
+                    format!("must be SOURCE=COMMAND, a source name and the command line that starts the helper: {why}"),
+                )
+            })?);
+        }
+        let mut uploads = Vec::new();
+        for text in &gui.helper_upload {
+            let bad = |why: &str| {
+                (
+                    "gui.helper_upload",
+                    format!("`{text}` must be SOURCE=DIRECTORY or SOURCE@FILES=DIRECTORY: {why}"),
+                )
+            };
+            let (names, dir) = text.split_once('=').ok_or_else(|| bad("no ="))?;
+            let (source, files) = match names.split_once('@') {
+                Some((source, files)) => (source.trim(), Some(files.trim().to_owned())),
+                None => (names.trim(), None),
+            };
+            if source.is_empty() || files.as_deref() == Some("") || dir.trim().is_empty() {
+                return Err(bad("a name or the directory is empty"));
+            }
+            uploads.push((
+                source.to_owned(),
+                Upload {
+                    files,
+                    dir: dir.trim().to_owned(),
+                    check_platform: gui.helper_upload_check_platform,
+                    binary: gui.helper_binary.as_ref().map(std::path::PathBuf::from),
+                    overwrite: gui.helper_upload_overwrite,
+                    shared_dir: gui.helper_upload_shared_dir,
+                },
+            ));
+        }
+        for (source, _) in &uploads {
+            if !helpers.iter().any(|helper| &helper.source == source) {
+                return Err((
+                    "gui.helper_upload",
+                    format!("names the source `{source}`, which has no gui.helper_exec entry"),
+                ));
+            }
+        }
+        for helper in &mut helpers {
+            let names_it = helper.command.iter().any(|word| word.contains(HELPER_WORD));
+            helper.upload = uploads
+                .iter()
+                .find(|(source, _)| source == &helper.source)
+                .map(|(_, upload)| upload.clone());
+            match (names_it, helper.upload.is_some()) {
+                (true, false) => {
+                    return Err((
+                        "gui.helper_exec",
+                        format!(
+                            "the command of `{}` names {HELPER_WORD} and gui.helper_upload puts nothing on that source",
+                            helper.source
+                        ),
+                    ));
+                }
+                (false, true) => {
+                    return Err((
+                        "gui.helper_upload",
+                        format!(
+                            "puts a helper on `{}` and its gui.helper_exec command never names {HELPER_WORD}",
+                            helper.source
+                        ),
+                    ));
+                }
+                _ => {}
+            }
+        }
+        Ok(helpers)
+    }
+
     /// Reads `SOURCE=COMMAND LINE`.
     ///
     /// # Errors
@@ -48,6 +136,7 @@ impl ExecHelper {
         let command = bohio_client::dial::split_command(line)?;
         Ok(Self {
             source: source.to_owned(),
+            upload: None,
             command,
         })
     }
@@ -121,14 +210,27 @@ impl Node {
             .sources
             .exec(Some(&helper.source))
             .map_err(|error| error.message)?;
+        let argv = match &helper.upload {
+            Some(upload) => {
+                let path =
+                    helper_upload::upload(&parts.state.sources, &helper.source, upload, stop)?;
+                helper
+                    .command
+                    .iter()
+                    .map(|word| word.replace(HELPER_WORD, &path))
+                    .collect()
+            }
+            None => helper.command.clone(),
+        };
         let process = source
             .get()
             .start(ExecStart {
-                argv: helper.command.clone(),
+                argv,
                 stdin: true,
                 ..ExecStart::default()
             })
             .map_err(|error| error.message().to_string())?;
+        tracing::debug!(source = %helper.source, "the helper started");
         let process = Arc::new(process);
         // The helper's messages to the log go to its standard error; unread, a full queue would stop its output too.
         let errors = Arc::clone(&process);
@@ -163,9 +265,53 @@ impl Node {
             self.serve_helper_channel(&channel, &account, Some(stop));
             channel.close();
         });
-        let _ = process.kill();
+        let ended = process.kill();
+        tracing::debug!(source = %helper.source, "the helper ended: {ended:?}");
         done.store(true, Ordering::SeqCst);
         let _ = drain.join();
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::GuiConfig;
+
+    fn gui(exec: &[&str], upload: &[&str]) -> GuiConfig {
+        GuiConfig {
+            helper_exec: exec.iter().map(|text| (*text).to_owned()).collect(),
+            helper_upload: upload.iter().map(|text| (*text).to_owned()).collect(),
+            ..GuiConfig::default()
+        }
+    }
+
+    #[test]
+    fn an_upload_belongs_to_the_command_that_names_the_helper() {
+        let helpers = ExecHelper::list(&gui(
+            &[
+                "a={helper} gui-helper --stdio",
+                "b=bohio gui-helper --stdio",
+            ],
+            &["a@files=/home/me/.cache"],
+        ))
+        .expect("a consistent configuration");
+        let upload = helpers[0].upload.as_ref().expect("a has an upload");
+        assert_eq!(upload.files.as_deref(), Some("files"));
+        assert_eq!(upload.dir, "/home/me/.cache");
+        assert!(upload.check_platform && !upload.overwrite && !upload.shared_dir);
+        assert!(helpers[1].upload.is_none());
+    }
+
+    #[test]
+    fn a_configuration_that_cannot_work_is_named_by_its_key() {
+        let key =
+            |exec: &[&str], upload: &[&str]| ExecHelper::list(&gui(exec, upload)).unwrap_err().0;
+        assert_eq!(key(&["a={helper} x"], &[]), "gui.helper_exec");
+        assert_eq!(key(&["a=bohio x"], &["a=/d"]), "gui.helper_upload");
+        assert_eq!(key(&["a={helper}"], &["b=/d"]), "gui.helper_upload");
+        assert_eq!(key(&["a={helper}"], &["a"]), "gui.helper_upload");
+        assert_eq!(key(&["a={helper}"], &["a="]), "gui.helper_upload");
+        assert_eq!(key(&["nonsense"], &[]), "gui.helper_exec");
     }
 }

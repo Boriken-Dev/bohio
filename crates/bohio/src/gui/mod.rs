@@ -15,6 +15,7 @@ mod adapt;
 mod encode;
 pub mod helper;
 pub mod helper_exec;
+pub mod helper_upload;
 mod limits;
 #[cfg(feature = "notify")]
 mod notify;
