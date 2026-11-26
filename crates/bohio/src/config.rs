@@ -1158,6 +1158,11 @@ pub struct ExecutionConfig {
     /// `term` sends SIGTERM, which a program may handle or ignore, and `leave` leaves them
     /// running. Unix only: a job object ends a Windows tree whenever its owner is gone.
     pub host_death: HostDeath,
+    /// Whether a program starts with SIGINT, SIGQUIT and SIGHUP at their default action (Unix). A host started with
+    /// `&` from a non-interactive shell, or with `nohup`, has them ignored, and an ignored signal stays ignored
+    /// across `exec`: the programs it starts would then never act on `interrupt` or `quit` unless they install a
+    /// handler. `false` keeps what the host inherited and is logged `non-default:`. Default `true`.
+    pub reset_signals: bool,
 }
 
 /// `[execution] host_death`: what a host does about its processes when it dies.
@@ -1194,6 +1199,7 @@ impl Default for ExecutionConfig {
             poll_interval: Span(Duration::from_millis(20)),
             drain_timeout: Span(Duration::from_millis(500)),
             host_death: HostDeath::default(),
+            reset_signals: true,
         }
     }
 }

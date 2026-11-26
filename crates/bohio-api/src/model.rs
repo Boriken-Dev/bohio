@@ -313,6 +313,10 @@ pub struct ExecStart {
     pub listed: bool,
     /// What happens to the program's tree if the host dies without ending it: `kill`, `term` or `leave`. Absent is `kill`.
     pub on_host_death: Option<String>,
+    /// Whether the program starts with SIGINT, SIGQUIT and SIGHUP at their default action instead of what the host
+    /// inherited (Unix; a host started with `&` or `nohup` has them ignored, and its programs would never see an
+    /// `interrupt`). Absent is `true`.
+    pub reset_signals: Option<bool>,
 }
 
 /// A moment, as seconds and nanoseconds from the Unix epoch (a time before it has negative seconds and nanoseconds

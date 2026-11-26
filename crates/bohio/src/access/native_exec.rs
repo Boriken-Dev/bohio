@@ -85,6 +85,7 @@ impl ExecSource for Native {
                 Some("leave") => HostDeath::Leave,
                 _ => HostDeath::Kill,
             },
+            reset_signals: request.reset_signals.unwrap_or(true),
         };
         let spawned = platform::spawn(spec).map_err(|error| match error.kind() {
             std::io::ErrorKind::NotFound => failure(word::NOT_FOUND, "the program was not found"),

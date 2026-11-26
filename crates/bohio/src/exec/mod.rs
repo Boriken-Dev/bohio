@@ -322,6 +322,7 @@ fn start<'a>(metadata: &[u8], context: &Context<'a>) -> Result<Begun<'a>, ErrorB
         .transpose()?;
     let mut spec = command::spec(&request, context.grant, context.path)?;
     spec.on_host_death = Some(context.config.host_death.name().to_owned());
+    spec.reset_signals = Some(context.config.reset_signals);
     let stdin_open = spec.stdin;
     let permit = context.slots.acquire().ok_or_else(|| {
         ErrorBody::new(

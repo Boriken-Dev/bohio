@@ -164,6 +164,7 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[execution] poll_interval` | `20ms` | how often a process, its deadline and its stream are looked at; not zero |
 | `[execution] drain_timeout` | `500ms` | wait for a process's remaining output after it exits, before the rest of its tree is ended |
 | `[execution] host_death` | `kill` | Unix: what happens to a process's group when the host dies without ending it: `kill` (SIGKILL), `term` (SIGTERM) or `leave` |
+| `[execution] reset_signals` | `true` | Unix: a program starts with SIGINT, SIGQUIT and SIGHUP at their default action; `false` keeps what the host inherited and is logged `non-default:` |
 | `[shell] host_death` | `kill` | Unix: what happens to a session's tree when the host dies without ending it: `kill`, `term` or `leave` |
 | `[sessions] enabled` | `true` | whether detached sessions run; a peer still needs `session` |
 | `[sessions] max_detached` | `16` | sessions across peers, the exited ones kept included; at least 1 |

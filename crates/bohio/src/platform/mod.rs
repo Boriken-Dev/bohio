@@ -156,6 +156,8 @@ pub struct Spec {
     pub stdin: bool,
     /// What happens to the process's group if this process dies without ending it (Unix).
     pub on_host_death: HostDeath,
+    /// Start the process with SIGINT, SIGQUIT and SIGHUP at their default action, not what this process inherited (Unix).
+    pub reset_signals: bool,
 }
 
 /// A started process and its pipes.
@@ -200,6 +202,9 @@ pub fn spawn(spec: Spec) -> io::Result<Spawned> {
             })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if spec.reset_signals {
+            guard::reset_signals(&mut command);
+        }
         tree::prepare(&mut command, spec.on_host_death)?;
         command.spawn()?
     };
@@ -215,7 +220,7 @@ pub fn spawn(spec: Spec) -> io::Result<Spawned> {
     ) = {
         // The process starts inside the job, so nothing it starts at once is outside it.
         let job = tree::job()?;
-        let _ = &spec.on_host_death;
+        let _ = (&spec.on_host_death, spec.reset_signals);
         let started = winproc::start(&spec, &job)?;
         (Tree::holding(job), started)
     };
@@ -423,3 +428,5 @@ pub fn resolve_listed(program: &str, path: &OsStr) -> Option<PathBuf> {
 
 #[cfg(all(test, windows))]
 mod inherit_tests;
+#[cfg(all(test, target_os = "linux"))]
+mod signal_tests;

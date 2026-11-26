@@ -109,6 +109,23 @@ pub(super) fn attach(command: &mut Command, on_death: HostDeath) -> io::Result<(
     Ok(())
 }
 
+/// Makes `command`'s child start with SIGINT, SIGQUIT and SIGHUP at their default action: a host started with `&`
+/// or `nohup` has them ignored, and an ignored signal stays ignored across `exec`, so a program would never see an
+/// `interrupt` or a `quit`. Runs between the fork and the exec, so it calls only `signal`.
+pub(super) fn reset_signals(command: &mut Command) {
+    // SAFETY: the closure runs in the forked child before `exec` and calls only `signal`, which is safe there.
+    unsafe {
+        command.pre_exec(|| {
+            for number in [libc::SIGINT, libc::SIGQUIT, libc::SIGHUP] {
+                if libc::signal(number, libc::SIG_DFL) == libc::SIG_ERR {
+                    return Err(io::Error::from_raw_os_error(libc::EINVAL));
+                }
+            }
+            Ok(())
+        });
+    }
+}
+
 /// An error unless this process leads a process group of its own.
 fn lead_own_group() -> io::Result<()> {
     // SAFETY: both calls take no arguments and cannot fail.

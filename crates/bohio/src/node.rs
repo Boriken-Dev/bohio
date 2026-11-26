@@ -143,6 +143,11 @@ impl Shared {
             config.execution.enabled = false;
         }
         let config = &config;
+        if !config.execution.reset_signals {
+            tracing::warn!(
+                "non-default: [execution] reset_signals is false: programs keep the signal dispositions this host inherited, so an `interrupt` or `quit` does nothing to one that ignores them"
+            );
+        }
         if let Some(dir) = &config.compression.prepare_dir {
             crate::fs::sweep_prepared(dir, config.compression.prepare_ttl.0);
         }
