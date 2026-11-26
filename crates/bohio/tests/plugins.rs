@@ -6,6 +6,9 @@
 //! there. A node built with feature `serial` already has the `serial` provider, which a library cannot replace: the console test
 //! therefore runs in a build without that feature (`--no-default-features --features cli`).
 
+#[path = "support/private_dir.rs"]
+mod private_dir;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -91,14 +94,7 @@ fn entry<'a>(report: &'a ProvidersReport, file: &Path) -> &'a bohio::access::Lib
 
 /// The directory a test loads from: owned by this account and writable by no one else.
 fn private_directory() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("a directory");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
-            .expect("private");
-    }
-    dir
+    private_dir::private_tempdir()
 }
 
 #[test]

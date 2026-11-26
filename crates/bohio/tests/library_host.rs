@@ -7,6 +7,9 @@
 //! one beside the test target's `debug` directory, built on first use with `cargo build -p guatiao-source-remote --bin
 //! guatiao-remote-server`. A host must match the library: a static musl test takes a glibc one from the variable.
 
+#[path = "support/private_dir.rs"]
+mod private_dir;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -76,14 +79,7 @@ fn host() -> PathBuf {
 }
 
 fn private_directory() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("a directory");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
-            .expect("private");
-    }
-    dir
+    private_dir::private_tempdir()
 }
 
 /// Copies of the library and the host in a directory only this account may write.

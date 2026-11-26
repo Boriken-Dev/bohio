@@ -250,7 +250,7 @@ fn toml_path(path: &Path) -> String {
 impl World {
     /// A host whose `[link]` section is `recheck = "1s"` and `link_extra`.
     fn new(link_extra: &str) -> Self {
-        let dir = tempfile::tempdir().expect("a directory");
+        let dir = crate::support::private_dir::private_tempdir().expect("a directory");
         let data = dir.path().join("host-data");
         let config = dir.path().join("host.cfg");
         std::fs::write(

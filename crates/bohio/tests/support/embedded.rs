@@ -420,7 +420,7 @@ pub fn dialed_with(grant: &str) -> Dialed {
     use super::procs::{DEADLINE as UP, Node as TestNode};
     const BEAT: &str = "heartbeat = \"500ms\"\nheartbeat_misses = 3";
     const DIAL: &str = "retry_min = \"200ms\"\nretry_max = \"1s\"";
-    let dir = tempfile::tempdir().expect("a directory");
+    let dir = super::private_dir::private_tempdir().expect("a directory");
     let controller = TestNode::new(dir.path(), "controller");
     let host = TestNode::new(dir.path(), "host");
     controller.write_with(BEAT, &TestNode::peer_table(&host.id, None, "", ""));

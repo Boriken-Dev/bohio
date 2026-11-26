@@ -36,3 +36,8 @@ mod stream;
 
 pub use config::{Config, ConfigError, Environment};
 pub use policy::{Grant, Peers, Permission};
+
+/// A temporary directory only this account may use, for the unit tests that make layers and data directories.
+#[cfg(test)]
+#[path = "../tests/support/private_dir.rs"]
+mod private_dir;

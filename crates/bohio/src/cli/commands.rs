@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn the_user_file_is_merged_over_the_system_one_unless_the_system_one_turns_it_off() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::private_dir::private_tempdir();
         let system = file(
             dir.path(),
             "system.cfg",
@@ -482,7 +482,7 @@ user_layer = false
 
     #[test]
     fn a_missing_file_is_not_a_layer_and_no_file_is_the_defaults() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::private_dir::private_tempdir();
         let (system, user) = (dir.path().join("none.cfg"), dir.path().join("also.cfg"));
         let found = found_in(&[], system.clone(), Some(user.clone())).unwrap();
         assert!(found.layered.files.is_empty());

@@ -97,7 +97,7 @@ struct Site {
 
 impl Site {
     fn new() -> Self {
-        let dir = tempfile::tempdir().expect("a directory");
+        let dir = crate::support::private_dir::private_tempdir().expect("a directory");
         let far = Node::new(dir.path(), "far");
         let near = Node::new(dir.path(), "near");
         let client = Node::new(dir.path(), "client");
@@ -496,7 +496,7 @@ fn remote_listen_listens_again_for_the_same_port_after_the_link_was_lost() {
 /// A burst of `count` connections through one `bohio remote ... forward -L`, to a host that holds `max_pending` opens
 /// pending and `per_peer` connections for the client, and a client that retries for `open_retry`: how many failed.
 fn burst(max_pending: usize, per_peer: usize, open_retry: &str, count: usize) -> Vec<String> {
-    let dir = tempfile::tempdir().expect("a directory");
+    let dir = crate::support::private_dir::private_tempdir().expect("a directory");
     let target = echo();
     let node = Running::with_link(
         ForwardConfig {

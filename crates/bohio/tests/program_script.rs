@@ -7,6 +7,9 @@
 //! builds them with cargo (the Rhai source from the guatiao checkout this workspace builds against, into `rhai` beside the test
 //! target) and prints `SKIPPED` with the reason when it cannot (no network for the Rhai crates, no C compiler for libffi).
 
+#[path = "support/private_dir.rs"]
+mod private_dir;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -105,14 +108,7 @@ fn rhai_source() -> Result<PathBuf, String> {
 }
 
 fn private_directory() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("a directory");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
-            .expect("private");
-    }
-    dir
+    private_dir::private_tempdir()
 }
 
 /// A path as JSON and TOML literal text may hold it: forward slashes.

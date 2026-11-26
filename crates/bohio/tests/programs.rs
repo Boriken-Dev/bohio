@@ -5,6 +5,9 @@
 //! The program is `examples/program_echo` (build it first: `cargo build -p bohio --example program_echo`; a whole test run
 //! builds it). It is copied into a directory the test makes, which only this account may write, and started from there.
 
+#[path = "support/private_dir.rs"]
+mod private_dir;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -42,14 +45,7 @@ fn built() -> PathBuf {
 
 /// A directory only this account may write.
 fn private_directory() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("a directory");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
-            .expect("private");
-    }
-    dir
+    private_dir::private_tempdir()
 }
 
 /// A copy of the example in a private directory.

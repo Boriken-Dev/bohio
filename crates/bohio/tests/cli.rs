@@ -2,6 +2,9 @@
 
 #![forbid(unsafe_code)]
 
+#[path = "support/private_dir.rs"]
+mod private_dir;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -204,6 +207,7 @@ fn read_only(path: &Path, on: bool) {
 fn scratch(name: &str) -> PathBuf {
     let directory = std::env::temp_dir().join(format!("bohio-cli-{name}-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
+    private_dir::narrow(&directory);
     directory
 }
 

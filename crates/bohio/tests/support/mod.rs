@@ -3,6 +3,7 @@
 #![allow(dead_code, reason = "each test binary uses some of these")]
 
 pub mod embedded;
+pub mod private_dir;
 pub mod procs;
 
 use std::path::PathBuf;

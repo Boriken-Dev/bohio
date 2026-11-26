@@ -207,7 +207,7 @@ fn stdio_host(dir: &std::path::Path, peer: PeerId) -> (String, String, PeerId) {
 #[test]
 fn a_stdio_hop_runs_bohio_serve_on_the_jump_and_proves_it() {
     let _deadline = Deadline::start();
-    let dir = tempfile::tempdir().expect("a directory");
+    let dir = crate::support::private_dir::private_tempdir().expect("a directory");
     let a = Running::start();
     let identity = Identity::generate(Method::DEFAULT).expect("an identity");
     let program = env!("CARGO_BIN_EXE_bohio").to_owned();
@@ -275,7 +275,7 @@ fn two_hosts(dir: &std::path::Path, with_forward: bool) -> (Running, Running, St
 #[test]
 fn remote_jump_runs_exec_on_b_through_a_and_names_the_hop_that_refused() {
     let _deadline = Deadline::start();
-    let dir = tempfile::tempdir().expect("a directory");
+    let dir = crate::support::private_dir::private_tempdir().expect("a directory");
     let (a, b, config, _) = two_hosts(dir.path(), true);
     let (server, jump_server) = (b.id.to_string(), a.id.to_string());
     let helper = helper();
@@ -322,7 +322,7 @@ fn remote_jump_runs_exec_on_b_through_a_and_names_the_hop_that_refused() {
 #[test]
 fn remote_jump_to_the_jumps_own_listener_fails_the_proof_and_a_wrong_jump_id_is_named() {
     let _deadline = Deadline::start();
-    let dir = tempfile::tempdir().expect("a directory");
+    let dir = crate::support::private_dir::private_tempdir().expect("a directory");
     let (a, b, config, peer) = two_hosts(dir.path(), true);
     // A also carries a stream to its own port: the hop reaches a real listener, which is not B.
     a.grants.set(
@@ -366,7 +366,7 @@ fn remote_jump_to_the_jumps_own_listener_fails_the_proof_and_a_wrong_jump_id_is_
 #[test]
 fn remote_jump_to_a_stdio_endpoint_runs_the_program_on_the_jump() {
     let _deadline = Deadline::start();
-    let dir = tempfile::tempdir().expect("a directory");
+    let dir = crate::support::private_dir::private_tempdir().expect("a directory");
     let a = Running::start();
     let config = client_config(dir.path(), "peer");
     let peer = id_of(&config);
@@ -411,7 +411,7 @@ fn forward_dash_d_through_a_jump_reaches_a_target_only_the_far_host_grants() {
     use support::embedded::{listening, serve_once};
 
     let _deadline = Deadline::start();
-    let dir = tempfile::tempdir().expect("a directory");
+    let dir = crate::support::private_dir::private_tempdir().expect("a directory");
     let (a, b) = (Running::start(), Running::start());
     let config = client_config(dir.path(), "peer");
     let peer = id_of(&config);
@@ -466,7 +466,7 @@ fn forward_dash_d_through_a_jump_reaches_a_target_only_the_far_host_grants() {
 #[test]
 fn a_named_host_with_a_named_jump_runs_exec_and_an_unknown_name_is_refused() {
     let _deadline = Deadline::start();
-    let dir = tempfile::tempdir().expect("a directory");
+    let dir = crate::support::private_dir::private_tempdir().expect("a directory");
     let (a, b, config, _) = two_hosts(dir.path(), true);
     // The names stand for the endpoints, the ids to prove and the jump; nothing else is on the command line.
     let mut file = std::fs::read_to_string(&config).unwrap();

@@ -569,15 +569,13 @@ fn write_document(path: &Path, text: &str, made: bool) -> Result<(), PeerError> 
     let path = linked.as_deref().unwrap_or(path);
     #[cfg(unix)]
     let before = std::fs::metadata(path).ok();
-    replace_file(path, text, made).map_err(
-        |error| {
-            PeerError::Write(format!(
-                "{} cannot be written: {}",
-                path.display(),
-                error.kind()
-            ))
-        },
-    )?;
+    replace_file(path, text, made).map_err(|error| {
+        PeerError::Write(format!(
+            "{} cannot be written: {}",
+            path.display(),
+            error.kind()
+        ))
+    })?;
     #[cfg(unix)]
     if !made && let Some(before) = before {
         use std::os::unix::fs::MetadataExt as _;
@@ -648,6 +646,8 @@ mod tests {
                 .expect("read")
                 .contains("peer.y")
         );
+    }
+}
 
 #[cfg(all(test, windows))]
 mod windows_tests {
