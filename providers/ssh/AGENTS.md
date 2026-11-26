@@ -3,6 +3,7 @@
 | `xauth` | `xauth` | the program on the host that lists the display's cookie (`xauth list :N`); a host without it is served with no cookie |
 | `x11_forward` | `false` | programs this source starts open their windows on the node's own display (needs `X11Forwarding yes` and an `xauth` on the host); needs `x11_trusted` |
 | `x11_trusted` | `false` | forward as `ssh -Y` does; required by `x11_forward` because this build cannot ask the display for an untrusted authorization |
+| `login_shell_check` | `true` | before the first program or terminal command with words, the source runs a probe line once and refuses (`unsupported`) when the account's login shell does not read single quotes as a POSIX shell does (`fish`, `cmd.exe`, PowerShell); `false` skips it and is logged `non-default:` |
 | `x11_local_display` | the node's `DISPLAY` | the node's display forwarded windows go to: `:N` (its socket) or `HOST:N` (TCP port 6000+N) |
 | `x11_max_connections` | `64` | forwarded X connections open at once; one past it is refused; at least 1 |
 | `x11_answer_max` | `65536` | bytes of `xauth`'s answer read when the display's cookie is asked for; at least 1 |

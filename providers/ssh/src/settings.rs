@@ -120,6 +120,13 @@ pub struct SshSettings {
     /// host. Default `false`.
     #[map(default = false)]
     pub x11_forward: bool,
+    /// Whether the node checks, once for each source, that the account's login shell reads a command line as a POSIX
+    /// shell does, and refuses to start a program or a terminal command until it does: every word is sent quoted for
+    /// a POSIX shell, and under `fish`, `cmd.exe` or PowerShell a word of a peer could end its quotes and run another
+    /// command, so a program list would restrict nothing. `false` skips the check and is logged `non-default:`. Default
+    /// `true`.
+    #[map(default = true)]
+    pub login_shell_check: bool,
     /// Forward as a trusted client (the way `ssh -Y` does): a program on the host can read and drive everything on the
     /// node's display. Forwarding needs it: this build cannot ask the display for an untrusted authorization, so
     /// `x11_forward` without it is refused. Default `false`.
@@ -218,6 +225,7 @@ pub(crate) struct Settings {
     pub x11_socket_dir: String,
     pub xauth: String,
     pub x11_forward: bool,
+    pub login_shell_check: bool,
     pub x11_local_display: Option<String>,
     pub x11_max_connections: usize,
     pub x11_answer_max: usize,
@@ -281,6 +289,7 @@ impl SshSettings {
             x11_socket_dir: "/tmp/.X11-unix".to_owned(),
             xauth: "xauth".to_owned(),
             x11_forward: false,
+            login_shell_check: true,
             x11_trusted: false,
             x11_local_display: None,
             x11_max_connections: 64,
@@ -428,6 +437,7 @@ impl SshSettings {
             x11_socket_dir: self.x11_socket_dir.trim_end_matches('/').to_owned(),
             xauth: self.xauth.clone(),
             x11_forward: self.x11_forward,
+            login_shell_check: self.login_shell_check,
             x11_local_display: self.x11_local_display.clone(),
             x11_max_connections: count("x11_max_connections", self.x11_max_connections)?,
             x11_answer_max: count("x11_answer_max", self.x11_answer_max)?,
@@ -453,6 +463,12 @@ impl SshSettings {
         if self.client == "openssh" {
             found.push(
                 "client = openssh: the host key, the agent and the login are the system ssh client's own; the source cannot pin a key or resize a terminal"
+                    .to_owned(),
+            );
+        }
+        if !self.login_shell_check {
+            found.push(
+                "login_shell_check = false: the account's login shell is not checked to read quoting as a POSIX shell does, so under fish, cmd.exe or PowerShell a peer's argument can run another command"
                     .to_owned(),
             );
         }

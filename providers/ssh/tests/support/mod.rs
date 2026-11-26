@@ -60,6 +60,9 @@ pub struct Options {
     /// Start the program of a command line the provider built (`cd DIR && exec env ... PROGRAM ARGS`) directly, with no shell:
     /// for a machine that has no `sh`. A command of another shape is refused.
     pub direct: bool,
+    /// Read a command line as `fish` does, where `\'` inside single quotes is an escape: a line the provider quoted for a POSIX
+    /// shell then ends its quote early, and one that cannot be read is refused.
+    pub fish: bool,
 }
 
 impl Default for Options {
@@ -70,6 +73,7 @@ impl Default for Options {
             keys: true,
             sftp: Some(Advertise::default()),
             direct: false,
+            fish: false,
         }
     }
 }
@@ -499,7 +503,15 @@ impl Connection {
         command: String,
         session: &mut Session,
     ) -> Result<(), russh::Error> {
-        let mut process = if self.options.direct {
+        // A line fish cannot read prints its own complaint and fails, as the real shell does.
+        let command = if self.options.fish && words_fish(&command).is_none() {
+            "echo 'fish: Unexpected end of string, quotes are not balanced' >&2; exit 127"
+                .to_owned()
+        } else {
+            command
+        };
+        let direct = self.options.direct && !self.options.fish;
+        let mut process = if direct {
             let Some(line) = parse_line(&command) else {
                 return session.channel_failure(channel);
             };
@@ -542,6 +554,46 @@ impl Connection {
         tokio::spawn(supervise(session.handle(), channel, child, merge, killed));
         Ok(())
     }
+}
+
+/// The words of a command line as `fish` reads single quotes: `\'` and `\\` inside them are escapes. `None` for an
+/// unterminated quote.
+fn words_fish(text: &str) -> Option<Vec<String>> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut started = false;
+    let mut quoted = false;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (quoted, c) {
+            (true, '\\') if matches!(chars.peek(), Some('\'' | '\\')) => {
+                current.push(chars.next()?);
+            }
+            (true, '\'') => quoted = false,
+            (true, c) => current.push(c),
+            (false, '\'') => {
+                quoted = true;
+                started = true;
+            }
+            (false, c) if c.is_whitespace() => {
+                if started {
+                    out.push(std::mem::take(&mut current));
+                    started = false;
+                }
+            }
+            (false, c) => {
+                current.push(c);
+                started = true;
+            }
+        }
+    }
+    if quoted {
+        return None;
+    }
+    if started {
+        out.push(current);
+    }
+    Some(out)
 }
 
 /// A command line of the provider's shape, taken apart.

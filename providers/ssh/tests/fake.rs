@@ -166,6 +166,43 @@ fn the_directory_and_the_environment_are_the_requests() {
 }
 
 #[test]
+fn a_login_shell_that_reads_quotes_as_fish_does_starts_no_program_unless_the_check_is_off() {
+    need_shell!();
+    let server = FakeSsh::start_with(Options {
+        fish: true,
+        ..Options::default()
+    });
+    let source = ssh(server.settings());
+    let error = source
+        .start(argv(&["echo", "a'; id; #"]))
+        .expect_err("a login shell that is not POSIX serves no program");
+    assert!(error.message().contains("POSIX"), "{}", error.message());
+    // A command with words in a terminal is refused the same way.
+    let terminal = TerminalOpen {
+        program: Some(bohio_api::model::ProgramSpec {
+            argv: vec!["sh".to_owned()],
+            ..bohio_api::model::ProgramSpec::default()
+        }),
+        ..TerminalOpen::default()
+    };
+    assert!(TerminalSource::open(&source, terminal).is_err());
+
+    // The control: a POSIX login shell starts one, and the operator can skip the check.
+    let posix = FakeSsh::start();
+    let source = ssh(posix.settings());
+    let process = source.start(argv(&["echo", "a'; id; #"])).unwrap();
+    assert!(
+        String::from_utf8(finish(&process).stdout)
+            .unwrap()
+            .starts_with("a'; id; #")
+    );
+    let mut unchecked = server.settings();
+    unchecked.login_shell_check = false;
+    let source = ssh(unchecked);
+    assert!(source.start(argv(&["echo", "hi"])).is_ok());
+}
+
+#[test]
 fn a_shell_script_runs_on_the_host() {
     need_shell!();
     let server = FakeSsh::start();
@@ -334,7 +371,8 @@ fn a_pinned_host_key_is_accepted_and_a_different_one_is_refused() {
     );
     assert_eq!(
         server.seen.lock().unwrap().commands.len(),
-        1,
+        // The login shell probe and `true`, both before the wrong key was presented.
+        2,
         "nothing ran on the host that presented the wrong key"
     );
 }
@@ -576,7 +614,10 @@ fn a_server_that_refuses_a_channel_is_busy_naming_max_channels() {
         max_sessions: 1,
         ..Options::default()
     });
-    let source = ssh(server.settings());
+    // The login shell probe takes a channel of its own for a moment; this test counts the program's.
+    let mut settings = server.settings();
+    settings.login_shell_check = false;
+    let source = ssh(settings);
     let first = source.start(argv(&["sleep", "300"])).unwrap();
     let error = source
         .start(argv(&["true"]))

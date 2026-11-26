@@ -37,6 +37,15 @@ fn is_variable_name(name: &str) -> bool {
         && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
 }
 
+/// The line that tells whether the login shell reads quotes as a POSIX shell does: `a\` is one word under POSIX
+/// single quotes, while `fish` reads `\'` as an escape and `cmd.exe` and PowerShell read quotes differently.
+pub(crate) const PROBE_LINE: &str = "exec printf '%s|' 'a\\' 'b c'";
+
+/// Whether `output` is what [`PROBE_LINE`] prints under a POSIX shell.
+pub(crate) fn probe_output_is_posix(output: &[u8]) -> bool {
+    output == b"a\\|b c|"
+}
+
 /// What goes before the program: `cd DIR && exec env ...`. `env` is on the line because most servers refuse the `env`
 /// channel request.
 fn prefix(cwd: Option<&str>, clear_env: bool, env: &[EnvVar]) -> Result<String, String> {

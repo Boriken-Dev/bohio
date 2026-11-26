@@ -54,6 +54,8 @@ pub const ID: &str = "ssh";
 )]
 pub struct Ssh {
     link: Option<Arc<Link>>,
+    /// Whether the login shell read the probe line as POSIX does, once it was asked.
+    posix: std::sync::OnceLock<bool>,
     files: Option<crate::files::SftpFiles>,
     desktop: Option<Arc<DesktopOf>>,
 }
@@ -76,6 +78,7 @@ impl TryFrom<SshSettings> for Ssh {
             ))))
         });
         Ok(Self {
+            posix: std::sync::OnceLock::new(),
             desktop,
             files: Some(crate::files::SftpFiles(crate::files::Files::new(
                 Arc::clone(&link),
@@ -90,6 +93,60 @@ impl Ssh {
         self.link
             .as_ref()
             .ok_or_else(|| ProviderError::new(Status::GUATIAO_ERR_NULL, "no host is configured"))
+    }
+
+    /// Refuses a command line that carries words until the account's login shell has been seen to read quotes as a POSIX
+    /// shell does (`login_shell_check`); the probe runs once for the source.
+    fn require_posix_shell(&self) -> Result<(), ProviderError> {
+        let link = self.link()?;
+        if !link.settings.login_shell_check {
+            return Ok(());
+        }
+        let posix = match self.posix.get() {
+            Some(posix) => *posix,
+            None => {
+                // A failure to log in or to open a channel is that failure, not an answer about the shell.
+                let posix = self.probe_login_shell(link)?;
+                *self.posix.get_or_init(|| posix)
+            }
+        };
+        if posix {
+            Ok(())
+        } else {
+            Err(ProviderError::new(
+                Status::GUATIAO_ERR_UNSUPPORTED,
+                "the account's login shell does not read a command line as a POSIX shell does, so a program's words cannot be quoted for it; use an account whose login shell is sh, bash or zsh (`login_shell_check = false` skips this check)",
+            ))
+        }
+    }
+
+    /// Runs the probe line and reads what it prints.
+    fn probe_login_shell(&self, link: &Arc<Link>) -> Result<bool, ProviderError> {
+        let session = link.rt.block_on(Session::start(
+            link,
+            Open {
+                pty: None,
+                command: Some(command::PROBE_LINE.to_owned()),
+                stdin: false,
+            },
+        ))?;
+        let wait = u64::try_from(link.settings.operation_timeout.as_millis()).unwrap_or(u64::MAX);
+        let (mut output, mut chunk) = (Vec::new(), [0_u8; 256]);
+        loop {
+            match session.read(1, &mut chunk, wait) {
+                Ok(count) if count > 0 => {
+                    output.extend_from_slice(&chunk[..usize::try_from(count).unwrap_or(0)]);
+                }
+                _ => break,
+            }
+            if output.len() > chunk.len() {
+                break;
+            }
+        }
+        // Let the channel end before the program's own starts, so the probe holds none of the server's sessions.
+        let _ = session.wait(wait);
+        let _ = session.kill();
+        Ok(command::probe_output_is_posix(&output))
     }
 
     fn sftp(&self) -> Result<&crate::files::SftpFiles, ProviderError> {
@@ -199,6 +256,13 @@ impl TerminalSource for Ssh {
         let link = self.link()?;
         let bad = |why: String| refuse(Status::GUATIAO_ERR_BAD_VALUE, why);
         let cwd = request.cwd.as_deref();
+        if request.program.is_some()
+            || cwd.is_some()
+            || request.clear_env
+            || !request.env.is_empty()
+        {
+            self.require_posix_shell()?;
+        }
         let command = match request.program.as_ref().map(command::terminal_words) {
             Some(words) => {
                 let words = words.map_err(bad)?.unwrap_or_default();
@@ -284,6 +348,7 @@ impl ExecSource for Ssh {
         let link = self.link()?;
         let bad = |why: String| refuse(Status::GUATIAO_ERR_BAD_VALUE, why);
         let words = command::exec_words(&request).map_err(bad)?;
+        self.require_posix_shell()?;
         let command = command::line(
             &words,
             request.cwd.as_deref(),

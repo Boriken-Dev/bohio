@@ -105,6 +105,7 @@ Two settings of an ssh source serve a desktop, with nothing of Bohío on the mac
   reach it. The screen is seen and clicked as the machine's own X session would be; the lock state of the machine's login session is
   not told (`lock_detection` is in `lacks`), and a Wayland-only machine has no X server to reach (its XWayland, such as WSLg's, serves
   the X windows alone).
+- `login_shell_check = true` (the default) makes the source run one probe line when the first program or terminal command with words starts, and refuse every such start (`unsupported`, naming the shell) when the account's login shell does not read single quotes as a POSIX shell does. Every word is quoted for a POSIX shell, and under `fish`, `cmd.exe` or PowerShell a peer's argument could end the quote and run another command, so a program list would restrict nothing. `false` skips the probe and is logged `non-default:`.
 - `x11_forward = true` makes the programs this source starts show their windows on **the node's own desktop** (the way `ssh -X` does):
   the machine's `sshd` needs `X11Forwarding yes` and an `xauth`, each program's X connections come back over the session and go to the
   node's display (`x11_local_display`, else the node's `DISPLAY`; at most `x11_max_connections` at once). It needs `x11_trusted = true`
