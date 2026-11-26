@@ -1,6 +1,8 @@
 //! What the Windows session's answers mean, and the clipboard's text encoding: pure, so every rule is tested on every
 //! platform. The Windows backend asks the operating system and hands the answers here.
 
+#![forbid(unsafe_code)]
+
 use crate::gui::GuiError;
 
 /// What a node says when it runs in session 0.

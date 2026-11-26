@@ -3,6 +3,8 @@
 //! byte layout. Pure, so every rule is tested on every platform; `macos.rs` asks the operating system and hands the
 //! answers here.
 
+#![forbid(unsafe_code)]
+
 use std::path::Path;
 
 use bohio_proto::gui::{Button, ButtonAction, Display, DisplayId, InputEvent, KeyAction};

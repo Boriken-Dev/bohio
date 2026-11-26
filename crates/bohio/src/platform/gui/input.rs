@@ -5,6 +5,8 @@
 //! The flag and key values are Windows' documented ABI constants, written out here and checked against the `windows`
 //! crate's by `windows.rs` at compile time.
 
+#![forbid(unsafe_code)]
+
 use bohio_proto::gui::{Button, ButtonAction, Display, InputEvent, KeyAction};
 
 use crate::gui::{DesktopState, GuiError};

@@ -327,10 +327,15 @@ fn every_unsafe_in_a_listed_file_has_a_safety_comment() {
     }
 }
 
+/// The modules that only deny `unsafe_code`, because listed files are their children; every other file of
+/// such a module's directory forbids it unless it is listed. Paths are relative to `crates/bohio/src`.
+const DENY_ONLY_PARENTS: &[&str] = &["platform/mod.rs", "platform/gui/mod.rs"];
+
 #[test]
 fn every_module_but_the_listed_ones_forbids_unsafe() {
-    // The crate denies unsafe_code; each of these top-level modules (and the files of `platform`
-    // that are not listed) forbids it, so a later `allow` in them cannot lift it.
+    // The crate denies unsafe_code; each top-level module, and each file of a directory whose module only
+    // denies it, forbids it, so a later `allow` in them cannot lift it. A file deeper inside a forbidding
+    // module is covered by that module.
     let root = workspace().join("crates/bohio/src");
     let mut missing = Vec::new();
     let mut files = Vec::new();
@@ -340,13 +345,15 @@ fn every_module_but_the_listed_ones_forbids_unsafe() {
         let listed = ALLOWED
             .iter()
             .any(|entry| entry.file == format!("crates/bohio/src/{name}"));
-        // Only a module that is not inside another forbidding one needs the line: the top-level
-        // files and directories' `mod.rs`, and the files of `platform`.
         let depth = name.matches('/').count();
-        let top = depth == 0
-            || (depth == 1 && name.ends_with("/mod.rs"))
-            || (name.starts_with("platform/") && depth == 1);
-        if !top || listed || name == "lib.rs" || name == "platform/mod.rs" {
+        let directory = name.rsplit_once('/').map_or("", |(directory, _)| directory);
+        let top = depth == 0 || (depth == 1 && name.ends_with("/mod.rs"));
+        let governed = DENY_ONLY_PARENTS.contains(&format!("{directory}/mod.rs").as_str());
+        if !(top || governed)
+            || listed
+            || name == "lib.rs"
+            || DENY_ONLY_PARENTS.contains(&name.as_str())
+        {
             continue;
         }
         let source = fs::read_to_string(&file).expect("a source file");
@@ -358,4 +365,23 @@ fn every_module_but_the_listed_ones_forbids_unsafe() {
         missing.is_empty(),
         "these modules hold no unsafe and do not forbid it: {missing:?}"
     );
+}
+
+#[test]
+fn the_modules_that_only_deny_are_the_ones_with_listed_children() {
+    let root = workspace().join("crates/bohio/src");
+    for parent in DENY_ONLY_PARENTS {
+        let directory = parent.trim_end_matches("mod.rs");
+        let has_listed_child = ALLOWED.iter().any(|entry| {
+            entry
+                .file
+                .strip_prefix(&format!("crates/bohio/src/{directory}"))
+                .is_some_and(|rest| !rest.contains('/'))
+        });
+        assert!(
+            has_listed_child,
+            "{parent} only denies unsafe_code and no file beside it is listed: it should forbid it"
+        );
+        assert!(root.join(parent).is_file(), "{parent} does not exist");
+    }
 }
