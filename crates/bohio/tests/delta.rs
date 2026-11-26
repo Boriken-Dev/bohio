@@ -921,3 +921,31 @@ fn a_replace_against_a_base_needs_read_as_well_as_write() {
     );
     assert_eq!(std::fs::read(fixture.root.join("f")).unwrap(), b"secret");
 }
+
+#[test]
+fn a_pull_with_a_block_below_min_block_is_refused_unless_the_host_lowers_it() {
+    let small = SyncOptions {
+        block_size: Some(64),
+        ..always()
+    };
+    let data = pseudo(100_000, 31);
+    let strict = fixture(&RW);
+    std::fs::write(strict.root.join("f"), &data).unwrap();
+    std::fs::write(strict.local.join("f"), pseudo(100_000, 32)).unwrap();
+    assert_eq!(
+        code(get(&strict.link, "f", &strict.local.join("f"), &small)),
+        ErrorCode::BadRequest
+    );
+
+    let loose = fixture_with(
+        &RW,
+        DeltaConfig {
+            min_block: 1,
+            ..DeltaConfig::default()
+        },
+    );
+    std::fs::write(loose.root.join("f"), &data).unwrap();
+    std::fs::write(loose.local.join("f"), pseudo(100_000, 32)).unwrap();
+    get(&loose.link, "f", &loose.local.join("f"), &small).unwrap();
+    assert_eq!(std::fs::read(loose.local.join("f")).unwrap(), data);
+}

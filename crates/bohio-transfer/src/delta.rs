@@ -28,8 +28,9 @@ pub enum Op {
 #[derive(Debug)]
 pub struct Matcher {
     block: usize,
-    /// Weak value and block number of every full block, ordered.
-    sorted: Vec<(u32, u32)>,
+    /// The number of every full block, ordered by weak value, then strong hash, then number: a window's
+    /// candidates are found by two binary searches, however many blocks share a weak value.
+    sorted: Vec<u32>,
     /// A bit set of the weak values' hashes: most windows never reach the table.
     filter: Vec<u64>,
     shift: u32,
@@ -69,18 +70,21 @@ impl Matcher {
             (signature.weak()[index], index)
         });
         let full = if short.is_some() { count - 1 } else { count } as usize;
-        let mut sorted: Vec<(u32, u32)> = signature.weak()[..full]
-            .iter()
-            .enumerate()
-            .map(|(index, weak)| (*weak, index as u32))
-            .collect();
-        sorted.sort_unstable();
+        let mut sorted: Vec<u32> = (0..full as u32).collect();
+        sorted.sort_unstable_by(|a, b| {
+            let (a, b) = (*a as usize, *b as usize);
+            (signature.weak()[a], signature.strong(a), a).cmp(&(
+                signature.weak()[b],
+                signature.strong(b),
+                b,
+            ))
+        });
         // About sixteen bits per block keeps the filter's false positives near a sixteenth.
         let bits = (full.max(1) * 16).next_power_of_two().max(64);
         let mut filter = vec![0_u64; bits / 64];
         let shift = 32 - bits.trailing_zeros().min(32);
-        for (weak, _) in &sorted {
-            let at = Self::slot(*weak, shift);
+        for index in &sorted {
+            let at = Self::slot(signature.weak()[*index as usize], shift);
             filter[at / 64] |= 1 << (at % 64);
         }
         Ok(Self {
@@ -203,27 +207,32 @@ impl Matcher {
 
     /// The block of the old file the window at `pos` equals, by weak value and then strong hash.
     fn find(&self, weak: u32) -> Option<u64> {
-        let start = self.sorted.partition_point(|(have, _)| *have < weak);
-        let mut candidates = self.sorted[start..]
-            .iter()
-            .take_while(|(have, _)| *have == weak)
-            .map(|(_, index)| *index as usize)
-            .peekable();
+        let weaks = self.signature.weak();
+        let start = self
+            .sorted
+            .partition_point(|index| weaks[*index as usize] < weak);
         // The strong hash costs a block's worth of hashing: only for a window some block shares the weak value with.
-        candidates.peek()?;
+        let first = *self.sorted.get(start)?;
+        if weaks[first as usize] != weak {
+            return None;
+        }
         let window = &self.buf[self.pos..self.pos + self.block];
         let strong = self.signature.spec().strong_of(window);
-        let mut first = None;
-        for index in candidates {
-            if self.signature.strong(index) != strong {
-                continue;
-            }
-            if self.follows == Some(index as u64) {
-                return Some(index as u64);
-            }
-            first.get_or_insert(index as u64);
+        if let Some(next) = self.follows
+            && let Ok(index) = usize::try_from(next)
+            && index < self.sorted.len()
+            && weaks[index] == weak
+            && self.signature.strong(index) == strong
+        {
+            return Some(next);
         }
-        first
+        let at = start
+            + self.sorted[start..].partition_point(|index| {
+                let index = *index as usize;
+                (weaks[index], self.signature.strong(index)) < (weak, strong.as_slice())
+            });
+        let found = *self.sorted.get(at)? as usize;
+        (weaks[found] == weak && self.signature.strong(found) == strong).then_some(found as u64)
     }
 
     fn add_literal(&mut self, bytes: &[u8]) {

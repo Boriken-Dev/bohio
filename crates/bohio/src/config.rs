@@ -932,14 +932,15 @@ impl Default for HashConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct DeltaConfig {
-    /// The smallest block a signature the host makes uses. At least 1; a small block finds more of what
-    /// stayed and makes a larger signature. Default `2048`.
+    /// The smallest block a signature the host makes uses, and the smallest a client's signature for a delta read
+    /// may use (a smaller one is `bad_request`: each position whose weak checksum matches costs a hash of a block).
+    /// At least 1; a small block finds more of what stayed and makes a larger signature. Default `2048`.
     pub min_block: u32,
     /// The largest block a signature uses, and the largest a peer may ask for; a block is held in
     /// memory twice per stream. At least `min_block`. Default `1048576`.
     pub max_block: u32,
     /// The most bytes of signature a delta read takes from the client (a weak value and a strong hash
-    /// per block); one past it is `busy`. At least 1. Default `67108864` (64 MiB).
+    /// per block, and about 8 bytes more per block for the matcher's index); one past it is `busy`. At least 1. Default `67108864` (64 MiB).
     pub max_signature_bytes: u64,
     /// The size of file from which a client's `auto` uses a delta instead of a whole transfer: a delta of a
     /// small file saves less than its round trips cost. Advertised in `info`; the client decides. Default

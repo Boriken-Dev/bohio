@@ -7,7 +7,7 @@ use bohio_transfer::apply::{ApplyError, apply, copy_len};
 use bohio_transfer::delta::{Matcher, Op};
 use bohio_transfer::rolling::Rolling;
 use bohio_transfer::signature::{
-    Signature, SignatureBuilder, SignatureSpec, SpecError, block_size_for,
+    BlockSig, Signature, SignatureBuilder, SignatureSpec, SpecError, block_size_for,
 };
 
 /// A deterministic generator: the tests need random-looking bytes and choices that repeat.
@@ -394,4 +394,41 @@ fn any_edit_of_any_file_rebuilds_for_block_sizes_from_2k_to_1m() {
             new.len()
         );
     }
+}
+
+#[test]
+fn a_signature_of_equal_weak_values_that_never_match_is_matched_in_bounded_time() {
+    const BLOCKS: u64 = 1 << 15;
+    let spec = SignatureSpec::new(1, Algorithm::Blake3, 1).unwrap();
+    let weak = Rolling::new(&[0]).value();
+    let wrong = spec.strong_of(&[0])[0].wrapping_add(1);
+    let mut signature = Signature::new(spec, BLOCKS).unwrap();
+    for _ in 0..BLOCKS {
+        signature
+            .push(&BlockSig {
+                weak,
+                strong: vec![wrong],
+            })
+            .unwrap();
+    }
+    let mut matcher = Matcher::new(signature, 4096).unwrap();
+    let started = std::time::Instant::now();
+    let ops = matcher.feed(&vec![0_u8; BLOCKS as usize]);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(3),
+        "matching took {:?}",
+        started.elapsed()
+    );
+    assert!(ops.iter().all(|op| matches!(op, Op::Literal(_))));
+}
+
+#[test]
+fn equal_blocks_of_the_old_file_are_found_and_the_one_that_continues_the_last_copy_is_preferred() {
+    let block = vec![7_u8; 8];
+    let old: Vec<u8> = block.iter().chain(&block).chain(&block).copied().collect();
+    let signature = signature_of(&old, 8, 8);
+    let mut matcher = Matcher::new(signature, 64).unwrap();
+    let mut ops = matcher.feed(&old);
+    ops.extend(matcher.finish());
+    assert_eq!(ops, vec![Op::Copy { block: 0, count: 3 }]);
 }

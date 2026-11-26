@@ -32,6 +32,9 @@ pub(super) struct Pull<'a> {
     pub idle: Duration,
 }
 
+/// What the matcher's index and filter hold for each block of the signature, beyond the signature itself.
+const INDEX_BYTES_PER_BLOCK: u64 = 8;
+
 /// The signature the client sends, checked against the bounds, before any byte of the file is read.
 ///
 /// # Errors
@@ -48,14 +51,14 @@ fn receive_signature(pull: &Pull<'_>) -> Result<Signature, ErrorBody> {
         ));
     }
     allowed(pull.context, std::slice::from_ref(&delta.strong))?;
-    let max_block = pull.context.delta.max_block;
+    let (min_block, max_block) = (pull.context.delta.min_block, pull.context.delta.max_block);
     let block = u32::try_from(delta.block_size)
         .ok()
-        .filter(|block| (1..=max_block).contains(block))
+        .filter(|block| (min_block..=max_block).contains(block))
         .ok_or_else(|| {
             ErrorBody::new(
                 ErrorCode::BadRequest,
-                "the block size is from 1 to this host's [delta] max_block",
+                "the block size is from this host's [delta] min_block to its max_block",
             )
         })?;
     let strong_len = usize::try_from(delta.strong_len).unwrap_or(usize::MAX);
@@ -63,9 +66,10 @@ fn receive_signature(pull: &Pull<'_>) -> Result<Signature, ErrorBody> {
         .map_err(|error| ErrorBody::new(ErrorCode::BadRequest, error.to_string()))?;
     let mut signature = Signature::new(spec, delta.base_size)
         .map_err(|error| ErrorBody::new(ErrorCode::BadRequest, error.to_string()))?;
+    // The matcher's index and filter take about as much again as the weak values do.
     let needed = signature
         .blocks_needed()
-        .saturating_mul(4 + delta.strong_len);
+        .saturating_mul(4 + delta.strong_len + INDEX_BYTES_PER_BLOCK);
     let too_big = || {
         ErrorBody::new(
             ErrorCode::Busy,
@@ -219,6 +223,9 @@ pub(super) fn pull(
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(error) => return Err(io_error(&error)),
         };
+        if pull.channel.is_closed() {
+            return Err(give_up());
+        }
         hasher.update(&buffer[..count]);
         remaining -= count as u64;
         ship(matcher.feed(&buffer[..count]))?;
