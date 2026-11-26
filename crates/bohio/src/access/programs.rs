@@ -555,7 +555,13 @@ impl Entry {
         check_access: bool,
         checked: &mut ownership::Checked,
     ) -> Self {
-        let file = PathBuf::from(&config.command[0]);
+        // One absolute path is checked, digested and run: a relative name would be run against the entry's `cwd`, and a
+        // bare one from `PATH`, which is not the file that was checked.
+        let file = std::path::absolute(&config.command[0])
+            .unwrap_or_else(|_| PathBuf::from(&config.command[0]));
+        let mut resolved = config.clone();
+        resolved.command[0] = file.to_string_lossy().into_owned();
+        let config = &resolved;
         if !file.is_file() {
             return Self::refused(
                 name.to_owned(),

@@ -307,7 +307,9 @@ A desktop helper that the node starts through an exec source (a session named `e
   one the operator meant, so whoever can write the program file, or the directory it is in, as the node's own account (or root),
   chooses the code the node runs. By default a program or its directory that another account owns or may write is refused
   (`[providers] check_access`, only the lowest layer sets it, as for libraries); `false` runs it and logs `non-default:`
-  (`bohio providers` prints it too): use it only where the directory's write access is held some other way. The check covers the file and
+  (`bohio providers` prints it too): use it only where the directory's write access is held some other way. The command's file is made absolute once (a relative one
+  against the node's working directory) and that one path is checked, digested and started, so an entry's `cwd` or `PATH` cannot
+  make it run another file. The check covers the file and
   the directory that holds it, not every directory above, and a file is checked and then run, so a swap in between is possible
   for whoever may write there. A program is not a sandbox either way: it shares the node's account, files and network, and only
   its memory is apart, so a crash or a stuck call in it cannot take the node down (a call is bounded by `call_timeout`, a start

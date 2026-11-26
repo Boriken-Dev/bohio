@@ -572,3 +572,44 @@ mod serial {
         assert!(got.ends_with(b"root\r"), "the far end read {got:?}");
     }
 }
+
+/// Puts the process back in its working directory when the test ends.
+#[cfg(unix)]
+struct Restore(PathBuf);
+
+#[cfg(unix)]
+impl Drop for Restore {
+    fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.0);
+    }
+}
+
+/// The file the entry's `command[0]` names relative to the node's working directory is the one checked, digested and
+/// run, not another one of that name under the entry's `cwd` or on `PATH`.
+#[cfg(unix)]
+#[test]
+fn a_relative_command_runs_the_file_that_was_checked_and_not_one_under_the_entrys_cwd() {
+    use std::os::unix::fs::PermissionsExt;
+    let here = private_directory();
+    std::fs::create_dir(here.path().join("bin")).expect("bin");
+    std::fs::copy(built(), here.path().join("bin").join("program_echo")).expect("the copy");
+    let other = private_directory();
+    std::fs::create_dir(other.path().join("bin")).expect("the decoy directory");
+    let script = other.path().join("bin").join("program_echo");
+    std::fs::write(&script, "#!/bin/sh\nexit 0\n").expect("the decoy");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).expect("runnable");
+
+    // The one test here that moves the process: every other test names its files by absolute path.
+    let _restore = Restore(std::env::current_dir().expect("a working directory"));
+    std::env::set_current_dir(here.path()).expect("moved");
+    let relative = Path::new("bin").join("program_echo");
+    let table = format!("cwd = {}\nstart_timeout = \"5s\"", quoted(other.path()));
+    let node = build(config(&relative, &[], &table, "")).expect("the node starts");
+    let program = &programs(&node).programs[0];
+    assert_eq!(program.state, ProgramState::Running, "{program:?}");
+    assert!(
+        program.detail.contains("program-echo"),
+        "{}",
+        program.detail
+    );
+}
