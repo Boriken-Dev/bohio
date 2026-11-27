@@ -2521,7 +2521,8 @@ fn console_command(
     let interactive = std::io::stdin().is_terminal();
     let size = if interactive { local_size() } else { (80, 24) };
     let shell = if let Some(from) = args.from {
-        let id = format!("console:{}", args.source.as_deref().unwrap_or("native"));
+        let id = Shell::console_session(link, args.source.as_deref(), Some(client.reply))
+            .map_err(|error| explain(&error))?;
         let (shell, attached) =
             Shell::attach(link, &id, Some(from)).map_err(|error| explain(&error))?;
         if attached.lost > 0 {

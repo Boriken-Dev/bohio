@@ -655,3 +655,22 @@ terminal = [\"line\"]
         world
     }
 }
+
+#[test]
+fn the_default_console_is_named_by_the_host_not_guessed_by_the_client() {
+    let _first = testing::terminal_link("console-first-default");
+    let _second = testing::terminal_link("console-spare-default");
+    let both = format!(
+        "{}[source.spare]\nprovider = \"fake_terminal\"\nlink = \"console-spare-default\"\n",
+        fake("console-first-default")
+    );
+    let world = world_with(&both, &["spare", "console"], granted());
+    assert_eq!(
+        Shell::console_session(&world.link, None, Some(WAIT)).unwrap(),
+        "console:spare"
+    );
+    assert_eq!(
+        Shell::console_session(&world.link, Some("console"), Some(WAIT)).unwrap(),
+        "console:console"
+    );
+}

@@ -94,6 +94,37 @@ impl Shell {
         Ok((Self::attached_to(channel, session), attached))
     }
 
+    /// The id of the console session of the terminal source `source`, or of the host's default terminal source when `None`:
+    /// the first the host lists, which is the one a console request without a source opens. The session is the one
+    /// [`Shell::attach`] takes.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Remote`] `not_found` when the host serves no terminal source, `denied` without the `info` permission,
+    /// else whatever `link` reports.
+    pub fn console_session(
+        link: &dyn Open,
+        source: Option<&str>,
+        wait: Option<Duration>,
+    ) -> Result<String, Error> {
+        if let Some(source) = source {
+            return Ok(format!("console:{source}"));
+        }
+        let info = crate::control::Control::open(link)?.info(wait)?;
+        info.access
+            .terminal
+            .iter()
+            .find(|entry| entry.default)
+            .or_else(|| info.access.terminal.first())
+            .map(|entry| format!("console:{}", entry.name))
+            .ok_or_else(|| {
+                Error::Remote(bohio_proto::ErrorBody::new(
+                    bohio_proto::ErrorCode::NotFound,
+                    "the host serves no terminal source",
+                ))
+            })
+    }
+
     /// A shell on a channel that attached to the session `session`.
     pub(crate) fn attached_to(channel: Box<dyn Channel>, session: &str) -> Self {
         Self {
