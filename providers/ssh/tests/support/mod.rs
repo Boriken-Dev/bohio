@@ -14,6 +14,7 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
+use bohio_api::Interval;
 use bohio_provider_ssh::SshSettings;
 use russh::keys::ssh_key::{LineEnding, PublicKey};
 use russh::keys::{Algorithm, HashAlg, PrivateKey};
@@ -67,6 +68,8 @@ pub struct Options {
     pub fail_writes_from: Option<u64>,
     /// Answer every command request with a failure, as a server that will not run the command does.
     pub refuse_commands: bool,
+    /// Never answer a request to open a session channel, as a server that is too slow to does.
+    pub stall_opens: bool,
 }
 
 impl Default for Options {
@@ -80,6 +83,7 @@ impl Default for Options {
             fish: false,
             fail_writes_from: None,
             refuse_commands: false,
+            stall_opens: false,
         }
     }
 }
@@ -264,7 +268,7 @@ impl FakeSsh {
                 .into_owned(),
         );
         settings.agent = false;
-        settings.reconnect_after = "0s".to_owned();
+        settings.reconnect_after = Interval::from_secs(0);
         settings
     }
 }
@@ -304,6 +308,7 @@ impl russh::server::Server for Server {
             ptys: HashSet::new(),
             stdin: HashMap::new(),
             kill: HashMap::new(),
+            stalled: Vec::new(),
             open: 0,
         }
     }
@@ -319,6 +324,8 @@ struct Connection {
     ptys: HashSet<ChannelId>,
     stdin: HashMap<ChannelId, ChildStdin>,
     kill: HashMap<ChannelId, oneshot::Sender<()>>,
+    /// The channel opens never answered (`stall_opens`).
+    stalled: Vec<ChannelOpenHandle>,
     open: usize,
 }
 
@@ -356,6 +363,10 @@ impl russh::server::Handler for Connection {
         reply: ChannelOpenHandle,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if self.options.stall_opens {
+            self.stalled.push(reply);
+            return Ok(());
+        }
         if self.open >= self.options.max_sessions {
             // Dropping the reply refuses the channel, as sshd's `MaxSessions` does.
             return Ok(());
@@ -666,6 +677,9 @@ pub fn parse_line(command: &str) -> Option<Line> {
     };
     if words.peek().map(String::as_str) == Some("cd") {
         words.next();
+        if words.peek().map(String::as_str) == Some("--") {
+            words.next();
+        }
         line.cwd = Some(words.next()?);
         if words.next()? != "&&" {
             return None;
@@ -685,6 +699,10 @@ pub fn parse_line(command: &str) -> Option<Line> {
                 Some("-u") => {
                     words.next();
                     line.env.push((words.next()?, None));
+                }
+                Some("--") => {
+                    words.next();
+                    break;
                 }
                 Some(word) if word.contains('=') && !word.starts_with('=') => {
                     let (name, value) = word.split_once('=')?;
@@ -734,7 +752,28 @@ async fn supervise(
             }
         }
     }
-    let code = match child.wait().await {
+    let status = child.wait().await;
+    // A program a signal ended is told as OpenSSH tells it: by name, and `SIG@openssh.com` for a signal it has no name for.
+    #[cfg(unix)]
+    if let Ok(status) = &status
+        && let Some(number) = std::os::unix::process::ExitStatusExt::signal(status)
+    {
+        let name = match number {
+            1 => Sig::HUP,
+            2 => Sig::INT,
+            6 => Sig::ABRT,
+            9 => Sig::KILL,
+            15 => Sig::TERM,
+            _ => Sig::Custom("SIG@openssh.com".to_owned()),
+        };
+        let _ = handle
+            .exit_signal_request(channel, name, false, String::new(), String::new())
+            .await;
+        let _ = handle.eof(channel).await;
+        let _ = handle.close(channel).await;
+        return;
+    }
+    let code = match status {
         Ok(status) => status.code().map_or(255, |code| code as u32),
         Err(_) => 255,
     };

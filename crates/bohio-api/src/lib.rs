@@ -25,6 +25,7 @@ pub mod contract;
 pub mod desktop;
 pub mod exec;
 pub mod files;
+pub mod interval;
 pub mod media;
 pub mod model;
 pub mod power;
@@ -37,6 +38,7 @@ pub mod vocab;
 pub use desktop::{DesktopSession, DesktopSource};
 pub use exec::{ExecSource, Process};
 pub use files::{DirReader, Directory, File, FilesSource};
+pub use interval::Interval;
 pub use media::{BlockReader, MediaSource};
 pub use model::{
     Delivery, DirEntryModel, DisplayModel, EnvVar, ExecStart, FileStat, FrameHeader, InputModel,

@@ -121,13 +121,18 @@ impl Default for TerminalOpen {
     }
 }
 
+/// The `signal` of an exit that a signal ended and the source could not name: a machine reached over SSH reports a
+/// signal OpenSSH has no name for (`BUS`, `SYS`, `TRAP`, `XCPU`) without saying which.
+pub const UNNAMED_SIGNAL: i64 = -1;
+
 /// How a terminal's program ended.
 #[derive(ToValue, FromValue, Schema, Debug, Clone, Default, PartialEq, Eq)]
 #[map(crate = ::guatiao)]
 pub struct TerminalExit {
     /// The exit code, when the source knows one.
     pub code: Option<i64>,
-    /// The signal number that ended it, when one did.
+    /// The signal number that ended it, when one did: the numbering of the machine the program ran on (Linux's for a
+    /// machine reached over SSH), or [`UNNAMED_SIGNAL`] when the source knows a signal ended it and not which.
     pub signal: Option<i64>,
 }
 
@@ -312,6 +317,7 @@ pub struct ExecStart {
     #[map(default)]
     pub listed: bool,
     /// What happens to the program's tree if the host dies without ending it: `kill`, `term` or `leave`. Absent is `kill`.
+    /// A source that cannot watch the host (one reached over SSH) ignores it: the program is left to the machine it runs on.
     pub on_host_death: Option<String>,
     /// Whether the program starts with SIGINT, SIGQUIT and SIGHUP at their default action instead of what the host
     /// inherited (Unix; a host started with `&` or `nohup` has them ignored, and its programs would never see an

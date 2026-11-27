@@ -332,6 +332,9 @@ impl Link {
             .is_some_and(|current| Arc::ptr_eq(current, conn))
         {
             state.conn = None;
+            if !self.settings.reconnect {
+                state.lost = true;
+            }
         }
     }
 
@@ -364,7 +367,15 @@ impl Link {
         let opened = match tokio::time::timeout(wait, conn.handle.channel_open_session()).await {
             Ok(Ok(channel)) => Ok(channel),
             Ok(Err(error)) if !conn.is_closed() => Err(self.open_error(&error)),
-            // The connection is gone: make it again and try once more.
+            // A slow server is not a dead connection: the others using it keep it.
+            Err(_) if !conn.is_closed() => Err(refuse(
+                Status::GUATIAO_ERR_GONE,
+                format!(
+                    "{}: the server did not open a channel in time",
+                    self.target()
+                ),
+            )),
+            // The connection is gone: make it again (unless `reconnect` is off) and try once more.
             _ => {
                 self.reset(&conn).await;
                 let conn = self.conn().await?;

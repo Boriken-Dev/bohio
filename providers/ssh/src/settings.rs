@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use bohio_api::Interval;
 use bohio_api::guatiao::library::ProviderError;
 use bohio_api::guatiao::{FromValue, Schema, Status, ToValue};
 
@@ -58,13 +59,13 @@ pub struct SshSettings {
     /// `off` (any key). Default `strict`.
     #[map(default = String::from("strict"))]
     pub host_key_check: String,
-    /// How long connecting and logging in may take (`15s`, `500ms`). Not zero. Default `15s`.
-    #[map(default = String::from("15s"))]
-    pub connect_timeout: String,
+    /// How long connecting and logging in may take (`15s`, `500ms`; a bare number is seconds). Not zero. Default `15s`.
+    #[map(default = Interval::from_secs(15))]
+    pub connect_timeout: Interval,
     /// How often an idle connection is probed (`30s`); `0s` sends none, and a dead connection is then found only when
     /// something is sent on it. Default `30s`.
-    #[map(default = String::from("30s"))]
-    pub keepalive: String,
+    #[map(default = Interval::from_secs(30))]
+    pub keepalive: Interval,
     /// Unanswered probes before the connection is dropped. Not zero. Default `3`.
     #[map(default = 3)]
     pub keepalive_max: u64,
@@ -77,22 +78,22 @@ pub struct SshSettings {
     pub reconnect: bool,
     /// How long after a failed connect the source is reported unavailable without trying again (`5s`, `0s` tries at
     /// every use). Default `5s`.
-    #[map(default = String::from("5s"))]
-    pub reconnect_after: String,
+    #[map(default = Interval::from_secs(5))]
+    pub reconnect_after: Interval,
     /// With `client = "openssh"`, how long what a login to the host answered is kept before the next `info` logs in
     /// again (`30s`): each probe is a full `ssh` login, so a short time makes every `info` a login, and a peer that holds
     /// `info` then makes the host see one for each. `0s` logs in for each probe (concurrent probes still share one).
     /// Default `30s`.
-    #[map(default = String::from("30s"))]
-    pub probe_every: String,
+    #[map(default = Interval::from_secs(30))]
+    pub probe_every: Interval,
     /// How long a request waits for a channel, the server's answer to opening one and a write to the server (`30s`).
     /// Not zero. Default `30s`.
-    #[map(default = String::from("30s"))]
-    pub operation_timeout: String,
+    #[map(default = Interval::from_secs(30))]
+    pub operation_timeout: Interval,
     /// How long output and the end of a channel are awaited after a program has exited (`1s`): a descendant that
     /// outlives the program can keep the channel open. Default `1s`.
-    #[map(default = String::from("1s"))]
-    pub exit_grace: String,
+    #[map(default = Interval::from_secs(1))]
+    pub exit_grace: Interval,
     /// Chunks of output a program holds ahead of the reader (the reader waits when they are full). At least 1.
     /// Default `16`.
     #[map(default = 16)]
@@ -167,21 +168,6 @@ pub struct SshSettings {
     #[map(default)]
     #[schema(advanced)]
     pub ssh_args: Vec<String>,
-}
-
-/// A time: a number and `ms`, `s`, `m` or `h`; a bare number is seconds.
-pub(crate) fn span(text: &str) -> Option<Duration> {
-    let text = text.trim();
-    let digits = text.chars().take_while(char::is_ascii_digit).count();
-    let (number, unit) = text.split_at(digits);
-    let number: u64 = number.parse().ok()?;
-    match unit.trim() {
-        "ms" => Some(Duration::from_millis(number)),
-        "" | "s" => Some(Duration::from_secs(number)),
-        "m" => Some(Duration::from_secs(number.checked_mul(60)?)),
-        "h" => Some(Duration::from_secs(number.checked_mul(3600)?)),
-        _ => None,
-    }
 }
 
 fn refuse(message: String) -> ProviderError {
@@ -447,15 +433,15 @@ impl SshSettings {
             host_key: None,
             known_hosts: None,
             host_key_check: "strict".to_owned(),
-            connect_timeout: "15s".to_owned(),
-            keepalive: "30s".to_owned(),
+            connect_timeout: Interval::from_secs(15),
+            keepalive: Interval::from_secs(30),
             keepalive_max: 3,
             max_channels: 8,
             reconnect: true,
-            reconnect_after: "5s".to_owned(),
-            probe_every: "30s".to_owned(),
-            operation_timeout: "30s".to_owned(),
-            exit_grace: "1s".to_owned(),
+            reconnect_after: Interval::from_secs(5),
+            probe_every: Interval::from_secs(30),
+            operation_timeout: Interval::from_secs(30),
+            exit_grace: Interval::from_secs(1),
             queue_chunks: 16,
             worker_threads: 2,
             sftp_in_flight: 16,
@@ -490,18 +476,11 @@ impl SshSettings {
             .ok()
             .filter(|port| *port != 0)
             .ok_or_else(|| refuse("port is not between 1 and 65535".to_owned()))?;
-        let time = |key: &str, text: &str, zero: bool| -> Result<Duration, ProviderError> {
-            let value = span(text).ok_or_else(|| {
-                refuse(format!(
-                    "{key} is not a time (a number and ms, s, m or h): `{text}`"
-                ))
-            })?;
-            if value.is_zero() && !zero {
-                return Err(refuse(format!(
-                    "{key} is 0, which could never succeed (a longer time)"
-                )));
+        let time = |key: &str, value: Interval, zero: bool| -> Result<Duration, ProviderError> {
+            if value.get().is_zero() && !zero {
+                return Err(Interval::zero_refused(key));
             }
-            Ok(value)
+            Ok(value.get())
         };
         let count = |key: &str, value: u64| -> Result<usize, ProviderError> {
             if value == 0 {
@@ -559,7 +538,7 @@ impl SshSettings {
                     .to_owned(),
             ));
         }
-        let keepalive = time("keepalive", &self.keepalive, true)?;
+        let keepalive = time("keepalive", self.keepalive, true)?;
         let openssh = match self.client.as_str() {
             "russh" => None,
             "openssh" => {
@@ -600,15 +579,15 @@ impl SshSettings {
             known_hosts_set: self.known_hosts.is_some(),
             known_hosts,
             check,
-            connect_timeout: time("connect_timeout", &self.connect_timeout, false)?,
+            connect_timeout: time("connect_timeout", self.connect_timeout, false)?,
             keepalive: (!keepalive.is_zero()).then_some(keepalive),
             keepalive_max: count("keepalive_max", self.keepalive_max)?,
             max_channels: count("max_channels", self.max_channels)?,
             reconnect: self.reconnect,
-            reconnect_after: time("reconnect_after", &self.reconnect_after, true)?,
-            probe_every: time("probe_every", &self.probe_every, true)?,
-            operation_timeout: time("operation_timeout", &self.operation_timeout, false)?,
-            exit_grace: time("exit_grace", &self.exit_grace, true)?,
+            reconnect_after: time("reconnect_after", self.reconnect_after, true)?,
+            probe_every: time("probe_every", self.probe_every, true)?,
+            operation_timeout: time("operation_timeout", self.operation_timeout, false)?,
+            exit_grace: time("exit_grace", self.exit_grace, true)?,
             queue_chunks: count("queue_chunks", self.queue_chunks)?,
             worker_threads: count("worker_threads", self.worker_threads)?,
             sftp_in_flight: count("sftp_in_flight", self.sftp_in_flight)?,
@@ -642,7 +621,7 @@ impl SshSettings {
         if self.user.as_deref() == Some("root") {
             found.push("user = root: every peer of this source acts as root there".to_owned());
         }
-        if span(&self.keepalive).is_some_and(|keepalive| keepalive.is_zero()) {
+        if self.keepalive.get().is_zero() {
             found.push(
                 "keepalive = 0s: a dead connection is found only when something is sent".to_owned(),
             );
@@ -688,18 +667,6 @@ impl SshSettings {
 
 #[cfg(test)]
 mod tests {
-    use super::span;
-    use std::time::Duration;
-
-    #[test]
-    fn a_time_is_a_number_and_a_unit() {
-        assert_eq!(span("15s"), Some(Duration::from_secs(15)));
-        assert_eq!(span("250ms"), Some(Duration::from_millis(250)));
-        assert_eq!(span("2"), Some(Duration::from_secs(2)));
-        assert_eq!(span("1h"), Some(Duration::from_secs(3600)));
-        assert_eq!(span("soon"), None);
-    }
-
     #[test]
     fn a_source_that_logs_in_as_root_says_so() {
         let mut settings = super::SshSettings::new("host.invalid");

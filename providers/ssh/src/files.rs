@@ -27,6 +27,26 @@ use tokio::sync::OwnedSemaphorePermit;
 use crate::link::{Link, Slot, lock};
 use crate::settings::Settings;
 
+/// The longest SFTP packet the client accepts: OpenSSH's `sftp-server` caps one read or write at 256 KiB.
+const SFTP_PACKET_MAX: usize = 256 * 1024;
+
+/// What a packet's framing (the request header and the handle) takes from [`SFTP_PACKET_MAX`], so the data in one read
+/// or write is at most [`SFTP_DATA_MAX`].
+const SFTP_FRAMING: usize = 1024;
+
+/// The most data one read or write carries.
+const SFTP_DATA_MAX: usize = SFTP_PACKET_MAX - SFTP_FRAMING;
+
+fn sftp_config(settings: &Settings) -> russh_sftp::client::Config {
+    russh_sftp::client::Config {
+        max_packet_len: u32::try_from(SFTP_PACKET_MAX).unwrap_or(u32::MAX),
+        max_concurrent_reads: settings.sftp_in_flight,
+        max_concurrent_writes: settings.sftp_in_flight,
+        max_write_packet_len: u32::try_from(settings.sftp_packet).unwrap_or(u32::MAX),
+        request_timeout_secs: settings.operation_timeout.as_secs().max(1),
+    }
+}
+
 /// What the server's version reply advertised.
 #[derive(Debug, Clone, Copy, Default)]
 struct Exts {
@@ -136,13 +156,7 @@ impl Files {
             return Err(unavailable("the ssh program has no pipes"));
         };
         let settings = self.settings();
-        let config = russh_sftp::client::Config {
-            max_packet_len: 256 * 1024,
-            max_concurrent_reads: settings.sftp_in_flight,
-            max_concurrent_writes: settings.sftp_in_flight,
-            max_write_packet_len: u32::try_from(settings.sftp_packet).unwrap_or(u32::MAX),
-            request_timeout_secs: settings.operation_timeout.as_secs().max(1),
-        };
+        let config = sftp_config(settings);
         let mut raw = RawSftpSession::new_with_config(tokio::io::join(stdout, stdin), config);
         let version = tokio::time::timeout(settings.operation_timeout, raw.init())
             .await
@@ -203,13 +217,7 @@ impl Files {
                 Some(_) => {}
             }
         }
-        let config = russh_sftp::client::Config {
-            max_packet_len: 256 * 1024,
-            max_concurrent_reads: settings.sftp_in_flight,
-            max_concurrent_writes: settings.sftp_in_flight,
-            max_write_packet_len: u32::try_from(settings.sftp_packet).unwrap_or(u32::MAX),
-            request_timeout_secs: settings.operation_timeout.as_secs().max(1),
-        };
+        let config = sftp_config(settings);
         let mut raw = RawSftpSession::new_with_config(channel.into_stream(), config);
         let version = raw
             .init()
@@ -698,7 +706,6 @@ impl Directory for SftpDir {
             sftp,
             handle,
             state: Mutex::new(FileState::default()),
-            append: options.append,
         }
         .into_object())
     }
@@ -958,8 +965,6 @@ struct FileState {
     ahead: Option<(u64, Vec<u8>)>,
     /// The offset after the latest read, to tell a sequential reader.
     next_read: u64,
-    /// The offset after the latest write, for an append file's length.
-    written: u64,
 }
 
 /// An open file. Reads go ahead and writes behind by `sftp_in_flight` requests; a call that observes the file
@@ -969,7 +974,6 @@ struct SftpFile {
     sftp: Arc<Sftp>,
     handle: SftpHandle,
     state: Mutex<FileState>,
-    append: bool,
 }
 
 impl SftpFile {
@@ -1011,7 +1015,7 @@ impl SftpFile {
     fn packet(&self) -> usize {
         let configured = self.files.settings().sftp_packet;
         // A server's own limit on one read or write caps it.
-        configured.min(255 * 1024)
+        configured.min(SFTP_DATA_MAX)
     }
 
     fn fetch(&self, offset: u64, want: usize) -> Result<Vec<u8>, ProviderError> {
@@ -1145,7 +1149,6 @@ impl File for SftpFile {
             }
             at += chunk.len() as u64;
         }
-        state.written = state.written.max(at);
         Ok(data.len() as u64)
     }
 
@@ -1172,7 +1175,7 @@ impl File for SftpFile {
         if !self.sftp.exts.fsync {
             return Err(failure(
                 word::UNSUPPORTED,
-                "this server cannot flush a file (no fsync@openssh.com)",
+                "this server cannot flush a file (it has no fsync@openssh.com); a write to it needs `[filesystem] sync_writes = false`, which also stops the node flushing native writes",
             ));
         }
         let (raw, handle) = (Arc::clone(&self.sftp.raw), self.handle.clone());
@@ -1232,7 +1235,6 @@ impl Drop for SftpFile {
         let (sftp, handle) = (Arc::clone(&self.sftp), self.handle.clone());
         let writing: Vec<_> = lock(&self.state).writing.drain(..).collect();
         let wait = self.files.settings().operation_timeout;
-        let _ = self.append;
         // The acknowledgements of what was written are awaited before the handle is closed, so a file dropped without
         // a call that observes it still lands.
         self.files.link.rt.handle().spawn(async move {

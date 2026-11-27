@@ -26,7 +26,7 @@ Provider id `ssh`. `[source.<name>] provider = "ssh"` and:
 | `host_key` | none | `sha256:HEX` of the host's public key blob; a pinned key is the only one accepted (except under `off`) |
 | `known_hosts` | `~/.ssh/known_hosts` | read by `strict` and `tofu` |
 | `host_key_check` | `strict` | `strict` (pinned or in known_hosts), `tofu` (a host with no entry is trusted at first contact and that key is held for the life of the source), `off` (any key) |
-| `connect_timeout` | `15s` | connecting and logging in; not zero |
+| `connect_timeout` | `15s` | connecting and logging in; not zero. Every time below is `bohio_api::Interval`: a number of seconds (`5`) or text with a unit (`500ms`, `30s`, `5m`, `1h`) |
 | `keepalive`, `keepalive_max` | `30s`, `3` | probe an idle connection; `0s` sends none; drop it after that many unanswered |
 | `max_channels` | `8` | session channels open at once (the server's `MaxSessions` is 10 in OpenSSH); a request past it waits `operation_timeout`, then is `busy` naming this key; a server that refuses sooner says so |
 | `reconnect`, `reconnect_after` | `true`, `5s` | make the connection again on the next use; after a failed connect the source is `unavailable` without trying for this long (`0s` tries every use) |
@@ -57,18 +57,24 @@ Building the source never touches the network or a key file; the first `describe
 ## Behaviour
 
 - Login order: agent keys, then the key file, then the password. The refusal names each way tried and never a secret.
-- **Exec**: one exec channel. The command line is `cd 'DIR' && exec env [-i] 'K=V' [-u 'K'] 'prog' 'arg'...`, every word single-quoted for the host's
+- **Exec**: one exec channel. The command line is `cd -- 'DIR' && exec env [-i] [-u 'K'] -- 'K=V' 'prog' 'arg'...`, every word single-quoted for the host's
   login shell, which must be a POSIX one (a Windows server is not served). The environment is on the line because servers refuse the `env`
-  channel request by default. A shell kind (`sh`, `bash`, `zsh`, `powershell`, `pwsh`; `cmd` is refused) runs a script as `KIND -c SCRIPT`.
+  channel request by default. A program word that starts with `-` is made `./WORD` (`exec` and `env` would read it as an option), and under
+  `env` a program word with an `=` is run as `sh -c 'exec "$@"' sh WORD ...` (`env` would read it as an assignment). A shell kind (`sh`, `bash`, `zsh`, `powershell`, `pwsh`; `cmd` is refused) runs a script as `KIND -c SCRIPT`.
   Standard output and standard error are separate; exit status or signal arrive in either order with the end of the channel, and the process
   ends `exit_grace` after the exit. A program missing on the host is exit status 127 with the shell's message, not `not_found`; a missing
-  working directory is exit status 1.
+  working directory is exit status 1. `on_host_death` is ignored: nothing of the node runs on the host, so what the node's death leaves
+  running is the host's own (its `sshd` closes the program's pipes and, under a terminal, hangs it up when the connection ends).
+  The login-shell probe (`login_shell_check`) is cached for the source only when it was conclusive (POSIX, or another shell's answer once
+  the probe ended); output an rc file prints before it is ignored, and a probe that did not end is an error that the next start asks again.
 - **Terminal**: a pty (`TERM` from the request's environment, else `xterm-256color`) running the program, or the account's login shell when
   the request names none. Resize is a window change; `interrupt` writes the control byte `0x03` (the line discipline signals the foreground
   program), the other signals are SSH signal requests.
 - **Signals** are SSH `signal` requests: OpenSSH 7.9+ delivers them to the program (not its group), others ignore them, and one that arrives before
   the program has started is lost. `kill` signals KILL, closes the channel and reports the program as ended by signal 9 whether or not the
-  host answers; the program's descendants are not ended (`lacks` `kill_tree`).
+  host answers; the program's descendants are not ended (`lacks` `kill_tree`). A signal that ended the program is reported with Linux's
+  number whatever the host; OpenSSH names 13, and any other (`BUS`, `SYS`, `TRAP`, `XCPU`) arrives as `SIG@openssh.com`, which is reported as
+  `bohio_api::model::UNNAMED_SIGNAL` (`-1`): a signal ended it and which is not known.
 - A program under a program list is the one the host finds at that name on the account's own `PATH`, not the node's.
 - `describe`: asks for the connection (waiting at most `connect_timeout + operation_timeout`); `available: false` with the reason when it
   fails, and for `reconnect_after` after that without trying again.
@@ -85,7 +91,7 @@ name is `outside_root` before it reaches the host. `describe` offers `read`, `wr
 | `posix-rename@openssh.com` | `atomic_replace` (rename over a name in one step) | `rename(.., overwrite)` over an existing name is `unsupported`; to a free name it is the plain rename |
 | `hardlink@openssh.com` | `hard_link` | `unsupported` |
 | `statvfs@openssh.com` | `statvfs` | `unsupported` |
-| `fsync@openssh.com` | `sync` | `unsupported` (the library alone would skip it silently) |
+| `fsync@openssh.com` | `sync` | `unsupported` (the library alone would skip it silently), so with `[filesystem] sync_writes` (the default `true`) every write to this server is refused, naming that setting; `sync_writes = false` lets a write through and is node-wide: native writes stop being flushed too |
 
 It **lacks `confined`**: the server resolves each name by path on every call, so a symbolic link inside a directory can lead out of it. The
 node's own check (a path is under one of the peer's `fs_roots`) is lexical and holds; a link a peer can make with `symlink` (or one the
@@ -107,8 +113,9 @@ Kerberos and `ProxyJump` apply, and the program's own agent is what logs in. A s
 
 What it cannot do, refused when the source is built: `host_key` (the client keeps `known_hosts`), `password` and `passphrase` (batch
 mode never asks), `x11_display` and `x11_forward` (they need channels of one connection). What a session lacks, said in `describe`:
-terminal `resize` (a pty starts at the client's default size, and the new size is not passed on) and `signals` and exec `signals`
-(`interrupt` on a terminal is still the control byte; `kill` ends the ssh process and the host's program is left to its own hangup).
+terminal `resize` (a pty starts at the client's default size, and the new size is not passed on) and exec `signals`. A terminal still
+offers `signals`, but the only one it takes is `interrupt`, written as the control byte (any other is `unsupported`); `kill` ends the ssh
+process and the host's program is left to its own hangup.
 A program's exit status is the client's: `255` is ssh's own failure, and its message is on the standard error (merged into the
 output under a terminal). A desktop through the helper (`[gui] source`) needs nothing more, since it is an exec session. The
 test suites run against it with `BOHIO_TEST_SSH_CLIENT=openssh`; tests of what only the russh client does print `SKIPPED`.
@@ -131,15 +138,15 @@ with no X display (Windows) fails each forwarded connection with the reason in t
 
 ## Gotchas
 
-- Channels count against the server until they are closed: a handle dropped without `kill` or the program's end still holds a slot until the host
-  closes the channel (`exit_grace` after the exit).
+- Channels count against the server until they are closed, but a slot of `max_channels` is let go as soon as a handle is dropped or killed, before
+  the host has closed the channel: keep the server's `MaxSessions` above `max_channels` by a margin for a burst of starts and kills.
 - A server accepts only a few failed logins: a wrong key can lock the account's throttle for a while.
 - A write that cannot make progress for `operation_timeout` fails; a connection that stops answering is dropped by `keepalive`.
 - An SFTP session that stops answering fails a request after `operation_timeout`; the next call opens another session.
 - From Windows into WSL's loopback relay a bulk full-duplex transfer has stalled the whole session in measurement: bulk tests run inside WSL.
 
 Tests: `tests/fake.rs` runs the provider against an in-process server (`tests/support/`, with an SFTP subsystem over the real file system; programs need `sh`, or `Options { direct: true }` starts the program of the provider's command line itself, as the helper test does on a machine with no `sh`);
-`tests/real_sshd.rs` starts a private no-root `sshd` on loopback (on Windows inside WSL `FedoraLinux-44`; `BOHIO_TEST_REQUIRE_SSHD=1` makes a missing one a
+`tests/real_sshd.rs` starts a private no-root `sshd` on loopback (on Windows inside the WSL distribution `BOHIO_TEST_WSL_DISTRO` names, else WSL's default; `BOHIO_TEST_REQUIRE_SSHD=1` makes a missing one a
 failure instead of a skip). Both run `bohio_api::contract::files`.
 
 `crates/bohio/tests/ssh.rs` has an ignored measurement against a real machine from another site, `a_live_machine_serves_programs_and_files_through_the_ssh_source`

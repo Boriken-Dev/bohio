@@ -1,7 +1,7 @@
 //! The `ssh` provider against a real OpenSSH server.
 //!
 //! On Linux the test starts a private `sshd` (no root, loopback, a throwaway host key). On Windows it starts the same
-//! inside a WSL distribution (`BOHIO_TEST_WSL_DISTRO`, default `FedoraLinux-44`) and reaches it through WSL's
+//! inside a WSL distribution (`BOHIO_TEST_WSL_DISTRO`, else WSL's default one) and reaches it through WSL's
 //! localhost relay. Where there is no `sshd` to start, a test says why it skipped and passes.
 
 use std::io::Write as _;
@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use bohio_api::model::{ExecStart, ProgramSpec, TerminalExit, TerminalOpen};
-use bohio_api::{ExecSource, Process, TerminalSource};
+use bohio_api::{ExecSource, Interval, Process, TerminalSource};
 
 /// Makes every server of this process its own: the tests run side by side.
 static STARTED: AtomicU64 = AtomicU64::new(0);
@@ -26,10 +26,11 @@ const SFTP_PATHS: &str = "/usr/libexec/openssh/sftp-server /usr/lib/openssh/sftp
 /// A command that reads a bash script from its standard input where the `sshd` lives.
 fn on_host() -> Command {
     if cfg!(windows) {
-        let distro =
-            std::env::var("BOHIO_TEST_WSL_DISTRO").unwrap_or_else(|_| "FedoraLinux-44".to_owned());
         let mut command = Command::new("wsl.exe");
-        command.args(["-d", &distro, "-e", "bash", "-s"]);
+        if let Ok(distro) = std::env::var("BOHIO_TEST_WSL_DISTRO") {
+            command.args(["-d", &distro]);
+        }
+        command.args(["-e", "bash", "-s"]);
         command
     } else {
         let mut command = Command::new("bash");
@@ -216,7 +217,7 @@ echo started
         settings.user = Some(self.user.clone());
         settings.identity = Some(self.identity());
         settings.agent = false;
-        settings.reconnect_after = "0s".to_owned();
+        settings.reconnect_after = Interval::from_secs(0);
         if openssh() {
             // The system's client keeps its own known_hosts: the file holds this server's key.
             let known = self.key_dir.path().join("known_hosts");
@@ -455,9 +456,6 @@ fn a_real_terminal_has_a_size_and_follows_a_resize() {
 
 #[test]
 fn a_real_terminal_passes_the_contract_suite() {
-    skip_openssh!(
-        "the system's ssh client lacks `signals` yet sends `interrupt` as a control byte, which the suite reads as a lacked word taken"
-    );
     let server = sshd!("");
     let source = server.ssh();
     // The shell's answer to arithmetic is not in its echo of the line, so reading it proves the shell ran it.
@@ -540,7 +538,7 @@ fn the_channel_limit_stays_below_the_servers_and_a_higher_one_is_the_servers_ref
     let server = sshd!("MaxSessions 3");
     let mut settings = server.settings();
     settings.max_channels = 8;
-    settings.operation_timeout = "5s".to_owned();
+    settings.operation_timeout = Interval::from_secs(5);
     let source = Ssh::try_from(settings).unwrap();
     let held: Vec<_> = (0..3).map(|_| start(&source, &["cat"])).collect();
     let error = source

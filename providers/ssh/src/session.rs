@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use bohio_api::guatiao::Status;
 use bohio_api::guatiao::library::ProviderError;
-use bohio_api::model::{Delivery, TerminalExit};
+use bohio_api::model::{Delivery, TerminalExit, UNNAMED_SIGNAL};
 use bohio_api::unavailable;
 use russh::client::Msg;
 use russh::{ChannelMsg, ChannelReadHalf, ChannelWriteHalf, Sig};
@@ -581,10 +581,8 @@ impl Session {
                 remote.finish(None, None);
             }
         });
-        if !open.stdin {
-            // No input: the program sees the end of it at once.
-        }
-        let stdin = if open.stdin { Some(stdin) } else { None };
+        // Without input the pipe is dropped at once: the program sees the end of it.
+        let stdin = open.stdin.then_some(stdin);
         Ok(Self {
             link: Arc::clone(link),
             backend: Backend::Child(ChildCtl {
@@ -655,7 +653,11 @@ async fn pump(mut read: ChannelReadHalf, ends: Pump) {
                 exited.get_or_insert_with(tokio::time::Instant::now);
             }
             Some(ChannelMsg::ExitSignal { signal_name, .. }) => {
-                remote.finish(None, signal_number(sig_name(&signal_name)));
+                // A signal OpenSSH has no name for arrives as `SIG@openssh.com`: it ended the program, and which is lost.
+                remote.finish(
+                    None,
+                    Some(signal_number(sig_name(&signal_name)).unwrap_or(UNNAMED_SIGNAL)),
+                );
                 exited.get_or_insert_with(tokio::time::Instant::now);
             }
             Some(_) => {}

@@ -41,9 +41,36 @@ fn is_variable_name(name: &str) -> bool {
 /// single quotes, while `fish` reads `\'` as an escape and `cmd.exe` and PowerShell read quotes differently.
 pub(crate) const PROBE_LINE: &str = "exec printf '%s|' 'a\\' 'b c'";
 
-/// Whether `output` is what [`PROBE_LINE`] prints under a POSIX shell.
-pub(crate) fn probe_output_is_posix(output: &[u8]) -> bool {
-    output == b"a\\|b c|"
+/// How much of the probe's output is kept: what [`PROBE_LINE`] prints under a POSIX shell, and room before it for what an
+/// rc file prints first.
+pub(crate) const PROBE_KEEP: usize = 4096;
+
+/// What the probe found out about the login shell. Only an answer that is the shell's own is kept for the source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Probe {
+    /// The shell read the line as POSIX does.
+    Posix,
+    /// The line ran to its end and printed something else: another kind of shell.
+    Other,
+    /// The line did not run to its end (no answer in time): this says nothing about the shell.
+    Unknown,
+}
+
+/// What [`PROBE_LINE`] came to: `output` is the tail of what it printed, and `ended` says whether the program ended.
+/// Anything an rc file printed before the line is ignored.
+pub(crate) fn probe_verdict(output: &[u8], ended: bool) -> Probe {
+    if output.ends_with(b"a\\|b c|") {
+        Probe::Posix
+    } else if ended {
+        Probe::Other
+    } else {
+        Probe::Unknown
+    }
+}
+
+/// Whether the line runs the program under `env`.
+fn env_changes(clear_env: bool, env: &[EnvVar]) -> bool {
+    clear_env || !env.is_empty()
 }
 
 /// What goes before the program: `cd DIR && exec env ...`. `env` is on the line because most servers refuse the `env`
@@ -54,12 +81,13 @@ fn prefix(cwd: Option<&str>, clear_env: bool, env: &[EnvVar]) -> Result<String, 
     }
     let mut text = String::new();
     if let Some(cwd) = cwd {
-        text.push_str("cd ");
+        // `--` keeps a directory named `-` or `-x` from being read as an option.
+        text.push_str("cd -- ");
         text.push_str(&quote(cwd));
         text.push_str(" && ");
     }
     text.push_str("exec ");
-    if clear_env || !env.is_empty() {
+    if env_changes(clear_env, env) {
         text.push_str("env");
         if clear_env {
             text.push_str(" -i");
@@ -74,6 +102,8 @@ fn prefix(cwd: Option<&str>, clear_env: bool, env: &[EnvVar]) -> Result<String, 
                 text.push_str(&quote(&change.name));
             }
         }
+        // `--` ends the options, so that nothing after it is read as one.
+        text.push_str(" --");
         for change in env {
             if let Some(value) = &change.value {
                 if value.contains('\0') {
@@ -103,6 +133,16 @@ pub(crate) fn line(
         return Err("a word of the command holds a NUL".to_owned());
     }
     let mut text = prefix(cwd, clear_env, env)?;
+    let mut words = words.to_vec();
+    // A program word that starts with `-` would be read as an option by `exec` or `env`: it names a file of the
+    // working directory.
+    if words[0].starts_with('-') {
+        words[0].insert_str(0, "./");
+    }
+    if env_changes(clear_env, env) && words[0].contains('=') {
+        // `env` reads every operand with an `=` as an assignment, so a shell starts the program instead.
+        words.splice(0..0, ["sh", "-c", "exec \"$@\"", "sh"].map(str::to_owned));
+    }
     let rendered: Vec<String> = words.iter().map(|word| quote(word)).collect();
     text.push_str(&rendered.join(" "));
     Ok(text)
@@ -191,7 +231,48 @@ mod tests {
         ];
         assert_eq!(
             line(&["pwd".to_owned()], Some("/tmp/x y"), true, &env).unwrap(),
-            "cd '/tmp/x y' && exec env -i -u 'B' 'A=1' 'pwd'"
+            "cd -- '/tmp/x y' && exec env -i -u 'B' -- 'A=1' 'pwd'"
+        );
+    }
+
+    #[test]
+    fn the_probe_ignores_what_an_rc_file_printed_and_keeps_only_a_conclusive_answer() {
+        assert_eq!(probe_verdict(b"a\\|b c|", true), Probe::Posix);
+        assert_eq!(
+            probe_verdict(b"Last login: today\r\na\\|b c|", true),
+            Probe::Posix
+        );
+        assert_eq!(probe_verdict(b"a\\|b c|", false), Probe::Posix);
+        assert_eq!(probe_verdict(b"", true), Probe::Other);
+        assert_eq!(probe_verdict(b"a' 'b c|", true), Probe::Other);
+        // No output in time says nothing about the shell.
+        assert_eq!(probe_verdict(b"", false), Probe::Unknown);
+    }
+
+    #[test]
+    fn a_program_word_is_never_read_as_an_option_or_an_assignment() {
+        let one = [EnvVar {
+            name: "A".to_owned(),
+            value: Some("1".to_owned()),
+        }];
+        // A directory or a program that starts with `-` is a name, not an option of `cd`, `exec` or `env`.
+        assert_eq!(
+            line(&["-l".to_owned()], Some("-"), false, &[]).unwrap(),
+            "cd -- '-' && exec './-l'"
+        );
+        assert_eq!(
+            line(&["-l".to_owned()], None, false, &one).unwrap(),
+            "exec env -- 'A=1' './-l'"
+        );
+        // A program word with an `=` is not an assignment of `env`: a shell starts it.
+        assert_eq!(
+            line(&["X=y/echo".to_owned(), "hi".to_owned()], None, false, &one).unwrap(),
+            "exec env -- 'A=1' 'sh' '-c' 'exec \"$@\"' 'sh' 'X=y/echo' 'hi'"
+        );
+        // Without `env` the word is quoted and `exec` takes it as it is.
+        assert_eq!(
+            line(&["X=y".to_owned()], None, false, &[]).unwrap(),
+            "exec 'X=y'"
         );
     }
 

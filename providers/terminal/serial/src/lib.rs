@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use bohio_api::guatiao::library::{Object, ProviderError};
 use bohio_api::guatiao::{FromValue, Provider, Schema, Status, ToValue};
 use bohio_api::model::{SourceInfo, TerminalExit, TerminalOpen};
-use bohio_api::{Terminal, TerminalSource, unavailable, vocab};
+use bohio_api::{Interval, Terminal, TerminalSource, unavailable, vocab};
 use coqui_transport::Split;
 use coqui_transport_serial::{
     DataBits, FlowControl, Parity, ReadHalf, SerialBuilder, StopBits, WriteHalf,
@@ -53,28 +53,17 @@ pub struct SerialConfig {
     /// The RTS line when the port opens; unchanged when absent.
     pub rts: Option<bool>,
     /// How long after the port vanishes (and after a failed open) it is opened again, and how long `describe` waits for
-    /// the first open (`1s`, `500ms`). Not zero. Default `1s`.
-    #[map(default = String::from("1s"))]
-    pub reopen_after: String,
+    /// the first open (`1s`, `500ms`; a bare number is seconds). Not zero. Default `1s`.
+    #[map(default = Interval::from_secs(1))]
+    pub reopen_after: Interval,
+    /// How long a write may make no progress before it fails (`5s`, `500ms`; a bare number is seconds): the line may be held
+    /// by flow control, so a shorter time fails a write the far end would have taken. Not zero. Default `5s`.
+    #[map(default = Interval::from_secs(5))]
+    pub write_stall: Interval,
     /// Bytes read from the line and not yet taken by a peer; the reader waits when they are full, so the driver's buffer
     /// and the line's flow control hold back what comes next. At least 1. Default `65536`.
     #[map(default = 65_536)]
     pub queue_bytes: u64,
-}
-
-/// A time: a number and `ms`, `s`, `m` or `h`; a bare number is seconds.
-fn span(text: &str) -> Option<Duration> {
-    let text = text.trim();
-    let digits = text.chars().take_while(char::is_ascii_digit).count();
-    let (number, unit) = text.split_at(digits);
-    let number: u64 = number.parse().ok()?;
-    match unit.trim() {
-        "ms" => Some(Duration::from_millis(number)),
-        "" | "s" => Some(Duration::from_secs(number)),
-        "m" => Some(Duration::from_secs(number.checked_mul(60)?)),
-        "h" => Some(Duration::from_secs(number.checked_mul(3600)?)),
-        _ => None,
-    }
 }
 
 fn refuse(message: &str) -> ProviderError {
@@ -89,6 +78,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 struct Shared {
     config: SerialConfig,
     reopen: Duration,
+    write_stall: Duration,
     capacity: usize,
     queue: Mutex<VecDeque<u8>>,
     arrived: Condvar,
@@ -242,9 +232,12 @@ impl TryFrom<SerialConfig> for Serial {
         if !["none", "software", "hardware"].contains(&config.flow_control.as_str()) {
             return Err(refuse("flow_control is none, software or hardware"));
         }
-        let reopen = span(&config.reopen_after)
+        let reopen = Some(config.reopen_after.get())
             .filter(|reopen| !reopen.is_zero())
             .ok_or_else(|| refuse("reopen_after is a time above zero, such as 1s or 500ms"))?;
+        let write_stall = Some(config.write_stall.get())
+            .filter(|stall| !stall.is_zero())
+            .ok_or_else(|| refuse("write_stall is a time above zero, such as 5s or 500ms"))?;
         if config.queue_bytes == 0 {
             return Err(refuse(
                 "queue_bytes is 0: nothing read from the line has room",
@@ -255,6 +248,7 @@ impl TryFrom<SerialConfig> for Serial {
             shared: Some(Arc::new(Shared {
                 config,
                 reopen,
+                write_stall,
                 capacity,
                 queue: Mutex::new(VecDeque::new()),
                 arrived: Condvar::new(),
@@ -401,19 +395,21 @@ impl Terminal for Console {
         };
         let mut rest = data;
         // The port reports a write that took nothing for its timeout as `TimedOut`; the line may be held by flow control.
-        let mut stalls = 0_u32;
+        let mut stalled: Option<Instant> = None;
         while !rest.is_empty() {
             match writer.write(rest) {
                 Ok(0) => return Err(unavailable("the line took no bytes")),
                 Ok(count) => {
                     rest = &rest[count..];
-                    stalls = 0;
+                    stalled = None;
                 }
                 Err(error)
                     if matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) =>
                 {
-                    stalls += 1;
-                    if stalls > 8 || self.closed.load(Ordering::Acquire) {
+                    let since = *stalled.get_or_insert_with(Instant::now);
+                    if since.elapsed() >= self.shared.write_stall
+                        || self.closed.load(Ordering::Acquire)
+                    {
                         return Err(unavailable("the line took no bytes"));
                     }
                 }
@@ -445,15 +441,32 @@ bohio_api::guatiao::local_providers!(
 
 #[cfg(test)]
 mod tests {
-    use super::span;
-    use std::time::Duration;
+    use super::SerialConfig;
+    use bohio_api::guatiao::{FromValue, ToValue};
+    use bohio_api::{Interval, guatiao};
+
+    /// A settings map with `path` and one more entry.
+    fn settings(key: &str, value: guatiao::Value) -> guatiao::Value {
+        let mut map = guatiao::Map::new();
+        map.set("path", "/dev/null".to_value().unwrap());
+        map.set(key, value);
+        map.into()
+    }
 
     #[test]
-    fn a_time_is_a_number_and_a_unit() {
-        assert_eq!(span("1s"), Some(Duration::from_secs(1)));
-        assert_eq!(span("250ms"), Some(Duration::from_millis(250)));
-        assert_eq!(span("2"), Some(Duration::from_secs(2)));
-        assert_eq!(span("1h"), Some(Duration::from_secs(3600)));
-        assert_eq!(span("soon"), None);
+    fn a_time_is_seconds_or_text_with_a_unit_in_every_setting() {
+        let text = SerialConfig::from_value(&settings("reopen_after", "250ms".to_value().unwrap()))
+            .unwrap();
+        assert_eq!(text.reopen_after, Interval::from_millis(250));
+        let number =
+            SerialConfig::from_value(&settings("reopen_after", 2_u64.to_value().unwrap())).unwrap();
+        assert_eq!(number.reopen_after, Interval::from_secs(2));
+        let stall =
+            SerialConfig::from_value(&settings("write_stall", 9_u64.to_value().unwrap())).unwrap();
+        assert_eq!(stall.write_stall, Interval::from_secs(9));
+        assert!(
+            SerialConfig::from_value(&settings("reopen_after", "soon".to_value().unwrap()))
+                .is_err()
+        );
     }
 }

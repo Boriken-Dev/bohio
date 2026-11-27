@@ -19,6 +19,9 @@ use crate::session::{Open, Session};
 
 type Cookie = Option<(Vec<u8>, Vec<u8>)>;
 
+/// How long one read of `xauth`'s output waits before the deadline is looked at again, in milliseconds.
+const XAUTH_READ_SLICE_MS: u64 = 200;
+
 /// How the X backend reaches the host's X server.
 #[derive(Debug)]
 struct Channels {
@@ -97,13 +100,14 @@ impl Channels {
         let mut out = Vec::new();
         let mut chunk = [0_u8; 4096];
         while out.len() < link.settings.x11_answer_max && Instant::now() < deadline {
-            match session.read(1, &mut chunk, 200).ok()? {
+            match session.read(1, &mut chunk, XAUTH_READ_SLICE_MS).ok()? {
                 -1 => break,
                 0 => {}
                 count => out.extend_from_slice(&chunk[..usize::try_from(count).ok()?]),
             }
         }
-        let exit = session.wait(1000)?;
+        // The program has written its answer: how long it may take to end is how long the source waits for any program to.
+        let exit = session.wait(u64::try_from(link.settings.exit_grace.as_millis()).unwrap_or(u64::MAX))?;
         (exit.code == Some(0)).then(|| String::from_utf8_lossy(&out).into_owned())
     }
 

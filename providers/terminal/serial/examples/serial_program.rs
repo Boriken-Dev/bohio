@@ -53,6 +53,9 @@ bohio_api::guatiao::local_providers!(
     providers = [Hosted]
 );
 
+/// The settings that are text whatever they look like: `--path 0` is a device named `0`, not a number.
+const TEXT_KEYS: [&str; 3] = ["path", "parity", "flow_control"];
+
 /// `--KEY VALUE` pairs as the map a `[source.<name>]` table would be.
 fn settings(args: impl Iterator<Item = String>) -> Result<Map, String> {
     let mut map = Map::new();
@@ -62,13 +65,17 @@ fn settings(args: impl Iterator<Item = String>) -> Result<Map, String> {
             .strip_prefix("--")
             .ok_or_else(|| format!("{flag} is not a setting (--KEY VALUE)"))?;
         let text = args.next().ok_or_else(|| format!("{flag} needs a value"))?;
-        let value = match text.parse::<i64>() {
-            Ok(number) => Value::from(number),
-            Err(_) => match text.as_str() {
-                "true" => Value::from(true),
-                "false" => Value::from(false),
-                _ => Value::from(text.as_str()),
-            },
+        let value = if TEXT_KEYS.contains(&key) {
+            Value::from(text.as_str())
+        } else {
+            match text.parse::<i64>() {
+                Ok(number) => Value::from(number),
+                Err(_) => match text.as_str() {
+                    "true" => Value::from(true),
+                    "false" => Value::from(false),
+                    _ => Value::from(text.as_str()),
+                },
+            }
         };
         map.set(key, value);
     }
@@ -93,4 +100,17 @@ fn main() -> Result<(), String> {
         std::thread::sleep(Duration::from_millis(20));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_device_named_with_digits_is_text_and_a_number_setting_is_a_number() {
+        let args = ["--path", "0", "--baud_rate", "9600"].map(str::to_owned);
+        let map = settings(args.into_iter()).unwrap();
+        assert!(<&str>::try_from(map.get("path").unwrap()).is_ok());
+        assert!(<&str>::try_from(map.get("baud_rate").unwrap()).is_err());
+    }
 }

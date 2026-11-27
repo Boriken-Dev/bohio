@@ -13,7 +13,8 @@ MSRV Rust 1.89. Depends on `guatiao` (a git revision, feature `provider`), re-ex
 
 Imports: the root holds the four source traits (`TerminalSource`, `DesktopSource`, `PowerSource`, `MediaSource`), the object
 kinds (`Terminal`, `DesktopSession`, `BlockReader`), the models, `unsupported(msg)` and `unavailable(msg)` (the two
-`ProviderError`s a provider answers most). Modules: `terminal`, `desktop`, `power`, `media`, `model`, `vocab`, `contract`,
+`ProviderError`s a provider answers most), and `Interval(pub Duration)`, the type of a provider setting that is a length of time: a number of
+seconds (`5`) or text with a unit (`500ms`, `30s`, `5m`, `1h`), `Interval::parse`, `.text()`, `.get()`, `from_secs`, `from_millis`. Modules: `terminal`, `desktop`, `power`, `media`, `interval`, `model`, `vocab`, `contract`,
 `testing` (feature).
 
 ## Kinds
@@ -117,7 +118,7 @@ A failure starts its message with a word (`files::word`: `not_found`, `denied`, 
 All derive guatiao's `ToValue`, `FromValue` and `Schema`; an `Option` field is optional on the wire and a model grows by such fields.
 `SourceInfo { provider, offers, lacks, available, reason }` (`SourceInfo::new(provider, offers, lacks)`, `.unavailable(reason)`,
 `.lacks(word)`); `TerminalOpen { program: Option<ProgramSpec>, cwd, clear_env, env: Vec<EnvVar>, path, cols, rows }` (Default 80x24);
-`ProgramSpec { kind, argv, listed }`; `TerminalExit { code, signal }`; `Delivery { delivered, ended, message }`;
+`ProgramSpec { kind, argv, listed }`; `TerminalExit { code, signal }` (`signal` is the numbering of the machine the program ran on, or `model::UNNAMED_SIGNAL`, `-1`, when a signal ended it and the source cannot say which); `Delivery { delivered, ended, message }`;
 `StateModel { user, active, locked, displays: Vec<DisplayModel> }`; `DisplayModel`; `RectModel`; `FrameHeader { width, height }` (`len()` is
 `width * height * 3`); `InputModel` (a flat event: `kind` is `move`, `button`, `scroll`, `key` or `text`); `PowerState { state, done }`;
 `MediaSlot { slot, inserted, image, size }`; `ExecStart { argv, shell, script, cwd, clear_env, env, stdin, path, listed, on_host_death, reset_signals /* Option<bool>, absent true: SIGINT, SIGQUIT and SIGHUP start at their default action */ }` (`argv` or

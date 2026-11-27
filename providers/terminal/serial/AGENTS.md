@@ -19,7 +19,8 @@ Provider id `serial`. `[source.<name>] provider = "serial"` and:
 | `path` | required | `/dev/ttyUSB0`, `COM3` (`\\.\COM10` above 9) |
 | `baud_rate`, `data_bits`, `parity`, `stop_bits`, `flow_control` | `115200`, `8`, `"none"`, `1`, `"none"` | the line (`parity` none/odd/even; `flow_control` none/software/hardware) |
 | `dtr`, `rts` | unchanged | the line's state when the port opens (many devices reset when DTR changes) |
-| `reopen_after` | `"1s"` | how long after the port vanishes or fails to open it is tried again, and how long `describe` waits for the first try; not zero |
+| `reopen_after` | `"1s"` | how long after the port vanishes or fails to open it is tried again, and how long `describe` waits for the first try; not zero. A time is `bohio_api::Interval`: a number of seconds (`1`) or text with a unit (`500ms`, `30s`, `5m`, `1h`) |
+| `write_stall` | `"5s"` | how long a write may make no progress (the port timing out, flow control holding the line) before it fails; not zero |
 | `queue_bytes` | `65536` | bytes read and not yet taken by a peer; the reader then waits, so the driver and the line's flow control hold the rest; at least 1 |
 
 A key it does not have, or a value out of range, is refused naming `source.<name>.<key>` before the provider is built. The port opens the first

@@ -22,6 +22,7 @@ mod session;
 mod settings;
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use bohio_api::guatiao::library::{Object, ProviderError};
 use bohio_api::guatiao::{Provider, Status};
@@ -54,7 +55,7 @@ pub const ID: &str = "ssh";
 )]
 pub struct Ssh {
     link: Option<Arc<Link>>,
-    /// Whether the login shell read the probe line as POSIX does, once it was asked.
+    /// Whether the login shell read the probe line as POSIX does, once it was asked and the answer was the shell's own.
     posix: std::sync::OnceLock<bool>,
     files: Option<crate::files::SftpFiles>,
     desktop: Option<Arc<DesktopOf>>,
@@ -105,8 +106,17 @@ impl Ssh {
         let posix = match self.posix.get() {
             Some(posix) => *posix,
             None => {
-                // A failure to log in or to open a channel is that failure, not an answer about the shell.
-                let posix = self.probe_login_shell(link)?;
+                // A failure to log in or to open a channel is that failure, not an answer about the shell, and a probe
+                // that did not end says nothing about it either: neither is kept, and the next start asks again.
+                let posix = match self.probe_login_shell(link)? {
+                    command::Probe::Posix => true,
+                    command::Probe::Other => false,
+                    command::Probe::Unknown => {
+                        return Err(bohio_api::unavailable(
+                            "the account's login shell did not answer the probe in time, so it is not known to read a command line as a POSIX shell does; try again (`login_shell_check = false` skips this check)",
+                        ));
+                    }
+                };
                 *self.posix.get_or_init(|| posix)
             }
         };
@@ -121,7 +131,7 @@ impl Ssh {
     }
 
     /// Runs the probe line and reads what it prints.
-    fn probe_login_shell(&self, link: &Arc<Link>) -> Result<bool, ProviderError> {
+    fn probe_login_shell(&self, link: &Arc<Link>) -> Result<command::Probe, ProviderError> {
         let session = link.rt.block_on(Session::start(
             link,
             Open {
@@ -130,23 +140,32 @@ impl Ssh {
                 stdin: false,
             },
         ))?;
-        let wait = u64::try_from(link.settings.operation_timeout.as_millis()).unwrap_or(u64::MAX);
+        let deadline = Instant::now() + link.settings.operation_timeout;
+        let left = || {
+            u64::try_from(deadline.saturating_duration_since(Instant::now()).as_millis())
+                .unwrap_or(u64::MAX)
+        };
         let (mut output, mut chunk) = (Vec::new(), [0_u8; 256]);
+        // Read to the end of the output: an rc file may print before the line does. Only the tail is kept.
         loop {
+            let wait = left();
+            if wait == 0 {
+                break;
+            }
             match session.read(1, &mut chunk, wait) {
                 Ok(count) if count > 0 => {
                     output.extend_from_slice(&chunk[..usize::try_from(count).unwrap_or(0)]);
+                    if output.len() > command::PROBE_KEEP {
+                        output.drain(..output.len() - command::PROBE_KEEP);
+                    }
                 }
                 _ => break,
             }
-            if output.len() > chunk.len() {
-                break;
-            }
         }
         // Let the channel end before the program's own starts, so the probe holds none of the server's sessions.
-        let _ = session.wait(wait);
+        let ended = session.wait(left()).is_some();
         let _ = session.kill();
-        Ok(command::probe_output_is_posix(&output))
+        Ok(command::probe_verdict(&output, ended))
     }
 
     fn sftp(&self) -> Result<&crate::files::SftpFiles, ProviderError> {
@@ -231,12 +250,18 @@ impl DesktopSource for Ssh {
 impl TerminalSource for Ssh {
     fn describe(&self) -> Result<SourceInfo, ProviderError> {
         use vocab::terminal as word;
-        // The system's ssh client cannot tell the host a new size and sends no signal request (a control byte still
-        // interrupts).
+        // The system's ssh client cannot tell the host a new size and sends no signal request, so the one signal a
+        // terminal takes there is `interrupt`, as the control byte; any other is `unsupported`.
         if self.link()?.settings.openssh.is_some() {
             return Ok(self.info(
-                &[word::READ, word::WRITE, word::PROGRAMS, word::EXIT_STATUS],
-                &[word::BREAK, word::RESIZE, word::SIGNALS],
+                &[
+                    word::READ,
+                    word::WRITE,
+                    word::PROGRAMS,
+                    word::SIGNALS,
+                    word::EXIT_STATUS,
+                ],
+                &[word::BREAK, word::RESIZE],
             ));
         }
         Ok(self.info(

@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use bohio_api::guatiao::library::Object;
 use bohio_api::model::{EnvVar, ExecStart, ProgramSpec, TerminalExit, TerminalOpen};
-use bohio_api::{ExecSource, Process, TerminalSource};
+use bohio_api::{ExecSource, Interval, Process, TerminalSource};
 use bohio_provider_ssh::{Ssh, SshSettings};
 
 mod support;
@@ -557,7 +557,7 @@ fn a_failed_connect_is_not_tried_again_until_reconnect_after() {
     settings.port = u64::from(port);
     settings.user = Some(USER.to_owned());
     settings.agent = false;
-    settings.reconnect_after = "1h".to_owned();
+    settings.reconnect_after = Interval::from_secs(1 * 3600);
     let source = ssh(settings);
     let first = first_error(&source);
     // The server appears; the source does not look until the wait is over.
@@ -593,12 +593,49 @@ fn with_reconnect_off_a_lost_connection_stays_lost() {
 }
 
 #[test]
+fn a_channel_open_that_times_out_keeps_the_connection_and_makes_no_new_one() {
+    for reconnect in [true, false] {
+        let server = FakeSsh::start_with(Options {
+            stall_opens: true,
+            ..Options::default()
+        });
+        let mut settings = server.settings();
+        settings.reconnect = reconnect;
+        settings.operation_timeout = Interval::from_millis(500);
+        let source = ssh(settings);
+        for _ in 0..2 {
+            let message = first_error(&source);
+            assert!(!message.contains("was lost"), "{message}");
+        }
+        assert_eq!(
+            server.seen.lock().unwrap().connections,
+            1,
+            "reconnect = {reconnect}: a slow server does not cost the healthy connection"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_program_a_signal_without_a_name_ended_still_has_a_signal() {
+    need_shell!();
+    let server = FakeSsh::start();
+    let source = ssh(server.settings());
+    // OpenSSH names 13 signals; a bus error arrives as `SIG@openssh.com`.
+    let done = run(&source, &["sh", "-c", "kill -BUS $$"]);
+    assert_eq!(done.exit.code, None);
+    assert_eq!(done.exit.signal, Some(bohio_api::model::UNNAMED_SIGNAL));
+    let done = run(&source, &["sh", "-c", "kill -TERM $$"]);
+    assert_eq!(done.exit.signal, Some(15));
+}
+
+#[test]
 fn channels_past_max_channels_wait_and_then_are_busy_naming_the_setting() {
     need_shell!();
     let server = FakeSsh::start();
     let mut settings = server.settings();
     settings.max_channels = 2;
-    settings.operation_timeout = "1s".to_owned();
+    settings.operation_timeout = Interval::from_secs(1);
     let source = ssh(settings);
     let a = source.start(argv(&["sleep", "300"])).unwrap();
     let b = source.start(argv(&["sleep", "300"])).unwrap();
@@ -664,8 +701,8 @@ fn settings_are_validated_when_the_source_is_built() {
         |s: &mut SshSettings| s.port = 70_000,
         |s: &mut SshSettings| s.host_key = Some("sha256:short".to_owned()),
         |s: &mut SshSettings| s.host_key_check = "sometimes".to_owned(),
-        |s: &mut SshSettings| s.connect_timeout = "0s".to_owned(),
-        |s: &mut SshSettings| s.operation_timeout = "soon".to_owned(),
+        |s: &mut SshSettings| s.connect_timeout = Interval::from_secs(0),
+        |s: &mut SshSettings| s.operation_timeout = Interval::from_secs(0),
         |s: &mut SshSettings| s.max_channels = 0,
         |s: &mut SshSettings| s.keepalive_max = 0,
         |s: &mut SshSettings| s.worker_threads = 0,
@@ -682,7 +719,7 @@ fn settings_are_validated_when_the_source_is_built() {
     let mut weak = base;
     weak.user = Some("u".to_owned());
     weak.host_key_check = "off".to_owned();
-    weak.keepalive = "0s".to_owned();
+    weak.keepalive = Interval::from_secs(0);
     weak.max_channels = 50;
     assert!(Ssh::try_from(weak).is_ok());
 }
@@ -727,7 +764,7 @@ fn the_exec_contract_holds_against_the_fake_server() {
     settings.port = 1;
     settings.user = Some(USER.to_owned());
     settings.agent = false;
-    settings.connect_timeout = "2s".to_owned();
+    settings.connect_timeout = Interval::from_secs(2);
     bohio_api::contract::exec(
         &ssh(settings),
         &start,
@@ -942,7 +979,7 @@ fn names_that_leave_a_directory_are_refused_before_they_reach_the_host() {
 #[test]
 fn the_direct_runner_takes_a_command_line_of_the_providers_shape_apart() {
     let line = support::parse_line(
-        "cd '/work dir' && exec env -i -u 'GONE' 'A=it'\\''s' 'B=' 'prog' 'one two' '--x'",
+        "cd -- '/work dir' && exec env -i -u 'GONE' -- 'A=it'\\''s' 'B=' 'prog' 'one two' '--x'",
     )
     .expect("a line");
     assert_eq!(line.cwd.as_deref(), Some("/work dir"));
@@ -986,7 +1023,7 @@ fn each_info_of_an_openssh_source_does_not_log_in_again() {
     settings.user = Some(USER.to_owned());
     settings.client = "openssh".to_owned();
     settings.ssh_program = program;
-    settings.probe_every = "1h".to_owned();
+    settings.probe_every = Interval::from_secs(1 * 3600);
     let source = ssh(settings);
     std::thread::scope(|scope| {
         for _ in 0..10 {
@@ -1009,7 +1046,7 @@ fn with_probe_every_zero_each_info_of_an_openssh_source_logs_in() {
     settings.user = Some(USER.to_owned());
     settings.client = "openssh".to_owned();
     settings.ssh_program = program;
-    settings.probe_every = "0s".to_owned();
+    settings.probe_every = Interval::from_secs(0);
     let source = ssh(settings);
     for _ in 0..3 {
         assert!(ExecSource::describe(&source).unwrap().available);
@@ -1119,7 +1156,7 @@ fn the_terminal_contract_holds_against_the_fake_server() {
     unreachable.port = 1;
     unreachable.user = Some(USER.to_owned());
     unreachable.agent = false;
-    unreachable.connect_timeout = "2s".to_owned();
+    unreachable.connect_timeout = Interval::from_secs(2);
     bohio_api::contract::terminal(
         &ssh(unreachable),
         TerminalOpen::default(),
