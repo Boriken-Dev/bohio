@@ -1,15 +1,3 @@
-| `x11_display` | none | the host's X display to serve as the desktop (`:0`); a number, never a host |
-| `x11_socket_dir` | `/tmp/.X11-unix` | where the host keeps its X sockets (`X<n>` in it) |
-| `xauth` | `xauth` | the program on the host that lists the display's cookie (`xauth list :N`); a host without it is served with no cookie |
-| `x11_forward` | `false` | programs this source starts open their windows on the node's own display (needs `X11Forwarding yes` and an `xauth` on the host); needs `x11_trusted` |
-| `x11_trusted` | `false` | forward as `ssh -Y` does; required by `x11_forward` because this build cannot ask the display for an untrusted authorization |
-| `login_shell_check` | `true` | before the first program or terminal command with words, the source runs a probe line once and refuses (`unsupported`) when the account's login shell does not read single quotes as a POSIX shell does (`fish`, `cmd.exe`, PowerShell); `false` skips it and is logged `non-default:` |
-| `x11_local_display` | the node's `DISPLAY` | the node's display forwarded windows go to: `:N` (its socket) or `HOST:N` (TCP port 6000+N) |
-| `x11_max_connections` | `64` | forwarded X connections open at once; one past it is refused; at least 1 |
-| `x11_answer_max` | `65536` | bytes of `xauth`'s answer read when the display's cookie is asked for; at least 1 |
-| `x11_max_strangers` | `16` | connections to the display's loopback bridge that are not the node's own before it gives up; at least 1 |
-| `client` | `russh` | who speaks SSH: `russh` (this provider's client) or `openssh` (the system's `ssh` program, see below) |
-| `ssh_program`, `ssh_args` | `ssh` on `PATH`, none | the `openssh` client's program, and arguments put after the options this provider sets and before the host |
 # `bohio-provider-ssh` — API header
 
 Header-file-style reference for the `bohio-provider-ssh` crate: the `ssh` provider of the `bohio_terminal`, `bohio_exec`, `bohio_files` and `bohio_desktop` kinds, with
@@ -49,6 +37,18 @@ Provider id `ssh`. `[source.<name>] provider = "ssh"` and:
 | `worker_threads` | `2` | threads of the source's runtime |
 | `sftp_in_flight` | `16` | SFTP requests of one file in flight at once (reads ahead, writes behind); over a slow link throughput is this many packets per round trip, and the host holds this many packets of a file in memory; at least 1 |
 | `sftp_packet` | `32768` | bytes of data one SFTP read or write carries; the server's `limits@openssh.com` and 255 KiB cap it; at least 1 |
+| `x11_display` | none | the host's X display to serve as the desktop (`:0`); a number, never a host |
+| `x11_socket_dir` | `/tmp/.X11-unix` | where the host keeps its X sockets (`X<n>` in it) |
+| `xauth` | `xauth` | the program on the host that lists the display's cookie (`xauth list :N`); a host without it is served with no cookie |
+| `x11_forward` | `false` | programs this source starts open their windows on the node's own display (needs `X11Forwarding yes` and an `xauth` on the host); needs `x11_trusted` |
+| `x11_trusted` | `false` | forward as `ssh -Y` does; required by `x11_forward` because this build cannot ask the display for an untrusted authorization |
+| `login_shell_check` | `true` | before the first program or terminal command with words, the source runs a probe line once and refuses (`unsupported`) when the account's login shell does not read single quotes as a POSIX shell does (`fish`, `cmd.exe`, PowerShell); `false` skips it and is logged `non-default:` |
+| `x11_local_display` | the node's `DISPLAY` | the node's display forwarded windows go to: `:N` (its socket) or `HOST:N` (TCP port 6000+N) |
+| `x11_max_connections` | `64` | forwarded X connections open at once; one past it is refused; at least 1 |
+| `x11_answer_max` | `65536` | bytes of `xauth`'s answer read when the display's cookie is asked for; at least 1 |
+| `x11_max_strangers` | `16` | connections to the display's loopback bridge that are not the node's own before it gives up; at least 1 |
+| `client` | `russh` | who speaks SSH: `russh` (this provider's client) or `openssh` (the system's `ssh` program, see below) |
+| `ssh_program`, `ssh_args` | `ssh` on `PATH`, none | the `openssh` client's program, and arguments put after the options this provider sets and before the host |
 
 A key it does not have, or a value that cannot work (a zero timeout, a port of 0, a malformed pin), is refused naming `source.<name>.<key>`
 before the provider is built. Everything else weaker than the default is accepted and logged as `non-default:` by the built-in provider.

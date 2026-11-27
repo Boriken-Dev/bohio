@@ -44,12 +44,14 @@ Set the key. This keeps `slow-link` and widens only the window it grows to:
 name = "slow-link"
 
 [link]
-max_window = "32MiB"
+max_window = 33554432   # 32 MiB, in bytes
 ```
 
 A value the profile supplies is checked with the rest, and when it conflicts with what your file sets, the error names the
 layer: `profile slow-link` for a value only the profile supplied, otherwise your file. A weaker or stronger choice than the
-profile's is never an error; only a meaningless value is.
+profile's is never an error; only a meaningless value is. A `max_window` only the profile supplies is a default and not your
+bound: a `window` or `bulk_window` your file raises past it raises it too, while a `max_window` your file sets is yours and a
+larger window is refused.
 
 A flag of `bohio remote` (`--compress`, `--delta`, `--compare`, `--parallel`, `--prepare`) wins over the client profile, and
 `--compress none` turns a profile's compression off for one run. A key the file sets itself (`[client] parallel_streams`,

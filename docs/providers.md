@@ -187,7 +187,7 @@ the node its sources; `Node::with_secrets` says how secret references are read.
 ### Loading a provider library
 
 A provider that is not linked into the node is a library the node maps at start. Nothing loads unless `[providers] paths` names
-something, and then only libraries that declare a Bohío kind (`bohio_terminal`, `bohio_desktop`, `bohio_power` or `bohio_media`);
+something, and then only libraries that declare a Bohío kind (`bohio_terminal`, `bohio_desktop`, `bohio_power`, `bohio_media`, `bohio_exec` or `bohio_files`);
 with the default (`paths = []`) no file is read, no library is mapped and nothing extra runs at start.
 
 ```toml

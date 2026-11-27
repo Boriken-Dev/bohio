@@ -26,6 +26,13 @@ machines and containers. It is an application: the `coqui-*` names are reserved 
   pairs with every other, each target decided by a rule in the peer's grant.
 - **Programs that survive a lost link**: detached sessions with scrollback, signals to a running program, and a program on
   a terminal with a deadline.
+- **Desktops**: a peer with the desktop permissions sees and drives a screen (`bohio-gui/1`): snapshots, watches, input and
+  clipboard, on X11, Wayland, Windows and macOS, on a machine reached over SSH, and through a per-user helper for a node that
+  runs as a service.
+- **Power and virtual media**: sources of power control and of boot or install media, granted per peer like the rest.
+- **Providers**: a terminal, a desktop, power, media, processes and files are capabilities that sources serve; `native` is
+  one, `serial` and `ssh` ship in the tree, and others are libraries (`[providers] paths`) or programs (`[[providers.program]]`).
+- **Transfer efficiency**: compression (zstd, lz4, deflate), delta transfers, `sync` of trees, and named profiles
 - **Search, `stats`, `which` and `read --follow`** on the host for a peer that only reads, and `--format json` for every command.
 - **Agent tools**: `bohio mcp` serves a host's files, programs and sessions to any Model Context Protocol client,
   bounded by the key's grant; `bohio_client::tools` is the same surface for an embedding agent.
@@ -58,6 +65,12 @@ cargo build --release
 | `bohio-proto` | the wire types and their CBOR codec; no I/O |
 | `bohio-client` | a Rust client over any coqui channel |
 | `bohio` | the host library and the `bohio` command |
+| `bohio-api` | the provider kinds (terminal, desktop, power, media, exec, files) and their contract suites |
+| `bohio-transfer` | byte-level work with no I/O: digests, compression, the delta matcher, screen encodings |
+| `bohio-x11` | the X11 desktop backend, which runs over any stream |
+| `bohio-provider-ssh` | the `ssh` provider: a machine's terminal, processes and files over SSH; `providers/ssh/plugin` is the same provider as a library |
+| `bohio-provider-serial` | the `serial` terminal provider; `providers/terminal/serial/plugin` is the same provider as a library |
+| `bohio-bench` | the benchmark harness |
 
 ## Quick start
 
@@ -138,6 +151,11 @@ network after the toolchain (`python tools/build.py container build`; [building]
 | `bohio-proto` | [`crates/bohio-proto/AGENTS.md`](https://github.com/Boriken-Dev/bohio/blob/main/crates/bohio-proto/AGENTS.md) |
 | `bohio-client` | [`crates/bohio-client/AGENTS.md`](https://github.com/Boriken-Dev/bohio/blob/main/crates/bohio-client/AGENTS.md) (the module headers are listed there) |
 | `bohio` | [`crates/bohio/AGENTS.md`](https://github.com/Boriken-Dev/bohio/blob/main/crates/bohio/AGENTS.md) (the module headers are listed there) |
+| `bohio-api` | [`crates/bohio-api/AGENTS.md`](https://github.com/Boriken-Dev/bohio/blob/main/crates/bohio-api/AGENTS.md) |
+| `bohio-transfer` | [`crates/bohio-transfer/AGENTS.md`](https://github.com/Boriken-Dev/bohio/blob/main/crates/bohio-transfer/AGENTS.md) |
+| `bohio-x11` | [`crates/bohio-x11/AGENTS.md`](https://github.com/Boriken-Dev/bohio/blob/main/crates/bohio-x11/AGENTS.md) |
+| `bohio-provider-ssh` | [`providers/ssh/AGENTS.md`](https://github.com/Boriken-Dev/bohio/blob/main/providers/ssh/AGENTS.md) |
+| `bohio-provider-serial` | [`providers/terminal/serial/AGENTS.md`](https://github.com/Boriken-Dev/bohio/blob/main/providers/terminal/serial/AGENTS.md) |
 
 ## Development
 

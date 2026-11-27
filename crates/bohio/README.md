@@ -47,6 +47,13 @@ cargo add bohio --git https://github.com/Boriken-Dev/bohio
 | Feature | Adds | Default |
 | --- | --- | --- |
 | `cli` | the `bohio` command and the `bohio::cli` module | on |
+| `zstd` | Zstandard compression through the C library (`lz4` and `deflate` remain without it) | on |
+| `zstdmt` | zstd worker threads (`[compression] workers` above 0) | off |
+| `serial` | the `serial` terminal provider | on |
+| `ssh` | the `ssh` provider: a machine's terminal, processes and files over SSH | on |
+| `gui` | snapshot encoding and a watch's tile encodings for `bohio-gui/1` | on |
+| `gui-wayland` | the Linux Wayland desktop (portal and PipeWire) | off |
+| `notify` | the desktop notice of the GUI presence indicator | on with `cli` |
 
 An embedding host takes the library alone with `default-features = false`.
 
@@ -125,6 +132,18 @@ who may do what; `bohio pair` arms a PIN on the listeners the node already serve
 | `local` | the local control endpoint of a running node (`Local`) and its clients (`LocalLink`, `Via`) |
 | `node` | `Node`: an embeddable host made from settings, an identity, `Keys` and `Grants` the caller supplies; accepts links, proves peers and runs each stream's engine |
 | `limit` | a counted bound on concurrent work |
+| `access` | the sources a node reaches a system through, and the provider libraries it loads |
+| `control` | calls on a running node |
+| `forward` | forwarding and `connect` on the host |
+| `fs` | the filesystem engines: read, write, bundles, hash, walk, search, copy and move |
+| `gui` | desktop access: snapshots, input, clipboard and the helper |
+| `media` | virtual media sessions |
+| `power` | power control sessions |
+| `profile` | named transfer defaults |
+| `secret` | secret references |
+| `session` | detached sessions with scrollback |
+| `shell` | interactive shells |
+| `stats` | file and tree statistics |
 | `cli` | the command line (feature `cli`) |
 
 ## Development
