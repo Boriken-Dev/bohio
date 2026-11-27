@@ -6,9 +6,10 @@
 //!
 //! A node reaches a system through a **source**: a configured instance of a **provider**. A provider serves a
 //! **capability**, and each capability is one `guatiao` kind: [`TerminalSource`] (a console), [`DesktopSource`]
-//! (a screen with input), [`PowerSource`] and [`MediaSource`] (virtual media). The host (`bohio`) and every
-//! provider compile against this crate and nothing else of Bohío's; it re-exports [`guatiao`], and a provider
-//! names guatiao only through it, so the two sides cannot drift to different versions.
+//! (a screen with input), [`PowerSource`] and [`MediaSource`] (virtual media), [`ExecSource`] (programs) and
+//! [`FilesSource`] (a directory tree). The host (`bohio`) and every provider compile against this crate and nothing
+//! else of Bohío's; it re-exports [`guatiao`], and a provider names guatiao only through it, so the two sides cannot
+//! drift to different versions.
 //!
 //! `native`, the node's own pseudo-terminal and screen, is a provider of these kinds like any other.
 //!

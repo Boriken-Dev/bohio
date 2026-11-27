@@ -11,10 +11,10 @@ with the source at <https://github.com/Boriken-Dev/bohio>.
 MSRV Rust 1.89. Depends on `guatiao` (a git revision, feature `provider`), re-exported as `bohio_api::guatiao`.
 `#![forbid(unsafe_code)]`: guatiao's macros generate the C shims safely. Version `0.0.0-alpha.0`, not published.
 
-Imports: the root holds the four source traits (`TerminalSource`, `DesktopSource`, `PowerSource`, `MediaSource`), the object
-kinds (`Terminal`, `DesktopSession`, `BlockReader`), the models, `unsupported(msg)` and `unavailable(msg)` (the two
+Imports: the root holds the six source traits (`TerminalSource`, `DesktopSource`, `PowerSource`, `MediaSource`, `ExecSource`,
+`FilesSource`), the object kinds (`Terminal`, `DesktopSession`, `BlockReader`, `Process`, `Directory`, `DirReader`, `File`), the models, `unsupported(msg)` and `unavailable(msg)` (the two
 `ProviderError`s a provider answers most), and `Interval(pub Duration)`, the type of a provider setting that is a length of time: a number of
-seconds (`5`) or text with a unit (`500ms`, `30s`, `5m`, `1h`), `Interval::parse`, `.text()`, `.get()`, `from_secs`, `from_millis`. Modules: `terminal`, `desktop`, `power`, `media`, `interval`, `model`, `vocab`, `contract`,
+seconds (`5`) or text with a unit (`500ms`, `30s`, `5m`, `1h`), `Interval::parse`, `.text()`, `.get()`, `from_secs`, `from_millis`. Modules: `terminal`, `desktop`, `power`, `media`, `exec`, `files`, `interval`, `model`, `vocab`, `contract`,
 `testing` (feature).
 
 ## Kinds

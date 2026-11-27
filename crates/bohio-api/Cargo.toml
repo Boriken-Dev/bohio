@@ -1,6 +1,6 @@
 [package]
 name = "bohio-api"
-description = "The provider kinds of Bohío: how a node reaches a terminal, a desktop, power and virtual media, as guatiao kinds"
+description = "The provider kinds of Bohío: how a node reaches a terminal, a desktop, power, virtual media, programs and files, as guatiao kinds"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
