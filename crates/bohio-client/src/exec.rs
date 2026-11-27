@@ -83,7 +83,7 @@ impl Exec {
             link,
             request,
             &Caps {
-                window_log_max: 27,
+                window_log_max: crate::fs::DEFAULT_WINDOW_LOG_MAX,
                 ..Caps::default()
             },
         )
@@ -140,16 +140,33 @@ impl Exec {
     /// # Errors
     ///
     /// [`Error::Remote`] when the host refused (`not_found` for a session this peer does not hold, `denied`, ...),
-    /// [`Error::Protocol`] when the session is a shell, else whatever `link` reports.
+    /// [`Error::WrongKind`] when the session is a shell, else whatever `link` reports.
     pub fn attach(
         link: &dyn Open,
         session: &str,
         from: Option<u64>,
     ) -> Result<(Self, Attached), Error> {
-        let (channel, attached) = attach_channel(link, session, from)?;
+        Self::attach_within(link, session, from, Some(crate::DEFAULT_TIMEOUT))
+    }
+
+    /// As [`Exec::attach`], waiting at most `timeout` for the host to answer (`None` waits without limit;
+    /// [`Exec::attach`] takes [`crate::DEFAULT_TIMEOUT`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Exec::attach`]; [`Error::Timeout`] when the host did not answer in time.
+    pub fn attach_within(
+        link: &dyn Open,
+        session: &str,
+        from: Option<u64>,
+        timeout: Option<Duration>,
+    ) -> Result<(Self, Attached), Error> {
+        let (channel, attached) = attach_channel(link, session, from, timeout)?;
         if attached.kind != Kind::Exec {
             channel.close();
-            return Err(Error::Protocol(bohio_proto::Error::Decode));
+            return Err(Error::WrongKind {
+                found: attached.kind,
+            });
         }
         Ok((Self::attached_to(channel, session), attached))
     }
@@ -161,7 +178,7 @@ impl Exec {
             used: Mutex::new((None, None)),
             decoders: Mutex::new((None, None)),
             encoder: Mutex::new(None),
-            window_log_max: 27,
+            window_log_max: crate::fs::DEFAULT_WINDOW_LOG_MAX,
             max_expansion: crate::fs::DEFAULT_MAX_EXPANSION,
             session: Mutex::new(Some(session.to_owned())),
         }
@@ -311,7 +328,7 @@ impl Exec {
             };
             let frame =
                 compressed.map_or_else(|| Input::Stdin(piece.to_vec()), Input::StdinCompressed);
-            self.send(&frame.encode())?;
+            self.send(&frame.encode()?)?;
         }
         Ok(())
     }
@@ -322,7 +339,7 @@ impl Exec {
     ///
     /// [`Error::Transport`] when the channel failed.
     pub fn finish_stdin(&self) -> Result<(), Error> {
-        self.send(&Input::StdinEnd.encode())
+        self.send(&Input::StdinEnd.encode()?)
     }
 
     /// Asks the host to end the process tree now.
@@ -331,7 +348,7 @@ impl Exec {
     ///
     /// [`Error::Transport`] when the channel failed.
     pub fn kill(&self) -> Result<(), Error> {
-        self.send(&Input::Kill.encode())
+        self.send(&Input::Kill.encode()?)
     }
 
     /// Asks the host to deliver `signal` to the process (its process group on Unix). The host answers with an
@@ -341,7 +358,7 @@ impl Exec {
     ///
     /// [`Error::Transport`] when the channel failed.
     pub fn signal(&self, signal: Signal) -> Result<(), Error> {
-        self.send(&Input::Signal(signal).encode())
+        self.send(&Input::Signal(signal).encode()?)
     }
 
     /// Reads events until the process ends, collecting its output, for at most `timeout`
@@ -391,6 +408,7 @@ pub(crate) fn attach_channel(
     link: &dyn Open,
     session: &str,
     from: Option<u64>,
+    timeout: Option<Duration>,
 ) -> Result<(Box<dyn Channel>, Attached), Error> {
     let request = Attach {
         session: session.to_owned(),
@@ -398,7 +416,7 @@ pub(crate) fn attach_channel(
     };
     let channel = link.open(protocol::ATTACH, &request.to_metadata()?)?;
     loop {
-        let Some(frame) = channel.receive(None)? else {
+        let Some(frame) = channel.receive(timeout)? else {
             return Err(Error::Closed);
         };
         match Attached::decode(&frame) {

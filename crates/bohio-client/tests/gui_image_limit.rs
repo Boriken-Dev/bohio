@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
-use bohio_client::gui::{Gui, SnapshotOptions};
+use bohio_client::gui::{Gui, Snapshot};
 use bohio_client::relay::Plain;
 use bohio_client::{Error, Open};
 use bohio_proto::gui::{
@@ -85,7 +85,7 @@ fn snapshot_of(length: u64, pieces: usize, limit: Option<u64>) -> (Result<(), Er
         });
         let started = std::time::Instant::now();
         let result = gui
-            .snapshot(&SnapshotOptions::default(), Some(Duration::from_secs(2)))
+            .snapshot(&Snapshot::default(), Some(Duration::from_secs(2)))
             .map(|_| ());
         let waited = started.elapsed();
         // The host may be waiting to send into a stream nobody reads; ending it lets the thread finish.

@@ -125,6 +125,7 @@ fn a_block_signature_past_the_callers_bound_is_refused() {
         &[Algorithm::Blake3],
         &BlockOptions::default(),
         1000,
+        WAIT,
     );
     assert!(matches!(outcome, Err(Error::Local(_))), "{outcome:?}");
 }

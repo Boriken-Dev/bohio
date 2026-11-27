@@ -76,7 +76,11 @@ impl Profile {
                 defaults.compare = Some(Compare::Hash(Algorithm::Xxh128));
             }
             Self::SlowLink => {
-                defaults.compression = Some(Compression::new(Codec::Zstd).level(19).window_log(27));
+                defaults.compression = Some(
+                    Compression::new(Codec::Zstd)
+                        .level(19)
+                        .window_log(crate::fs::DEFAULT_WINDOW_LOG_MAX),
+                );
                 defaults.compare = Some(Compare::Hash(Algorithm::Blake3));
                 defaults.parallel = 4;
                 defaults.bulk_window = Some(4 * MIB);
@@ -155,7 +159,11 @@ mod tests {
         let slow = Profile::SlowLink.defaults();
         assert_eq!(
             slow.compression,
-            Some(Compression::new(Codec::Zstd).level(19).window_log(27))
+            Some(
+                Compression::new(Codec::Zstd)
+                    .level(19)
+                    .window_log(crate::fs::DEFAULT_WINDOW_LOG_MAX)
+            )
         );
         assert_eq!(slow.compare, Some(Compare::Hash(Algorithm::Blake3)));
         assert_eq!(slow.delta, DeltaMode::Auto);

@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 
 use super::{Cancel, Image, Output, ToolError, Tools, lock, parse};
 use crate::Error;
-use crate::gui::{Gui, SnapshotOptions, WatchEvent, WatchOptions};
+use crate::gui::{Gui, Snapshot, Watch, WatchEvent};
 
 /// The desktop stream kept between calls.
 pub(crate) struct Held {
@@ -396,7 +396,7 @@ impl Tools {
     }
 
     /// One snapshot on the kept stream, asked again on a new one when the stream was lost: it changes nothing.
-    fn take(&self, options: &SnapshotOptions) -> Result<(Arc<Gui>, crate::gui::Image), ToolError> {
+    fn take(&self, options: &Snapshot) -> Result<(Arc<Gui>, crate::gui::Image), ToolError> {
         let wait = Some(self.settings.gui_timeout);
         let mut tried = 0;
         loop {
@@ -423,7 +423,7 @@ impl Tools {
         let settings = &self.settings;
         let format = options.format.unwrap_or_default();
         let quality = options.quality.unwrap_or(settings.gui_jpeg_quality);
-        let mut wire = SnapshotOptions {
+        let mut wire = Snapshot {
             display: options.display.clone(),
             region: options.region,
             format: Some(match format {
@@ -435,6 +435,7 @@ impl Tools {
             max_height: Some(options.max_height.unwrap_or(settings.gui_max_height)),
             cursor: true,
             settle: options.settle,
+            ..Snapshot::default()
         };
         let (mut gui, mut image) = self.take(&wire)?;
         if format == ShotFormat::Auto && image.bytes.len() as u64 > settings.gui_auto_limit {
@@ -442,7 +443,7 @@ impl Tools {
             wire.format = Some(ImageFormat::Jpeg);
             wire.quality = Some(quality);
             let settled = image.header.settled;
-            (gui, image) = self.take(&SnapshotOptions {
+            (gui, image) = self.take(&Snapshot {
                 settle: None,
                 ..wire
             })?;
@@ -732,12 +733,12 @@ impl Tools {
         let gui = self.desktop(&[Want::View])?;
         let displays = gui.state().displays;
         for display in displays {
-            let (_, image) = self.take(&SnapshotOptions {
+            let (_, image) = self.take(&Snapshot {
                 display: Some(display.id.clone()),
                 region: Some(Rect::new(0, 0, 1, 1)),
                 format: Some(ImageFormat::Png),
                 cursor: true,
-                ..SnapshotOptions::default()
+                ..Snapshot::default()
             })?;
             let Some(point) = image.header.cursor else {
                 continue;
@@ -1124,14 +1125,14 @@ pub(super) fn watch(tools: &Tools, arguments: Value, cancel: &Cancel) -> Result<
     let length =
         Duration::from_millis(args.duration_ms.unwrap_or(2000)).min(tools.settings.gui_timeout);
     let gui = tools.desktop(&[Want::View])?;
-    gui.watch(&WatchOptions {
+    gui.watch(&Watch {
         display: args.display,
         region: args.region,
         fps: args.fps,
         max_width: args.max_width,
         max_height: args.max_height,
         cursor: args.cursor,
-        ..WatchOptions::default()
+        ..Watch::default()
     })?;
     let begun = Instant::now();
     let (mut updates, mut rects, mut bytes, mut cursors) = (0_u64, 0_u64, 0_u64, 0_u64);

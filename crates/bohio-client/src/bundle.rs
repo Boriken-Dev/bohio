@@ -33,7 +33,7 @@ pub struct BundleOptions {
     pub caps: Caps,
     /// The most file bytes in one frame. Default 64 KiB.
     pub chunk: usize,
-    /// The largest zstd window a read accepts, as a power of two; 27 when absent.
+    /// The largest zstd window a read accepts, as a power of two; [`DEFAULT_WINDOW_LOG_MAX`](crate::fs::DEFAULT_WINDOW_LOG_MAX) when absent.
     pub window_log_max: Option<u32>,
     /// How many times the compressed bytes received the output of a read may grow to, once it passes 1 MiB; `Some(0)`
     /// is no check. Default [`crate::fs::DEFAULT_MAX_EXPANSION`].
@@ -42,7 +42,7 @@ pub struct BundleOptions {
     /// size of one file's compressed bytes does not depend on the file before it; `true` compresses many small similar
     /// files better and lets a path observer learn whether one repeats text of the one before it.
     pub shared_context: bool,
-    /// How long a step may wait for the host; `None` waits without limit. Default five minutes.
+    /// How long a step may wait for the host; `None` waits without limit. Default [`crate::DEFAULT_TIMEOUT`].
     pub timeout: Option<Duration>,
 }
 
@@ -52,14 +52,14 @@ impl Default for BundleOptions {
             compression: None,
             hashes: None,
             caps: Caps {
-                window_log_max: 27,
+                window_log_max: crate::fs::DEFAULT_WINDOW_LOG_MAX,
                 ..Caps::default()
             },
             chunk: crate::fs::Writer::DEFAULT_CHUNK,
             window_log_max: None,
             max_expansion: None,
             shared_context: false,
-            timeout: Some(Duration::from_secs(300)),
+            timeout: Some(crate::DEFAULT_TIMEOUT),
         }
     }
 }
@@ -168,7 +168,9 @@ fn receive_reads(
                         Decoder::new(
                             used,
                             &Bounds {
-                                window_log_max: options.window_log_max.unwrap_or(27),
+                                window_log_max: options
+                                    .window_log_max
+                                    .unwrap_or(crate::fs::DEFAULT_WINDOW_LOG_MAX),
                                 max_output: None,
                                 max_expansion: options
                                     .max_expansion

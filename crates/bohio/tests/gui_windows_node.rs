@@ -14,7 +14,7 @@ use bohio::node::{MemoryGrants, MemoryKeys, Node, PeerLink};
 use bohio::policy::{Grant, Permission};
 use bohio_client::Error;
 use bohio_client::control::Control;
-use bohio_client::gui::{Gui, SnapshotOptions};
+use bohio_client::gui::{Gui, Snapshot};
 use bohio_client::link::{Settings, stream};
 use bohio_proto::ErrorCode;
 use bohio_proto::gui::{GuiRequest, InputEvent, Rect, Want};
@@ -176,9 +176,9 @@ fn while_the_secure_desktop_has_the_screen_a_peer_is_told_so() {
     );
     let gui = Gui::open(&world.link, &GuiRequest::new([Want::View, Want::Input])).unwrap();
     assert_eq!(gui.state().locked, Some(true));
-    let options = SnapshotOptions {
+    let options = Snapshot {
         region: Some(Rect::new(0, 0, 4, 4)),
-        ..SnapshotOptions::default()
+        ..Snapshot::default()
     };
     let Err(Error::Remote(body)) = gui.snapshot(&options, Some(WAIT)) else {
         panic!("a snapshot of the lock screen was not refused");

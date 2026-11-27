@@ -25,7 +25,7 @@ use bohio::policy::{Grant, Permission};
 use bohio_client::Error;
 use bohio_client::control::Control;
 use bohio_client::dial::Endpoint;
-use bohio_client::gui::{Gui, SnapshotOptions};
+use bohio_client::gui::{Gui, Snapshot};
 use bohio_client::link::{Settings, stream};
 use bohio_proto::gui::{Button, ButtonAction, DisplayId, GuiRequest, InputEvent, Rect, Want};
 use bohio_proto::{ErrorBody, ErrorCode};
@@ -372,7 +372,7 @@ fn a_helper_over_a_real_pipe_serves_a_snapshot_and_input_to_a_peer() {
     assert_eq!(info.gui.sessions[0].id, gui.session());
     assert_eq!(info.gui.sessions[0].displays.len(), 2);
     let image = gui
-        .snapshot(&SnapshotOptions::default(), Some(WAIT))
+        .snapshot(&Snapshot::default(), Some(WAIT))
         .expect("a snapshot through the helper");
     assert_eq!(image.header.width, 320);
     let click = InputEvent::Button {
@@ -575,10 +575,7 @@ fn removing_gui_input_from_the_peer_ends_the_relayed_stream_and_refuses_the_next
     );
     let started = Instant::now();
     let ended = loop {
-        match gui.snapshot(
-            &SnapshotOptions::default(),
-            Some(Duration::from_millis(200)),
-        ) {
+        match gui.snapshot(&Snapshot::default(), Some(Duration::from_millis(200))) {
             Err(Error::Timeout) | Ok(_) => {}
             Err(error) => break error,
         }
@@ -631,7 +628,7 @@ fn a_helper_that_ends_ends_its_streams_as_unavailable() {
     let mut world = World::new(&[me()], all(), false);
     let (stop, helper) = world.helper(&me(), GuiConfig::default());
     let gui = world.open(&[Want::View]).expect("opens");
-    gui.snapshot(&SnapshotOptions::default(), Some(WAIT))
+    gui.snapshot(&Snapshot::default(), Some(WAIT))
         .expect("one snapshot");
     stop_helper(&stop, helper);
     // Read without sending: a request sent after the stream ended would meet the ended stream before the node's last frame.
@@ -810,7 +807,7 @@ fn a_peer_reaches_the_helper_of_an_exec_source_only_with_that_source() {
     );
     let until = Instant::now() + WAIT;
     while open
-        .snapshot(&SnapshotOptions::default(), Some(Duration::from_secs(2)))
+        .snapshot(&Snapshot::default(), Some(Duration::from_secs(2)))
         .is_ok()
     {
         assert!(Instant::now() < until, "the stream outlived its source");
@@ -828,7 +825,7 @@ fn the_events_of_a_relayed_stream_reach_the_owner_including_the_last() {
     let (stop, helper) = world.helper(&me(), GuiConfig::default());
     let gui = world.open(&[Want::View]).expect("opens");
     let snapshot = gui
-        .snapshot(&SnapshotOptions::default(), Some(WAIT))
+        .snapshot(&Snapshot::default(), Some(WAIT))
         .expect("a snapshot");
     assert_eq!(snapshot.header.width, 320);
     gui.close();

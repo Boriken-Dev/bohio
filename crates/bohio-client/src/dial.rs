@@ -38,6 +38,26 @@ use crate::Error;
 use crate::certificate::{Checked, Refusals};
 use crate::link::{Settings, framed, socket, stream};
 
+/// Why a serial setting could not be read. It never quotes the text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum SerialError {
+    /// A query item is not `key=value`.
+    #[error("a serial setting is not `key=value`")]
+    NotKeyValue,
+    /// The key is none of `baud`, `data_bits`, `parity`, `stop_bits` and `flow_control`.
+    #[error("a serial setting is none of baud, data_bits, parity, stop_bits, flow_control")]
+    UnknownSetting,
+    /// The setting does not take the value.
+    #[error("the value of `{setting}` is not {expected}")]
+    Value {
+        /// The setting.
+        setting: &'static str,
+        /// What it takes.
+        expected: &'static str,
+    },
+}
+
 /// The serial line settings an endpoint or a `[[listen]]` entry gives; a setting left out takes the port
 /// crate's default (115200 baud, 8 data bits, no parity, 1 stop bit, no flow control).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -60,11 +80,15 @@ impl SerialOptions {
     ///
     /// # Errors
     ///
-    /// The reason, for an unknown key or a value the setting does not take.
-    pub fn set(&mut self, key: &str, value: &str) -> Result<(), String> {
-        let bad = |what: &str| format!("`{value}` is not {what} for `{key}`");
+    /// [`SerialError::UnknownSetting`] for a key that is none of these, [`SerialError::Value`] for a value the
+    /// setting does not take.
+    pub fn set(&mut self, key: &str, value: &str) -> Result<(), SerialError> {
         match key {
             "baud" => {
+                let bad = |expected| SerialError::Value {
+                    setting: "baud",
+                    expected,
+                };
                 self.baud = Some(
                     value
                         .parse::<u32>()
@@ -74,6 +98,10 @@ impl SerialOptions {
                 );
             }
             "data_bits" => {
+                let bad = |expected| SerialError::Value {
+                    setting: "data_bits",
+                    expected,
+                };
                 self.data_bits = Some(match value {
                     "5" => DataBits::Five,
                     "6" => DataBits::Six,
@@ -83,6 +111,10 @@ impl SerialOptions {
                 });
             }
             "parity" => {
+                let bad = |expected| SerialError::Value {
+                    setting: "parity",
+                    expected,
+                };
                 self.parity = Some(match value {
                     "none" => Parity::None,
                     "odd" => Parity::Odd,
@@ -91,6 +123,10 @@ impl SerialOptions {
                 });
             }
             "stop_bits" => {
+                let bad = |expected| SerialError::Value {
+                    setting: "stop_bits",
+                    expected,
+                };
                 self.stop_bits = Some(match value {
                     "1" => StopBits::One,
                     "2" => StopBits::Two,
@@ -98,17 +134,17 @@ impl SerialOptions {
                 });
             }
             "flow_control" => {
+                let bad = |expected| SerialError::Value {
+                    setting: "flow_control",
+                    expected,
+                };
                 self.flow_control = Some(match value {
                     "none" => FlowControl::None,
                     "hardware" => FlowControl::Hardware,
                     _ => return Err(bad("none or hardware")),
                 });
             }
-            other => {
-                return Err(format!(
-                    "`{other}` is not a serial setting: baud, data_bits, parity, stop_bits, flow_control"
-                ));
-            }
+            _ => return Err(SerialError::UnknownSetting),
         }
         Ok(())
     }
@@ -153,13 +189,14 @@ impl ServerTrust {
     ///
     /// # Errors
     ///
-    /// The reason, for text that is not a SHA-256 digest.
-    pub fn pin(&mut self, text: &str) -> Result<(), String> {
-        let id = text.trim().parse::<PeerId>().map_err(|_| {
-            format!("`{text}` is not a certificate hash: write `sha256:` and 64 hex digits")
-        })?;
+    /// [`PinError`] for text that is not a SHA-256 digest.
+    pub fn pin(&mut self, text: &str) -> Result<(), PinError> {
+        let id = text
+            .trim()
+            .parse::<PeerId>()
+            .map_err(|_| PinError::NotAHash)?;
         if !id.to_string().starts_with("sha256:") {
-            return Err(format!("`{text}` is not a SHA-256 certificate hash"));
+            return Err(PinError::NotSha256);
         }
         self.pins.push(id);
         Ok(())
@@ -211,6 +248,82 @@ impl ServerTrust {
             .map_err(|error| error.to_string())?;
         Ok(Arc::new(built.config))
     }
+}
+
+/// Why a certificate pin could not be read. It never quotes the text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum PinError {
+    /// The text is not a hash: write `sha256:` and 64 hex digits.
+    #[error("not a certificate hash: write `sha256:` and 64 hex digits")]
+    NotAHash,
+    /// The hash is of another algorithm than SHA-256.
+    #[error("not a SHA-256 certificate hash")]
+    NotSha256,
+}
+
+/// Why an endpoint could not be read or combined. It names the part that is wrong and never quotes the text, which can
+/// hold a credential.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum EndpointError {
+    /// The text has no `scheme://`: an endpoint looks like `tcp://host:port`, `pipe://name`, `ws://host:port`,
+    /// `wss://host:port`, `webtransport://host:port`, `serial://port?baud=N` or `stdio://program args`.
+    #[error(
+        "an endpoint looks like `tcp://host:port`, `pipe://name`, `ws://host:port`, `wss://host:port`, `webtransport://host:port`, `serial://port?baud=N` or `stdio://program args`"
+    )]
+    NoScheme,
+    /// The scheme is not one this build serves.
+    #[error("the scheme is not served; use tcp, pipe, ws, wss, webtransport, serial or stdio")]
+    UnknownScheme,
+    /// A `tcp://` host name did not resolve; the text is the kind of failure.
+    #[error("the host cannot be resolved: {0}")]
+    Resolve(String),
+    /// A `tcp://` host resolved to no address.
+    #[error("the host has no address")]
+    NoAddress,
+    /// The pipe name cannot be used.
+    #[error("not a pipe name: {0}")]
+    Pipe(String),
+    /// A `ws://`, `wss://` or `webtransport://` endpoint is not a URL; the text is the parser's reason.
+    #[error("the endpoint is not a URL: {0}")]
+    Url(String),
+    /// A `ws://` or `wss://` endpoint names no host.
+    #[error("the endpoint names no host")]
+    NoHost,
+    /// A `webtransport://` endpoint lacks a host or a UDP port: `webtransport://host:4433`.
+    #[error("a `webtransport://` endpoint needs a host and a UDP port: `webtransport://host:4433`")]
+    NoUdpPort,
+    /// A `serial://` endpoint names no port.
+    #[error("`serial://` needs a port: `serial:///dev/ttyUSB0?baud=115200` or `serial://COM3`")]
+    NoSerialPort,
+    /// A serial setting in the query cannot be read.
+    #[error(transparent)]
+    Serial(#[from] SerialError),
+    /// A `stdio://` command cannot be read.
+    #[error(transparent)]
+    Command(#[from] CommandError),
+    /// A fallback is a `ws://` or `wss://` endpoint that follows a `webtransport://` one.
+    #[error("a fallback is a `ws://` or `wss://` endpoint that follows a `webtransport://` one")]
+    NotAFallback,
+    /// The MTU settings are for a `webtransport://` endpoint.
+    #[error("the MTU settings are for a `webtransport://` endpoint")]
+    NotWebTransport,
+    /// An MTU value is below what QUIC needs; the text names the value.
+    #[error("{0}")]
+    Mtu(String),
+}
+
+/// Why a command line could not be split. It never quotes the line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum CommandError {
+    /// A quote in the command is not closed.
+    #[error("a quote in the command is not closed")]
+    UnclosedQuote,
+    /// The command has no program.
+    #[error("the command is empty")]
+    Empty,
 }
 
 /// A place to listen or connect to.
@@ -275,12 +388,9 @@ impl Endpoint {
     ///
     /// # Errors
     ///
-    /// The reason, for a scheme this build does not serve or an address that does not parse.
-    pub fn parse(text: &str) -> Result<Self, String> {
-        let (scheme, rest) = text.split_once("://").ok_or_else(|| {
-            "an endpoint looks like `tcp://host:port`, `pipe://name`, `ws://host:port`, `wss://host:port`, `webtransport://host:port`, `serial://port?baud=N` or `stdio://program args`"
-                .to_owned()
-        })?;
+    /// [`EndpointError`] for a scheme this build does not serve or an address that does not parse.
+    pub fn parse(text: &str) -> Result<Self, EndpointError> {
+        let (scheme, rest) = text.split_once("://").ok_or(EndpointError::NoScheme)?;
         match scheme {
             "tcp" => first_address(rest).map(Self::Tcp),
             "pipe" => {
@@ -291,23 +401,21 @@ impl Endpoint {
                 };
                 named
                     .map(Self::Pipe)
-                    .map_err(|error| format!("`{rest}` is not a pipe name: {error}"))
+                    .map_err(|error| EndpointError::Pipe(error.to_string()))
             }
             "ws" | "wss" => {
                 let url =
-                    Url::parse(text).map_err(|error| format!("`{text}` is not a URL: {error}"))?;
+                    Url::parse(text).map_err(|error| EndpointError::Url(error.to_string()))?;
                 if url.host_str().is_none() || url.port_or_known_default().is_none() {
-                    return Err(format!("`{text}` names no host"));
+                    return Err(EndpointError::NoHost);
                 }
                 Ok(Self::WebSocket(url))
             }
             "webtransport" => {
                 let url =
-                    Url::parse(text).map_err(|error| format!("`{text}` is not a URL: {error}"))?;
+                    Url::parse(text).map_err(|error| EndpointError::Url(error.to_string()))?;
                 if url.host_str().is_none() || url.port().is_none() {
-                    return Err(format!(
-                        "`{text}` needs a host and a UDP port: `webtransport://host:4433`"
-                    ));
+                    return Err(EndpointError::NoUdpPort);
                 }
                 Ok(Self::WebTransport {
                     url,
@@ -318,13 +426,11 @@ impl Endpoint {
             "serial" => {
                 let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
                 if path.is_empty() {
-                    return Err("`serial://` needs a port: `serial:///dev/ttyUSB0?baud=115200` or `serial://COM3`".to_owned());
+                    return Err(EndpointError::NoSerialPort);
                 }
                 let mut options = SerialOptions::default();
                 for pair in query.split('&').filter(|pair| !pair.is_empty()) {
-                    let (key, value) = pair
-                        .split_once('=')
-                        .ok_or_else(|| format!("`{pair}` is not `key=value`"))?;
+                    let (key, value) = pair.split_once('=').ok_or(SerialError::NotKeyValue)?;
                     options.set(key, value)?;
                 }
                 Ok(Self::Serial {
@@ -332,10 +438,8 @@ impl Endpoint {
                     options,
                 })
             }
-            "stdio" => split_command(rest).map(Self::Command),
-            other => Err(format!(
-                "the scheme `{other}` is not served; use tcp, pipe, ws, wss, webtransport, serial or stdio"
-            )),
+            "stdio" => Ok(Self::Command(split_command(rest)?)),
+            _ => Err(EndpointError::UnknownScheme),
         }
     }
 
@@ -351,8 +455,8 @@ impl Endpoint {
     ///
     /// # Errors
     ///
-    /// The reason, when this is not a WebTransport endpoint or `fallback` is not a WebSocket one.
-    pub fn with_fallback(self, fallback: Self) -> Result<Self, String> {
+    /// [`EndpointError::NotAFallback`] when this is not a WebTransport endpoint or `fallback` is not a WebSocket one.
+    pub fn with_fallback(self, fallback: Self) -> Result<Self, EndpointError> {
         match (self, fallback) {
             (Self::WebTransport { url, mtu, .. }, Self::WebSocket(other)) => {
                 Ok(Self::WebTransport {
@@ -361,10 +465,7 @@ impl Endpoint {
                     mtu,
                 })
             }
-            _ => Err(
-                "a fallback is a `ws://` or `wss://` endpoint that follows a `webtransport://` one"
-                    .to_owned(),
-            ),
+            _ => Err(EndpointError::NotAFallback),
         }
     }
 
@@ -376,16 +477,16 @@ impl Endpoint {
     ///
     /// # Errors
     ///
-    /// The reason, when this is not a WebTransport endpoint or `initial` or `min` is below [`MIN_MTU`], which names the value.
-    pub fn with_mtu(self, mtu: Mtu) -> Result<Self, String> {
-        mtu.check().map_err(|error| error.to_string())?;
+    /// [`EndpointError::NotWebTransport`] when this is not a WebTransport endpoint, [`EndpointError::Mtu`] when `initial`
+    /// or `min` is below [`MIN_MTU`], which names the value.
+    pub fn with_mtu(self, mtu: Mtu) -> Result<Self, EndpointError> {
+        mtu.check()
+            .map_err(|error| EndpointError::Mtu(error.to_string()))?;
         match self {
             Self::WebTransport { url, fallback, .. } => {
                 Ok(Self::WebTransport { url, fallback, mtu })
             }
-            other => Err(format!(
-                "the MTU settings are for a `webtransport://` endpoint, not `{other}`"
-            )),
+            _ => Err(EndpointError::NotWebTransport),
         }
     }
 
@@ -448,6 +549,14 @@ impl Endpoint {
                 Ok(Box::new(channel))
             }
         }
+    }
+}
+
+impl core::str::FromStr for Endpoint {
+    type Err = EndpointError;
+
+    fn from_str(text: &str) -> Result<Self, EndpointError> {
+        Self::parse(text)
     }
 }
 
@@ -585,11 +694,11 @@ impl WebDialer for Both {
     }
 }
 
-fn first_address(text: &str) -> Result<SocketAddr, String> {
+fn first_address(text: &str) -> Result<SocketAddr, EndpointError> {
     text.to_socket_addrs()
-        .map_err(|error| format!("`{text}` cannot be resolved: {error}"))?
+        .map_err(|error| EndpointError::Resolve(format!("{:?}", error.kind())))?
         .next()
-        .ok_or_else(|| format!("`{text}` has no address"))
+        .ok_or(EndpointError::NoAddress)
 }
 
 /// The failure an I/O error on the way to a host reports.
@@ -675,8 +784,8 @@ pub fn command(argv: &[String], settings: &Settings) -> io::Result<coqui_transpo
 ///
 /// # Errors
 ///
-/// The reason, for an empty line or a quote that is not closed.
-pub fn split_command(line: &str) -> Result<Vec<String>, String> {
+/// [`CommandError`] for an empty line or a quote that is not closed.
+pub fn split_command(line: &str) -> Result<Vec<String>, CommandError> {
     let mut arguments = Vec::new();
     let mut current = String::new();
     let mut started = false;
@@ -702,13 +811,13 @@ pub fn split_command(line: &str) -> Result<Vec<String>, String> {
         }
     }
     if quote.is_some() {
-        return Err("a quote in the command is not closed".to_owned());
+        return Err(CommandError::UnclosedQuote);
     }
     if started {
         arguments.push(current);
     }
     if arguments.is_empty() {
-        return Err("the command is empty".to_owned());
+        return Err(CommandError::Empty);
     }
     Ok(arguments)
 }

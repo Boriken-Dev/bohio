@@ -22,6 +22,16 @@ pub enum Error {
     /// The host could not be proven or would not prove this side; the text says why, never a key.
     #[error("the link could not be established: {0}")]
     Link(String),
+    /// The caller asked a session of one kind for another: [`Exec`](crate::exec::Exec) attached to a shell session or
+    /// the reverse. The session is not touched.
+    #[error("the session is of another kind than the one asked for")]
+    WrongKind {
+        /// The kind the host reported.
+        found: bohio_proto::session::Kind,
+    },
+    /// The caller collected an id twice, or one that was abandoned or never sent.
+    #[error("no call with that id is outstanding")]
+    NothingOutstanding,
     /// The stream ended before the operation's last frame.
     #[error("the stream ended before the operation finished")]
     Closed,

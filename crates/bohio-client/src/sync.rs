@@ -101,7 +101,7 @@ pub struct SyncOptions {
     pub read_size: usize,
     /// What the host offers (`info.transfer`, or the `hello` reply's), when the caller has it already: saves a call.
     pub transfer: Option<TransferInfo>,
-    /// The largest zstd window a read accepts, as a power of two; 27 when absent.
+    /// The largest zstd window a read accepts, as a power of two; [`DEFAULT_WINDOW_LOG_MAX`](crate::fs::DEFAULT_WINDOW_LOG_MAX) when absent.
     pub window_log_max: Option<u32>,
     /// How many times the compressed bytes received the output of a read may grow to, once it passes 1 MiB; `Some(0)`
     /// is no check. Default [`crate::fs::DEFAULT_MAX_EXPANSION`].
@@ -115,7 +115,7 @@ impl Default for SyncOptions {
             compression: None,
             compare: None,
             caps: Caps {
-                window_log_max: 27,
+                window_log_max: crate::fs::DEFAULT_WINDOW_LOG_MAX,
                 ..Caps::default()
             },
             block_size: None,
@@ -896,7 +896,9 @@ fn rebuild(
             Decoder::new(
                 used,
                 &Bounds {
-                    window_log_max: options.window_log_max.unwrap_or(27),
+                    window_log_max: options
+                        .window_log_max
+                        .unwrap_or(crate::fs::DEFAULT_WINDOW_LOG_MAX),
                     max_output: Some(header.length),
                     max_expansion: options
                         .max_expansion

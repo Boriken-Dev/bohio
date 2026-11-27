@@ -114,7 +114,7 @@ impl Control {
     ///
     /// [`Error::Remote`] when the host refused or failed the call, [`Error::Timeout`] when no answer came in time,
     /// [`Error::Closed`] when the host closed the stream, [`Error::Transport`] or [`Error::Protocol`] otherwise; and
-    /// [`Error::Protocol`] for an id with nothing outstanding (already collected or abandoned).
+    /// [`Error::NothingOutstanding`] for an id with nothing outstanding (already collected or abandoned).
     pub fn collect(&self, id: u64, timeout: Option<Duration>) -> Result<Reply, Error> {
         let deadline = timeout.map(|limit| Instant::now() + limit);
         self.collect_by(id, deadline)
@@ -130,7 +130,7 @@ impl Control {
                 return Err(Error::Closed);
             }
             if !pending.awaiting.contains(&id) {
-                return Err(Error::Protocol(bohio_proto::Error::Decode));
+                return Err(Error::NothingOutstanding);
             }
             let left = deadline.map(|at| at.saturating_duration_since(Instant::now()));
             if left.is_some_and(|left| left.is_zero()) {

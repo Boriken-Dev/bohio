@@ -28,7 +28,9 @@ pub trait Open: Send + Sync {
 }
 #[derive(Default)] #[non_exhaustive] pub struct OpenOptions { pub receive_window: Option<u32> }   // None: the link's window; `OpenOptions::receive_window(bytes)`. A link grants the difference on the new stream, up to its `max_window`
 #[non_exhaustive] pub enum Error { Remote(ErrorBody), Transport(Failure), Protocol(bohio_proto::Error), Link(String), Timeout, Closed,
-                                   Compression(String) /* a codec this build lacks */, Local(String) /* a local file; never a path */, Screen(String) /* an unusable update */, Mismatch /* a rebuilt file's digest differs */ }   // Clone, Eq, std::error::Error
+                                   Compression(String) /* a codec this build lacks */, Local(String) /* a local file; never a path */, Screen(String) /* an unusable update */, Mismatch /* a rebuilt file's digest differs */,
+                                   WrongKind { found: Kind } /* Exec attached to a shell session or the reverse */, NothingOutstanding /* a collected id nothing waits for */ }   // Clone, Eq, std::error::Error
+pub const DEFAULT_TIMEOUT: Duration;   // 5 min: how long Fs calls, hashes, a bundle step and an attach wait for the host unless the caller gives another bound (`None`: without limit)
 ```
 
 `Sourced::new(&link, "name")` / `Sourced::shared(arc, "name")` is an `Open` that names the host's files source on every filesystem stream (`bohio-read/1`, `-write/1`, `-hash/1`, `-walk/1`, `-search/1`) and, through `Open::files_source`, on the calls of a `Control` opened through it; `Tools::call` does the same for a file tool's `source` argument.

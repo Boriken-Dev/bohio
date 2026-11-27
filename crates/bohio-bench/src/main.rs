@@ -451,7 +451,7 @@ fn local(args: &LocalArgs) -> Result<bool, String> {
                 wan::start(target, wan::Path::parse(text)?).map_err(|error| error.to_string())?;
             endpoint_text = format!("tcp://{proxy}");
         }
-        let endpoint = Endpoint::parse(&endpoint_text)?;
+        let endpoint = Endpoint::parse(&endpoint_text).map_err(|error| error.to_string())?;
         let proof = proof_of(&local.client_data, &local.client_config, None)?;
         let node = if common
             .scenario
@@ -495,7 +495,7 @@ fn remote(args: &RunArgs) -> Result<bool, String> {
     let bohio = common.bohio.clone().unwrap_or_else(|| sibling("bohio"));
     let proof = proof_of(&args.data_dir, &args.client_config, args.server.as_deref())?;
     let mut runner = Runner::new(Env {
-        endpoint: Endpoint::parse(&args.endpoint)?,
+        endpoint: Endpoint::parse(&args.endpoint).map_err(|error| error.to_string())?,
         endpoint_text: args.endpoint.clone(),
         proof,
         settings,

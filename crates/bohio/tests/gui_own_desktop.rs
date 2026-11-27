@@ -32,7 +32,7 @@ use bohio::gui::{own_display, own_uid};
 use bohio::node::{MemoryGrants, MemoryKeys, Node, PeerLink};
 use bohio::policy::{Grant, Permission};
 use bohio_client::control::Control;
-use bohio_client::gui::{Gui, SnapshotOptions};
+use bohio_client::gui::{Gui, Snapshot};
 use bohio_client::link::{Settings, stream};
 use bohio_proto::gui::{
     Button, ButtonAction, GuiRequest, ImageFormat, InputEvent, KeyAction, Rect, Want,
@@ -469,7 +469,7 @@ fn an_own_desktop_serves_a_snapshot_and_input_to_a_peer() {
     // The snapshot is the probe's pattern, pixel for pixel: the root of the own desktop is readable.
     let image = gui
         .snapshot(
-            &SnapshotOptions {
+            &Snapshot {
                 display: Some(shown.id.clone()),
                 region: Some(Rect::new(
                     u32::try_from(left).unwrap(),
@@ -478,7 +478,7 @@ fn an_own_desktop_serves_a_snapshot_and_input_to_a_peer() {
                     u32::from(pattern::HEIGHT),
                 )),
                 format: Some(ImageFormat::Png),
-                ..SnapshotOptions::default()
+                ..Snapshot::default()
             },
             Some(WAIT),
         )

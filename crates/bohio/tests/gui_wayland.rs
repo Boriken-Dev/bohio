@@ -27,7 +27,7 @@ use bohio::gui::{Desktop, WaylandDesktop, WaylandSettings};
 use bohio::node::{MemoryGrants, MemoryKeys, Node, PeerLink};
 use bohio::policy::{Grant, Permission};
 use bohio_client::control::Control;
-use bohio_client::gui::{Gui, SnapshotOptions};
+use bohio_client::gui::{Gui, Snapshot};
 use bohio_client::link::{Settings, stream};
 use bohio_proto::ErrorCode;
 use bohio_proto::gui::{
@@ -380,11 +380,11 @@ fn a_node_serves_the_compositors_picture_and_names_the_wayland_backend() {
     let gui = Gui::open(&world.link, &GuiRequest::new([Want::View])).unwrap();
     let image = gui
         .snapshot(
-            &SnapshotOptions {
+            &Snapshot {
                 display: Some(expected.displays[0].id.clone()),
                 region: Some(Rect::new(0, 0, 1280, 720)),
                 format: Some(ImageFormat::Png),
-                ..SnapshotOptions::default()
+                ..Snapshot::default()
             },
             Some(WAIT),
         )

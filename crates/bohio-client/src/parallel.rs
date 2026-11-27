@@ -69,7 +69,7 @@ impl Default for ParallelOptions {
             range: None,
             compression: None,
             caps: Caps {
-                window_log_max: 27,
+                window_log_max: crate::fs::DEFAULT_WINDOW_LOG_MAX,
                 ..Caps::default()
             },
             hashes: vec![Algorithm::Sha256],

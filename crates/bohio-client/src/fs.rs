@@ -39,7 +39,8 @@ pub struct Fs {
 }
 
 impl Fs {
-    /// Opens a control stream on `link`. Calls wait without limit until [`Fs::with_timeout`].
+    /// Opens a control stream on `link`. Each call waits at most [`crate::DEFAULT_TIMEOUT`] for its answer until
+    /// [`Fs::with_timeout`] says another bound (`None` waits without limit).
     ///
     /// # Errors
     ///
@@ -47,7 +48,7 @@ impl Fs {
     pub fn connect(link: &dyn Open) -> Result<Self, Error> {
         Ok(Self {
             control: Control::open(link)?,
-            timeout: None,
+            timeout: Some(crate::DEFAULT_TIMEOUT),
         })
     }
 
@@ -392,6 +393,11 @@ fn decode_error(error: &DecodeError) -> Error {
 /// mebibyte), unless a request says otherwise: a host cannot make the client hold more than this times what it sent.
 pub const DEFAULT_MAX_EXPANSION: u32 = 1024;
 
+/// The base-2 logarithm of the largest window a decoder accepts from a compressed stream, unless a request says
+/// otherwise: `27` (128 MiB), zstd's own, so a host cannot make the client allocate more than this before it has sent
+/// any data.
+pub const DEFAULT_WINDOW_LOG_MAX: u32 = 27;
+
 /// The most bytes of block signature a client takes from a host for one file, unless a request says otherwise.
 pub const DEFAULT_MAX_SIGNATURE_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -399,7 +405,7 @@ pub const DEFAULT_MAX_SIGNATURE_BYTES: u64 = 64 * 1024 * 1024;
 #[derive(Default)]
 pub struct ReadOptions {
     /// The largest zstd window the reader accepts, as a power of two; a stream asking for more is refused
-    /// before it costs memory. Default `27` (128 MiB), zstd's own.
+    /// before it costs memory. Default [`DEFAULT_WINDOW_LOG_MAX`].
     pub window_log_max: Option<u32>,
     /// How many times the compressed bytes received the decoded output may grow to once it passes 1 MiB; past it the
     /// read fails with [`Error::Compression`]. `Some(0)` turns the check off (a file of zeros compresses a thousand to
@@ -499,7 +505,9 @@ impl Reader {
                             Decoder::new(
                                 used,
                                 &Bounds {
-                                    window_log_max: options.window_log_max.unwrap_or(27),
+                                    window_log_max: options
+                                        .window_log_max
+                                        .unwrap_or(crate::fs::DEFAULT_WINDOW_LOG_MAX),
                                     max_output: Some(header.length),
                                     max_expansion: options
                                         .max_expansion
@@ -721,7 +729,7 @@ impl Writer {
             request,
             timeout,
             &Caps {
-                window_log_max: 27,
+                window_log_max: crate::fs::DEFAULT_WINDOW_LOG_MAX,
                 ..Caps::default()
             },
         )

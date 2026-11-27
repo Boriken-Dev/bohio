@@ -32,6 +32,11 @@ mod tree;
 pub mod walk;
 
 pub use error::Error;
+
+/// How long a call waits for the host's next message unless the caller gives another bound (`None` waits without limit,
+/// which only a caller that accepts a host that never answers should ask for): five minutes. The control calls of
+/// [`fs::Fs`], the hashes, a bundle and an attach to a session use it.
+pub const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 pub use sourced::Sourced;
 
 use cabuya::mux::LinkStream;

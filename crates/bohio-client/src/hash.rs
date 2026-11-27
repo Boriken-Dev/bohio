@@ -12,7 +12,8 @@ use coqui_transport::Channel;
 
 use crate::{Error, Open};
 
-/// The digests of one file, or of a range of it.
+/// The digests of one file, or of a range of it. Each wait for the host is at most [`crate::DEFAULT_TIMEOUT`] (a file that
+/// takes longer to hash is [`hash_items`] with another bound).
 ///
 /// # Errors
 ///
@@ -33,7 +34,12 @@ pub fn hash_range(
     item: HashItem,
     algorithms: &[Algorithm],
 ) -> Result<Digests, Error> {
-    let mut answers = hash_items(link, &HashRequest::new(algorithms.iter().cloned()), &[item])?;
+    let mut answers = hash_items(
+        link,
+        &HashRequest::new(algorithms.iter().cloned()),
+        &[item],
+        Some(crate::DEFAULT_TIMEOUT),
+    )?;
     match answers.pop() {
         Some(Ok(result)) => Ok(result.hashes),
         Some(Err(body)) => Err(Error::Remote(body)),
@@ -53,32 +59,36 @@ pub fn hash_many(
     algorithms: &[Algorithm],
 ) -> Result<Vec<Result<Digests, ErrorBody>>, Error> {
     let request = HashRequest::new(algorithms.iter().cloned());
-    Ok(hash_items(link, &request, items)?
-        .into_iter()
-        .map(|answer| answer.map(|result| result.hashes))
-        .collect())
+    Ok(
+        hash_items(link, &request, items, Some(crate::DEFAULT_TIMEOUT))?
+            .into_iter()
+            .map(|answer| answer.map(|result| result.hashes))
+            .collect(),
+    )
 }
 
 /// As [`hash_many`], keeping each item's size, modification time and `unchanged` flag, and with the whole
 /// request (`algorithms` and the rest of the options) given.
 ///
 /// Items are sent and results read on two threads, so a long batch cannot stop on a full stream: the host
-/// answers each item in order while the next are still being sent.
+/// answers each item in order while the next are still being sent. `timeout` is the longest the wait for each
+/// answer lasts (`None` waits without limit).
 ///
 /// # Errors
 ///
 /// As [`hash_file`], for the stream as a whole; [`Error::Closed`] when the stream ended before every item
-/// was answered.
+/// was answered, [`Error::Timeout`] when no answer came within `timeout`.
 pub fn hash_items(
     link: &dyn Open,
     request: &HashRequest,
     items: &[HashItem],
+    timeout: Option<Duration>,
 ) -> Result<Vec<Result<HashResult, ErrorBody>>, Error> {
     let channel = link.open(protocol::HASH, &request.to_metadata()?)?;
     let channel: &dyn Channel = channel.as_ref();
     thread::scope(|scope| {
         let sender = scope.spawn(move || send_items(channel, items));
-        let received = receive_answers(channel, items.len());
+        let received = receive_answers(channel, items.len(), timeout);
         // Closing ends a send still waiting for room, which a host that gave up no longer makes.
         channel.close();
         // A failed send is told by the host's own error frame when there is one, and by the stream's end otherwise.
@@ -117,21 +127,25 @@ pub fn hash_blocks(
         algorithms,
         options,
         crate::fs::DEFAULT_MAX_SIGNATURE_BYTES,
+        Some(crate::DEFAULT_TIMEOUT),
     )
 }
 
 /// As [`hash_blocks`], taking at most `max_signature_bytes` of weak values and strong hashes from the host
-/// (`hash_blocks` takes [`crate::fs::DEFAULT_MAX_SIGNATURE_BYTES`]); `0` takes any amount.
+/// (`hash_blocks` takes [`crate::fs::DEFAULT_MAX_SIGNATURE_BYTES`]); `0` takes any amount. `timeout` is the longest the wait
+/// for each of the host's frames lasts (`hash_blocks` takes [`crate::DEFAULT_TIMEOUT`]; `None` waits without limit).
 ///
 /// # Errors
 ///
-/// As [`hash_blocks`]; [`Error::Local`] when the host sends more than the bound.
+/// As [`hash_blocks`]; [`Error::Local`] when the host sends more than the bound, [`Error::Timeout`] when a frame did
+/// not come within `timeout`.
 pub fn hash_blocks_within(
     link: &dyn Open,
     item: HashItem,
     algorithms: &[Algorithm],
     options: &BlockOptions,
     max_signature_bytes: u64,
+    timeout: Option<Duration>,
 ) -> Result<Blocks, Error> {
     let strong = algorithms
         .first()
@@ -156,7 +170,7 @@ pub fn hash_blocks_within(
         let mut wire = 0_u64;
         let mut result = None;
         loop {
-            let Some(frame) = channel.receive(None::<Duration>)? else {
+            let Some(frame) = channel.receive(timeout)? else {
                 return Err(Error::Closed);
             };
             wire += frame.len() as u64;
@@ -219,6 +233,7 @@ fn send_items(channel: &dyn Channel, items: &[HashItem]) -> Result<(), Error> {
 fn receive_answers(
     channel: &dyn Channel,
     count: usize,
+    timeout: Option<Duration>,
 ) -> Result<Vec<Result<HashResult, ErrorBody>>, Error> {
     let mut answers: Vec<Option<Result<HashResult, ErrorBody>>> = vec![None; count];
     let place = |answers: &mut Vec<Option<_>>, index: u64, answer| {
@@ -230,7 +245,7 @@ fn receive_answers(
         Ok::<(), Error>(())
     };
     loop {
-        let Some(frame) = channel.receive(None::<Duration>)? else {
+        let Some(frame) = channel.receive(timeout)? else {
             return Err(Error::Closed);
         };
         match HashOutput::decode(&frame) {

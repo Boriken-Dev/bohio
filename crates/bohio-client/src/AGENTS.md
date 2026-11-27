@@ -29,7 +29,7 @@ impl Exec {
     pub fn kill(&self) -> Result<(), Error>;
     pub fn signal(&self, signal: Signal) -> Result<(), Error>;      // the host answers with Event::Signalled (delivered or not)
     pub fn session(&self) -> Option<String>;                          // the id, once `started` said the request made a session, or when attached
-    pub fn attach(link: &dyn Open, session: &str, from: Option<u64>) -> Result<(Self, Attached), Error>;   // `bohio-attach/1`; Error::Protocol for a shell session
+    pub fn attach(link: &dyn Open, session: &str, from: Option<u64>) -> Result<(Self, Attached), Error>;   // `bohio-attach/1`; Error::WrongKind { found } for a shell session; `attach_within(.., timeout: Option<Duration>)` takes the wait, `attach` waits DEFAULT_TIMEOUT
     pub fn wait(&self, timeout: Option<Duration>) -> Result<Completed, Error>;
     pub fn close(&self);
 }
@@ -50,7 +50,7 @@ impl Shell {
     pub fn start(link: &dyn Open, request: &bohio_proto::shell::Request, timeout: Option<Duration>) -> Result<Self, Error>;   // waits for `started`
     pub const fn pid(&self) -> u32;                               // the host's process id of the shell; 0 for a stream that attached
     pub fn session(&self) -> Option<&str>;                        // the id, when the request made a session or the stream attached to one
-    pub fn attach(link: &dyn Open, session: &str, from: Option<u64>) -> Result<(Self, Attached), Error>;   // `bohio-attach/1`; Error::Protocol for an exec session
+    pub fn attach(link: &dyn Open, session: &str, from: Option<u64>) -> Result<(Self, Attached), Error>;   // `bohio-attach/1`; Error::WrongKind { found } for an exec session; `attach_within(.., timeout)` as Exec's
     pub fn signal(&self, signal: Signal) -> Result<(), Error>;    // the host answers with Event::Signalled
     pub fn next(&self, timeout: Option<Duration>) -> Result<Option<Event>, Error>;          // Ok(None): the host closed in order
     pub fn write(&self, bytes: &[u8]) -> Result<(), Error>;       // typed input, split to the channel's message size; Enter is \r
@@ -81,7 +81,7 @@ The agent tools `power_status` and `media_status` (needs `power`/`media` and a s
 
 ```rust
 #[non_exhaustive] pub enum Attachment { Exec(Exec), Shell(Shell) }
-pub fn attach(link: &dyn Open, session: &str, from: Option<u64>) -> Result<(Attachment, Attached), Error>;   // opens `bohio-attach/1` for a session of either kind
+pub fn attach(link: &dyn Open, session: &str, from: Option<u64>) -> Result<(Attachment, Attached), Error>;   // opens `bohio-attach/1` for a session of either kind; `attach_within(.., timeout)`, as Exec's
 ```
 
 A session starts with a request whose `session` is set (`Exec::start`, `Shell::start`; the id is `Exec::session()` or `Shell::session()`) and needs the peer's `session` permission. `Attached { kind, from, lost }`: `from` is where the output starts (the offset asked for, or the oldest the host still keeps), `lost` the bytes between. Dropping the returned stream detaches: the program runs on.
@@ -128,11 +128,11 @@ pub struct Gui;                                                    // Debug; Dro
 impl Gui {
     pub fn open(link: &dyn Open, request: &GuiRequest) -> Result<Gui, Error>;   // waits up to OPEN_WAIT (120 s: the host may wait for its owner); `open_within(link, request, wait: Option<Duration>)` takes the wait (the command's `[client] gui_timeout`); Error::Remote for a refusal the engine made, Transport(Permission) when the link's grant does not cover the request
     pub fn granted(&self) -> &[Want];   pub fn session(&self) -> &str;   pub fn state(&self) -> State;   // state: the last the host said (`state` frames are kept as they pass)
-    pub fn snapshot(&self, options: &SnapshotOptions, timeout: Option<Duration>) -> Result<Image, Error>;   // Image { header: ImageHeader, bytes }
+    pub fn snapshot(&self, options: &Snapshot, timeout: Option<Duration>) -> Result<Image, Error>;   // Image { header: ImageHeader, bytes }
     pub fn input(&self, events: &[InputEvent], timeout: Option<Duration>) -> Result<u32, Error>;            // applied; `denied`, `busy`, `unavailable`, `bad_request` are Error::Remote and the stream goes on
     pub fn settle(&self, request: &Settle, timeout: Option<Duration>) -> Result<SettleResult, Error>;
     pub fn clipboard(&self, timeout: Option<Duration>) -> Result<String, Error>;   pub fn set_clipboard(&self, text: &str, timeout: Option<Duration>) -> Result<(), Error>;
-    pub fn watch(&self, options: &WatchOptions) -> Result<(), Error>;   pub fn unwatch(&self) -> Result<(), Error>;   // a watch replaces the settings of a running one; the host refusal is an Error::Remote from the next `next_event`
+    pub fn watch(&self, options: &Watch) -> Result<(), Error>;   pub fn unwatch(&self) -> Result<(), Error>;   // a watch replaces the settings of a running one; the host refusal is an Error::Remote from the next `next_event`
     pub fn next_event(&self, timeout: Option<Duration>) -> Result<WatchEvent, Error>;   // WatchEvent::{Update(UpdateInfo { header, bytes, acknowledged }), Cursor(CursorFrame)}: an update is applied to `screen()` (and acknowledged, unless `set_auto_ack(false)`) before it is returned; Error::Timeout when nothing came (call again), Error::Screen for an update the limits or the decoders refuse
     pub fn screen(&self) -> Option<Screen>;   // Screen { width, height, rgb }: the frame the updates built (feature `screen`, on with the host crate `gui`; None without it)
     pub fn ack(&self, frame: u64) -> Result<(), Error>;   pub fn set_auto_ack(&self, on: bool);   pub fn updates(&self) -> u64;
@@ -140,8 +140,7 @@ impl Gui {
     pub fn set_image_limit(&self, max_bytes: u64);   // a snapshot whose announced length is over it is Error::Screen at the header; default 32 MiB (`[gui] max_rect_bytes`); `bohio remote gui` sets it from that key
     pub fn close(&self);
 }
-pub struct SnapshotOptions { display, region, format, quality, max_width, max_height, cursor, settle }   // Default
-pub struct WatchOptions { display, region, fps, encoding: Option<WatchEncoding>, quality, max_width, max_height, max_rate, cursor, refine, key }   // Default
+pub use bohio_proto::gui::{Snapshot, Watch};   // the wire frames, Default: `snapshot` and `watch` set `seq` and ignore the one given
 ```
 
 `Error::Screen(String)` is an update that cannot be used (a rectangle outside the frame, bytes that do not decode, a size past the limits); the text never carries pixels. A request made during a watch (`snapshot`, `input`...) reads, applies and acknowledges the updates that arrive meanwhile.
@@ -183,7 +182,7 @@ rebuilds as the host's copies and data arrive. `Error::Local` is a local file fa
 
 ```rust
 pub fn walk(link: &dyn Open, roots: &[&str], options: &WalkOptions) -> Result<WalkIter, Error>;   // walk_with(.., timeout) too; roots are sent while entries come back; one stream
-#[derive(Default)] pub struct WalkOptions { pub depth: Option<u64>, pub follow: bool, pub include: Vec<String>, pub exclude: Vec<String>, pub hashes: Vec<Algorithm>, pub compression: Option<Compression>, pub window_log_max: Option<u32> /* 27 */, pub max_expansion: Option<u32> /* 1024; 0 off */ }
+#[derive(Default)] pub struct WalkOptions { pub depth: Option<u64>, pub follow: bool, pub include: Vec<String>, pub exclude: Vec<String>, pub hashes: Vec<Algorithm>, pub compression: Option<Compression>, pub window_log_max: Option<u32> /* fs::DEFAULT_WINDOW_LOG_MAX, 27 */, pub max_expansion: Option<u32> /* 1024; 0 off */ }
 pub enum WalkItem { Entry { root: u64, entry: Box<WalkEntry> }, Failure(WalkItemError) }
 pub struct WalkIter;   // Iterator<Item = Result<WalkItem, Error>>; done() -> Option<WalkDone>; wire_bytes(); compression(); dropping it closes the stream
 pub fn read_bundle(link, items: &[ReadItem], &BundleOptions, on: &mut dyn FnMut(Fetch<'_>) -> Result<(), Error>) -> Result<BundleStats, Error>;   // Fetch::{Begin(&ReadHeader), Data(&[u8]), End { index, hashes }, Failed { index, error }}: a Failed after a Begin discards what came
@@ -209,13 +208,13 @@ A pushed file takes the local modification time (a bundle item's `modified`, `se
 pub fn hash_file(link: &dyn Open, path: &str, algorithms: &[Algorithm]) -> Result<Digests, Error>;
 pub fn hash_range(link: &dyn Open, item: HashItem, algorithms: &[Algorithm]) -> Result<Digests, Error>;
 pub fn hash_many(link: &dyn Open, items: &[HashItem], algorithms: &[Algorithm]) -> Result<Vec<Result<Digests, ErrorBody>>, Error>;   // one stream; a file that fails fails alone
-pub fn hash_items(link: &dyn Open, request: &HashRequest, items: &[HashItem]) -> Result<Vec<Result<HashResult, ErrorBody>>, Error>;   // keeps size, modified, unchanged
+pub fn hash_items(link: &dyn Open, request: &HashRequest, items: &[HashItem], timeout: Option<Duration>) -> Result<Vec<Result<HashResult, ErrorBody>>, Error>;   // keeps size, modified, unchanged; hash_file, hash_range and hash_many wait DEFAULT_TIMEOUT for each answer
 ```
 
 ```rust
 pub struct Blocks { pub result: HashResult, pub signature: Signature, pub wire_bytes: u64 }   // a file's signature as the host made it, and what it cost on the wire
 pub fn hash_blocks(link: &dyn Open, item: HashItem, algorithms: &[Algorithm], options: &BlockOptions) -> Result<Blocks, Error>;   // the strong hash is algorithms[0] cut to options.strong_len; the host chooses the block size when options.size is None
-pub fn hash_blocks_within(link: &dyn Open, item: HashItem, algorithms: &[Algorithm], options: &BlockOptions, max_signature_bytes: u64) -> Result<Blocks, Error>;   // hash_blocks takes fs::DEFAULT_MAX_SIGNATURE_BYTES (64 MiB); past the bound Error::Local; 0 takes any
+pub fn hash_blocks_within(link: &dyn Open, item: HashItem, algorithms: &[Algorithm], options: &BlockOptions, max_signature_bytes: u64, timeout: Option<Duration>) -> Result<Blocks, Error>;   // hash_blocks takes fs::DEFAULT_MAX_SIGNATURE_BYTES (64 MiB); past the bound Error::Local; 0 takes any
 ```
 
 One `bohio-hash/1` stream each. Items are sent on one scoped thread and results read on another, so a long batch cannot stop on a full stream. A refusal of
@@ -226,7 +225,7 @@ the stream (`unsupported`, `busy`, `denied`) is `Error::Remote`; for `hash_file`
 ```rust
 pub struct Fs;                                                    // Debug; one control stream; calls wait without limit until with_timeout
 impl Fs {
-    pub fn connect(link: &dyn Open) -> Result<Self, Error>;       pub fn with_timeout(self, Option<Duration>) -> Self;     pub fn control(&self) -> &Control;
+    pub fn connect(link: &dyn Open) -> Result<Self, Error> /* each call waits DEFAULT_TIMEOUT, 5 min */;       pub fn with_timeout(self, Option<Duration>) -> Self;     pub fn control(&self) -> &Control;
     pub fn stat(&self, path: &str, follow: bool) -> Result<Metadata, Error>;
     pub fn list(&self, path: &str, after: Option<&str>, limit: Option<u64>) -> Result<Listing, Error>;     // one page
     pub fn list_all(&self, path: &str) -> Result<Vec<Entry>, Error>;                                       // every page
@@ -262,7 +261,7 @@ impl Writer {
 ```
 
 ```rust
-pub struct ReadOptions { pub window_log_max: Option<u32> /* 27 */, pub max_expansion: Option<u32> /* fs::DEFAULT_MAX_EXPANSION, 1024: the decoded bytes may not pass that many times the compressed ones received once past 1 MiB (Error::Compression); Some(0) off */, pub raw: bool /* hand out the compressed stream undecoded */, pub on_progress: Option<Box<dyn FnMut(u64) + Send>> }   // Default
+pub struct ReadOptions { pub window_log_max: Option<u32> /* fs::DEFAULT_WINDOW_LOG_MAX, 27 */, pub max_expansion: Option<u32> /* fs::DEFAULT_MAX_EXPANSION, 1024: the decoded bytes may not pass that many times the compressed ones received once past 1 MiB (Error::Compression); Some(0) off */, pub raw: bool /* hand out the compressed stream undecoded */, pub on_progress: Option<Box<dyn FnMut(u64) + Send>> }   // Default
 pub struct PutOptions { pub compression: Option<Compression>, pub prepare: bool, pub caps: Caps, pub temp_dir: Option<PathBuf>, pub chunk: Option<usize> }   // Default
 pub fn put(link: &dyn Open, request: &WriteRequest, source: &mut dyn Read, options: &PutOptions, timeout: Option<Duration>) -> Result<WriteDone, Error>;   // prepare: one context into a temp file, then sent
 pub fn resolve_auto(info: &Info, wanted: &Compression) -> Option<Compression>;        // `auto` -> the host's compression_default (a client names what it sends)
@@ -284,20 +283,20 @@ place for `replace` and `create`.
 pub use coqui_transport_web::webtransport::{MIN_MTU, Mtu};   // Mtu { initial, min, discovery, upper_bound } (non_exhaustive, Copy, Default = quinn's), MIN_MTU = 1200
 #[non_exhaustive] pub enum Endpoint { Tcp(SocketAddr), Pipe(PipeName), WebSocket(Url), WebTransport { url: Url, fallback: Option<Url>, mtu: Mtu }, Serial { path: String, options: SerialOptions }, Command(Vec<String>) }   // Clone, Eq, Display; WebSocket is `ws` or `wss`
 impl Endpoint {
-    pub fn parse(text: &str) -> Result<Endpoint, String>;     // the reason, for an unknown scheme or a bad address; `webtransport://` needs a UDP port
+    pub fn parse(text: &str) -> Result<Endpoint, EndpointError>;     // also FromStr; for an unknown scheme or a bad address; `webtransport://` needs a UDP port
     pub fn dial(&self, timeout: Duration, settings: &Settings) -> Result<Box<dyn Channel>, Error>;   // an unproven channel; Error::Transport(why); dial_with and the default trust
     pub fn dial_with(&self, timeout: Duration, settings: &Settings, trust: &ServerTrust) -> Result<Box<dyn Channel>, Error>;   // a refused certificate is Transport(Failure::Certificate); Error::Link when the trust cannot be set up (an unreadable CA file)
-    pub fn with_fallback(self, fallback: Endpoint) -> Result<Endpoint, String>;   // a `ws://` or `wss://` endpoint, on any host, after a `webtransport://` one; the caller naming it is the choice (a plain one is readable until the proof, one elsewhere sends the proof there)
-    pub fn with_mtu(self, mtu: Mtu) -> Result<Endpoint, String>;   // the UDP payload sizes and path-MTU discovery of a `webtransport://` endpoint's QUIC connection, default quinn's (1200, 1200, discovery on, up to 1452); Err for another endpoint or an `initial` or `min` below 1200, naming the value. A tunnel with a smaller MTU loses each probe above it (a send error in the host's log): lower `upper_bound` to its size or turn `discovery` off
+    pub fn with_fallback(self, fallback: Endpoint) -> Result<Endpoint, EndpointError>;   // a `ws://` or `wss://` endpoint, on any host, after a `webtransport://` one; the caller naming it is the choice (a plain one is readable until the proof, one elsewhere sends the proof there)
+    pub fn with_mtu(self, mtu: Mtu) -> Result<Endpoint, EndpointError>;   // the UDP payload sizes and path-MTU discovery of a `webtransport://` endpoint's QUIC connection, default quinn's (1200, 1200, discovery on, up to 1452); Err for another endpoint or an `initial` or `min` below 1200, naming the value. A tunnel with a smaller MTU loses each probe above it (a send error in the host's log): lower `upper_bound` to its size or turn `discovery` off
 }
 #[non_exhaustive] pub struct ServerTrust { pub ca_files: Vec<PathBuf>, pub pins: Vec<PeerId>, pub clock_skew: Duration /* default zero */ }   // Default, Clone, Eq; who a TLS client accepts as the host's certificate; a pinned or chained certificate is held to its dates, `clock_skew` is how far from this clock a start or end is still accepted (a certificate made just now by a host whose clock is ahead is refused until this clock reaches its start)
-impl ServerTrust { pub fn pin(&mut self, text: &str) -> Result<(), String>; pub fn client_config(&self) -> Result<Arc<rustls::ClientConfig>, String>; pub fn refusal(&self) -> Option<String>; }   // pin: `sha256:` and 64 hex digits; refusal: why the last certificate a config from this trust refused was refused (the presented certificate's hash, and for its dates the start or end and how far this clock is from it), for the message of a `Failure::Certificate`
+impl ServerTrust { pub fn pin(&mut self, text: &str) -> Result<(), PinError>; pub fn client_config(&self) -> Result<Arc<rustls::ClientConfig>, String>; pub fn refusal(&self) -> Option<String>; }   // pin: `sha256:` and 64 hex digits; refusal: why the last certificate a config from this trust refused was refused (the presented certificate's hash, and for its dates the start or end and how far this clock is from it), for the message of a `Failure::Certificate`
 #[non_exhaustive] pub struct SerialOptions { pub baud: Option<u32>, pub data_bits: Option<DataBits>, pub parity: Option<Parity>, pub stop_bits: Option<StopBits>, pub flow_control: Option<FlowControl> }   // Default, Copy, Eq
-impl SerialOptions { pub fn set(&mut self, key: &str, value: &str) -> Result<(), String>; pub fn or(self, fallback: Self) -> Self; }
+impl SerialOptions { pub fn set(&mut self, key: &str, value: &str) -> Result<(), SerialError>; pub fn or(self, fallback: Self) -> Self; }
 pub fn serial(path: &str, options: &SerialOptions, settings: &Settings) -> io::Result<StreamChannel>;   // opens the port: COBS + CRC-32C frames
 pub fn command(argv: &[String], settings: &Settings) -> io::Result<StreamChannel>;                       // starts the program; stderr is this process's; its tree ends on close
 pub fn web_limits(settings: &Settings) -> coqui_transport_web::Limits;                                    // one proof-sized message, read ahead one at a time, until the proof
-pub fn split_command(line: &str) -> Result<Vec<String>, String>;                                         // spaces separate, quotes group, nothing escapes
+pub fn split_command(line: &str) -> Result<Vec<String>, CommandError>;                                         // spaces separate, quotes group, nothing escapes
 ```
 
 | Endpoint | Transport |

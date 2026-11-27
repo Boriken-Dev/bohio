@@ -4,6 +4,8 @@
 //! [`Exec::session`] or [`Shell::session`], and [`Control::sessions`](crate::control::Control::sessions) lists the ones a
 //! peer holds. [`Exec::attach`] and [`Shell::attach`] attach when the kind is known.
 
+use std::time::Duration;
+
 use bohio_proto::session::{Attached, Kind};
 
 use crate::exec::{Exec, attach_channel};
@@ -33,7 +35,22 @@ pub fn attach(
     session: &str,
     from: Option<u64>,
 ) -> Result<(Attachment, Attached), Error> {
-    let (channel, attached) = attach_channel(link, session, from)?;
+    attach_within(link, session, from, Some(crate::DEFAULT_TIMEOUT))
+}
+
+/// As [`attach`], waiting at most `timeout` for the host to answer (`None` waits without limit; [`attach`] takes
+/// [`crate::DEFAULT_TIMEOUT`]).
+///
+/// # Errors
+///
+/// As [`attach`]; [`Error::Timeout`] when the host did not answer in time.
+pub fn attach_within(
+    link: &dyn Open,
+    session: &str,
+    from: Option<u64>,
+    timeout: Option<Duration>,
+) -> Result<(Attachment, Attached), Error> {
+    let (channel, attached) = attach_channel(link, session, from, timeout)?;
     let attachment = match attached.kind {
         Kind::Exec => Attachment::Exec(Box::new(Exec::attached_to(channel, session))),
         Kind::Shell => Attachment::Shell(Shell::attached_to(channel, session)),

@@ -5,62 +5,14 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use bohio_proto::gui::{
-    Ack, ClipboardGet, ClipboardSet, CursorFrame, DisplayId, GuiInput, GuiOutput, GuiRequest,
-    ImageFormat, ImageHeader, Input, InputEvent, Point, Ready, Rect, Settle, SettleOptions,
-    Snapshot as Wire, State, Unwatch, UpdateHeader, Want, Watch, WatchEncoding,
+    Ack, ClipboardGet, ClipboardSet, CursorFrame, GuiInput, GuiOutput, GuiRequest, ImageHeader,
+    Input, InputEvent, Point, Ready, Settle, State, Unwatch, UpdateHeader, Want,
 };
+pub use bohio_proto::gui::{Snapshot, Watch};
 use bohio_proto::protocol;
 use coqui_transport::Channel;
 
 use crate::{Error, Open};
-
-/// What a snapshot asks for: every field is optional and the host fills what is absent.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct SnapshotOptions {
-    /// The display; the primary one when absent.
-    pub display: Option<DisplayId>,
-    /// The part of the display; all of it when absent.
-    pub region: Option<Rect>,
-    /// The format; the host first allowed one when absent.
-    pub format: Option<ImageFormat>,
-    /// JPEG quality, 1 to 100.
-    pub quality: Option<u8>,
-    /// Scale down to fit this width.
-    pub max_width: Option<u32>,
-    /// Scale down to fit this height.
-    pub max_height: Option<u32>,
-    /// Report where the pointer is.
-    pub cursor: bool,
-    /// Wait for the screen to settle first.
-    pub settle: Option<SettleOptions>,
-}
-
-/// What a watch asks for: every field is optional and the host fills what is absent.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct WatchOptions {
-    /// The display; the primary one when absent.
-    pub display: Option<DisplayId>,
-    /// The part of the display; all of it when absent.
-    pub region: Option<Rect>,
-    /// Updates a second at most; the host's `default_fps` when absent.
-    pub fps: Option<u32>,
-    /// How rectangles are encoded; the host decides per rectangle when absent.
-    pub encoding: Option<WatchEncoding>,
-    /// The JPEG quality a rectangle starts at, 1 to 100.
-    pub quality: Option<u8>,
-    /// Scale the frame down to fit this width.
-    pub max_width: Option<u32>,
-    /// Scale the frame down to fit this height.
-    pub max_height: Option<u32>,
-    /// Bytes a second at most.
-    pub max_rate: Option<u64>,
-    /// Report where the pointer is.
-    pub cursor: bool,
-    /// Resend lossy rectangles lossless once they stay unchanged.
-    pub refine: Option<bool>,
-    /// Start with a key frame again.
-    pub key: bool,
-}
 
 /// What a watch's stream says next.
 #[derive(Debug, Clone, PartialEq)]
@@ -368,28 +320,17 @@ impl Gui {
         }
     }
 
-    /// An image of a display or a region of one.
+    /// An image of a display or a region of one. The frame's `seq` is set here; the one in `request` is ignored.
     ///
     /// # Errors
     ///
     /// [`Error::Remote`] with the host's reason (`denied`, `busy` past `snapshots_per_minute`, `bad_request`,
     /// `unsupported` for a format it does not offer...), [`Error::Timeout`], [`Error::Closed`].
-    pub fn snapshot(
-        &self,
-        options: &SnapshotOptions,
-        timeout: Option<Duration>,
-    ) -> Result<Image, Error> {
+    pub fn snapshot(&self, request: &Snapshot, timeout: Option<Duration>) -> Result<Image, Error> {
         let seq = self.seq();
-        let wire = Wire {
+        let wire = Snapshot {
             seq,
-            display: options.display.clone(),
-            region: options.region,
-            format: options.format,
-            quality: options.quality,
-            max_width: options.max_width,
-            max_height: options.max_height,
-            cursor: options.cursor,
-            settle: options.settle,
+            ..request.clone()
         };
         self.ask(seq, &GuiInput::Snapshot(wire), timeout, |item| match item {
             Item::Image(header, bytes) if header.seq == seq => Some(Ok(Image { header, bytes })),
@@ -523,21 +464,11 @@ impl Gui {
     ///
     /// [`Error::Transport`] or [`Error::Timeout`] when the frame cannot be sent; the host's refusal (`denied`,
     /// `bad_request`...) arrives as [`Error::Remote`] from the next [`Gui::next_event`].
-    pub fn watch(&self, options: &WatchOptions) -> Result<(), Error> {
+    pub fn watch(&self, request: &Watch) -> Result<(), Error> {
         let seq = self.seq();
         let frame = GuiInput::Watch(Watch {
             seq,
-            display: options.display.clone(),
-            region: options.region,
-            fps: options.fps,
-            encoding: options.encoding,
-            quality: options.quality,
-            max_width: options.max_width,
-            max_height: options.max_height,
-            max_rate: options.max_rate,
-            cursor: options.cursor,
-            refine: options.refine,
-            key: options.key,
+            ..request.clone()
         });
         let _turn = self
             .turn

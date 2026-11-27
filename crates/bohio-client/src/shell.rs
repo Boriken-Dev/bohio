@@ -80,16 +80,33 @@ impl Shell {
     /// # Errors
     ///
     /// [`Error::Remote`] when the host refused (`not_found` for a session this peer does not hold, `denied`, ...),
-    /// [`Error::Protocol`] when the session is an exec, else whatever `link` reports.
+    /// [`Error::WrongKind`] when the session is an exec, else whatever `link` reports.
     pub fn attach(
         link: &dyn Open,
         session: &str,
         from: Option<u64>,
     ) -> Result<(Self, Attached), Error> {
-        let (channel, attached) = crate::exec::attach_channel(link, session, from)?;
+        Self::attach_within(link, session, from, Some(crate::DEFAULT_TIMEOUT))
+    }
+
+    /// As [`Shell::attach`], waiting at most `timeout` for the host to answer (`None` waits without limit;
+    /// [`Shell::attach`] takes [`crate::DEFAULT_TIMEOUT`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Shell::attach`]; [`Error::Timeout`] when the host did not answer in time.
+    pub fn attach_within(
+        link: &dyn Open,
+        session: &str,
+        from: Option<u64>,
+        timeout: Option<Duration>,
+    ) -> Result<(Self, Attached), Error> {
+        let (channel, attached) = crate::exec::attach_channel(link, session, from, timeout)?;
         if attached.kind != Kind::Shell {
             channel.close();
-            return Err(Error::Protocol(bohio_proto::Error::Decode));
+            return Err(Error::WrongKind {
+                found: attached.kind,
+            });
         }
         Ok((Self::attached_to(channel, session), attached))
     }

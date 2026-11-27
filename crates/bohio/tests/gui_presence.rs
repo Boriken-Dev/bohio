@@ -17,7 +17,7 @@ use bohio::local::{Local, LocalLink};
 use bohio::node::{MemoryGrants, MemoryKeys, Node, PeerLink};
 use bohio::policy::{Grant, Permission};
 use bohio_client::Error;
-use bohio_client::gui::{Gui, SnapshotOptions};
+use bohio_client::gui::{Gui, Snapshot};
 use bohio_client::link::{Settings, stream};
 use bohio_proto::ErrorCode;
 use bohio_proto::gui::{GuiRequest, Want};
@@ -180,8 +180,7 @@ fn ten_short_streams_make_one_engagement_released_after_the_linger() {
     let host = host(config(), |node| node.with_presence(presence.clone()));
     for _ in 0..10 {
         let gui = Gui::open(&host.link, &GuiRequest::default()).unwrap();
-        gui.snapshot(&SnapshotOptions::default(), Some(WAIT))
-            .unwrap();
+        gui.snapshot(&Snapshot::default(), Some(WAIT)).unwrap();
         gui.close();
     }
     assert_eq!(count(&presence.engaged), 1);
@@ -238,10 +237,7 @@ fn a_presence_that_always_denies_does_not_gate_a_host_with_no_approval() {
     });
     let host = host(config(), |node| node.with_presence(presence.clone()));
     let gui = Gui::open(&host.link, &GuiRequest::default()).unwrap();
-    assert!(
-        gui.snapshot(&SnapshotOptions::default(), Some(WAIT))
-            .is_ok()
-    );
+    assert!(gui.snapshot(&Snapshot::default(), Some(WAIT)).is_ok());
     assert_eq!(presence.asked.load(Ordering::SeqCst), 0);
 }
 
@@ -364,11 +360,7 @@ fn local_approval_waits_for_the_owner_and_the_command_decides() {
     assert_eq!(pending[0].want, [Want::View]);
     assert!(local.gui_decide(pending[0].id, true).unwrap());
     let opened = waiting.join().unwrap().expect("allowed");
-    assert!(
-        opened
-            .snapshot(&SnapshotOptions::default(), Some(WAIT))
-            .is_ok()
-    );
+    assert!(opened.snapshot(&Snapshot::default(), Some(WAIT)).is_ok());
     // A second stream inside approval_ttl is not asked.
     let again = Gui::open(&host.link, &GuiRequest::default()).expect("not asked again");
     assert!(local.gui_pending().unwrap().is_empty());

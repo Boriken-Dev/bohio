@@ -29,7 +29,7 @@ use bohio::gui::{Desktop, X11Desktop, X11Settings};
 use bohio::node::{MemoryGrants, MemoryKeys, Node, PeerLink};
 use bohio::policy::{Grant, Permission};
 use bohio_client::control::Control;
-use bohio_client::gui::{Gui, SnapshotOptions};
+use bohio_client::gui::{Gui, Snapshot};
 use bohio_client::link::{Settings, stream};
 use bohio_proto::ErrorCode;
 use bohio_proto::gui::{
@@ -1054,7 +1054,7 @@ fn a_node_serves_the_probe_window_and_names_the_x11_backend() {
     let gui = Gui::open(&world.link, &GuiRequest::new([Want::View])).unwrap();
     let image = gui
         .snapshot(
-            &SnapshotOptions {
+            &Snapshot {
                 display: Some(display.id),
                 region: Some(Rect::new(
                     u32::try_from(left).unwrap(),
@@ -1063,7 +1063,7 @@ fn a_node_serves_the_probe_window_and_names_the_x11_backend() {
                     probe.height,
                 )),
                 format: Some(ImageFormat::Png),
-                ..SnapshotOptions::default()
+                ..Snapshot::default()
             },
             Some(WAIT),
         )

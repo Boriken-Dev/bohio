@@ -15,7 +15,7 @@ use bohio::node::{MemoryGrants, MemoryKeys, Node, NodeEvent, NodeEvents, PeerLin
 use bohio::policy::{Grant, Permission};
 use bohio_client::Error;
 use bohio_client::control::Control;
-use bohio_client::gui::{Gui, SnapshotOptions};
+use bohio_client::gui::{Gui, Snapshot};
 use bohio_client::link::{Settings, stream};
 use bohio_proto::gui::{
     Button, ButtonAction, DisplayId, GuiRequest, ImageFormat, InputEvent, KeyAction, Rect, Settle,
@@ -211,9 +211,9 @@ fn a_png_snapshot_is_the_painted_pixels_exactly_and_a_jpeg_is_close() {
     assert_eq!(gui.state().displays.len(), 2);
     let png = gui
         .snapshot(
-            &SnapshotOptions {
+            &Snapshot {
                 format: Some(ImageFormat::Png),
-                ..SnapshotOptions::default()
+                ..Snapshot::default()
             },
             Some(WAIT),
         )
@@ -226,10 +226,10 @@ fn a_png_snapshot_is_the_painted_pixels_exactly_and_a_jpeg_is_close() {
     assert_eq!(pixels[0..3], pattern(0, 0, 0));
     let jpeg = gui
         .snapshot(
-            &SnapshotOptions {
+            &Snapshot {
                 format: Some(ImageFormat::Jpeg),
                 quality: Some(90),
-                ..SnapshotOptions::default()
+                ..Snapshot::default()
             },
             Some(WAIT),
         )
@@ -242,9 +242,9 @@ fn a_png_snapshot_is_the_painted_pixels_exactly_and_a_jpeg_is_close() {
     );
     let webp = gui
         .snapshot(
-            &SnapshotOptions {
+            &Snapshot {
                 format: Some(ImageFormat::Webp),
-                ..SnapshotOptions::default()
+                ..Snapshot::default()
             },
             Some(WAIT),
         )
@@ -259,10 +259,10 @@ fn fitting_reports_the_scale_and_a_region_and_another_display_are_served() {
     let gui = open(&world, &[Want::View]);
     let small = gui
         .snapshot(
-            &SnapshotOptions {
+            &Snapshot {
                 max_width: Some(160),
                 max_height: Some(160),
-                ..SnapshotOptions::default()
+                ..Snapshot::default()
             },
             Some(WAIT),
         )
@@ -272,9 +272,9 @@ fn fitting_reports_the_scale_and_a_region_and_another_display_are_served() {
     assert_eq!(decode_rgb(&small.bytes).0, 160);
     let region = gui
         .snapshot(
-            &SnapshotOptions {
+            &Snapshot {
                 region: Some(Rect::new(10, 20, 30, 40)),
-                ..SnapshotOptions::default()
+                ..Snapshot::default()
             },
             Some(WAIT),
         )
@@ -285,9 +285,9 @@ fn fitting_reports_the_scale_and_a_region_and_another_display_are_served() {
     assert_eq!(region.header.region, Rect::new(10, 20, 30, 40));
     let second = gui
         .snapshot(
-            &SnapshotOptions {
+            &Snapshot {
                 display: Some(DisplayId::from("1")),
-                ..SnapshotOptions::default()
+                ..Snapshot::default()
             },
             Some(WAIT),
         )
@@ -295,19 +295,16 @@ fn fitting_reports_the_scale_and_a_region_and_another_display_are_served() {
     assert_eq!((second.header.width, second.header.height), (160, 100));
     let outside = gui
         .snapshot(
-            &SnapshotOptions {
+            &Snapshot {
                 region: Some(Rect::new(300, 0, 100, 10)),
-                ..SnapshotOptions::default()
+                ..Snapshot::default()
             },
             Some(WAIT),
         )
         .unwrap_err();
     assert_eq!(remote(&outside).code, ErrorCode::BadRequest);
     // The stream goes on after a request that failed.
-    assert!(
-        gui.snapshot(&SnapshotOptions::default(), Some(WAIT))
-            .is_ok()
-    );
+    assert!(gui.snapshot(&Snapshot::default(), Some(WAIT)).is_ok());
 }
 
 #[test]
@@ -323,9 +320,7 @@ fn a_click_paints_where_it_lands_and_text_and_a_combination_arrive_in_order() {
         y: Some(50),
     };
     assert_eq!(gui.input(&[click], Some(WAIT)).unwrap(), 1);
-    let image = gui
-        .snapshot(&SnapshotOptions::default(), Some(WAIT))
-        .unwrap();
+    let image = gui.snapshot(&Snapshot::default(), Some(WAIT)).unwrap();
     let (width, _, pixels) = decode_rgb(&image.bytes);
     let at = |x: u32, y: u32| (y * width + x) as usize * 3;
     assert_eq!(pixels[at(100, 50)..at(100, 50) + 3], CLICK);
@@ -429,10 +424,7 @@ fn removing_gui_input_refuses_the_next_frame_at_once_and_ends_the_stream_as_revo
     assert_eq!(world.desktop.log(), ["text:a"]);
     let started = Instant::now();
     let ended = loop {
-        match gui.snapshot(
-            &SnapshotOptions::default(),
-            Some(Duration::from_millis(200)),
-        ) {
+        match gui.snapshot(&Snapshot::default(), Some(Duration::from_millis(200))) {
             Err(Error::Timeout) | Ok(_) => {}
             Err(error) => break error,
         }
@@ -456,10 +448,7 @@ fn a_locked_screen_refuses_input_unless_the_host_allows_it() {
         .unwrap_err();
     assert_eq!(remote(&refused).code, ErrorCode::Unavailable);
     assert!(world.desktop.log().is_empty());
-    assert!(
-        gui.snapshot(&SnapshotOptions::default(), Some(WAIT))
-            .is_ok()
-    );
+    assert!(gui.snapshot(&Snapshot::default(), Some(WAIT)).is_ok());
     let open_host = self::world(
         GuiConfig {
             input_when_locked: true,
@@ -509,12 +498,9 @@ fn the_rates_hold() {
         .unwrap_err();
     assert_eq!(remote(&long).code, ErrorCode::BadRequest);
     for _ in 0..3 {
-        gui.snapshot(&SnapshotOptions::default(), Some(WAIT))
-            .unwrap();
+        gui.snapshot(&Snapshot::default(), Some(WAIT)).unwrap();
     }
-    let limited = gui
-        .snapshot(&SnapshotOptions::default(), Some(WAIT))
-        .unwrap_err();
+    let limited = gui.snapshot(&Snapshot::default(), Some(WAIT)).unwrap_err();
     assert_eq!(remote(&limited).code, ErrorCode::Busy);
 }
 
@@ -548,12 +534,12 @@ fn settle_answers_true_once_painting_stops_and_false_at_the_timeout() {
     assert!(moving.waited_ms >= 800);
     let with_snapshot = gui
         .snapshot(
-            &SnapshotOptions {
+            &Snapshot {
                 settle: Some(SettleOptions {
                     quiet_ms: Some(100),
                     timeout_ms: Some(300),
                 }),
-                ..SnapshotOptions::default()
+                ..Snapshot::default()
             },
             Some(WAIT),
         )
@@ -611,8 +597,7 @@ fn the_owners_events_hold_counts_and_never_what_was_typed() {
         .unwrap();
         gui.set_clipboard(secret, Some(WAIT)).unwrap();
         gui.clipboard(Some(WAIT)).unwrap();
-        gui.snapshot(&SnapshotOptions::default(), Some(WAIT))
-            .unwrap();
+        gui.snapshot(&Snapshot::default(), Some(WAIT)).unwrap();
         gui.close();
     }
     let until = Instant::now() + WAIT;

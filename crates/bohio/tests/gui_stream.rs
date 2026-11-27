@@ -21,7 +21,7 @@ use bohio::node::{MemoryGrants, MemoryKeys, Node, PeerLink};
 use bohio::policy::{Grant, Permission};
 use bohio_client::Error;
 use bohio_client::connect::Connection;
-use bohio_client::gui::{Gui, WatchEvent, WatchOptions};
+use bohio_client::gui::{Gui, Watch, WatchEvent};
 use bohio_client::link::{Settings, stream};
 use bohio_proto::ErrorCode;
 use bohio_proto::gui::{
@@ -203,11 +203,11 @@ impl Drop for Painter {
     }
 }
 
-fn lossless(fps: u32) -> WatchOptions {
-    WatchOptions {
+fn lossless(fps: u32) -> Watch {
+    Watch {
         fps: Some(fps),
         encoding: Some(WatchEncoding::Lossless),
-        ..WatchOptions::default()
+        ..Watch::default()
     }
 }
 
@@ -415,9 +415,9 @@ fn a_jpeg_rectangle_is_resent_lossless_once_it_stays_unchanged() {
     };
     let world = world(gui_config, viewer());
     let gui = open(&world, &[Want::View]);
-    gui.watch(&WatchOptions {
+    gui.watch(&Watch {
         fps: Some(15),
-        ..WatchOptions::default()
+        ..Watch::default()
     })
     .unwrap();
     let (first, _) = update(&gui, Duration::from_secs(10)).expect("a key frame");
@@ -448,10 +448,10 @@ fn a_jpeg_rectangle_is_resent_lossless_once_it_stays_unchanged() {
 fn a_watch_fits_the_frame_to_the_size_asked_and_reports_the_scale() {
     let world = world(config(), viewer());
     let gui = open(&world, &[Want::View]);
-    gui.watch(&WatchOptions {
+    gui.watch(&Watch {
         max_width: Some(160),
         encoding: Some(WatchEncoding::Lossless),
-        ..WatchOptions::default()
+        ..Watch::default()
     })
     .unwrap();
     let (header, _) = update(&gui, Duration::from_secs(10)).expect("a key frame");
@@ -465,10 +465,10 @@ fn a_watch_fits_the_frame_to_the_size_asked_and_reports_the_scale() {
 fn the_pointer_alone_is_a_cursor_frame() {
     let world = world(config(), viewer());
     let gui = open(&world, &[Want::View, Want::Input]);
-    gui.watch(&WatchOptions {
+    gui.watch(&Watch {
         cursor: true,
         encoding: Some(WatchEncoding::Lossless),
-        ..WatchOptions::default()
+        ..Watch::default()
     })
     .unwrap();
     let (first, _) = update(&gui, Duration::from_secs(10)).expect("a key frame");
@@ -519,21 +519,21 @@ fn a_watch_needs_gui_view_and_a_setting_that_means_nothing_is_refused() {
     let world = self::world(config(), viewer());
     let gui = open(&world, &[Want::View]);
     for options in [
-        WatchOptions {
+        Watch {
             fps: Some(0),
-            ..WatchOptions::default()
+            ..Watch::default()
         },
-        WatchOptions {
+        Watch {
             quality: Some(0),
-            ..WatchOptions::default()
+            ..Watch::default()
         },
-        WatchOptions {
+        Watch {
             max_rate: Some(0),
-            ..WatchOptions::default()
+            ..Watch::default()
         },
-        WatchOptions {
+        Watch {
             max_width: Some(0),
-            ..WatchOptions::default()
+            ..Watch::default()
         },
     ] {
         gui.watch(&options).unwrap();
@@ -552,12 +552,12 @@ fn corner_watch(rate: Option<u64>, seconds: u64) -> (u64, u64, u64) {
     let world = world(config(), viewer());
     let _painter = Painter::start(&world.desktop);
     let gui = open(&world, &[Want::View]);
-    gui.watch(&WatchOptions {
+    gui.watch(&Watch {
         fps: Some(15),
         region: Some(Rect::new(0, 0, 64, 64)),
         encoding: Some(WatchEncoding::Lossless),
         max_rate: rate,
-        ..WatchOptions::default()
+        ..Watch::default()
     })
     .unwrap();
     let started = Instant::now();
@@ -819,7 +819,7 @@ impl Measured {
 }
 
 /// Drives a watch of the noisy moving block for `seconds` through `address`.
-fn measure(host: &TcpHost, address: SocketAddr, options: &WatchOptions, seconds: u64) -> Measured {
+fn measure(host: &TcpHost, address: SocketAddr, options: &Watch, seconds: u64) -> Measured {
     let connection = host.connect(address);
     let gui = Gui::open(&connection, &GuiRequest::new([Want::View])).expect("the stream opens");
     let painting = Arc::new(AtomicBool::new(true));
@@ -879,10 +879,10 @@ fn a_slow_link_steps_the_ladder_down_and_a_fast_one_does_not() {
         // A late acknowledgement is judged against the requested rate: 4 updates a second, 250 ms apart.
         ..config()
     });
-    let options = WatchOptions {
+    let options = Watch {
         fps: Some(4),
         encoding: Some(WatchEncoding::Jpeg),
-        ..WatchOptions::default()
+        ..Watch::default()
     };
     // Control: the host reached directly.
     let fast = measure(&host, host.address, &options, 6);

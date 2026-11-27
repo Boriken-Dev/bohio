@@ -15,7 +15,7 @@ use bohio::gui::helper_exec::{ExecHelper, HELPER_WORD};
 use bohio::gui::helper_upload::{self, Upload};
 use bohio::node::{MemoryGrants, MemoryKeys, Node};
 use bohio::policy::{Grant, Permission};
-use bohio_client::gui::{Gui, SnapshotOptions};
+use bohio_client::gui::{Gui, Snapshot};
 use bohio_client::link::{Settings, stream};
 use bohio_proto::gui::{Button, ButtonAction, GuiRequest, InputEvent, Want};
 use cabuya::auth::{Identity, Method};
@@ -187,7 +187,7 @@ fn run(sources: Sources, helper: ExecHelper, width: Option<u32>) {
         gui.session()
     );
     let image = gui
-        .snapshot(&SnapshotOptions::default(), Some(WAIT))
+        .snapshot(&Snapshot::default(), Some(WAIT))
         .expect("a snapshot through the helper");
     match width {
         Some(width) => assert_eq!(image.header.width, width),

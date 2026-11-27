@@ -1,6 +1,8 @@
 //! Endpoint text for every transport, and the command line `stdio://` and `--command` start.
 
-use bohio_client::dial::{Endpoint, SerialOptions, split_command};
+use bohio_client::dial::{
+    CommandError, Endpoint, EndpointError, PinError, SerialError, SerialOptions, split_command,
+};
 
 #[test]
 fn each_scheme_parses_and_prints_back() {
@@ -65,7 +67,8 @@ fn wss_is_a_web_socket_and_an_unknown_scheme_says_why() {
     assert_eq!(url.scheme(), "wss");
     assert!(Endpoint::parse("wss://").is_err());
     let other = Endpoint::parse("gopher://host").unwrap_err();
-    assert!(other.contains("not served"), "{other}");
+    assert_eq!(other, EndpointError::UnknownScheme);
+    assert!(!other.to_string().contains("gopher"), "{other}");
     assert!(Endpoint::parse("nowhere").is_err());
 }
 
@@ -164,13 +167,48 @@ fn webtransport_takes_mtu_sizes_that_quic_can_start_from_and_no_other_endpoint_d
     assert_ne!(lowered, wt);
     mtu.initial = MIN_MTU - 1;
     let refused = wt.with_mtu(mtu).unwrap_err();
-    assert!(
-        refused.contains("1199") && refused.contains("1200"),
-        "{refused}"
+    let text = refused.to_string();
+    assert!(text.contains("1199") && text.contains("1200"), "{text}");
+    assert_eq!(
+        ws.with_mtu(Mtu::default()).unwrap_err(),
+        EndpointError::NotWebTransport
     );
-    assert!(
-        ws.with_mtu(Mtu::default())
-            .unwrap_err()
-            .contains("webtransport://")
+}
+
+#[test]
+fn a_parse_error_never_quotes_the_text_it_refused() {
+    let secret = "hunter2-credential";
+    for text in [
+        format!("ws://user:{secret}@/x"),
+        format!("webtransport://user:{secret}@host/"),
+        format!("{secret}://host"),
+        format!("serial:///dev/x?baud={secret}"),
+        format!("serial:///dev/x?{secret}"),
+        format!("serial:///dev/x?{secret}=1"),
+        format!("stdio://prog \"{secret}"),
+        format!("tcp://{secret}.invalid:1"),
+    ] {
+        if let Err(error) = Endpoint::parse(&text) {
+            assert!(!error.to_string().contains(secret), "{error}");
+        }
+    }
+    let mut options = SerialOptions::default();
+    assert_eq!(
+        options.set("baud", secret).unwrap_err(),
+        SerialError::Value {
+            setting: "baud",
+            expected: "a bit rate above 0"
+        }
     );
+    assert_eq!(
+        options.set(secret, "1").unwrap_err(),
+        SerialError::UnknownSetting
+    );
+    assert_eq!(
+        split_command(&format!("a \"{secret}")).unwrap_err(),
+        CommandError::UnclosedQuote
+    );
+    let mut trust = bohio_client::dial::ServerTrust::default();
+    assert_eq!(trust.pin(secret).unwrap_err(), PinError::NotAHash);
+    assert!(!trust.pin(secret).unwrap_err().to_string().contains(secret));
 }

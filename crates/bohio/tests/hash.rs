@@ -90,6 +90,7 @@ fn every_algorithm_gives_what_a_local_hasher_gives_for_a_whole_file_and_a_range(
         &fixture.link,
         &HashRequest::new(all.clone()),
         std::slice::from_ref(&item),
+        WAIT,
     )
     .unwrap();
     let result = part[0].as_ref().unwrap();
@@ -161,7 +162,7 @@ fn an_item_whose_size_and_time_match_is_unchanged_and_reads_nothing() {
     let data = pseudo(70_000, 3);
     std::fs::write(fixture.root.join("a.bin"), &data).unwrap();
     let request = HashRequest::new([Algorithm::Sha256]);
-    let first = hash_items(&fixture.link, &request, &[HashItem::whole("a.bin")]).unwrap();
+    let first = hash_items(&fixture.link, &request, &[HashItem::whole("a.bin")], WAIT).unwrap();
     let first = first[0].as_ref().unwrap();
     let (size, modified) = (first.size, first.modified);
 
@@ -178,7 +179,13 @@ fn an_item_whose_size_and_time_match_is_unchanged_and_reads_nothing() {
         if_modified: None,
         ..same.clone()
     };
-    let answers = hash_items(&fixture.link, &request, &[same, other_size, only_size]).unwrap();
+    let answers = hash_items(
+        &fixture.link,
+        &request,
+        &[same, other_size, only_size],
+        WAIT,
+    )
+    .unwrap();
     let [unchanged, hashed, also_hashed] = [0, 1, 2].map(|at| answers[at].as_ref().unwrap());
     assert!(unchanged.unchanged && unchanged.hashes.is_empty() && unchanged.length == 0);
     assert_eq!((unchanged.size, unchanged.modified), (size, modified));
@@ -378,7 +385,8 @@ fn an_algorithm_the_host_does_not_offer_is_unsupported_before_any_item() {
         code(hash_items(
             &fixture.link,
             &blocks,
-            &[HashItem::whole("f.txt")]
+            &[HashItem::whole("f.txt")],
+            WAIT
         )),
         ErrorCode::Unsupported
     );
