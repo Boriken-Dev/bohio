@@ -455,6 +455,9 @@ impl Staged {
         let flushed = (|| {
             let mut file = file;
             file.flush()?;
+            // A source may acknowledge a write before its machine has: asking it about the file is the call that
+            // reports a write that failed, so a failure is never read as done whatever `sync` is.
+            file.metadata()?;
             if sync {
                 file.sync_all()?;
             }

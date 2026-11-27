@@ -70,6 +70,11 @@ fn tables(text: &str) -> SourceTables {
 /// A node that serves the ssh source `remote` (the table `source_toml`) as its terminal and exec sources, and a
 /// client granted `grant`, linked over memory pipes.
 fn world(source_toml: &str, grant: Grant) -> World {
+    world_with(source_toml, grant, NodeConfig::default())
+}
+
+/// As [`world`], on a node with `config`.
+fn world_with(source_toml: &str, grant: Grant, config: NodeConfig) -> World {
     let sources = Sources::unconfigured();
     sources
         .reconfigure(
@@ -83,27 +88,22 @@ fn world(source_toml: &str, grant: Grant) -> World {
             },
         )
         .expect("the sources build");
-    let make = |sources: Option<Sources>| {
+    let make = |sources: Option<Sources>, config: NodeConfig| {
         let identity = Identity::generate(Method::DEFAULT).expect("an identity");
         let id = identity.peer_id();
         let keys = Arc::new(MemoryKeys::new());
         let grants = Arc::new(MemoryGrants::new());
-        let mut node = Node::new(
-            NodeConfig::default(),
-            identity,
-            keys.clone(),
-            grants.clone(),
-        )
-        .expect("the node is built")
-        .with_path(std::env::var_os("PATH").unwrap_or_default());
+        let mut node = Node::new(config, identity, keys.clone(), grants.clone())
+            .expect("the node is built")
+            .with_path(std::env::var_os("PATH").unwrap_or_default());
         if let Some(sources) = sources {
             node = node.with_sources(sources);
         }
         let _ = Span(Duration::ZERO);
         (Arc::new(node), id, keys, grants)
     };
-    let (host, host_id, host_keys, host_grants) = make(Some(sources));
-    let (client, client_id, client_keys, _) = make(None);
+    let (host, host_id, host_keys, host_grants) = make(Some(sources), config);
+    let (client, client_id, client_keys, _) = make(None, NodeConfig::default());
     host_keys.accept(client_id);
     host_grants.set(client_id, grant);
     client_keys.accept(host_id);
@@ -723,4 +723,35 @@ fn with_gui(gui: &[Permission]) -> Grant {
             .chain(gui.iter().copied()),
     )
     .with_sources(["remote"])
+}
+
+#[test]
+fn a_write_the_machine_refuses_in_the_last_window_is_not_reported_as_done() {
+    let server = FakeSsh::start_with(support::Options {
+        fail_writes_from: Some(100_000),
+        ..support::Options::default()
+    });
+    let machine = tempfile::tempdir().unwrap();
+    let root = posix(machine.path());
+    let mut config = NodeConfig::default();
+    config.filesystem.sync_writes = false;
+    let world = world_with(&source_toml(&server, ""), files_granted(&root), config);
+    let remote = bohio_client::Sourced::new(&world.link, "remote");
+    let target = machine.path().join("kept.bin");
+    std::fs::write(&target, b"the old file").unwrap();
+
+    let content = vec![9_u8; 200_000];
+    let request = bohio_proto::fs::WriteRequest::replace(format!("{root}/kept.bin"));
+    let outcome = bohio_client::fs::Writer::start(
+        &bohio_client::Sourced::new(&world.link, "remote"),
+        &request,
+        Some(WAIT),
+    )
+    .and_then(|writer| {
+        writer.write(&content)?;
+        writer.finish(Some(WAIT)).map(|_| ())
+    });
+    drop(remote);
+    assert!(outcome.is_err(), "the write was reported done");
+    assert_eq!(std::fs::read(&target).unwrap(), b"the old file");
 }

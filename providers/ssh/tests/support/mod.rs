@@ -63,6 +63,10 @@ pub struct Options {
     /// Read a command line as `fish` does, where `\'` inside single quotes is an escape: a line the provider quoted for a POSIX
     /// shell then ends its quote early, and one that cannot be read is refused.
     pub fish: bool,
+    /// A write at or past this offset is answered with a failure, as a full disk or a quota does.
+    pub fail_writes_from: Option<u64>,
+    /// Answer every command request with a failure, as a server that will not run the command does.
+    pub refuse_commands: bool,
 }
 
 impl Default for Options {
@@ -74,6 +78,8 @@ impl Default for Options {
             sftp: Some(Advertise::default()),
             direct: false,
             fish: false,
+            fail_writes_from: None,
+            refuse_commands: false,
         }
     }
 }
@@ -418,6 +424,9 @@ impl russh::server::Handler for Connection {
     ) -> Result<(), Self::Error> {
         let command = String::from_utf8_lossy(data).into_owned();
         self.seen.lock().unwrap().commands.push(command.clone());
+        if self.options.refuse_commands {
+            return session.channel_failure(channel);
+        }
         self.run(channel, command, session)
     }
 
@@ -472,7 +481,7 @@ impl russh::server::Handler for Connection {
         session.channel_success(channel)?;
         tokio::spawn(russh_sftp::server::run(
             stream.into_stream(),
-            sftp::Sftp::new(advertise, self.modes.clone()),
+            sftp::Sftp::new(advertise, self.modes.clone(), self.options.fail_writes_from),
         ));
         Ok(())
     }

@@ -62,15 +62,22 @@ pub struct Sftp {
     advertise: Advertise,
     /// Permission bits a client set, where the host has no modes of its own.
     modes: Arc<Mutex<HashMap<PathBuf, u32>>>,
+    /// Writes at or past this offset fail.
+    fail_writes_from: Option<u64>,
 }
 
 impl Sftp {
-    pub fn new(advertise: Advertise, modes: Arc<Mutex<HashMap<PathBuf, u32>>>) -> Self {
+    pub fn new(
+        advertise: Advertise,
+        modes: Arc<Mutex<HashMap<PathBuf, u32>>>,
+        fail_writes_from: Option<u64>,
+    ) -> Self {
         Self {
             handles: HashMap::new(),
             next: 0,
             advertise,
             modes,
+            fail_writes_from,
         }
     }
 }
@@ -282,6 +289,9 @@ impl russh_sftp::server::Handler for Sftp {
         offset: u64,
         data: Vec<u8>,
     ) -> Result<Status, Self::Error> {
+        if self.fail_writes_from.is_some_and(|from| offset >= from) {
+            return Err(StatusCode::Failure);
+        }
         let key = String::from_utf8_lossy(handle.as_bytes()).into_owned();
         let Some(Open::File(file)) = self.handles.get_mut(&key) else {
             return Err(StatusCode::Failure);
