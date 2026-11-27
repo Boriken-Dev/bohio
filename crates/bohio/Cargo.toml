@@ -137,6 +137,7 @@ bohio-provider-serial-plugin.workspace = true
 bohio-provider-ssh-plugin.workspace = true
 bohio-test-plugin-other = { path = "tests/plugin_other" }
 bohio-test-plugin-echo = { path = "tests/plugin_echo" }
+bohio-test-plugin-exec = { path = "tests/plugin_exec" }
 
 [[test]]
 name = "gui"

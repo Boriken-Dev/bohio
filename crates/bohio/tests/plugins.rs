@@ -54,6 +54,10 @@ fn other_plugin() -> PathBuf {
     built("bohio_test_plugin_other")
 }
 
+fn exec_plugin() -> PathBuf {
+    built("bohio_test_plugin_exec")
+}
+
 /// A copy of `from` named `name` in `dir`.
 fn put(dir: &Path, name: &str, from: &Path) -> PathBuf {
     let extension = from.extension().expect("a library extension");
@@ -201,6 +205,16 @@ fn a_library_that_declares_no_bohio_kind_is_not_mapped_and_the_report_says_why()
     );
     assert!(library.digest.is_some());
     assert_eq!(entry(&report, &serial).state, LibraryState::Loaded);
+}
+
+#[test]
+fn a_library_that_serves_only_processes_is_mapped_like_any_other() {
+    let dir = private_directory();
+    let exec = put(dir.path(), "exec", &exec_plugin());
+    let report = started(providers(&[dir.path()], true));
+    let library = entry(&report, &exec);
+    assert_eq!(library.state, LibraryState::Loaded, "{library:?}");
+    assert!(library.detail.contains("1 provider"), "{}", library.detail);
 }
 
 #[test]

@@ -1,0 +1,19 @@
+[package]
+name = "bohio-test-plugin-exec"
+description = "Test only: a provider library that serves processes and nothing else, which a node must map"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+bohio-api = { workspace = true }
+
+# Not the workspace's lints: the entry symbols `providers!` writes are `no_mangle`, which `unsafe_code = "forbid"` refuses.
+[lints.rust]
+missing_docs = "warn"

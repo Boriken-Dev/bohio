@@ -19,19 +19,22 @@ use std::path::{Path, PathBuf};
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 use bohio_api::guatiao::library::foreign::Settings;
-use bohio_api::guatiao::library::{Dlopen, Loading, Registry, probe};
+use bohio_api::guatiao::library::{Dlopen, Kind, Loading, Registry, probe};
 use bohio_proto::hash::Algorithm;
 use bohio_transfer::hash::digest_reader;
 
 use crate::config::{DlopenChoice, ProvidersConfig};
 use crate::ownership;
 
-/// The kinds of `bohio-api`: a library that declares none of them is not a Bohío provider library.
-const KINDS: [&str; 4] = [
-    "bohio_terminal",
-    "bohio_desktop",
-    "bohio_power",
-    "bohio_media",
+/// The source kinds of `bohio-api`, named by the kinds themselves: a library that declares none of them is not a
+/// Bohío provider library.
+const KINDS: [&str; 6] = [
+    <dyn bohio_api::TerminalSource as Kind>::NAME,
+    <dyn bohio_api::DesktopSource as Kind>::NAME,
+    <dyn bohio_api::PowerSource as Kind>::NAME,
+    <dyn bohio_api::MediaSource as Kind>::NAME,
+    <dyn bohio_api::ExecSource as Kind>::NAME,
+    <dyn bohio_api::FilesSource as Kind>::NAME,
 ];
 
 /// What became of one library.
