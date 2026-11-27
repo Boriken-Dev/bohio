@@ -16,6 +16,10 @@ Header-file-style reference for `bohio-x11`: the desktop trait, the X11 backend 
 - `Connector` (trait, `Debug + Send + Sync`): `connect() -> io::Result<Wire>`, a new connection per call (the screen holds one and each
   clipboard question makes one). `Wire { stream: WireStream, auth_name, auth_data }` (`WireStream::Tcp(TcpStream)`, or on Unix `WireStream::Unix(UnixStream)`): a stream to the X server, already open, and the
   authorization the server wants (empty for none).
+- `display_id(name, index, taken) -> String` (the id a monitor of that name gets), `one_primary(&mut [Display])` (exactly one display is primary) and
+  `keysym_of(&str) -> Option<u32>` (the keysym of a key name or one character): the layout and key rules the other backends share.
+- `logind::{Logind, Hints}` (Linux, feature `logind`): `Logind::new(bus, session, timeout).hints() -> Option<Hints { locked }>`, the session's `LockedHint`; it keeps its
+  bus connection while logind answers and connects again only after the connection failed.
 - `source::DesktopOf::new(Arc<dyn Desktop>)`: a `DesktopSource`; `source::{code_of, gui_error, rect_model, display_of, input_model}`: the
   conversions between the kind's models and the desktop's types.
 
