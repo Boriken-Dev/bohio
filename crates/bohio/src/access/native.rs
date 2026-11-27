@@ -119,6 +119,11 @@ pub struct NativeSettings {
     /// that may ask `info` can make the portal's dialog appear, so this is how often at most. Default `30s`.
     #[map(default = String::from("30s"))]
     pub wayland_retry: String,
+    /// How long the Wayland desktop keeps its portal session after the last request (`60s`, `0s` closes it after every request).
+    /// The session keeps the compositor's screen-sharing indicator on and copies every frame; a portal that asks the person
+    /// before sharing asks again when the session is reopened. Default `60s`.
+    #[map(default = String::from("60s"))]
+    pub wayland_idle: String,
     /// The most clicks of one button event and wheel notches of one scroll event on Wayland; more is `bad_request`. At
     /// least 1. Default `1000`.
     #[map(default = 1_000)]
@@ -179,6 +184,7 @@ impl Default for NativeSettings {
             wayland_capture_wait: "5s".to_owned(),
             wayland_start_wait: "10s".to_owned(),
             wayland_retry: "30s".to_owned(),
+            wayland_idle: "60s".to_owned(),
             wayland_max_repeat: 1_000,
             own_session: "none".to_owned(),
             own_runtime_dir: None,
@@ -218,6 +224,7 @@ impl NativeSettings {
             ("x11_clipboard_wait", &self.x11_clipboard_wait),
             ("wayland_start_wait", &self.wayland_start_wait),
             ("wayland_retry", &self.wayland_retry),
+            ("wayland_idle", &self.wayland_idle),
         ] {
             if Span::parse(text).is_none() {
                 return Err(refuse(&format!("{key} is a time such as 250ms or 10s")));
@@ -389,6 +396,7 @@ impl NativeSettings {
             capture_wait: span(&self.wayland_capture_wait),
             start_wait: span(&self.wayland_start_wait),
             retry: span(&self.wayland_retry),
+            idle: span(&self.wayland_idle),
             session: self.x11_session.clone().filter(|id| !id.is_empty()),
             system_bus: self.x11_system_bus.clone().filter(|bus| !bus.is_empty()),
             bus_wait: span(&self.x11_bus_wait),

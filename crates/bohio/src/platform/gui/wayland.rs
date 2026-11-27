@@ -100,6 +100,10 @@ pub struct WaylandSettings {
     /// How long after a refused or failed start the next request does not ask the portal again, so that a peer asking
     /// `info` cannot make the dialog appear over and over.
     pub retry: Duration,
+    /// How long the portal session stays open after the last request (`0` closes it after every request). The session
+    /// makes the compositor show its screen-sharing indicator and copy every frame, so it is not kept for nobody; the next
+    /// request opens it again, and a portal that asks the person each time asks again.
+    pub idle: Duration,
     /// The login session logind is asked about (`XDG_SESSION_ID`); `None` asks for this process's own.
     pub session: Option<String>,
     /// The address of the system bus, when it is not the standard one.
@@ -121,6 +125,7 @@ impl Default for WaylandSettings {
             capture_wait: Duration::from_secs(5),
             start_wait: Duration::from_secs(10),
             retry: Duration::from_secs(30),
+            idle: Duration::from_secs(60),
             session: None,
             system_bus: None,
             bus_wait: Duration::from_secs(1),
@@ -1160,6 +1165,41 @@ enum Phase {
     Failed { at: Instant, error: GuiError },
 }
 
+/// Closes the live session once no request has used it for `settings.idle`. The thread holds the desktop weakly, so a dropped
+/// desktop ends it.
+fn release_when_idle(inner: &Arc<Inner>, live: &Arc<Live>) {
+    let (weak, live) = (Arc::downgrade(inner), Arc::clone(live));
+    let spawned = thread::Builder::new()
+        .name("bohio-wayland-idle".to_owned())
+        .spawn(move || {
+            let mut wait = match weak.upgrade() {
+                Some(inner) => inner.settings.idle,
+                None => return,
+            };
+            loop {
+                thread::sleep(wait);
+                let Some(inner) = weak.upgrade() else {
+                    return;
+                };
+                let mut phase = lock(&inner.phase);
+                match &*phase {
+                    Phase::Live(current) if Arc::ptr_eq(current, &live) => {}
+                    _ => return,
+                }
+                let quiet = lock(&inner.used).elapsed();
+                if quiet >= inner.settings.idle {
+                    *phase = Phase::Idle;
+                    inner.changed.notify_all();
+                    return;
+                }
+                wait = inner.settings.idle - quiet;
+            }
+        });
+    if let Err(error) = spawned {
+        tracing::warn!(%error, "the portal session will not be closed when idle");
+    }
+}
+
 struct Inner {
     settings: WaylandSettings,
     phase: Mutex<Phase>,
@@ -1168,6 +1208,8 @@ struct Inner {
     pointer: Mutex<Option<(DisplayId, i32, i32)>>,
     /// Whether the portal offers input, asked once while no session says.
     input_offered: Mutex<Option<bool>>,
+    /// When a request last used the live session.
+    used: Mutex<Instant>,
 }
 
 impl Inner {
@@ -1179,7 +1221,10 @@ impl Inner {
         loop {
             match &*phase {
                 Phase::Live(live) if live.is_closed() => *phase = Phase::Idle,
-                Phase::Live(live) => return Ok(Arc::clone(live)),
+                Phase::Live(live) => {
+                    *lock(&self.used) = Instant::now();
+                    return Ok(Arc::clone(live));
+                }
                 Phase::Failed { at, error } => {
                     if at.elapsed() < self.settings.retry {
                         return Err(error.clone());
@@ -1195,7 +1240,12 @@ impl Inner {
                             let result = pollster::block_on(open(&inner.settings))
                                 .and_then(|started| Live::build(started, &inner.settings));
                             *lock(&inner.phase) = match result {
-                                Ok(live) => Phase::Live(Arc::new(live)),
+                                Ok(live) => {
+                                    let live = Arc::new(live);
+                                    *lock(&inner.used) = Instant::now();
+                                    release_when_idle(&inner, &live);
+                                    Phase::Live(live)
+                                }
                                 Err(error) => Phase::Failed {
                                     at: Instant::now(),
                                     error,
@@ -1249,6 +1299,13 @@ pub struct WaylandDesktop {
 }
 
 impl WaylandDesktop {
+    /// Whether the portal session is open now (it closes after `idle` without a request).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn session_open(&self) -> bool {
+        matches!(&*lock(&self.inner.phase), Phase::Live(_))
+    }
+
     /// A desktop run by `settings`. Nothing is asked of the portal until the desktop is asked something.
     #[must_use]
     pub fn new(settings: WaylandSettings) -> Self {
@@ -1265,6 +1322,7 @@ impl WaylandDesktop {
                 logind,
                 pointer: Mutex::new(None),
                 input_offered: Mutex::new(None),
+                used: Mutex::new(Instant::now()),
             }),
         }
     }

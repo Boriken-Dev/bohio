@@ -220,6 +220,32 @@ fn a_session_the_portal_ends_is_started_again_by_the_next_request() {
     }
 }
 
+#[test]
+fn the_portal_session_closes_after_idle_and_the_next_request_opens_it_again() {
+    let _turn = turn();
+    let Some(colour) =
+        compositor("the_portal_session_closes_after_idle_and_the_next_request_opens_it_again")
+    else {
+        return;
+    };
+    let desktop = WaylandDesktop::new(WaylandSettings {
+        capture_wait: WAIT,
+        start_wait: WAIT,
+        idle: Duration::from_secs(2),
+        ..WaylandSettings::default()
+    });
+    let (_, rgb) = painted(&desktop, colour);
+    assert_eq!(differences(&rgb, colour).0, 0);
+    assert!(desktop.session_open());
+    let until = Instant::now() + WAIT;
+    while desktop.session_open() {
+        assert!(Instant::now() < until, "the session was never closed");
+        thread::sleep(Duration::from_millis(200));
+    }
+    let (_, again) = painted(&desktop, colour);
+    assert_eq!(differences(&again, colour).0, 0);
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Through a node.
 
