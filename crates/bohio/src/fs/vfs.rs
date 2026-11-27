@@ -89,6 +89,12 @@ impl Dir {
         })
     }
 
+    /// Whether both are roots of one source at one path, so a name below one is a name below the other.
+    pub(crate) fn same_root(&self, other: &Self) -> bool {
+        matches!((&self.origin, &other.origin), (Some(here), Some(there))
+            if Arc::ptr_eq(&here.files, &there.files) && here.root == there.root)
+    }
+
     /// Another handle for the same directory.
     pub(crate) fn try_clone(&self) -> io::Result<Self> {
         Ok(self.clone())

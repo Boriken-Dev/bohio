@@ -417,3 +417,30 @@ fn a_node_removes_the_expired_kept_writes_in_every_granted_root_when_it_starts()
     assert!(young.exists(), "a file within its ttl stays");
     assert!(other.exists(), "a file that is not a kept write stays");
 }
+
+#[test]
+fn a_directory_is_not_copied_into_itself() {
+    let f = fixture(FilesystemConfig::default());
+    let fs = Fs::connect(&f.link).unwrap();
+    std::fs::create_dir_all(f.root.join("a/sub")).unwrap();
+    std::fs::write(f.root.join("a/one.txt"), "one").unwrap();
+    let tree = CopyOptions {
+        recursive: true,
+        ..CopyOptions::default()
+    };
+    assert_eq!(code(fs.copy_with("a", "a/b", &tree)), ErrorCode::BadRequest);
+    assert_eq!(
+        code(fs.copy_with("a", "a/sub/deep/er", &tree)),
+        ErrorCode::BadRequest
+    );
+    let onto = CopyOptions {
+        overwrite: true,
+        ..tree
+    };
+    assert_eq!(code(fs.copy_with("a", "a", &onto)), ErrorCode::BadRequest);
+    // Nothing was made, and a name that only shares a prefix is another directory.
+    assert!(!f.root.join("a/b").exists());
+    assert!(!f.root.join("a/sub/deep").exists());
+    fs.copy_with("a", "ab", &tree).unwrap();
+    assert_eq!(text(&f.root.join("ab/one.txt")), "one");
+}

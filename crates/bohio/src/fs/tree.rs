@@ -118,6 +118,17 @@ pub(crate) fn copy(
     )
 }
 
+/// Whether `inner` is `outer` or a name below it, word by word; a source that is not POSIX may fold case.
+fn lies_within(inner: &Path, outer: &Path, posix: bool) -> bool {
+    let mut inner = inner.components();
+    outer.components().all(|word| {
+        inner.next().is_some_and(|other| {
+            let (one, two) = (word.as_os_str(), other.as_os_str());
+            one == two || (!posix && one.eq_ignore_ascii_case(two))
+        })
+    })
+}
+
 fn copy_entry(
     context: &Context<'_>,
     from: &Place<'_>,
@@ -132,6 +143,11 @@ fn copy_entry(
     if meta.is_dir() {
         if !options.recursive {
             return Err(bad("the path is a directory: copy it with recursive"));
+        }
+        if from.dir.same_root(to.dir)
+            && lies_within(to.relative, from.relative, context.source.posix)
+        {
+            return Err(bad("a directory cannot be copied into itself"));
         }
         return copy_tree(context, from, to, options);
     }
