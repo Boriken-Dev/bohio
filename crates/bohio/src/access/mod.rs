@@ -1203,19 +1203,21 @@ pub fn settings_value(settings: &impl ToValue) -> Result<Value, String> {
 ///
 /// # Errors
 ///
-/// `denied` when `described` says the source forwards the display and `grant` lacks one of the three.
+/// `denied` when `described` says the source forwards the display, or cannot say (the description failed), and `grant`
+/// lacks one of the three.
 pub(crate) fn refuse_display_forward<E>(
     grant: &crate::policy::Grant,
     described: Result<bohio_api::SourceInfo, E>,
 ) -> Result<(), bohio_proto::ErrorBody> {
     use crate::policy::Permission;
-    let Ok(described) = described else {
-        return Ok(());
-    };
-    let forwards = described
-        .offers
-        .iter()
-        .any(|word| word == bohio_api::vocab::exec::X11_FORWARD);
+    // A source that cannot say what it offers is treated as one that forwards the display: a check that cannot decide
+    // refuses, since a provider need not be one of this build's own.
+    let forwards = described.map_or(true, |described| {
+        described
+            .offers
+            .iter()
+            .any(|word| word == bohio_api::vocab::exec::X11_FORWARD)
+    });
     if forwards
         && !(grant.allows(Permission::GuiView)
             && grant.allows(Permission::GuiInput)
@@ -1223,8 +1225,39 @@ pub(crate) fn refuse_display_forward<E>(
     {
         return Err(bohio_proto::ErrorBody::new(
             bohio_proto::ErrorCode::Denied,
-            "this source gives the programs it starts the node's own display: a peer needs gui.view, gui.input and gui.clipboard to use it",
+            "this source gives the programs it starts the node's own display, or cannot say whether it does: a peer needs gui.view, gui.input and gui.clipboard to use it",
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod display_forward_tests {
+    use super::refuse_display_forward;
+    use crate::policy::{Grant, Permission};
+
+    fn described(offers: &[&str]) -> Result<bohio_api::SourceInfo, String> {
+        Ok(bohio_api::SourceInfo {
+            offers: offers.iter().map(|word| (*word).to_owned()).collect(),
+            ..bohio_api::SourceInfo::default()
+        })
+    }
+
+    #[test]
+    fn a_source_whose_description_fails_is_refused_to_a_peer_without_the_gui_grants() {
+        let exec_only = Grant::allowing([Permission::Exec]);
+        let refused = refuse_display_forward(&exec_only, Err("describe timed out".to_owned()));
+        assert_eq!(
+            refused.expect_err("refused").code,
+            bohio_proto::ErrorCode::Denied
+        );
+        let all = Grant::allowing([
+            Permission::Exec,
+            Permission::GuiView,
+            Permission::GuiInput,
+            Permission::GuiClipboard,
+        ]);
+        assert!(refuse_display_forward(&all, Err("describe timed out".to_owned())).is_ok());
+        assert!(refuse_display_forward(&exec_only, described(&[])).is_ok());
+    }
 }
