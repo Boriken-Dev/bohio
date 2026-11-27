@@ -57,8 +57,8 @@ const ALLOWED: &[Allowed] = &[
                  block). The windows crate exposes each as an unsafe function. Ruled out: enigo 0.6.1 \
                  maps an absolute move on Windows to the main display only (win_impl.rs, its own \
                  TODO), so a point on another display is unreachable; xcap and \
-                 win-desktop-duplication capture and send no input; arboard would add clipboard-win and its \
-                 dependencies to every platform's lock for fifty lines of calls whose every pointer \
+                 win-desktop-duplication capture and send no input; arboard's Windows backend is \
+                 clipboard-win, another crate and its dependencies built here for fifty lines of calls whose every pointer \
                  is a local or the clipboard's own block; no maintained crate answers whether the \
                  input desktop is the secure one",
         miri: "not reachable: every unsafe call is a Win32 call, which Miri does not run; the \
@@ -224,6 +224,18 @@ fn without_safety_comment(source: &str) -> Vec<usize> {
     missing
 }
 
+/// Whether a source file lifts the `unsafe_code` lint in any spelling: `allow(unsafe_code)`, `allow(unsafe_code, reason = ..)`,
+/// `expect(unsafe_code)`, alone or inside `cfg_attr`. A comment does not.
+fn lifts_unsafe_lint(source: &str) -> bool {
+    source.lines().any(|line| {
+        let line = line.trim_start();
+        !line.starts_with("//")
+            && ["allow(unsafe_code", "expect(unsafe_code"]
+                .iter()
+                .any(|lift| line.contains(lift))
+    })
+}
+
 fn rust_files(dir: &Path, found: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
@@ -266,6 +278,23 @@ fn the_detector_sees_unsafe_and_nothing_else() {
 }
 
 #[test]
+fn the_lint_lift_is_seen_in_every_spelling() {
+    for lifted in [
+        "#![allow(unsafe_code)]",
+        "#![allow(unsafe_code, reason = \"a call\")]",
+        "#![expect(unsafe_code)]",
+        "#![cfg_attr(windows, allow(unsafe_code))]",
+    ] {
+        assert!(lifts_unsafe_lint(lifted), "{lifted}");
+    }
+    assert!(!lifts_unsafe_lint("#![forbid(unsafe_code)]"));
+    assert!(!lifts_unsafe_lint("#![deny(unsafe_code)]"));
+    assert!(!lifts_unsafe_lint(
+        "// #![allow(unsafe_code)] would lift it"
+    ));
+}
+
+#[test]
 fn the_safety_check_wants_a_comment_above_each_unsafe() {
     let documented = "fn f() {\n    // SAFETY: a valid pointer.\n    let a = unsafe { g() };\n}\n";
     assert!(without_safety_comment(documented).is_empty());
@@ -300,7 +329,7 @@ fn only_the_listed_files_hold_unsafe_code() {
         if holds_unsafe(&source) {
             holding.push(relative(&root, &file));
         }
-        if source.contains("allow(unsafe_code)") {
+        if lifts_unsafe_lint(&source) {
             allowing.push(relative(&root, &file));
         }
     }
