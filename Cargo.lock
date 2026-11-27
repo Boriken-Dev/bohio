@@ -385,6 +385,7 @@ dependencies = [
  "bohio-provider-serial",
  "bohio-provider-serial-plugin",
  "bohio-provider-ssh",
+ "bohio-provider-ssh-plugin",
  "bohio-test-plugin-echo",
  "bohio-test-plugin-other",
  "bohio-transfer",

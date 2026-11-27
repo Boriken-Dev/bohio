@@ -46,6 +46,10 @@ fn serial_plugin() -> PathBuf {
     built("bohio_provider_serial_plugin")
 }
 
+fn ssh_plugin() -> PathBuf {
+    built("bohio_provider_ssh_plugin")
+}
+
 fn other_plugin() -> PathBuf {
     built("bohio_test_plugin_other")
 }
@@ -129,6 +133,30 @@ fn the_serial_library_loads_from_a_path_and_is_reported_with_its_digest() {
     assert_eq!(library.digest.as_deref(), Some(want.as_str()));
     if cfg!(feature = "serial") {
         // The node has `serial` built in, and a library never replaces a built-in provider.
+        assert!(
+            library.detail.contains("already registered"),
+            "{}",
+            library.detail
+        );
+    } else {
+        assert!(library.detail.contains("1 provider"), "{}", library.detail);
+    }
+}
+
+#[test]
+fn the_ssh_library_loads_and_offers_the_ssh_provider() {
+    let dir = private_directory();
+    let file = put(dir.path(), "ssh", &ssh_plugin());
+    let report = started(providers(&[&file], true));
+    let library = entry(&report, &file);
+    assert_eq!(library.state, LibraryState::Loaded, "{library:?}");
+    assert!(
+        library.detail.contains("bohio-provider-ssh-plugin"),
+        "{}",
+        library.detail
+    );
+    if cfg!(feature = "ssh") {
+        // The node has `ssh` built in, and a library never replaces a built-in provider.
         assert!(
             library.detail.contains("already registered"),
             "{}",
