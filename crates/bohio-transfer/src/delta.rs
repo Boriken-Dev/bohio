@@ -115,8 +115,8 @@ impl Matcher {
 
     /// Feeds the next bytes of the new file; returns the steps they settle.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<Op> {
-        if self.sorted.is_empty() && self.short.is_none() {
-            // An empty or one-short-block old file: only the tail can match.
+        if self.sorted.is_empty() {
+            // No full block in the old file: only its short last block can match, and only at the end.
             self.buf.extend_from_slice(bytes);
             let keep = self.block.max(1);
             if self.buf.len() > keep {

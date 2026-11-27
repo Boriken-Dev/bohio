@@ -259,6 +259,41 @@ fn the_short_last_block_of_the_old_file_is_matched_at_the_end() {
 }
 
 #[test]
+fn an_old_file_of_one_short_block_holds_no_more_than_a_block_of_the_new_file() {
+    let mut rng = Rng(21);
+    let block = 2048;
+    let frame = 4096;
+    let base = rng.bytes(100);
+    let signature = signature_of(&base, block, 100);
+    assert_eq!(signature.blocks(), 1);
+    let mut matcher = Matcher::new(signature, frame).unwrap();
+    let (mut fed, mut released) = (0, 0);
+    for _ in 0..256 {
+        let piece = rng.bytes(65_536);
+        fed += piece.len();
+        released += literal_bytes(&matcher.feed(&piece));
+        // One block kept back for the tail, and at most one literal run still being filled.
+        assert!(
+            fed - released <= block as usize + frame,
+            "{} bytes held after {fed} fed",
+            fed - released
+        );
+    }
+}
+
+#[test]
+fn an_old_file_of_one_short_block_is_still_matched_at_the_end_of_the_new_file() {
+    let mut rng = Rng(22);
+    let base = rng.bytes(100);
+    let signature = signature_of(&base, 2048, 100);
+    let mut new = rng.bytes(9_000);
+    new.extend_from_slice(&base);
+    let ops = delta_of(&signature, &new, 700, 4096);
+    assert_eq!(rebuild(&base, 2048, &ops), new);
+    assert_eq!(literal_bytes(&ops), 9_000, "{ops:?}");
+}
+
+#[test]
 fn an_empty_old_file_gives_one_literal_run_cut_at_the_frame_size() {
     let mut rng = Rng(8);
     let new = rng.bytes(10_000);
