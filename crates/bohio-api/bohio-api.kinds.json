@@ -1239,7 +1239,7 @@
           ],
           "minimum": -9223372036854775808,
           "maximum": 9223372036854775807,
-          "description": "The signal number that ended it, when one did."
+          "description": "The signal number that ended it, when one did: the numbering of the machine the program ran on (Linux's for a machine reached over SSH), or [`UNNAMED_SIGNAL`] when the source knows a signal ended it and not which."
         }
       },
       "additionalProperties": false
@@ -1723,7 +1723,7 @@
             "string",
             "null"
           ],
-          "description": "What happens to the program's tree if the host dies without ending it: `kill`, `term` or `leave`. Absent is `kill`."
+          "description": "What happens to the program's tree if the host dies without ending it: `kill`, `term` or `leave`. Absent is `kill`. A source that cannot watch the host (one reached over SSH) ignores it: the program is left to the machine it runs on."
         },
         "reset_signals": {
           "type": [

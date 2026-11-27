@@ -702,7 +702,6 @@ pub fn parse_line(command: &str) -> Option<Line> {
                 }
                 Some("--") => {
                     words.next();
-                    break;
                 }
                 Some(word) if word.contains('=') && !word.starts_with('=') => {
                     let (name, value) = word.split_once('=')?;
