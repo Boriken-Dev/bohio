@@ -1225,7 +1225,7 @@ fn an_mtu_below_the_least_or_for_another_endpoint_is_refused_naming_it() {
 
 const HOSTS: &str = r#"
 [remote.web]
-endpoint = "tcp://10.0.0.5:7620"
+endpoint = "tcp://203.0.113.5:7620"
 server = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
 jump = ["gateway", "tcp://inner.example:7620"]
 
@@ -1247,7 +1247,7 @@ fn named_hosts_are_read_and_a_named_jump_brings_its_own_jumps_and_server() {
         ["edge", "gateway", "web"]
     );
     let web = config.remote.get("web").unwrap();
-    assert_eq!(web.endpoint, "tcp://10.0.0.5:7620");
+    assert_eq!(web.endpoint, "tcp://203.0.113.5:7620");
     // The hops in order: the gateway's own jump first, then the gateway, then an endpoint named as it is.
     let hops = config.remote.hops("web").unwrap();
     let endpoints: Vec<&str> = hops.iter().map(|hop| hop.endpoint.as_str()).collect();

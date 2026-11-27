@@ -302,8 +302,8 @@ mod tests {
     #[test]
     fn an_answer_carries_the_address_in_its_own_family() {
         assert_eq!(
-            answer(0, Some("10.1.2.3:258".parse().unwrap())),
-            [5, 0, 0, 1, 10, 1, 2, 3, 1, 2]
+            answer(0, Some("192.0.2.3:258".parse().unwrap())),
+            [5, 0, 0, 1, 192, 0, 2, 3, 1, 2]
         );
         let six = answer(0, Some("[::1]:80".parse().unwrap()));
         assert_eq!(six.len(), 4 + 16 + 2);

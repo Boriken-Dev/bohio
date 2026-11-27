@@ -472,7 +472,7 @@ mod tests {
         for text in [
             "db.lan:5432",
             "192.0.2.5:22",
-            "[fd00::5]:443",
+            "[2001:db8::5]:443",
             "unix:/run/docker.sock",
             "pipe:docker_engine",
         ] {
@@ -490,8 +490,8 @@ mod tests {
             "db.lan:65536",
             "db.lan:http",
             ":80",
-            "fd00::5:80",
-            "[fd00::5:80",
+            "2001:db8::5:80",
+            "[2001:db8::5:80",
             "[db.lan]:80",
             "unix:",
             "pipe:",

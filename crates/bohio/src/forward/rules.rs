@@ -376,13 +376,13 @@ mod tests {
         assert!(rule("db.lan:5432").matches(&tcp("DB.lan:5432")));
         assert!(!rule("db.lan:5432").matches(&tcp("db.lan:5433")));
         assert!(rule("10.0.0.0/8:22-25").matches(&tcp("10.1.2.3:24")));
-        assert!(!rule("10.0.0.0/8:22-25").matches(&tcp("11.1.2.3:24")));
+        assert!(!rule("10.0.0.0/8:22-25").matches(&tcp("203.0.113.4:24")));
         assert!(rule("*.lan:*").matches(&tcp("a.lan:1")));
         assert!(!rule("*.lan:*").matches(&tcp("lan:1")));
         // Nothing resolves: a name never matches a network, and localhost is not 127.0.0.1.
         assert!(!rule("127.0.0.0/8:80").matches(&tcp("localhost:80")));
         assert!(!rule("127.0.0.1:80").matches(&tcp("localhost:80")));
-        assert!(rule("[fd00::]/8:443").matches(&tcp("[fd00::5]:443")));
+        assert!(rule("[2001:db8::]/32:443").matches(&tcp("[2001:db8::5]:443")));
         assert!(rule("*:*").matches(&tcp("anything:9")));
         assert!(!rule("*:*").matches(&Target::Unix { path: "/x".into() }));
     }
@@ -470,7 +470,7 @@ mod tests {
         assert!(rule("*:8080").matches(&tcp("0.0.0.0:8080")));
         assert!(rule("[::1]:8080").matches(&tcp("[::1]:8080")));
         assert!(rule("127.0.0.0/8:*").matches(&tcp("127.0.0.2:5")));
-        assert!(!rule("127.0.0.0/8:*").matches(&tcp("10.0.0.2:5")));
+        assert!(!rule("127.0.0.0/8:*").matches(&tcp("203.0.113.2:5")));
         assert!(!rule("127.0.0.1:*").matches(&Bind::Unix { path: "/x".into() }));
         let unix = |path: &str| Bind::Unix { path: path.into() };
         assert!(rule("unix:/run/user/*/app.sock").matches(&unix("/run/user/1000/app.sock")));
