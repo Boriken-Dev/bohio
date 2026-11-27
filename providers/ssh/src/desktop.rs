@@ -41,8 +41,9 @@ impl std::fmt::Debug for Link {
 pub(crate) fn desktop(link: &Arc<Link>, display: u32) -> X11Desktop {
     let settings = X11Settings {
         display: Some(format!("{}:{display}", link.settings.host)),
-        // A display of another machine has no session of this node's to ask about.
-        headless: true,
+        // A display of another machine has no session of this node's to ask about, and nothing says whether it is locked:
+        // the engine's `input_when_lock_unknown` decides whether input goes to it.
+        lock_unknown: true,
         connector: Some(Arc::new(Channels {
             link: Arc::clone(link),
             display,

@@ -892,6 +892,10 @@ fn the_hosts_x_display_is_a_desktop_that_is_seen_and_clicked() {
     let session = DesktopSource::open(&source).unwrap();
     let state = session.state().unwrap();
     let shown = state.displays.first().expect("a display");
+    assert_eq!(
+        state.locked, None,
+        "another machine's display has no lock state this node can tell"
+    );
     let size = session.frame_size(&shown.id, None).unwrap();
     let mut rgb = vec![0_u8; usize::try_from(size.len()).unwrap()];
     // Somewhere in the picture is the window's green: its middle, wherever the host's screen puts it. The server may

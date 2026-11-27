@@ -68,6 +68,9 @@ pub struct X11Settings {
     /// A desktop of the node's own that no person sits at: it has no lock screen, so it is never locked and does not ask
     /// logind.
     pub headless: bool,
+    /// A display of another machine, whose lock state nothing here can tell: it is reported unknown (`None`) and logind,
+    /// which speaks for this machine's sessions, is not asked. `headless` takes precedence.
+    pub lock_unknown: bool,
     /// Why this node cannot serve its display at all (the own session's runtime directory is refused): every call answers
     /// `unavailable` with it.
     pub refused: Option<String>,
@@ -93,6 +96,7 @@ impl Default for X11Settings {
             clipboard_wait: Duration::from_millis(500),
             clipboard_max_bytes: 1024 * 1024,
             headless: false,
+            lock_unknown: false,
             refused: None,
             hint: None,
             selection: "CLIPBOARD".to_owned(),
@@ -1156,6 +1160,8 @@ impl X11Desktop {
             active: true,
             locked: if self.settings.headless {
                 Some(false)
+            } else if self.settings.lock_unknown {
+                None
             } else {
                 self.locked()
             },
@@ -1251,7 +1257,9 @@ impl Desktop for X11Desktop {
             backend: "x11".to_owned(),
             input,
             clipboard: true,
-            lock_detection: !self.settings.headless && self.locked().is_some(),
+            lock_detection: !self.settings.headless
+                && !self.settings.lock_unknown
+                && self.locked().is_some(),
         }
     }
 }
