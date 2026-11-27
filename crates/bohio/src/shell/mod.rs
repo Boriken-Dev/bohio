@@ -490,7 +490,7 @@ fn monitor(
         while !shared.reader_done.load(Ordering::Acquire)
             && !shared.gone.load(Ordering::Acquire)
             && shared.quiet_for() < drain_quiet
-            && !timeout.is_some_and(|limit| started.elapsed() >= limit)
+            && timeout.is_none_or(|limit| started.elapsed() < limit)
         {
             thread::sleep(shared.poll);
         }

@@ -465,7 +465,7 @@ fn assert_detached(shell: &Shell) {
                 assert!(Instant::now() < until, "the kill never ended the attach");
             }
             Ok(Some(Event::Exit(exit))) => panic!("a console has no exit: {exit:?}"),
-            Ok(Some(Event::Signalled(_))) | Ok(None) | Err(_) => return,
+            Ok(Some(_) | None) | Err(_) => return,
         }
     }
 }
@@ -503,6 +503,7 @@ fn a_program_is_unsupported_naming_the_source_and_a_kill_only_detaches() {
             Ok(Some(Event::Signalled(answer))) => answered = Some(answer),
             Ok(Some(Event::Data(_))) | Err(Error::Timeout) => {}
             Ok(Some(Event::Exit(_)) | None) | Err(_) => break,
+            Ok(Some(_)) => {}
         }
     }
     let answer = answered.expect("a kill signal is answered");
