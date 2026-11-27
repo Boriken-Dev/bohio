@@ -1044,5 +1044,1167 @@
         }
       ]
     }
-  ]
+  ],
+  "models": {
+    "SourceInfo": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "The provider's id."
+        },
+        "offers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "What this source can do, in its kind's vocabulary ([`crate::vocab`]).",
+          "default": []
+        },
+        "lacks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "What this source cannot do, in the kind's vocabulary: the limits a peer should know before it asks.",
+          "default": []
+        },
+        "available": {
+          "type": "boolean",
+          "description": "Whether the source can be used now.",
+          "default": false
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Why it cannot, when `available` is false."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "provider"
+      ]
+    },
+    "ProgramSpec": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A shell kind (`\"sh\"`, `\"bash\"`, `\"powershell\"`, `\"cmd\"`...) the source finds itself; empty when `argv` names the program."
+        },
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The program and its arguments.",
+          "default": []
+        },
+        "listed": {
+          "type": "boolean",
+          "description": "The grant lists programs: the program is the one found at that name on `path`, never what the request's environment would find.",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "TerminalOpen": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "program": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "kind": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "A shell kind (`\"sh\"`, `\"bash\"`, `\"powershell\"`, `\"cmd\"`...) the source finds itself; empty when `argv` names the program."
+            },
+            "argv": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "The program and its arguments.",
+              "default": []
+            },
+            "listed": {
+              "type": "boolean",
+              "description": "The grant lists programs: the program is the one found at that name on `path`, never what the request's environment would find.",
+              "default": false
+            }
+          },
+          "additionalProperties": false,
+          "description": "The program to start. A console source starts none and refuses a request that names one."
+        },
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The working directory."
+        },
+        "clear_env": {
+          "type": "boolean",
+          "description": "Start from an empty environment.",
+          "default": false
+        },
+        "env": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "The variable."
+              },
+              "value": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Its new value; absent removes it."
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "name"
+            ]
+          },
+          "description": "Changes to the environment, in order.",
+          "default": []
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The host's own `PATH`, where a program without a directory is looked for."
+        },
+        "on_host_death": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "What happens to the program's tree if the host dies without ending it: `kill`, `term` or `leave`. Absent is `kill`."
+        },
+        "cols": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "Columns."
+        },
+        "rows": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "Rows."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "cols",
+        "rows"
+      ]
+    },
+    "TerminalExit": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807,
+          "description": "The exit code, when the source knows one."
+        },
+        "signal": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807,
+          "description": "The signal number that ended it, when one did."
+        }
+      },
+      "additionalProperties": false
+    },
+    "Delivery": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "delivered": {
+          "type": "boolean",
+          "description": "The signal reached the program.",
+          "default": false
+        },
+        "ended": {
+          "type": "boolean",
+          "description": "Delivering it meant ending the program.",
+          "default": false
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Something a person should know: why it was not delivered, or what was done instead."
+        }
+      },
+      "additionalProperties": false
+    },
+    "DisplayModel": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "How requests name it."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A name for a person."
+        },
+        "primary": {
+          "type": "boolean",
+          "description": "The display a request without a display means.",
+          "default": false
+        },
+        "x": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807,
+          "description": "Its left edge in the desktop's layout."
+        },
+        "y": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807,
+          "description": "Its top edge."
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "Width in physical pixels."
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "Height in physical pixels."
+        },
+        "scale": {
+          "type": "number",
+          "description": "Physical pixels per logical point.",
+          "default": 1
+        },
+        "rotation": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "Rotation in degrees, when known."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "x",
+        "y",
+        "width",
+        "height"
+      ]
+    },
+    "StateModel": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "user": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The account that owns the session, when known."
+        },
+        "active": {
+          "type": "boolean",
+          "description": "Whether the session is the one at the screen.",
+          "default": false
+        },
+        "locked": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether the screen is locked; absent when the source cannot tell."
+        },
+        "displays": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "How requests name it."
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "A name for a person."
+              },
+              "primary": {
+                "type": "boolean",
+                "description": "The display a request without a display means.",
+                "default": false
+              },
+              "x": {
+                "type": "integer",
+                "minimum": -9223372036854775808,
+                "maximum": 9223372036854775807,
+                "description": "Its left edge in the desktop's layout."
+              },
+              "y": {
+                "type": "integer",
+                "minimum": -9223372036854775808,
+                "maximum": 9223372036854775807,
+                "description": "Its top edge."
+              },
+              "width": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709551615,
+                "description": "Width in physical pixels."
+              },
+              "height": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709551615,
+                "description": "Height in physical pixels."
+              },
+              "scale": {
+                "type": "number",
+                "description": "Physical pixels per logical point.",
+                "default": 1
+              },
+              "rotation": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 18446744073709551615,
+                "description": "Rotation in degrees, when known."
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "x",
+              "y",
+              "width",
+              "height"
+            ]
+          },
+          "description": "The displays and their layout.",
+          "default": []
+        }
+      },
+      "additionalProperties": false
+    },
+    "RectModel": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "Left edge."
+        },
+        "y": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "Top edge."
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "Width."
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "Height."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+      ]
+    },
+    "FrameHeader": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "width": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "Width in pixels."
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "Height in pixels."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "width",
+        "height"
+      ]
+    },
+    "InputModel": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "description": "The kind of event."
+        },
+        "display": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The display coordinates are on; the primary one when absent."
+        },
+        "x": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807,
+          "description": "Pixels from the display's left edge."
+        },
+        "y": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807,
+          "description": "Pixels from the display's top edge."
+        },
+        "button": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A button (`left`, `right`, `middle`, `back`, `forward`)."
+        },
+        "action": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`press`, `release` or `click`."
+        },
+        "count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "Clicks of a button."
+        },
+        "dx": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807,
+          "description": "Horizontal notches of a scroll.",
+          "default": 0
+        },
+        "dy": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807,
+          "description": "Vertical notches of a scroll.",
+          "default": 0
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A key name or one character."
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Text typed as it is."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ]
+    },
+    "PowerState": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "description": "`on`, `off` or `unknown` ([`crate::vocab::power_state`])."
+        },
+        "done": {
+          "type": "boolean",
+          "description": "The state is the one the action asked for; false while a transition is still under way.",
+          "default": false
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "state"
+      ]
+    },
+    "MediaSlot": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "slot": {
+          "type": "string",
+          "description": "The slot's name (`cd`, `floppy`, `usb`...)."
+        },
+        "inserted": {
+          "type": "boolean",
+          "description": "Whether an image is inserted.",
+          "default": false
+        },
+        "image": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "What is inserted, for a person; never a URL's query."
+        },
+        "size": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "Size of the inserted image in bytes, when known."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "slot"
+      ]
+    },
+    "ExecStart": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The program and its arguments, never run through a shell. Empty when `script` is set.",
+          "default": []
+        },
+        "shell": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A shell kind (`sh`, `bash`, `zsh`, `powershell`, `pwsh`, `cmd`) that runs `script`; the source finds the shell."
+        },
+        "script": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The script `shell` runs."
+        },
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The working directory, in the source's own syntax."
+        },
+        "clear_env": {
+          "type": "boolean",
+          "description": "Start from an empty environment.",
+          "default": false
+        },
+        "env": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "The variable."
+              },
+              "value": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Its new value; absent removes it."
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "name"
+            ]
+          },
+          "description": "Changes to the environment, in order.",
+          "default": []
+        },
+        "stdin": {
+          "type": "boolean",
+          "description": "Whether standard input is a pipe; otherwise it is empty.",
+          "default": false
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The host's own `PATH`, where a listed program is looked for."
+        },
+        "listed": {
+          "type": "boolean",
+          "description": "The grant lists programs: `argv[0]` is the one found at that name on `path`, never what the request's environment would find.",
+          "default": false
+        },
+        "on_host_death": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "What happens to the program's tree if the host dies without ending it: `kill`, `term` or `leave`. Absent is `kill`."
+        },
+        "reset_signals": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether the program starts with SIGINT, SIGQUIT and SIGHUP at their default action instead of what the host inherited (Unix; a host started with `&` or `nohup` has them ignored, and its programs would never see an `interrupt`). Absent is `true`."
+        }
+      },
+      "additionalProperties": false
+    },
+    "TimeModel": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "secs": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807,
+          "description": "Whole seconds."
+        },
+        "nanos": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "description": "Nanoseconds after `secs`, below one billion."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "secs",
+        "nanos"
+      ]
+    },
+    "FileStat": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "description": "`file`, `dir`, `symlink` or `other` ([`crate::vocab::file_kind`])."
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "Size in bytes.",
+          "default": 0
+        },
+        "modified": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "secs": {
+              "type": "integer",
+              "minimum": -9223372036854775808,
+              "maximum": 9223372036854775807,
+              "description": "Whole seconds."
+            },
+            "nanos": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295,
+              "description": "Nanoseconds after `secs`, below one billion."
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "secs",
+            "nanos"
+          ],
+          "description": "Last modified."
+        },
+        "accessed": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "secs": {
+              "type": "integer",
+              "minimum": -9223372036854775808,
+              "maximum": 9223372036854775807,
+              "description": "Whole seconds."
+            },
+            "nanos": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295,
+              "description": "Nanoseconds after `secs`, below one billion."
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "secs",
+            "nanos"
+          ],
+          "description": "Last accessed."
+        },
+        "created": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "secs": {
+              "type": "integer",
+              "minimum": -9223372036854775808,
+              "maximum": 9223372036854775807,
+              "description": "Whole seconds."
+            },
+            "nanos": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295,
+              "description": "Nanoseconds after `secs`, below one billion."
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "secs",
+            "nanos"
+          ],
+          "description": "Created."
+        },
+        "mode": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 4294967295,
+          "description": "Permission bits."
+        },
+        "readonly": {
+          "type": "boolean",
+          "description": "The read-only attribute.",
+          "default": false
+        },
+        "attributes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 4294967295,
+          "description": "Windows file attributes."
+        },
+        "device": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "The device the file is on."
+        },
+        "inode": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "The file's number on it."
+        },
+        "links": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "Names the file has."
+        },
+        "owner": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "The account that owns the file, as the system numbers it (a user id on Unix); absent where the system has none."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ]
+    },
+    "DirEntryModel": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The name, without a directory."
+        },
+        "stat": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "description": "`file`, `dir`, `symlink` or `other` ([`crate::vocab::file_kind`])."
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "description": "Size in bytes.",
+              "default": 0
+            },
+            "modified": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "properties": {
+                "secs": {
+                  "type": "integer",
+                  "minimum": -9223372036854775808,
+                  "maximum": 9223372036854775807,
+                  "description": "Whole seconds."
+                },
+                "nanos": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4294967295,
+                  "description": "Nanoseconds after `secs`, below one billion."
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "secs",
+                "nanos"
+              ],
+              "description": "Last modified."
+            },
+            "accessed": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "properties": {
+                "secs": {
+                  "type": "integer",
+                  "minimum": -9223372036854775808,
+                  "maximum": 9223372036854775807,
+                  "description": "Whole seconds."
+                },
+                "nanos": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4294967295,
+                  "description": "Nanoseconds after `secs`, below one billion."
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "secs",
+                "nanos"
+              ],
+              "description": "Last accessed."
+            },
+            "created": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "properties": {
+                "secs": {
+                  "type": "integer",
+                  "minimum": -9223372036854775808,
+                  "maximum": 9223372036854775807,
+                  "description": "Whole seconds."
+                },
+                "nanos": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4294967295,
+                  "description": "Nanoseconds after `secs`, below one billion."
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "secs",
+                "nanos"
+              ],
+              "description": "Created."
+            },
+            "mode": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 4294967295,
+              "description": "Permission bits."
+            },
+            "readonly": {
+              "type": "boolean",
+              "description": "The read-only attribute.",
+              "default": false
+            },
+            "attributes": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 4294967295,
+              "description": "Windows file attributes."
+            },
+            "device": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "description": "The device the file is on."
+            },
+            "inode": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "description": "The file's number on it."
+            },
+            "links": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "description": "Names the file has."
+            },
+            "owner": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "description": "The account that owns the file, as the system numbers it (a user id on Unix); absent where the system has none."
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "description": "What the entry is (a link is not followed), when the listing carried it; absent, the host asks."
+        },
+        "unnamed": {
+          "type": "boolean",
+          "description": "The name is not text: `name` is a lossy rendering the host cannot use to reach the entry, and it skips it.",
+          "default": false
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ]
+    },
+    "OpenModel": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "read": {
+          "type": "boolean",
+          "description": "Read.",
+          "default": false
+        },
+        "write": {
+          "type": "boolean",
+          "description": "Write.",
+          "default": false
+        },
+        "create": {
+          "type": "boolean",
+          "description": "Make the file when it is not there.",
+          "default": false
+        },
+        "create_new": {
+          "type": "boolean",
+          "description": "Make the file and fail with `exists` when it is there.",
+          "default": false
+        },
+        "truncate": {
+          "type": "boolean",
+          "description": "Cut the file to nothing.",
+          "default": false
+        },
+        "append": {
+          "type": "boolean",
+          "description": "Every write goes to the end of the file, whatever offset it names.",
+          "default": false
+        },
+        "mode": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 4294967295,
+          "description": "Permission bits of a file made, where the system has them."
+        }
+      },
+      "additionalProperties": false
+    },
+    "VfsStat": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "block_size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "Bytes in a block."
+        },
+        "blocks": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "Blocks."
+        },
+        "blocks_free": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "Free blocks."
+        },
+        "blocks_avail": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "Free blocks for an unprivileged account."
+        },
+        "files": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "Files the system can hold, when it counts them."
+        },
+        "files_free": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "Files it can still make."
+        },
+        "name_max": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "The longest name, when known."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "block_size",
+        "blocks",
+        "blocks_free",
+        "blocks_avail"
+      ]
+    }
+  }
 }

@@ -163,3 +163,23 @@ pub mod file_kind {
     /// Anything else.
     pub const OTHER: &str = "other";
 }
+
+/// The signal words `Terminal::signal` and `Process::signal` take: the wire's `Signal` names.
+pub mod signal {
+    /// The program is asked to stop what it is doing (`SIGINT`, Ctrl-C).
+    pub const INTERRUPT: &str = "interrupt";
+    /// The program is asked to end and may clean up (`SIGTERM`).
+    pub const TERMINATE: &str = "terminate";
+    /// The program's terminal went away (`SIGHUP`).
+    pub const HANGUP: &str = "hangup";
+    /// The program is asked to end and dump (`SIGQUIT`).
+    pub const QUIT: &str = "quit";
+    /// `SIGUSR1`.
+    pub const USER1: &str = "user1";
+    /// `SIGUSR2`.
+    pub const USER2: &str = "user2";
+    /// The whole tree is ended at once and cannot object (`SIGKILL`).
+    pub const KILL: &str = "kill";
+    /// Every signal word.
+    pub const ALL: [&str; 7] = [INTERRUPT, TERMINATE, HANGUP, QUIT, USER1, USER2, KILL];
+}

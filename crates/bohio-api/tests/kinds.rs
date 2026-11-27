@@ -16,8 +16,13 @@ use std::path::PathBuf;
 use bohio_api::desktop::{DesktopSessionVtable, DesktopSourceVtable};
 use bohio_api::exec::{ExecSourceVtable, ProcessVtable};
 use bohio_api::files::{DirReaderVtable, DirectoryVtable, FileVtable, FilesSourceVtable};
-use bohio_api::guatiao::Alloc;
+use bohio_api::guatiao::{Alloc, Schema};
 use bohio_api::media::{BlockReaderVtable, MediaSourceVtable};
+use bohio_api::model::{
+    Delivery, DirEntryModel, DisplayModel, ExecStart, FileStat, FrameHeader, InputModel, MediaSlot,
+    OpenModel, PowerState, ProgramSpec, RectModel, SourceInfo, StateModel, TerminalExit,
+    TerminalOpen, TimeModel, VfsStat,
+};
 use bohio_api::power::PowerSourceVtable;
 use bohio_api::terminal::{TerminalSourceVtable, TerminalVtable};
 use guatiao_serde::Presentation;
@@ -58,6 +63,36 @@ fn actual() -> [(&'static str, u32); 13] {
     ]
 }
 
+/// The schema of each model a slot's `value` carries, by name: what a provider written in another language reads.
+fn models() -> String {
+    fn one<T: Schema>(name: &str) -> String {
+        let schema = T::schema_in(Alloc::rust()).expect("a model describes itself");
+        let text = json::to_string(&schema, Presentation::new()).expect("written");
+        format!("\"{name}\":{text}")
+    }
+    [
+        one::<SourceInfo>("SourceInfo"),
+        one::<ProgramSpec>("ProgramSpec"),
+        one::<TerminalOpen>("TerminalOpen"),
+        one::<TerminalExit>("TerminalExit"),
+        one::<Delivery>("Delivery"),
+        one::<DisplayModel>("DisplayModel"),
+        one::<StateModel>("StateModel"),
+        one::<RectModel>("RectModel"),
+        one::<FrameHeader>("FrameHeader"),
+        one::<InputModel>("InputModel"),
+        one::<PowerState>("PowerState"),
+        one::<MediaSlot>("MediaSlot"),
+        one::<ExecStart>("ExecStart"),
+        one::<TimeModel>("TimeModel"),
+        one::<FileStat>("FileStat"),
+        one::<DirEntryModel>("DirEntryModel"),
+        one::<OpenModel>("OpenModel"),
+        one::<VfsStat>("VfsStat"),
+    ]
+    .join(",")
+}
+
 fn rendered() -> String {
     let kinds = [
         TerminalSourceVtable::description(),
@@ -74,7 +109,11 @@ fn rendered() -> String {
         DirReaderVtable::description(),
         FileVtable::description(),
     ];
-    let document = format!("{{\"kinds\":[{}]}}", kinds.join(","));
+    let document = format!(
+        "{{\"kinds\":[{}],\"models\":{{{}}}}}",
+        kinds.join(","),
+        models()
+    );
     let value = json::from_str(&document, Alloc::rust(), Presentation::new())
         .expect("a kind's description is JSON");
     let mut text = json::to_string_pretty(&value, Presentation::new()).expect("written");
@@ -131,5 +170,25 @@ fn a_description_carries_the_hash_a_provider_writes() {
             description.contains(&format!("\"floor_hash\":{hash},")),
             "{description}"
         );
+    }
+}
+
+#[test]
+fn the_description_types_every_model_a_slot_carries() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("bohio-api.kinds.json");
+    let text = std::fs::read_to_string(path).expect("the kind description is committed");
+    for model in [
+        "SourceInfo",
+        "TerminalOpen",
+        "ExecStart",
+        "FileStat",
+        "FrameHeader",
+        "InputModel",
+    ] {
+        assert!(text.contains(&format!("\"{model}\"")), "{model}");
+    }
+    assert!(text.contains("\"properties\""));
+    for word in bohio_api::vocab::signal::ALL {
+        assert!(!word.is_empty() && word == word.to_lowercase());
     }
 }

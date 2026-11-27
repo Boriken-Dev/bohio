@@ -376,13 +376,13 @@ struct Term(Session);
 
 fn sig_of(name: &str) -> Option<(Sig, bool)> {
     Some(match name {
-        "interrupt" => (Sig::INT, false),
-        "terminate" => (Sig::TERM, false),
-        "kill" => (Sig::KILL, true),
-        "hangup" => (Sig::HUP, false),
-        "quit" => (Sig::QUIT, false),
-        "user1" => (Sig::USR1, false),
-        "user2" => (Sig::Custom("USR2".to_owned()), false),
+        vocab::signal::INTERRUPT => (Sig::INT, false),
+        vocab::signal::TERMINATE => (Sig::TERM, false),
+        vocab::signal::KILL => (Sig::KILL, true),
+        vocab::signal::HANGUP => (Sig::HUP, false),
+        vocab::signal::QUIT => (Sig::QUIT, false),
+        vocab::signal::USER1 => (Sig::USR1, false),
+        vocab::signal::USER2 => (Sig::Custom("USR2".to_owned()), false),
         _ => return None,
     })
 }
