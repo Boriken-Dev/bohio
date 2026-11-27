@@ -2649,8 +2649,9 @@ impl Config {
             .unwrap_or_else(|| environment.default_data_dir())
     }
 
-    /// What a node runs on, from this file's `[service] name`, `[link]`, `[filesystem]`, `[execution]`
-    /// and `[shell]`.
+    /// What a node runs on, from this file's `[service] name` and every table of [`NodeConfig`]: `[link]`, `[filesystem]`,
+    /// `[hash]`, `[walk]`, `[search]`, `[delta]`, `[compression]`, `[execution]`, `[shell]`, `[sessions]`, `[forward]`,
+    /// `[gui]`, `[pairing]`, `[power]`, `[media]`, `[secrets]`, `[providers]`, `[source.*]` and `[access]`.
     pub fn node(&self) -> NodeConfig {
         NodeConfig {
             name: self.service.name.clone(),

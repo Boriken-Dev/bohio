@@ -150,9 +150,9 @@ impl Layers {
     ///
     /// [`ConfigError::Read`] for a file that cannot be read, [`ConfigError::Parse`] for syntax, an unknown
     /// key or a wrong type in one layer (naming it, with the line, column and key), and
-    /// [`ConfigError::Invalid`] for a value out of range, a table name that is not a peer id or a
-    /// governing key (`[service] check_access`, `user_layer`) set above the lowest layer, naming the key
-    /// and the highest layer that sets it.
+    /// [`ConfigError::Invalid`] for a value out of range or a table name that is not a peer id. A key only the lowest layer
+    /// may set (`[service] check_access`, `user_layer`) that a higher layer sets is not an error: its value is ignored
+    /// and the layer is named in the log.
     pub fn load(paths: &[PathBuf]) -> Result<Layered, ConfigError> {
         let inputs = paths
             .iter()
