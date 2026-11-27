@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use x11rb::connection::{Connection, RequestConnection};
 use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{
-    Atom, AtomEnum, ConnectionExt as _, CreateWindowAux, EventMask, PropMode,
+    Atom, AtomEnum, ClientMessageEvent, ConnectionExt as _, CreateWindowAux, EventMask, PropMode,
     SELECTION_NOTIFY_EVENT, SelectionNotifyEvent, Window, WindowClass,
 };
 use x11rb::rust_connection::RustConnection;
@@ -29,6 +29,9 @@ use crate::desktop::GuiError;
 fn failed(what: &str, error: impl std::fmt::Display) -> GuiError {
     GuiError::io(format!("{what}: {error}"))
 }
+
+/// How often a read looks for the owner's answer; `clipboard_wait` bounds the wait.
+const ANSWER_POLL: Duration = Duration::from_millis(2);
 
 /// A connection with a window of its own and the atoms the clipboard speaks.
 struct Session {
@@ -97,15 +100,27 @@ impl Session {
     }
 }
 
-/// The owner thread: its stop flag, and the thread, joined when it is dropped.
+/// The owner thread: its stop flag, and the thread, joined when it is dropped. The thread blocks waiting for a request,
+/// so ending it sends its window a message to wake it.
 struct Owner {
     stop: Arc<AtomicBool>,
+    session: Arc<Session>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl Drop for Owner {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
+        let wake =
+            ClientMessageEvent::new(32, self.session.window, self.session.property, [0_u32; 5]);
+        // An empty mask sends the event to the client that made the window: the owner thread's own connection.
+        let _ = self.session.connection.send_event(
+            false,
+            self.session.window,
+            EventMask::NO_EVENT,
+            wake,
+        );
+        let _ = self.session.connection.flush();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -162,8 +177,9 @@ impl Selection {
             ));
         }
         let stop = Arc::new(AtomicBool::new(false));
+        let session = Arc::new(session);
         let thread = {
-            let stop = Arc::clone(&stop);
+            let (stop, session) = (Arc::clone(&stop), Arc::clone(&session));
             let text = text.to_owned();
             thread::Builder::new()
                 .name("bohio-x11-clipboard".to_owned())
@@ -172,6 +188,7 @@ impl Selection {
         };
         *held = Some(Owner {
             stop,
+            session,
             thread: Some(thread),
         });
         Ok(())
@@ -239,7 +256,7 @@ fn ask(
                     "the program that owns the clipboard did not answer in time",
                 ));
             }
-            None => thread::sleep(Duration::from_millis(2)),
+            None => thread::sleep(ANSWER_POLL),
         }
     };
     if property == NONE {
@@ -269,12 +286,13 @@ fn ask(
     }))
 }
 
-/// Answers the requests for the selection until another program takes it, or `stop`.
+/// Answers the requests for the selection until another program takes it, or `stop` is set and the thread is woken. It
+/// waits for an event, so an owner nobody asks costs nothing.
 fn serve(session: &Session, text: &str, stop: &AtomicBool) {
     let connection = &session.connection;
     let _ = connection.flush();
     while !stop.load(Ordering::Acquire) {
-        match connection.poll_for_event() {
+        match connection.wait_for_event().map(Some) {
             Ok(Some(Event::SelectionClear(event))) if event.selection == session.selection => {
                 return;
             }
@@ -300,8 +318,7 @@ fn serve(session: &Session, text: &str, stop: &AtomicBool) {
                     connection.send_event(false, request.requestor, EventMask::NO_EVENT, notify);
                 let _ = connection.flush();
             }
-            Ok(Some(_)) => {}
-            Ok(None) => thread::sleep(Duration::from_millis(5)),
+            Ok(_) => {}
             Err(_) => return,
         }
     }

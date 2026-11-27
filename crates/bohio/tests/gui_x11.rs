@@ -836,6 +836,54 @@ fn a_clipboard_text_round_trips_through_a_selection_of_its_own() {
     assert_eq!(error.code, ErrorCode::BadRequest);
 }
 
+/// The times the clipboard's owner thread has gone to sleep and woken, from the kernel's own count for the thread.
+fn owner_wakeups() -> Option<u64> {
+    for entry in std::fs::read_dir("/proc/self/task").ok()?.flatten() {
+        let path = entry.path();
+        // The kernel keeps the first 15 bytes of a thread's name.
+        if std::fs::read_to_string(path.join("comm")).ok()?.trim() != "bohio-x11-clipb" {
+            continue;
+        }
+        let status = std::fs::read_to_string(path.join("status")).ok()?;
+        let line = status
+            .lines()
+            .find(|line| line.starts_with("voluntary_ctxt_switches"))?;
+        return line.split_whitespace().nth(1)?.parse().ok();
+    }
+    None
+}
+
+#[test]
+fn an_owner_of_the_clipboard_that_nobody_asks_does_not_wake() {
+    let _turn = turn();
+    let Some(server) = server("an_owner_of_the_clipboard_that_nobody_asks_does_not_wake") else {
+        return;
+    };
+    let desktop = X11Desktop::new({
+        let mut s = X11Settings::default();
+        s.display = Some(server.display.clone());
+        s.selection = format!("BOHIO_TEST_IDLE_{}", std::process::id());
+        s
+    });
+    desktop.set_clipboard_text("held").expect("set");
+    // Let the thread settle into waiting, then count a second of nobody asking.
+    thread::sleep(Duration::from_millis(300));
+    let before = owner_wakeups().expect("the owner thread");
+    thread::sleep(Duration::from_secs(1));
+    let after = owner_wakeups().expect("the owner thread");
+    // Polling every 5 ms woke it about 200 times in that second.
+    assert!(
+        after - before < 10,
+        "the owner woke {} times",
+        after - before
+    );
+    // It still answers, and is ended by a new owner without waiting out a poll.
+    assert_eq!(desktop.clipboard_text().expect("read"), "held");
+    let started = Instant::now();
+    drop(desktop);
+    assert!(started.elapsed() < Duration::from_secs(2));
+}
+
 #[test]
 fn a_click_on_the_second_monitor_lands_at_its_root_point() {
     let _turn = turn();
