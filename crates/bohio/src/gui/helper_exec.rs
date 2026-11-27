@@ -182,7 +182,8 @@ impl ExecHelper {
         }
         let command = match line {
             Some(line) => {
-                let words = bohio_client::dial::split_command(line).map_err(bad)?;
+                let words = bohio_client::dial::split_command(line)
+                    .map_err(|error| bad(error.to_string()))?;
                 if words.is_empty() {
                     return Err(bad(format!("`{text}` names no command")));
                 }

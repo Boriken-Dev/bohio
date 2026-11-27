@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use bohio_client::Open;
-use bohio_client::gui::{Gui, SnapshotOptions, WatchEvent, WatchOptions};
+use bohio_client::gui::{Gui, Snapshot, Watch, WatchEvent};
 use bohio_proto::gui::{
     Button, ButtonAction, DisplayId, GuiRequest, ImageFormat, InputEvent, Rect, SettleOptions,
     Want, WatchEncoding,
@@ -270,7 +270,7 @@ pub(super) fn run(
                     ImageFormat::from_name(name).ok_or("--image-format is png, jpeg or webp")
                 })
                 .transpose()?;
-            let options = SnapshotOptions {
+            let options = Snapshot {
                 display: id(&snapshot.display),
                 region,
                 format,
@@ -279,6 +279,7 @@ pub(super) fn run(
                 max_height: max.map(|size| size.1),
                 cursor: false,
                 settle: snapshot.settle.then(SettleOptions::default),
+                ..Snapshot::default()
             };
             let image = gui.snapshot(&options, Some(wait)).map_err(fail)?;
             let to_stdout = snapshot.out.as_os_str() == "-";
@@ -461,7 +462,7 @@ fn watch_screen(gui: &Gui, watch: &WatchArgs, wait: std::time::Duration) -> Resu
     if let Some(dir) = &watch.out {
         std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
     }
-    gui.watch(&WatchOptions {
+    gui.watch(&Watch {
         display: id(&watch.display),
         region,
         fps: watch.fps,
@@ -473,6 +474,7 @@ fn watch_screen(gui: &Gui, watch: &WatchArgs, wait: std::time::Duration) -> Resu
         cursor: false,
         refine: None,
         key: false,
+        ..Watch::default()
     })
     .map_err(|error| explain(&error))?;
     let started = Instant::now();

@@ -21,15 +21,20 @@ use crate::platform::find_program;
 ///
 /// `host_id` stays empty: a link fills it once it has proven an identity.
 pub fn collect(config: &NodeConfig, path: &OsStr) -> Info {
-    let shells = ShellKind::KNOWN
-        .into_iter()
-        .filter_map(|kind| {
-            find_program(kind.program(), path).map(|found| ShellInfo {
-                kind,
-                path: display(&found),
+    // A node that serves no shell lists none: the ones on `PATH` are not offered.
+    let shells = if config.shell.enabled {
+        ShellKind::KNOWN
+            .into_iter()
+            .filter_map(|kind| {
+                find_program(kind.program(), path).map(|found| ShellInfo {
+                    kind,
+                    path: display(&found),
+                })
             })
-        })
-        .collect();
+            .collect()
+    } else {
+        Vec::new()
+    };
     Info {
         protocol: PROTOCOL_VERSION,
         service: Service {

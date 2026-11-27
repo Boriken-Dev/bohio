@@ -60,12 +60,14 @@ impl Local {
             endpoint: text.clone(),
             reason,
         };
-        let Endpoint::Pipe(name) = Endpoint::parse(&text).map_err(fail)? else {
+        let Endpoint::Pipe(name) =
+            Endpoint::parse(&text).map_err(|error| fail(error.to_string()))?
+        else {
             return Err(fail("the control endpoint is a `pipe://` one".to_owned()));
         };
         let mut builder = PipeListener::builder().name(&name);
-        if let Some(bits) = config.socket_mode_bits().map_err(fail)? {
-            builder = builder.socket_mode(bits);
+        if let Some(mode) = config.socket_mode {
+            builder = builder.socket_mode(mode.0);
         }
         if let Some(group) = &config.socket_group {
             let group: SocketGroup =
@@ -954,7 +956,7 @@ mod tests {
                 std::process::id()
             )),
             security_descriptor: cfg!(windows).then(|| "D:(A;;GA;;;WD)".to_owned()),
-            socket_mode: cfg!(unix).then(|| "0o600".to_owned()),
+            socket_mode: cfg!(unix).then_some(crate::config::Mode(0o600)),
             ..ControlConfig::default()
         };
         let text = logged(|| {

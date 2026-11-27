@@ -716,7 +716,9 @@ impl HelperListener {
         };
         let accounts = resolve_accounts(&config.helper_accounts)
             .map_err(|reason| fail(format!("gui.helper_accounts: {reason}")))?;
-        let Endpoint::Pipe(name) = Endpoint::parse(&text).map_err(fail)? else {
+        let Endpoint::Pipe(name) =
+            Endpoint::parse(&text).map_err(|error| fail(error.to_string()))?
+        else {
             return Err(fail("the helper endpoint is a `pipe://` one".to_owned()));
         };
         let mut builder = PipeListener::builder().name(&name);

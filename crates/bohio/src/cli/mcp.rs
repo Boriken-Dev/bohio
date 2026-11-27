@@ -37,13 +37,19 @@ fn host_words(spec: &str) -> Result<(String, Vec<String>), String> {
         && plain(name)
         && !name.starts_with('-')
     {
-        return Ok((name.to_owned(), split_command(rest)?));
+        return Ok((
+            name.to_owned(),
+            split_command(rest).map_err(|error| error.to_string())?,
+        ));
     }
     if plain(spec) && !spec.starts_with('-') {
         // A bare name: `bohio remote NAME` resolves it.
         return Ok((spec.to_owned(), vec![spec.to_owned()]));
     }
-    Ok(("host".to_owned(), split_command(spec)?))
+    Ok((
+        "host".to_owned(),
+        split_command(spec).map_err(|error| error.to_string())?,
+    ))
 }
 
 /// Everything `bohio mcp` serves.

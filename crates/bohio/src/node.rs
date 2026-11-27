@@ -144,7 +144,57 @@ impl Shared {
         if sources.names(Capability::Exec).is_empty() {
             config.execution.enabled = false;
         }
+        if sources.names(Capability::Terminal).is_empty() {
+            config.shell.enabled = false;
+        }
         let config = &config;
+        let mut capabilities = info::collect(config, &path);
+        capabilities.host_id = Some(host.to_string());
+        Arc::new(Self {
+            settings: config.link.settings(),
+            grants: Arc::clone(grants),
+            path,
+            info: capabilities,
+            processes: Arc::new(Slots::with_share(
+                config.execution.max_processes,
+                config.execution.max_processes_per_peer,
+            )),
+            transfers: Slots::with_share(
+                config.filesystem.max_transfers,
+                config.filesystem.max_transfers_per_peer,
+            ),
+            follows: Slots::new(config.filesystem.max_follows),
+            hashes: Slots::new(config.hash.max_streams),
+            walks: Slots::new(config.walk.max_streams),
+            searches: Slots::new(config.search.max_searches),
+            sessions: Arc::new(Slots::with_share(
+                config.shell.max_sessions,
+                config.shell.max_sessions_per_peer,
+            )),
+            power: Arc::new(Slots::new(config.power.max_streams)),
+            media: Arc::new(Slots::new(config.media.max_streams)),
+            detached: session::Sessions::new(
+                &config.sessions,
+                Arc::clone(grants),
+                Arc::clone(keys),
+                Arc::clone(events) as Arc<dyn NodeEvents>,
+            ),
+            forwards: Slots::new(config.forward.max_connections),
+            forwards_per_peer: Counted::new(config.forward.max_connections_per_peer),
+            streams_per_peer: Counted::new(config.link.max_streams_per_peer),
+            listeners: forward::Listeners::new(&config.forward),
+            events: Arc::clone(events),
+            gui: Arc::clone(gui),
+            sources: Arc::clone(sources),
+            config: config.clone(),
+        })
+    }
+
+    /// The work a node does once, when it is built: logs the settings that depart from the defaults, takes the
+    /// guardians this process adopts, and sweeps what interrupted transfers left. Rebuilding the shared state for another
+    /// `PATH` or other sources does not repeat it.
+    fn start(&self, grants: &Arc<dyn Grants>) {
+        let (config, sources) = (&self.config, &self.sources);
         if config.compression.bundle_context == crate::config::BundleContext::Shared {
             tracing::warn!(
                 "non-default: [compression] bundle_context is shared: the files of a bundle share one compression context, so a path observer can learn from compressed sizes whether a file repeats text placed in the one before it"
@@ -191,46 +241,6 @@ impl Shared {
                 });
             }
         }
-        let mut capabilities = info::collect(config, &path);
-        capabilities.host_id = Some(host.to_string());
-        Arc::new(Self {
-            settings: config.link.settings(),
-            grants: Arc::clone(grants),
-            path,
-            info: capabilities,
-            processes: Arc::new(Slots::with_share(
-                config.execution.max_processes,
-                config.execution.max_processes_per_peer,
-            )),
-            transfers: Slots::with_share(
-                config.filesystem.max_transfers,
-                config.filesystem.max_transfers_per_peer,
-            ),
-            follows: Slots::new(config.filesystem.max_follows),
-            hashes: Slots::new(config.hash.max_streams),
-            walks: Slots::new(config.walk.max_streams),
-            searches: Slots::new(config.search.max_searches),
-            sessions: Arc::new(Slots::with_share(
-                config.shell.max_sessions,
-                config.shell.max_sessions_per_peer,
-            )),
-            power: Arc::new(Slots::new(config.power.max_streams)),
-            media: Arc::new(Slots::new(config.media.max_streams)),
-            detached: session::Sessions::new(
-                &config.sessions,
-                Arc::clone(grants),
-                Arc::clone(keys),
-                Arc::clone(events) as Arc<dyn NodeEvents>,
-            ),
-            forwards: Slots::new(config.forward.max_connections),
-            forwards_per_peer: Counted::new(config.forward.max_connections_per_peer),
-            streams_per_peer: Counted::new(config.link.max_streams_per_peer),
-            listeners: forward::Listeners::new(&config.forward),
-            events: Arc::clone(events),
-            gui: Arc::clone(gui),
-            sources: Arc::clone(sources),
-            config: config.clone(),
-        })
     }
 }
 
@@ -472,14 +482,16 @@ pub struct Node {
 }
 
 /// The source a connection counts against: an IPv4 address (an IPv4-mapped IPv6 address is its IPv4
-/// address), or the /64 an IPv6 address lies in, since one holder controls every address of a /64.
-pub(crate) fn source_key(source: SocketAddr) -> IpAddr {
+/// address), or the first `prefix` bits of an IPv6 address, since one holder controls every address of its prefix.
+pub(crate) fn source_key(source: SocketAddr, prefix: u8) -> IpAddr {
     match source.ip() {
         IpAddr::V6(address) => match address.to_ipv4_mapped() {
             Some(v4) => IpAddr::V4(v4),
             None => {
-                let bits = u128::from(address) & !u128::from(u64::MAX);
-                IpAddr::V6(Ipv6Addr::from(bits))
+                let kept = u128::MAX
+                    .checked_shl(128 - u32::from(prefix.clamp(1, 128)))
+                    .unwrap_or(0);
+                IpAddr::V6(Ipv6Addr::from(u128::from(address) & kept))
             }
         },
         v4 @ IpAddr::V4(_) => v4,
@@ -581,7 +593,7 @@ impl Node {
             .initiators(asked)
             .build()
             .map_err(|error| NodeError::Proof(error.to_string()))?;
-        Ok(Self {
+        let node = Self {
             identity,
             registry: Arc::default(),
             shared: Shared::new(
@@ -605,7 +617,10 @@ impl Node {
             pairing: Arc::new(PairState::new(config.pairing.clone())),
             unproven: Counted::new(config.link.max_unproven_per_source),
             links: Counted::new(config.link.max_links_per_peer),
-        })
+        };
+        // Once: rebuilding the shared state for another `PATH` or other sources does not repeat it.
+        node.shared.start(&node.grants);
+        Ok(node)
     }
 
     /// Sends the node's events to `events` instead of the log.
@@ -770,7 +785,10 @@ impl Node {
                     continue;
                 };
                 let proving = match arrival.source() {
-                    Some(source) => match self.unproven.take(source_key(source)) {
+                    Some(source) => match self
+                        .unproven
+                        .take(source_key(source, self.shared.config.link.ipv6_prefix))
+                    {
                         Some(hold) => Some(hold),
                         None => {
                             tracing::info!(
@@ -789,7 +807,7 @@ impl Node {
                 scope.spawn(move || {
                     match arrival.open() {
                         Ok((channel, source)) => {
-                            self.serve_proving(&channel, source, proving);
+                            self.serve_proving(&channel, source, proving, Some(stop));
                             channel.close();
                         }
                         Err(error) => tracing::info!("a connection could not be set up: {error}"),
@@ -809,7 +827,7 @@ impl Node {
         while !stop.load(Ordering::SeqCst) {
             match serial(path, options, settings) {
                 Ok(channel) => {
-                    self.serve_channel(&channel, None);
+                    self.serve_channel_until(&channel, None, Some(stop));
                     channel.close();
                 }
                 Err(error) => tracing::info!("the serial port {path} cannot be opened: {error}"),
@@ -837,8 +855,21 @@ impl Node {
     /// when the caller passes it), and at most `[link] max_links_per_peer` per peer. A channel past a bound is
     /// refused: this returns at once and logs it. The caller closes `channel`.
     pub fn serve_channel<C: Channel>(&self, channel: &C, source: Option<SocketAddr>) {
+        self.serve_channel_until(channel, source, None);
+    }
+
+    /// As [`Node::serve_channel`], ending the proof or the link when `stop` is set.
+    fn serve_channel_until<C: Channel>(
+        &self,
+        channel: &C,
+        source: Option<SocketAddr>,
+        stop: Option<&AtomicBool>,
+    ) {
         let proving = match source {
-            Some(source) => match self.unproven.take(source_key(source)) {
+            Some(source) => match self
+                .unproven
+                .take(source_key(source, self.shared.config.link.ipv6_prefix))
+            {
                 Some(hold) => Some(hold),
                 None => {
                     tracing::info!(
@@ -856,12 +887,25 @@ impl Node {
             tracing::info!("a connection was refused: max_connections are open");
             return;
         }
-        self.serve_proving(channel, source, proving);
+        self.serve_proving(channel, source, proving, stop);
         self.connections.fetch_sub(1, Ordering::SeqCst);
     }
 
-    /// As [`Node::serve_channel`], giving `proving` back once the proof has ended either way.
+    /// As [`Node::serve_channel`], giving `proving` back once the proof has ended either way, and closing `channel` when
+    /// `stop` is set.
     fn serve_proving<C: Channel>(
+        &self,
+        channel: &C,
+        source: Option<SocketAddr>,
+        proving: Option<Hold<'_, IpAddr>>,
+        stop: Option<&AtomicBool>,
+    ) {
+        self.until_stopped(channel, stop, || {
+            self.prove_and_serve(channel, source, proving);
+        });
+    }
+
+    fn prove_and_serve<C: Channel>(
         &self,
         channel: &C,
         source: Option<SocketAddr>,
@@ -872,7 +916,7 @@ impl Node {
             proof: &self.proof,
             source,
         };
-        let key = source.map(source_key);
+        let key = source.map(|source| source_key(source, self.shared.config.pairing.ipv6_prefix));
         let mut attempts = 0;
         let mut delayed = false;
         let answered = self.pairing.host(&self.identity, key, |host, slot, wait| {
@@ -1025,21 +1069,9 @@ impl Node {
             .responders(Trust::pinned([*expect]))
             .build()
             .map_err(|error| NodeError::Proof(error.to_string()))?;
-        let finished = AtomicBool::new(false);
-        thread::scope(|scope| {
-            if let Some(stop) = stop {
-                // A stopped node ends a proof or a link that is still going: closing the channel ends both.
-                scope.spawn(|| {
-                    while !finished.load(Ordering::SeqCst) {
-                        if stop.load(Ordering::SeqCst) {
-                            channel.close();
-                            return;
-                        }
-                        thread::sleep(settings.poll_interval);
-                    }
-                });
-            }
-            let linked = prove_out(
+        // A stopped node ends a proof or a link that is still going: closing the channel ends both.
+        self.until_stopped(channel, stop, || {
+            prove_out(
                 &proof,
                 channel,
                 settings.proof_timeout,
@@ -1056,9 +1088,35 @@ impl Node {
             })
             .and_then(|established| {
                 self.serve_proven(channel, established, Side::Dialed, source, endpoint)
-            });
+            })
+        })
+    }
+
+    /// Runs `work` on `channel`, closing the channel when `stop` is set meanwhile, which ends a proof or a link that
+    /// is still going.
+    fn until_stopped<C: Channel, R>(
+        &self,
+        channel: &C,
+        stop: Option<&AtomicBool>,
+        work: impl FnOnce() -> R,
+    ) -> R {
+        let poll = self.shared.settings.poll_interval;
+        let finished = AtomicBool::new(false);
+        thread::scope(|scope| {
+            if let Some(stop) = stop {
+                scope.spawn(|| {
+                    while !finished.load(Ordering::SeqCst) {
+                        if stop.load(Ordering::SeqCst) {
+                            channel.close();
+                            return;
+                        }
+                        thread::sleep(poll);
+                    }
+                });
+            }
+            let result = work();
             finished.store(true, Ordering::SeqCst);
-            linked
+            result
         })
     }
 
@@ -1083,7 +1141,7 @@ impl Node {
                 return self.events.event(&NodeEvent::DialFailed {
                     peer: *peer,
                     endpoint: endpoint.to_owned(),
-                    reason,
+                    reason: reason.to_string(),
                     retry_in: Duration::MAX,
                 });
             }
@@ -1128,8 +1186,11 @@ impl Node {
                     }
                     None => Ok(parsed),
                 })
+                .map_err(|error| error.to_string())
                 .and_then(|parsed| match dial.web_mtu() {
-                    Ok(mtu) if mtu != Mtu::default() => parsed.with_mtu(mtu),
+                    Ok(mtu) if mtu != Mtu::default() => {
+                        parsed.with_mtu(mtu).map_err(|error| error.to_string())
+                    }
                     Ok(_) => Ok(parsed),
                     Err((key, reason)) => Err(format!("{key} {reason}")),
                 })

@@ -329,7 +329,7 @@ impl MtuArgs {
         mtu.min = self.mtu_min.unwrap_or(mtu.min);
         mtu.discovery = self.mtu_discovery.unwrap_or(mtu.discovery);
         mtu.upper_bound = self.mtu_upper_bound.unwrap_or(mtu.upper_bound);
-        endpoint.with_mtu(mtu)
+        endpoint.with_mtu(mtu).map_err(|error| error.to_string())
     }
 }
 

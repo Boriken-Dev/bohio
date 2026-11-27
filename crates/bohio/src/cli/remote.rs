@@ -221,12 +221,16 @@ fn direct_plan(args: &RemoteArgs, environment: &Environment) -> Result<Plan, Str
     let config = found.config();
     let target = target(args, config)?;
     let endpoint = match (&target.endpoint, &args.command) {
-        (Some(text), None) => Endpoint::parse(text)?,
-        (None, Some(command)) => Endpoint::Command(split_command(command)?),
+        (Some(text), None) => Endpoint::parse(text).map_err(|error| error.to_string())?,
+        (None, Some(command)) => {
+            Endpoint::Command(split_command(command).map_err(|error| error.to_string())?)
+        }
         _ => return Err("name the host as an endpoint or with --command, not both".to_owned()),
     };
     let endpoint = match &target.fallback {
-        Some(text) => endpoint.with_fallback(Endpoint::parse(text)?)?,
+        Some(text) => endpoint
+            .with_fallback(Endpoint::parse(text).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())?,
         None => endpoint,
     };
     let endpoint = args.mtu.apply(endpoint)?;
@@ -321,7 +325,7 @@ pub(super) fn tls_trust(
     trust.ca_files = ca.to_vec();
     trust.clock_skew = clock_skew.unwrap_or_default();
     for hash in cert_hash {
-        trust.pin(hash)?;
+        trust.pin(hash).map_err(|error| error.to_string())?;
     }
     let needs_tls = match endpoint {
         Endpoint::WebSocket(url) => url.scheme() == "wss",

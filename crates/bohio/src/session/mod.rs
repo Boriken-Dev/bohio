@@ -299,7 +299,10 @@ impl Entry {
     fn end_with(&self, signal: Option<Signal>) {
         let frame = match signal {
             None | Some(Signal::Kill) => vec![KILL_FRAME],
-            Some(signal) => exec::Input::Signal(signal).encode(),
+            Some(signal) => match exec::Input::Signal(signal).encode() {
+                Ok(frame) => frame,
+                Err(_) => return,
+            },
         };
         let _ = self.engine.send_timeout(&frame, Some(self.poll));
     }

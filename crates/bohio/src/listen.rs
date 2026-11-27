@@ -453,7 +453,8 @@ impl Listening {
             endpoint: config.endpoint.clone(),
             reason,
         };
-        let endpoint = Endpoint::parse(&config.endpoint).map_err(fail)?;
+        let endpoint =
+            Endpoint::parse(&config.endpoint).map_err(|error| fail(error.to_string()))?;
         match endpoint {
             Endpoint::Tcp(address) => {
                 let listener = TcpListener::bind(address).map_err(|e| fail(e.to_string()))?;
@@ -464,8 +465,8 @@ impl Listening {
             }
             Endpoint::Pipe(name) => {
                 let mut builder = PipeListener::builder().name(&name);
-                if let Some(bits) = config.socket_mode_bits().map_err(fail)? {
-                    builder = builder.socket_mode(bits);
+                if let Some(mode) = config.socket_mode {
+                    builder = builder.socket_mode(mode.0);
                 }
                 if let Some(remote) = config.remote_clients {
                     builder = builder.remote_clients(remote);
@@ -494,7 +495,7 @@ impl Listening {
                     .build()
                     .map_err(|e| fail(e.to_string()))?;
                 let bound = listener.local_addr().map_err(|e| fail(e.to_string()))?;
-                let url = Endpoint::parse(&format!("{}://{bound}", url.scheme())).map_err(fail)?;
+                let url = Endpoint::parse(&format!("{}://{bound}", url.scheme())).map_err(|error| fail(error.to_string()))?;
                 Ok((Self::WebSocket(listener), url))
             }
             Endpoint::WebTransport { url, .. } => {
@@ -554,7 +555,7 @@ impl Listening {
                     .map_err(|e| fail(e.to_string()))?;
                 let bound = listener.local_addr();
                 let shown =
-                    Endpoint::parse(&format!("webtransport://{bound}")).map_err(fail)?;
+                    Endpoint::parse(&format!("webtransport://{bound}")).map_err(|error| fail(error.to_string()))?;
                 Ok((
                     Self::WebTransport {
                         listener,
