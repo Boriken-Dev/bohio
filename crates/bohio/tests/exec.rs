@@ -908,3 +908,31 @@ fn one_peer_cannot_take_more_than_its_share_of_the_process_slots() {
     first.kill().unwrap();
     first.wait(WAIT).unwrap();
 }
+
+#[test]
+fn a_kill_is_read_while_the_program_does_not_read_its_input() {
+    let link = runner();
+    let mut request = Request::argv([helper().as_str(), "sleep", "600000"]);
+    request.stdin = Stdin::Open;
+    let exec = Exec::start(&link, &request).unwrap();
+    // Far more than a pipe holds, to a program that never reads it.
+    let piece = vec![7_u8; 16 * 1024];
+    std::thread::scope(|scope| {
+        let writer = scope.spawn(|| {
+            for _ in 0..64 {
+                if exec.write_stdin(&piece).is_err() {
+                    break;
+                }
+            }
+        });
+        std::thread::sleep(Duration::from_millis(500));
+        let started = Instant::now();
+        exec.kill().unwrap();
+        let done = exec
+            .wait(Some(Duration::from_secs(10)))
+            .expect("the kill is read");
+        assert!(done.exit.killed, "{:?}", done.exit);
+        assert!(started.elapsed() < Duration::from_secs(8));
+        let _ = writer.join();
+    });
+}

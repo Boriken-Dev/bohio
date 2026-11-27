@@ -1210,6 +1210,10 @@ pub struct ExecutionConfig {
     /// The most output bytes in one frame. At least 1; a smaller bound of the stream wins.
     /// Default `16384`.
     pub chunk_size: usize,
+    /// The bytes of standard input the host holds for a process that has not read them yet. The host keeps reading the
+    /// client's frames meanwhile, so a kill or a signal reaches a program that never reads its input; once this many
+    /// bytes wait, it stops reading until the program takes some, and a kill waits too. At least 1. Default `4194304`.
+    pub stdin_queue: usize,
     /// How often a running process, its deadline and its stream are looked at. Same units as
     /// `link.recheck`; not zero. Default `20ms`.
     pub poll_interval: Span,
@@ -1282,6 +1286,7 @@ impl Default for ExecutionConfig {
             max_processes: 16,
             max_processes_per_peer: 16,
             chunk_size: 16 * 1024,
+            stdin_queue: 4 * 1024 * 1024,
             poll_interval: Span(Duration::from_millis(20)),
             drain_timeout: Span(Duration::from_millis(500)),
             host_death: HostDeath::default(),
@@ -2420,6 +2425,7 @@ impl NodeConfig {
                 "execution.max_processes_per_peer",
                 self.execution.max_processes_per_peer,
             ),
+            ("execution.stdin_queue", self.execution.stdin_queue),
             (
                 "shell.max_sessions_per_peer",
                 self.shell.max_sessions_per_peer,

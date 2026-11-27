@@ -9,11 +9,12 @@
 
 mod command;
 
+use std::collections::VecDeque;
 use std::ffi::OsStr;
 use std::io::Write;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -98,6 +99,131 @@ impl Drop for InputPipe {
     }
 }
 
+/// What is waiting to be written to a process's input.
+#[derive(Default)]
+struct Waiting {
+    chunks: VecDeque<Vec<u8>>,
+    bytes: usize,
+    /// The client ended its input: close the process's once the chunks are written.
+    ended: bool,
+    /// The process stopped taking input: nothing more is queued.
+    broken: bool,
+}
+
+struct StdinQueue {
+    waiting: Mutex<Waiting>,
+    changed: Condvar,
+}
+
+impl StdinQueue {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Waiting> {
+        self.waiting
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// The input of a process as the frame reader sees it: a queue that a thread of its own empties
+/// into the process, so a program that does not read its input never holds up the reading of a
+/// kill or a signal. Writing waits for room only once `limit` bytes are queued; dropping it ends
+/// the input.
+struct StdinSink {
+    queue: Arc<StdinQueue>,
+    shared: Arc<Shared>,
+    limit: usize,
+}
+
+impl StdinSink {
+    /// Starts the thread that writes `pipe`; `None` when it cannot be started.
+    fn start(pipe: InputPipe, limit: usize, shared: &Arc<Shared>) -> Option<Self> {
+        let queue = Arc::new(StdinQueue {
+            waiting: Mutex::new(Waiting::default()),
+            changed: Condvar::new(),
+        });
+        let writing = Arc::clone(&queue);
+        thread::Builder::new()
+            .name("bohio-exec-stdin".to_owned())
+            .spawn(move || write_input(pipe, &writing))
+            .ok()?;
+        Some(Self {
+            queue,
+            shared: Arc::clone(shared),
+            limit: limit.max(1),
+        })
+    }
+}
+
+impl Write for StdinSink {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        let mut waiting = self.queue.lock();
+        while waiting.bytes >= self.limit && !waiting.broken {
+            if self.shared.done.load(Ordering::Acquire) || self.shared.gone.load(Ordering::Acquire)
+            {
+                return Err(std::io::ErrorKind::BrokenPipe.into());
+            }
+            waiting = self
+                .queue
+                .changed
+                .wait_timeout(waiting, self.shared.poll)
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
+        }
+        if waiting.broken {
+            return Err(std::io::ErrorKind::BrokenPipe.into());
+        }
+        if !data.is_empty() {
+            waiting.bytes += data.len();
+            waiting.chunks.push_back(data.to_vec());
+            self.queue.changed.notify_all();
+        }
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Drop for StdinSink {
+    fn drop(&mut self) {
+        self.queue.lock().ended = true;
+        self.queue.changed.notify_all();
+    }
+}
+
+/// Writes what is queued to the process until the input ends or the process stops taking it; the
+/// pipe closes when this thread returns.
+fn write_input(mut pipe: InputPipe, queue: &StdinQueue) {
+    loop {
+        let chunk = {
+            let mut waiting = queue.lock();
+            loop {
+                if let Some(chunk) = waiting.chunks.pop_front() {
+                    waiting.bytes -= chunk.len();
+                    queue.changed.notify_all();
+                    break Some(chunk);
+                }
+                if waiting.ended {
+                    break None;
+                }
+                waiting = queue
+                    .changed
+                    .wait(waiting)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+        };
+        let Some(chunk) = chunk else { return };
+        if pipe.write_all(&chunk).and_then(|()| pipe.flush()).is_err() {
+            let mut waiting = queue.lock();
+            waiting.broken = true;
+            waiting.chunks.clear();
+            waiting.bytes = 0;
+            queue.changed.notify_all();
+            return;
+        }
+    }
+}
+
 /// Serves one `bohio-exec/1` stream whose open carried `metadata`, until the process has ended
 /// and its last frame is sent.
 ///
@@ -145,7 +271,8 @@ pub fn serve(
         mut decoder,
     } = negotiated;
     let control = live;
-    let mut stdin = input;
+    let mut stdin =
+        input.and_then(|pipe| StdinSink::start(pipe, context.config.stdin_queue, &shared));
     let pid = control
         .process
         .pid()
@@ -530,7 +657,7 @@ fn wait_for(pumps: &Receiver<()>, open: &mut u8, limit: Duration, sending: &Atom
 fn receive_frames(
     shared: &Shared,
     control: &Live,
-    stdin: &mut Option<InputPipe>,
+    stdin: &mut Option<StdinSink>,
     decoder: &mut Option<Decoder>,
 ) {
     while !shared.done.load(Ordering::Acquire) {
