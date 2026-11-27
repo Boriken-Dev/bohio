@@ -37,7 +37,8 @@ use crate::config::Environment;
         PATH           where programs and shells are looked for\n  \
         APPDATA, LOCALAPPDATA, ProgramData (Windows) and XDG_CONFIG_HOME, XDG_DATA_HOME, HOME (Unix)\n                 \
         where the system and user configuration files and the data directory are looked for\n\n\
-        Exit status: 0 success, 1 the operation failed, 2 the invocation was wrong."
+        Exit status: 0 success, 1 the operation failed, 2 the invocation was wrong.
+\n        `remote search` finding nothing is 0; an item it could not read is 1."
 )]
 pub struct Cli {
     /// `json` prints results for a program to read: one object, or for a command that streams one object on each line; a

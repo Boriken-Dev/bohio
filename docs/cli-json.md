@@ -4,8 +4,9 @@
 person reads. The flag is global: `bohio remote HOST stats --format json` and `bohio --format json remote HOST stats` are the same. There is
 no other format switch.
 
-Exit statuses do not change with `--format json`: `0` success, `1` the operation failed, `2` the invocation was wrong (and, for
-`search`, `1` for no match and `2` for something that could not be read; `which` is `1` when a name was not found).
+Exit statuses do not change with `--format json`: `0` success, `1` the operation failed, `2` the invocation was wrong. `search`
+finding nothing is `0` (the `done` event's `matches` is `0`) and a file or directory it could not read is `1`; `which` is `1` when a name was
+not found.
 
 One command does not follow the flag: `remote console` is a terminal, so its bytes are its payload. Everything else on this page
 does what it says.

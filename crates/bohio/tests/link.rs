@@ -2240,9 +2240,20 @@ fn the_command_searches_globs_and_reports_the_host_with_no_exec_granted() {
     );
     assert_eq!(folded.code, Some(0), "{}", folded.stderr);
     assert_eq!(folded.stdout.lines().count(), 1);
-    // No match is exit 1 and a request the host refuses is an error.
+    // No match is success, the zero visible in the counts, and a request the host refuses is an error.
     let none = remote(&client, &host, &["search", "absent", &root_text]);
-    assert_eq!(none.code, Some(1), "{}", none.stderr);
+    assert_eq!(none.code, Some(0), "{}", none.stderr);
+    assert!(none.stdout.is_empty(), "{}", none.stdout);
+    let none_json = remote(
+        &client,
+        &host,
+        &["search", "--format", "json", "absent", &root_text],
+    );
+    assert_eq!(none_json.code, Some(0), "{}", none_json.stderr);
+    let last: serde_json::Value =
+        serde_json::from_str(none_json.stdout.lines().last().unwrap()).unwrap();
+    assert_eq!(last["event"], "done");
+    assert_eq!(last["matches"], 0, "{}", none_json.stdout);
     let bad = remote(&client, &host, &["search", "(", &root_text]);
     assert_eq!(bad.code, Some(1), "{}", bad.stdout);
     assert!(bad.stderr.contains("refused"), "{}", bad.stderr);
@@ -2305,6 +2316,64 @@ fn the_command_searches_globs_and_reports_the_host_with_no_exec_granted() {
     let denied = remote(&reader, &host, &["stats"]);
     assert_eq!(denied.code, Some(1), "{}", denied.stdout);
     assert!(denied.stderr.contains("info"), "{}", denied.stderr);
+}
+
+/// A file the host cannot read fails the search (exit 1) while the matches it did find are still printed; a search
+/// that matches nothing is exit 0.
+#[cfg(unix)]
+#[test]
+fn a_search_that_could_not_read_a_file_exits_1_and_one_that_found_nothing_exits_0() {
+    use std::os::unix::fs::PermissionsExt;
+    let world = World::new("");
+    let root = world.path("files");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("open.txt"),
+        "a needle
+",
+    )
+    .unwrap();
+    let locked = root.join("locked.txt");
+    std::fs::write(
+        &locked,
+        "a needle
+",
+    )
+    .unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    // A superuser reads it anyway, and then there is nothing to fail.
+    let unreadable = std::fs::read(&locked).is_err();
+    let host = world.serve("warn");
+    let root_text = root.to_string_lossy().into_owned();
+    let client = approved(
+        &world,
+        "searcher",
+        &["--allow", "info,fs.read", "--fs-root", &root_text],
+    );
+    let found = remote(&client, &host, &["search", "needle", &root_text]);
+    let nothing = remote(&client, &host, &["search", "absent", &root_text]);
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(
+        found.stdout.contains("open.txt:1:a needle"),
+        "{}",
+        found.stdout
+    );
+    if unreadable {
+        assert_eq!(found.code, Some(1), "{}", found.stderr);
+        assert!(found.stderr.contains("locked.txt"), "{}", found.stderr);
+        assert_eq!(nothing.code, Some(1), "{}", nothing.stderr);
+    } else {
+        assert_eq!(found.code, Some(0), "{}", found.stderr);
+        assert_eq!(nothing.code, Some(0), "{}", nothing.stderr);
+    }
+    let clean = remote(
+        &client,
+        &host,
+        &["search", "absent", &format!("{root_text}/open.txt")],
+    );
+    assert_eq!(clean.code, Some(0), "{}", clean.stderr);
+    let wrong = remote(&client, &host, &["search"]);
+    assert_eq!(wrong.code, Some(2), "{}", wrong.stderr);
 }
 
 #[test]

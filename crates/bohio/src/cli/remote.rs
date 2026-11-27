@@ -1938,7 +1938,8 @@ fn joined(base: &str, path: &str) -> String {
     }
 }
 
-/// `bohio remote ... search`: the matching lines of files, found on the host.
+/// `bohio remote ... search`: the matching lines of files, found on the host. No match is success (the host's counts say
+/// so, in the `done` event); a file or directory it could not read is exit 1.
 fn search_command(
     link: &dyn Open,
     args: &RemoteSearchArgs,
@@ -1966,11 +1967,9 @@ fn search_command(
     .map_err(|error| explain(&error))?;
     let mut out = std::io::stdout().lock();
     let mut failed = false;
-    let mut found = 0_u64;
     for item in iter.by_ref() {
         match item.map_err(|error| explain(&error))? {
             bohio_client::search::SearchItem::Match(hit) => {
-                found += 1;
                 let base = roots
                     .get(usize::try_from(hit.root).unwrap_or(usize::MAX))
                     .copied()
@@ -2011,8 +2010,6 @@ fn search_command(
         }
     }
     Ok(if failed {
-        ExitCode::from(2)
-    } else if found == 0 {
         ExitCode::from(1)
     } else {
         ExitCode::SUCCESS
