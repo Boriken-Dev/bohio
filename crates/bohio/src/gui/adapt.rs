@@ -48,6 +48,9 @@ pub(crate) struct Adapter {
 /// How much of a new acknowledgement delay the average takes.
 const WEIGHT: f64 = 0.3;
 
+/// The most times the rate halves: a shift of a `u32` by more would overflow, and 2^30 is far below any rate's floor.
+const MAX_HALVINGS: u32 = 30;
+
 impl Adapter {
     /// A ladder over `config`'s settings for a watch asking `fps` updates a second. With `steps` false (a lossless watch)
     /// only the rate comes down: quality and size are what the client asked for.
@@ -64,7 +67,9 @@ impl Adapter {
         let base_fps = f64::from(fps.max(1));
         let min_fps = f64::from(config.min_fps).min(base_fps);
         let mut halvings = 0_u32;
-        while base_fps / f64::from(1_u32 << halvings.min(30)) > min_fps && halvings < 30 {
+        while base_fps / f64::from(1_u32 << halvings.min(MAX_HALVINGS)) > min_fps
+            && halvings < MAX_HALVINGS
+        {
             halvings += 1;
         }
         Self {
@@ -109,7 +114,7 @@ impl Adapter {
             (None, Some(last)) if self.level > in_steps => (Some(last.quality), last.scale),
             _ => (None, 1.0),
         };
-        let fps = (self.base_fps / f64::from(1_u32 << beyond.min(30))).max(self.min_fps);
+        let fps = (self.base_fps / f64::from(1_u32 << beyond.min(MAX_HALVINGS))).max(self.min_fps);
         Quality { jpeg, scale, fps }
     }
 

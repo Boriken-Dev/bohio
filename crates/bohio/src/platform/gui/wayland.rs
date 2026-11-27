@@ -808,8 +808,16 @@ struct StreamData {
     info: VideoInfoRaw,
 }
 
-/// The format a stream is asked for: any of the offered layouts, any size. No modifier is named, so the buffers are
-/// memory the process can map, never a GPU handle.
+/// The largest width or height, in pixels, the stream's format names: PipeWire negotiates a size inside a range, and a
+/// monitor larger than this on a side is not offered. The host's `max_snapshot_pixels` bounds what is captured of it.
+const MAX_STREAM_SIDE: u32 = 16_384;
+
+/// The frame rate the stream's format names as its default, and the highest it accepts, in frames a second.
+const STREAM_FPS_DEFAULT: u32 = 30;
+const STREAM_FPS_MOST: u32 = 1000;
+
+/// The format a stream is asked for: any of the offered layouts, any size from one pixel to [`MAX_STREAM_SIDE`] a side. No
+/// modifier is named, so the buffers are memory the process can map, never a GPU handle.
 fn format_param() -> Result<Vec<u8>, String> {
     let formats = offered();
     let object = spa::pod::object!(
@@ -856,8 +864,8 @@ fn format_param() -> Result<Vec<u8>, String> {
                 height: 1
             },
             spa::utils::Rectangle {
-                width: 16384,
-                height: 16384
+                width: MAX_STREAM_SIDE,
+                height: MAX_STREAM_SIDE
             }
         ),
         spa::pod::property!(
@@ -865,10 +873,13 @@ fn format_param() -> Result<Vec<u8>, String> {
             Choice,
             Range,
             Fraction,
-            spa::utils::Fraction { num: 30, denom: 1 },
+            spa::utils::Fraction {
+                num: STREAM_FPS_DEFAULT,
+                denom: 1
+            },
             spa::utils::Fraction { num: 0, denom: 1 },
             spa::utils::Fraction {
-                num: 1000,
+                num: STREAM_FPS_MOST,
                 denom: 1
             }
         ),

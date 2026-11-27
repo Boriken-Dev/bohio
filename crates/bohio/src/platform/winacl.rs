@@ -225,6 +225,13 @@ pub(crate) fn read(path: &Path) -> Result<Acl, String> {
     Ok(listed)
 }
 
+/// The first wait before `ReplaceFileW` is tried again after a refusal; each wait after it doubles.
+const REPLACE_RETRY_FIRST: std::time::Duration = std::time::Duration::from_millis(2);
+
+/// The longest wait that is still followed by another try: the retries end after the wait that passes it, about a second
+/// in all, since a scanner or another handle holds a file for a moment, not for good.
+const REPLACE_RETRY_LONGEST: std::time::Duration = std::time::Duration::from_millis(512);
+
 /// Puts `replacement` over `replaced`, atomically, and leaves `replaced`'s own access list, attributes and identity
 /// on the result (`ReplaceFileW`): a file narrowed below its folder stays narrowed.
 ///
@@ -233,7 +240,7 @@ pub(crate) fn read(path: &Path) -> Result<Acl, String> {
 /// The operating system's error; `replacement` is left where it was then.
 pub(crate) fn replace_keeping_access(replaced: &Path, replacement: &Path) -> io::Result<()> {
     let (replaced, replacement) = (wide(replaced), wide(replacement));
-    let mut wait = std::time::Duration::from_millis(2);
+    let mut wait = REPLACE_RETRY_FIRST;
     loop {
         // SAFETY: both names are NUL-terminated; the backup name and the two reserved pointers are null.
         let done = unsafe {
@@ -251,9 +258,7 @@ pub(crate) fn replace_keeping_access(replaced: &Path, replacement: &Path) -> io:
         }
         let error = io::Error::last_os_error();
         // A scanner or another handle may hold the file for a moment: wait a little, as `rename` is retried.
-        if error.kind() == io::ErrorKind::PermissionDenied
-            && wait <= std::time::Duration::from_millis(512)
-        {
+        if error.kind() == io::ErrorKind::PermissionDenied && wait <= REPLACE_RETRY_LONGEST {
             std::thread::sleep(wait);
             wait *= 2;
             continue;

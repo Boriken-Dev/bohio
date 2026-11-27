@@ -23,6 +23,9 @@ use crate::node::Node;
 /// How long one read of the process waits before it looks at the stop flag again.
 const POLL_MS: u64 = 200;
 
+/// How often the wait before a helper is started again looks at the stop flag.
+const RETRY_POLL: Duration = Duration::from_millis(100);
+
 /// A helper to run: the exec source that reaches the machine, and the command that starts the helper there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecHelper {
@@ -252,7 +255,7 @@ impl Node {
                         }
                         let until = std::time::Instant::now() + retry;
                         while !stop.load(Ordering::SeqCst) && std::time::Instant::now() < until {
-                            thread::sleep(Duration::from_millis(100));
+                            thread::sleep(RETRY_POLL);
                         }
                     }
                 });
