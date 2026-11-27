@@ -9,6 +9,8 @@
 //! and the tools' [`Settings`], and the stream a client speaks on. The `bohio mcp` command does the same with standard input
 //! and output, resolving each `--host` the way `bohio remote` does.
 
+#![forbid(unsafe_code)]
+
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
