@@ -201,37 +201,60 @@ impl Stream<'_> {
         let quality = watch.adapter.quality();
         let interval = Duration::from_secs_f64(1.0 / quality.fps.min(f64::from(watch.fps)));
         watch.next_due = now + interval;
-        let state = &self.last_state;
-        if !state.active {
+        if !self.last_state.active {
             // The session is not at the screen: nothing to show until it returns.
             return Ok(true);
         }
-        let display = state
-            .displays
-            .iter()
-            .find(|display| display.id == watch.display)
-            .ok_or_else(|| ErrorBody::new(ErrorCode::NotFound, "the display is gone"))?
-            .clone();
-        let region = watch
-            .region
-            .unwrap_or_else(|| Rect::new(0, 0, display.width, display.height));
-        if !region.fits(display.width, display.height) {
-            return Err(bad("the region is no longer inside the display"));
-        }
-        let asked = watch.region;
-        let (display_id, mode) = (display.id.clone(), watch.mode);
-        let captured = {
-            let desktop = self.desktop;
-            self.context
-                .state
-                .call(|| desktop.capture(&display_id, asked))?
+        // A display that changed size since the last state poll is found by the capture: read the state again and take
+        // the new size as the shape of the next frame. Only a display that still disagrees is an error.
+        let mut refreshed = false;
+        let (display_id, mode, region, captured) = loop {
+            let Some(watch) = self.watch.as_ref() else {
+                return Ok(true);
+            };
+            let display = self
+                .last_state
+                .displays
+                .iter()
+                .find(|display| display.id == watch.display)
+                .ok_or_else(|| ErrorBody::new(ErrorCode::NotFound, "the display is gone"))?
+                .clone();
+            let region = watch
+                .region
+                .unwrap_or_else(|| Rect::new(0, 0, display.width, display.height));
+            let (asked, mode) = (watch.region, watch.mode);
+            let captured = if region.fits(display.width, display.height) {
+                let desktop = self.desktop;
+                let id = display.id.clone();
+                Some(self.context.state.call(|| desktop.capture(&id, asked)))
+            } else {
+                None
+            };
+            match captured {
+                Some(Ok(captured))
+                    if (captured.width(), captured.height()) == (region.width, region.height) =>
+                {
+                    break (display.id, mode, region, captured);
+                }
+                _ if !refreshed => {
+                    refreshed = true;
+                    if !self.poll_state() {
+                        return Ok(false);
+                    }
+                    if !self.last_state.active {
+                        return Ok(true);
+                    }
+                }
+                Some(Ok(_)) => {
+                    return Err(ErrorBody::new(
+                        ErrorCode::Internal,
+                        "the desktop returned a picture of another size",
+                    ));
+                }
+                Some(Err(error)) => return Err(error.into()),
+                None => return Err(bad("the region is no longer inside the display")),
+            }
         };
-        if (captured.width(), captured.height()) != (region.width, region.height) {
-            return Err(ErrorBody::new(
-                ErrorCode::Internal,
-                "the desktop returned a picture of another size",
-            ));
-        }
         let Some(watch) = self.watch.as_mut() else {
             return Ok(true);
         };

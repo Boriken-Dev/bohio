@@ -909,3 +909,23 @@ fn a_slow_link_steps_the_ladder_down_and_a_fast_one_does_not() {
     let worst = slow.ack_ms.iter().max().copied().unwrap_or(0);
     assert!(worst < 10_000, "{slow:?}");
 }
+
+#[test]
+fn a_display_that_changes_size_between_state_polls_reshapes_the_watch() {
+    // The state is polled far less often than the watch captures, so the capture finds the new size first.
+    let gui_config = GuiConfig {
+        state_interval: Span(Duration::from_secs(600)),
+        ..config()
+    };
+    let world = world(gui_config, viewer());
+    let gui = open(&world, &[Want::View]);
+    gui.watch(&lossless(15)).unwrap();
+    let (first, _) = update(&gui, Duration::from_secs(10)).expect("a key frame");
+    assert!(first.key);
+    world.desktop.resize(0, 200, 120);
+    let (second, _) = update(&gui, Duration::from_secs(10)).expect("a key frame of the new size");
+    assert!(second.key);
+    let part = second.rects[0];
+    assert_eq!((part.x, part.y, part.width, part.height), (0, 0, 200, 120));
+    gui.unwatch().unwrap();
+}

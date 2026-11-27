@@ -106,6 +106,20 @@ impl Painted {
         }
     }
 
+    /// Gives a display a new size, filled with the starting pattern.
+    pub fn resize(&self, display: usize, width: u32, height: u32) {
+        let mut inner = self.lock();
+        let screen = &mut inner.screens[display];
+        screen.width = width;
+        screen.height = height;
+        screen.rgb.clear();
+        for y in 0..height {
+            for x in 0..width {
+                screen.rgb.extend_from_slice(&pattern(display as u32, x, y));
+            }
+        }
+    }
+
     /// Every input event the desktop took, as text: `press:leftx1@0:5,6`, `key:enter:click`, `text:abc`.
     pub fn log(&self) -> Vec<String> {
         self.lock().log.clone()
