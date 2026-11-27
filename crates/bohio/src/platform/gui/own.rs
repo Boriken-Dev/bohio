@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 /// Which kind of desktop the account's units run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum OwnSession {
     /// A Wayland compositor and the desktop portals: a view of every output, input where the portal has it.
     Wayland,
@@ -30,6 +31,47 @@ impl OwnSession {
             _ => None,
         }
     }
+}
+
+/// Why a runtime directory is not the account's own.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum RuntimeDirError {
+    /// The directory cannot be read: the account's user manager is not running.
+    #[error(
+        "the runtime directory {} cannot be read ({reason}): the account's user manager is not running, enable lingering for it with `loginctl enable-linger`",
+        dir.display()
+    )]
+    Unreadable {
+        /// The directory.
+        dir: PathBuf,
+        /// The operating system's error.
+        reason: String,
+    },
+    /// The path is a link, or not a directory.
+    #[error("{} is not a directory of the account's own", dir.display())]
+    NotADirectory {
+        /// The directory.
+        dir: PathBuf,
+    },
+    /// Another account owns it.
+    #[error("{} belongs to uid {owner}, not to the node's uid {uid}", dir.display())]
+    WrongOwner {
+        /// The directory.
+        dir: PathBuf,
+        /// Its owner's uid.
+        owner: u32,
+        /// The uid it should belong to.
+        uid: u32,
+    },
+    /// Others can enter it.
+    #[error("{} has mode {mode:04o}, not 0700: other accounts could reach the desktop", dir.display())]
+    WrongMode {
+        /// The directory.
+        dir: PathBuf,
+        /// Its permission bits.
+        mode: u32,
+    },
 }
 
 /// The user id this process runs as, as the kernel reports it for the process itself.
@@ -58,38 +100,34 @@ pub fn display(uid: u32) -> String {
 ///
 /// # Errors
 ///
-/// The text to report when it is not. With `check_owner` false (`own_runtime_dir_check = false`) only the link and directory
-/// test is made.
-pub fn check_runtime_dir(dir: &Path, uid: u32, check_owner: bool) -> Result<(), String> {
-    let found = std::fs::symlink_metadata(dir).map_err(|error| {
-        format!(
-            "the runtime directory {} cannot be read ({error}): the account's user manager is not running, enable \
-             lingering for it with `loginctl enable-linger`",
-            dir.display()
-        )
+/// [`RuntimeDirError`] says why it is not. With `check_owner` false (`own_runtime_dir_check = false`) only the link and
+/// directory test is made.
+pub fn check_runtime_dir(dir: &Path, uid: u32, check_owner: bool) -> Result<(), RuntimeDirError> {
+    let found = std::fs::symlink_metadata(dir).map_err(|error| RuntimeDirError::Unreadable {
+        dir: dir.to_owned(),
+        reason: error.to_string(),
     })?;
     if found.file_type().is_symlink() || !found.is_dir() {
-        return Err(format!(
-            "{} is not a directory of the account's own",
-            dir.display()
-        ));
+        return Err(RuntimeDirError::NotADirectory {
+            dir: dir.to_owned(),
+        });
     }
     if !check_owner {
         return Ok(());
     }
     if found.uid() != uid {
-        return Err(format!(
-            "{} belongs to uid {}, not to the node's uid {uid}",
-            dir.display(),
-            found.uid()
-        ));
+        return Err(RuntimeDirError::WrongOwner {
+            dir: dir.to_owned(),
+            owner: found.uid(),
+            uid,
+        });
     }
     let mode = found.mode() & 0o7777;
     if mode != 0o700 {
-        return Err(format!(
-            "{} has mode {mode:04o}, not 0700: other accounts could reach the desktop",
-            dir.display()
-        ));
+        return Err(RuntimeDirError::WrongMode {
+            dir: dir.to_owned(),
+            mode,
+        });
     }
     Ok(())
 }
@@ -146,11 +184,7 @@ impl bohio_x11::Connector for OwnServer {
                 ),
             ));
         }
-        Ok(bohio_x11::Wire {
-            stream: stream.into(),
-            auth_name: Vec::new(),
-            auth_data: Vec::new(),
-        })
+        Ok(bohio_x11::Wire::new(stream.into(), Vec::new(), Vec::new()))
     }
 }
 
@@ -226,7 +260,9 @@ mod tests {
         let uid = own_uid().expect("a uid");
         for mode in [0o755, 0o710, 0o770, 0o777, 0o500] {
             let dir = temporary(mode);
-            let refused = check_runtime_dir(dir.path(), uid, true).unwrap_err();
+            let refused = check_runtime_dir(dir.path(), uid, true)
+                .unwrap_err()
+                .to_string();
             assert!(
                 refused.contains(&dir.path().display().to_string()),
                 "{refused}"
@@ -239,7 +275,9 @@ mod tests {
     fn a_directory_of_another_uid_is_refused_naming_it() {
         let uid = own_uid().expect("a uid");
         let dir = temporary(0o700);
-        let refused = check_runtime_dir(dir.path(), uid.wrapping_add(1), true).unwrap_err();
+        let refused = check_runtime_dir(dir.path(), uid.wrapping_add(1), true)
+            .unwrap_err()
+            .to_string();
         assert!(
             refused.contains(&dir.path().display().to_string()),
             "{refused}"
@@ -268,10 +306,12 @@ mod tests {
         let dir = temporary(0o700);
         let link = dir.path().join("link");
         std::os::unix::fs::symlink(dir.path(), &link).expect("a link");
-        let refused = check_runtime_dir(&link, uid, true).unwrap_err();
+        let refused = check_runtime_dir(&link, uid, true).unwrap_err().to_string();
         assert!(refused.contains(&link.display().to_string()), "{refused}");
         let missing = dir.path().join("missing");
-        let refused = check_runtime_dir(&missing, uid, true).unwrap_err();
+        let refused = check_runtime_dir(&missing, uid, true)
+            .unwrap_err()
+            .to_string();
         assert!(
             refused.contains(&missing.display().to_string()),
             "{refused}"

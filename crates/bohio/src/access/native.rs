@@ -348,26 +348,26 @@ impl NativeSettings {
     #[cfg(target_os = "linux")]
     fn x11_plain(&self) -> crate::gui::X11Settings {
         let span = |text: &str| Span::parse(text).map_or(Duration::ZERO, |span| span.0);
-        crate::gui::X11Settings {
-            display: self
-                .x11_display
-                .clone()
-                .filter(|display| !display.is_empty()),
-            wayland: self
-                .x11_wayland
-                .as_ref()
-                .is_some_and(|word| !word.is_empty()),
-            in_wayland: self.x11_in_wayland,
-            session: self.x11_session.clone().filter(|id| !id.is_empty()),
-            system_bus: self.x11_system_bus.clone().filter(|bus| !bus.is_empty()),
-            bus_wait: span(&self.x11_bus_wait),
-            key_wait: span(&self.x11_key_wait),
-            clipboard_wait: span(&self.x11_clipboard_wait),
-            clipboard_max_bytes: usize::try_from(self.clipboard_max_bytes).unwrap_or(usize::MAX),
-            selection: self.x11_selection.clone(),
-            max_repeat: u32::try_from(self.x11_max_repeat).unwrap_or(u32::MAX),
-            ..crate::gui::X11Settings::default()
-        }
+        let mut settings = crate::gui::X11Settings::default();
+        settings.display = self
+            .x11_display
+            .clone()
+            .filter(|display| !display.is_empty());
+        settings.wayland = self
+            .x11_wayland
+            .as_ref()
+            .is_some_and(|word| !word.is_empty());
+        settings.in_wayland = self.x11_in_wayland;
+        settings.session = self.x11_session.clone().filter(|id| !id.is_empty());
+        settings.system_bus = self.x11_system_bus.clone().filter(|bus| !bus.is_empty());
+        settings.bus_wait = span(&self.x11_bus_wait);
+        settings.key_wait = span(&self.x11_key_wait);
+        settings.clipboard_wait = span(&self.x11_clipboard_wait);
+        settings.clipboard_max_bytes =
+            usize::try_from(self.clipboard_max_bytes).unwrap_or(usize::MAX);
+        settings.selection = self.x11_selection.clone();
+        settings.max_repeat = u32::try_from(self.x11_max_repeat).unwrap_or(u32::MAX);
+        settings
     }
 
     /// Whether this node's session is a Wayland one and the file does not ask for its X11 windows only.

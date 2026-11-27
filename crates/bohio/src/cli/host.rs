@@ -366,7 +366,7 @@ pub(super) fn serve_endpoints(
         }
     }
     let exec_helpers = crate::gui::helper_exec::ExecHelper::list(&config.gui)
-        .map_err(|(key, why)| format!("{key}: {why}"))?;
+        .map_err(|error| error.to_string())?;
     tracing::info!(host = %server.host(), "serving");
     thread::scope(|scope| {
         let handles: Vec<_> = listeners

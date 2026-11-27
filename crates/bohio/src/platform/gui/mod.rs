@@ -41,7 +41,7 @@ mod windows_capture;
 pub use self::macos::{MacosDesktop, MacosSettings};
 #[cfg(target_os = "linux")]
 pub use self::own::{
-    OwnServer, OwnSession, check_runtime_dir, display as own_display, own_uid,
+    OwnServer, OwnSession, RuntimeDirError, check_runtime_dir, display as own_display, own_uid,
     runtime_dir as own_runtime_dir,
 };
 #[cfg(all(target_os = "linux", feature = "gui-wayland"))]

@@ -34,9 +34,10 @@ fn live(test: &str) -> bool {
 }
 
 fn desktop(capture: WindowsCapture) -> WindowsDesktop {
-    WindowsDesktop::new(WindowsSettings {
-        capture,
-        ..WindowsSettings::default()
+    WindowsDesktop::new({
+        let mut s = WindowsSettings::default();
+        s.capture = capture;
+        s
     })
 }
 
@@ -70,9 +71,10 @@ fn the_state_names_the_displays_and_the_session() {
 
 #[test]
 fn a_clipboard_text_over_the_limit_is_refused_before_the_clipboard_is_opened() {
-    let desktop = WindowsDesktop::new(WindowsSettings {
-        clipboard_max_bytes: 8,
-        ..WindowsSettings::default()
+    let desktop = WindowsDesktop::new({
+        let mut s = WindowsSettings::default();
+        s.clipboard_max_bytes = 8;
+        s
     });
     let error = desktop.set_clipboard_text("123456789").unwrap_err();
     assert_eq!(error.code, ErrorCode::BadRequest);

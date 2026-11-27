@@ -42,6 +42,7 @@ pub(crate) const WAYLAND_SESSION: &str = "this is a Wayland session: an X11 conn
 
 /// How the X11 backend runs; the `native` source builds it from `[source.native]` and the command's environment.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct X11Settings {
     /// The display to serve (`:0`); `None` is a node with no display, which reports itself unavailable.
     pub display: Option<String>,
@@ -108,6 +109,7 @@ impl Default for X11Settings {
 
 /// The connection to an X server a [`Connector`] hands over.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum WireStream {
     /// A TCP connection (the loopback of a tunnel).
     Tcp(std::net::TcpStream),
@@ -131,6 +133,7 @@ impl From<std::os::unix::net::UnixStream> for WireStream {
 
 /// The authorization an X server asked for, and the stream to it, for a display that is not reached by its name.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Wire {
     /// The connection to the X server, already open.
     pub stream: WireStream,
@@ -138,6 +141,18 @@ pub struct Wire {
     pub auth_name: Vec<u8>,
     /// The authorization data (the cookie), empty for none.
     pub auth_data: Vec<u8>,
+}
+
+impl Wire {
+    /// A connection to the X server and the authorization it asked for (empty names and data for none).
+    #[must_use]
+    pub fn new(stream: WireStream, auth_name: Vec<u8>, auth_data: Vec<u8>) -> Self {
+        Self {
+            stream,
+            auth_name,
+            auth_data,
+        }
+    }
 }
 
 /// How the backend reaches its X server when the display is not one this machine names: each call makes a new

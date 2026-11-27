@@ -144,9 +144,10 @@ fn server(test: &str) -> Option<Server> {
 }
 
 fn desktop(server: &Server) -> X11Desktop {
-    X11Desktop::new(X11Settings {
-        display: Some(server.display.clone()),
-        ..X11Settings::default()
+    X11Desktop::new({
+        let mut s = X11Settings::default();
+        s.display = Some(server.display.clone());
+        s
     })
 }
 
@@ -450,9 +451,10 @@ fn a_node_with_no_display_has_no_desktop_and_says_so() {
 
 #[test]
 fn a_display_that_is_not_there_is_unavailable_and_names_it() {
-    let desktop = X11Desktop::new(X11Settings {
-        display: Some(":97".to_owned()),
-        ..X11Settings::default()
+    let desktop = X11Desktop::new({
+        let mut s = X11Settings::default();
+        s.display = Some(":97".to_owned());
+        s
     });
     for error in [
         desktop.state().unwrap_err(),
@@ -470,21 +472,23 @@ fn a_display_that_is_not_there_is_unavailable_and_names_it() {
 
 #[test]
 fn a_wayland_session_is_refused_with_the_way_to_serve_its_x11_windows() {
-    let refused = X11Desktop::new(X11Settings {
-        display: Some(":97".to_owned()),
-        wayland: true,
-        ..X11Settings::default()
+    let refused = X11Desktop::new({
+        let mut s = X11Settings::default();
+        s.display = Some(":97".to_owned());
+        s.wayland = true;
+        s
     });
     let error = refused.state().unwrap_err();
     assert_eq!(error.code, ErrorCode::Unavailable);
     assert!(error.message.contains("Wayland"), "{error}");
     assert!(error.message.contains("x11_in_wayland"), "{error}");
     // Asked for, it goes on to the display (which is not there).
-    let allowed = X11Desktop::new(X11Settings {
-        display: Some(":97".to_owned()),
-        wayland: true,
-        in_wayland: true,
-        ..X11Settings::default()
+    let allowed = X11Desktop::new({
+        let mut s = X11Settings::default();
+        s.display = Some(":97".to_owned());
+        s.wayland = true;
+        s.in_wayland = true;
+        s
     });
     let error = allowed.state().unwrap_err();
     assert!(error.message.contains("cannot connect"), "{error}");
@@ -546,10 +550,11 @@ fn lock_detection_is_logind_or_nothing() {
         return;
     };
     // A system bus that is not there: no detection, an unknown lock state, and the screen is still served.
-    let without = X11Desktop::new(X11Settings {
-        display: Some(server.display.clone()),
-        system_bus: Some("unix:path=/nonexistent/bohio-test-bus".to_owned()),
-        ..X11Settings::default()
+    let without = X11Desktop::new({
+        let mut s = X11Settings::default();
+        s.display = Some(server.display.clone());
+        s.system_bus = Some("unix:path=/nonexistent/bohio-test-bus".to_owned());
+        s
     });
     assert!(!without.capabilities().lock_detection);
     let state = without.state().expect("a state without logind");
@@ -557,10 +562,11 @@ fn lock_detection_is_logind_or_nothing() {
     assert!(state.active && !state.displays.is_empty());
     // The standard bus: whichever it says, `info` and the state agree. A session id may be named for a shell that belongs to no
     // session (`BOHIO_TEST_X11_SESSION`).
-    let with = X11Desktop::new(X11Settings {
-        display: Some(server.display.clone()),
-        session: std::env::var("BOHIO_TEST_X11_SESSION").ok(),
-        ..X11Settings::default()
+    let with = X11Desktop::new({
+        let mut s = X11Settings::default();
+        s.display = Some(server.display.clone());
+        s.session = std::env::var("BOHIO_TEST_X11_SESSION").ok();
+        s
     });
     let detected = with.capabilities().lock_detection;
     let state = with.state().expect("a state");
@@ -803,11 +809,12 @@ fn a_clipboard_text_round_trips_through_a_selection_of_its_own() {
     };
     let name = format!("BOHIO_TEST_{}", std::process::id());
     let made = |selection: &str, max: usize| {
-        X11Desktop::new(X11Settings {
-            display: Some(server.display.clone()),
-            selection: selection.to_owned(),
-            clipboard_max_bytes: max,
-            ..X11Settings::default()
+        X11Desktop::new({
+            let mut s = X11Settings::default();
+            s.display = Some(server.display.clone());
+            s.selection = selection.to_owned();
+            s.clipboard_max_bytes = max;
+            s
         })
     };
     let desktop = made(&name, 1024);

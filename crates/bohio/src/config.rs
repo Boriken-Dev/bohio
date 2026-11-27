@@ -2534,8 +2534,8 @@ impl NodeConfig {
         if let Err((key, message)) = self.gui.validate() {
             return Err(invalid(key, message));
         }
-        if let Err((key, message)) = crate::gui::helper_exec::ExecHelper::list(&self.gui) {
-            return Err(invalid(key, &message));
+        if let Err(error) = crate::gui::helper_exec::ExecHelper::list(&self.gui) {
+            return Err(invalid(error.key(), error.reason()));
         }
         for (key, zero) in [
             ("power.max_streams", self.power.max_streams == 0),

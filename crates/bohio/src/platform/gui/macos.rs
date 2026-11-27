@@ -52,6 +52,7 @@ const USER_DECLINED: isize = -3801;
 
 /// How the macOS desktop behaves.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct MacosSettings {
     /// How long a capture waits for ScreenCaptureKit's answer before it gives up.
     pub capture_wait: Duration,
@@ -473,12 +474,11 @@ impl Desktop for MacosDesktop {
         if displays.is_empty() {
             return Err(GuiError::unavailable("no display is on"));
         }
-        Ok(DesktopState {
-            user: None,
-            active: judged.active,
-            locked: Some(judged.locked),
+        Ok(DesktopState::new(
+            judged.active,
+            Some(judged.locked),
             displays,
-        })
+        ))
     }
 
     fn capture(&self, display: &DisplayId, region: Option<Rect>) -> Result<Frame, GuiError> {
@@ -583,12 +583,7 @@ impl Desktop for MacosDesktop {
     fn capabilities(&self) -> Capabilities {
         let made = lock(&self.enigo).is_some();
         let input = made || self.with_enigo(|_| Ok(())).is_ok();
-        Capabilities {
-            backend: "macos".to_owned(),
-            input,
-            clipboard: true,
-            lock_detection: true,
-        }
+        Capabilities::new("macos", input, true, true)
     }
 }
 

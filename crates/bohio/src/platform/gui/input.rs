@@ -449,12 +449,7 @@ mod tests {
         ];
         let virtual_screen = Virtual::of(&displays).expect("two displays");
         (
-            DesktopState {
-                user: None,
-                active: true,
-                locked: Some(false),
-                displays,
-            },
+            DesktopState::new(true, Some(false), displays),
             virtual_screen,
         )
     }

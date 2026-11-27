@@ -45,12 +45,13 @@ impl Desktop for KindDesktop {
     fn state(&self) -> Result<DesktopState, GuiError> {
         self.live()?;
         let model = self.session.state().map_err(|error| gui_error(&error))?;
-        Ok(DesktopState {
-            user: model.user,
-            active: model.active,
-            locked: model.locked,
-            displays: model.displays.into_iter().map(display_of).collect(),
-        })
+        let mut state = DesktopState::new(
+            model.active,
+            model.locked,
+            model.displays.into_iter().map(display_of).collect(),
+        );
+        state.user = model.user;
+        Ok(state)
     }
 
     fn capture(&self, display: &DisplayId, region: Option<Rect>) -> Result<Frame, GuiError> {
@@ -110,12 +111,12 @@ impl Desktop for KindDesktop {
 
     fn capabilities(&self) -> Capabilities {
         match self.source.get().describe() {
-            Ok(info) => Capabilities {
-                input: !info.lacks(vocab::desktop::INPUT),
-                clipboard: !info.lacks(vocab::desktop::CLIPBOARD),
-                lock_detection: !info.lacks(vocab::desktop::LOCK_DETECTION),
-                backend: info.provider,
-            },
+            Ok(info) => Capabilities::new(
+                info.provider.clone(),
+                !info.lacks(vocab::desktop::INPUT),
+                !info.lacks(vocab::desktop::CLIPBOARD),
+                !info.lacks(vocab::desktop::LOCK_DETECTION),
+            ),
             Err(_) => Capabilities::default(),
         }
     }

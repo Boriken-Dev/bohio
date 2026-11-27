@@ -48,27 +48,61 @@ use crate::policy::{Grant, Permission};
 
 // ---------------------------------------------------------------------------------------------------------------- accounts
 
+/// Why a name is not an account of this machine.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum AccountError {
+    /// The text is empty.
+    #[error("an account is not empty")]
+    Empty,
+    /// The text looks like an identifier (a SID, a uid) and is not one.
+    #[error("`{account}` is not {kind}")]
+    Malformed {
+        /// The text given.
+        account: String,
+        /// What it should have been: `a SID` or `a uid`.
+        kind: &'static str,
+    },
+    /// The system could not be asked.
+    #[error("`{account}` cannot be looked up: {reason}")]
+    Lookup {
+        /// The text given.
+        account: String,
+        /// What went wrong.
+        reason: String,
+    },
+    /// The system does not know the name.
+    #[error("`{account}` is not an account of this machine")]
+    Unknown {
+        /// The text given.
+        account: String,
+    },
+}
+
 /// An account as the operating system names it: a SID on Windows, a decimal uid on Unix. `text` is that already, or a name.
 ///
 /// # Errors
 ///
-/// Why the name is not an account of this machine.
-pub fn resolve_account(text: &str) -> Result<String, String> {
+/// [`AccountError`]: the name is not an account of this machine.
+pub fn resolve_account(text: &str) -> Result<String, AccountError> {
     let text = text.trim();
     if text.is_empty() {
-        return Err("an account is not empty".to_owned());
+        return Err(AccountError::Empty);
     }
     resolve(text)
 }
 
 #[cfg(windows)]
-fn resolve(text: &str) -> Result<String, String> {
+fn resolve(text: &str) -> Result<String, AccountError> {
     if text.len() > 4 && text[..4].eq_ignore_ascii_case("S-1-") {
         let sid = text.to_ascii_uppercase();
         return if sid[2..].chars().all(|c| c.is_ascii_digit() || c == '-') {
             Ok(sid)
         } else {
-            Err(format!("`{text}` is not a SID"))
+            Err(AccountError::Malformed {
+                account: text.to_owned(),
+                kind: "a SID",
+            })
         };
     }
     // The three service accounts a node runs as, without asking the system.
@@ -98,25 +132,34 @@ fn resolve(text: &str) -> Result<String, String> {
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .output()
-        .map_err(|error| format!("`{text}` cannot be looked up: {error}"))?;
+        .map_err(|error| AccountError::Lookup {
+            account: text.to_owned(),
+            reason: error.to_string(),
+        })?;
     let answer = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     if output.status.success() && answer.starts_with("S-1-") {
         Ok(answer.to_ascii_uppercase())
     } else {
-        Err(format!("`{text}` is not an account of this machine"))
+        Err(AccountError::Unknown {
+            account: text.to_owned(),
+        })
     }
 }
 
 #[cfg(unix)]
-fn resolve(text: &str) -> Result<String, String> {
+fn resolve(text: &str) -> Result<String, AccountError> {
     if text.chars().all(|c| c.is_ascii_digit()) {
-        return text
-            .parse::<u32>()
-            .map(|uid| uid.to_string())
-            .map_err(|_| format!("`{text}` is not a uid"));
+        return text.parse::<u32>().map(|uid| uid.to_string()).map_err(|_| {
+            AccountError::Malformed {
+                account: text.to_owned(),
+                kind: "a uid",
+            }
+        });
     }
-    let passwd = std::fs::read_to_string("/etc/passwd")
-        .map_err(|error| format!("`{text}` cannot be looked up in /etc/passwd: {error}"))?;
+    let passwd = std::fs::read_to_string("/etc/passwd").map_err(|error| AccountError::Lookup {
+        account: text.to_owned(),
+        reason: format!("/etc/passwd: {error}"),
+    })?;
     passwd
         .lines()
         .filter_map(|line| {
@@ -126,7 +169,9 @@ fn resolve(text: &str) -> Result<String, String> {
             (name == text).then(|| uid.to_owned())
         })
         .next()
-        .ok_or_else(|| format!("`{text}` is not an account of this machine (use its uid for one /etc/passwd does not list)"))
+        .ok_or_else(|| AccountError::Unknown {
+            account: text.to_owned(),
+        })
 }
 
 /// Whether `user`, the account the operating system says is at the other end of a connection, is one of `accounts` (each as
@@ -143,8 +188,8 @@ pub fn admits(user: Option<&str>, accounts: &[String]) -> bool {
 ///
 /// # Errors
 ///
-/// The reason, with the account.
-pub fn resolve_accounts(accounts: &[String]) -> Result<Vec<String>, String> {
+/// [`AccountError`], naming the account.
+pub fn resolve_accounts(accounts: &[String]) -> Result<Vec<String>, AccountError> {
     accounts.iter().map(|text| resolve_account(text)).collect()
 }
 

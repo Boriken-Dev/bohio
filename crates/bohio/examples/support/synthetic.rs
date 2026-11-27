@@ -227,11 +227,10 @@ fn move_block(screen: &mut Screen, step: u32) {
 impl Desktop for Synthetic {
     fn state(&self) -> Result<DesktopState, GuiError> {
         let screen = self.lock();
-        Ok(DesktopState {
-            user: Some("synthetic".to_owned()),
-            active: true,
-            locked: Some(false),
-            displays: vec![Display {
+        Ok(DesktopState::new(
+            true,
+            Some(false),
+            vec![Display {
                 id: DisplayId::from("0"),
                 name: Some("synthetic".to_owned()),
                 primary: true,
@@ -242,7 +241,8 @@ impl Desktop for Synthetic {
                 scale: 1.0,
                 rotation: Some(0),
             }],
-        })
+        )
+        .with_user("synthetic"))
     }
 
     fn capture(&self, _: &DisplayId, region: Option<Rect>) -> Result<Frame, GuiError> {
@@ -277,11 +277,6 @@ impl Desktop for Synthetic {
     }
 
     fn capabilities(&self) -> Capabilities {
-        Capabilities {
-            backend: "synthetic".to_owned(),
-            input: false,
-            clipboard: false,
-            lock_detection: false,
-        }
+        Capabilities::new("synthetic", false, false, false)
     }
 }

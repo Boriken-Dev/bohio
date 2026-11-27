@@ -7,6 +7,7 @@ use bohio_proto::{ErrorBody, ErrorCode};
 /// clipboard content or path.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{message}")]
+#[non_exhaustive]
 pub struct GuiError {
     /// What kind of failure.
     pub code: ErrorCode,
@@ -57,6 +58,7 @@ impl From<GuiError> for ErrorBody {
 
 /// What the desktop is doing now.
 #[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
 pub struct DesktopState {
     /// The account that owns the session, when the backend knows; only a peer holding `gui.view` or `gui.input` is told.
     pub user: Option<String>,
@@ -69,6 +71,24 @@ pub struct DesktopState {
 }
 
 impl DesktopState {
+    /// A state of `displays`, with no account named.
+    #[must_use]
+    pub fn new(active: bool, locked: Option<bool>, displays: Vec<Display>) -> Self {
+        Self {
+            user: None,
+            active,
+            locked,
+            displays,
+        }
+    }
+
+    /// Names the account that owns the session.
+    #[must_use]
+    pub fn with_user(mut self, user: impl Into<String>) -> Self {
+        self.user = Some(user.into());
+        self
+    }
+
     /// The state the wire carries (no account).
     pub fn wire(&self) -> State {
         State {
@@ -144,6 +164,7 @@ impl Frame {
 
 /// What a desktop can do, as `info` reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Capabilities {
     /// The backend's name.
     pub backend: String,
@@ -153,6 +174,24 @@ pub struct Capabilities {
     pub clipboard: bool,
     /// The backend can tell a locked screen.
     pub lock_detection: bool,
+}
+
+impl Capabilities {
+    /// What a backend called `backend` can do.
+    #[must_use]
+    pub fn new(
+        backend: impl Into<String>,
+        input: bool,
+        clipboard: bool,
+        lock_detection: bool,
+    ) -> Self {
+        Self {
+            backend: backend.into(),
+            input,
+            clipboard,
+            lock_detection,
+        }
+    }
 }
 
 impl Default for Capabilities {

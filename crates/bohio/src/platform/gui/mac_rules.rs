@@ -563,13 +563,12 @@ mod tests {
 
     /// A retina main display and a plain one to its right, a second one above it at an offset.
     fn two() -> DesktopState {
-        DesktopState {
-            displays: displays_of(&[
-                raw(1, true, 0.0, 0.0, (1512.0, 982.0), (3024, 1964)),
-                raw(7, false, 1512.0, -300.0, (1920.0, 1080.0), (1920, 1080)),
-            ]),
-            ..DesktopState::default()
-        }
+        let mut state = DesktopState::default();
+        state.displays = displays_of(&[
+            raw(1, true, 0.0, 0.0, (1512.0, 982.0), (3024, 1964)),
+            raw(7, false, 1512.0, -300.0, (1920.0, 1080.0), (1920, 1080)),
+        ]);
+        state
     }
 
     #[test]

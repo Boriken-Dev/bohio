@@ -66,10 +66,11 @@ fn compositor(test: &str) -> Option<[u8; 3]> {
 }
 
 fn desktop() -> WaylandDesktop {
-    WaylandDesktop::new(WaylandSettings {
-        capture_wait: WAIT,
-        start_wait: WAIT,
-        ..WaylandSettings::default()
+    WaylandDesktop::new({
+        let mut s = WaylandSettings::default();
+        s.capture_wait = WAIT;
+        s.start_wait = WAIT;
+        s
     })
 }
 
@@ -228,11 +229,12 @@ fn the_portal_session_closes_after_idle_and_the_next_request_opens_it_again() {
     else {
         return;
     };
-    let desktop = WaylandDesktop::new(WaylandSettings {
-        capture_wait: WAIT,
-        start_wait: WAIT,
-        idle: Duration::from_secs(2),
-        ..WaylandSettings::default()
+    let desktop = WaylandDesktop::new({
+        let mut s = WaylandSettings::default();
+        s.capture_wait = WAIT;
+        s.start_wait = WAIT;
+        s.idle = Duration::from_secs(2);
+        s
     });
     let (_, rgb) = painted(&desktop, colour);
     assert_eq!(differences(&rgb, colour).0, 0);

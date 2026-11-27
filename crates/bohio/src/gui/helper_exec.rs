@@ -37,26 +37,51 @@ pub struct ExecHelper {
 /// What a command word names where the uploaded helper is.
 pub const HELPER_WORD: &str = "{helper}";
 
+/// A `[gui]` helper setting that cannot work: the key and what is wrong with it.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{key}: {reason}")]
+#[non_exhaustive]
+pub struct ExecHelperError {
+    key: &'static str,
+    reason: String,
+}
+
+impl ExecHelperError {
+    fn new(key: &'static str, reason: impl Into<String>) -> Self {
+        Self {
+            key,
+            reason: reason.into(),
+        }
+    }
+
+    /// The configuration key, as written in the file (`gui.source`).
+    #[must_use]
+    pub const fn key(&self) -> &'static str {
+        self.key
+    }
+
+    /// What is wrong with it.
+    #[must_use]
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+}
+
 impl ExecHelper {
     /// The helpers `[gui]` names: each `source` entry, with the upload `helper_upload` gives its source.
     ///
     /// # Errors
     ///
-    /// The key and what is wrong with it.
-    pub fn list(gui: &crate::config::GuiConfig) -> Result<Vec<Self>, (&'static str, String)> {
+    /// [`ExecHelperError`] names the key and what is wrong with it.
+    pub fn list(gui: &crate::config::GuiConfig) -> Result<Vec<Self>, ExecHelperError> {
         let mut helpers = Vec::new();
         for text in &gui.source {
-            helpers.push(Self::parse(text).map_err(|why| {
-                (
-                    "gui.source",
-                    format!("must be NAME, an exec source, or NAME=COMMAND with the command line that starts the helper: {why}"),
-                )
-            })?);
+            helpers.push(Self::parse(text)?);
         }
         let mut uploads = Vec::new();
         for text in &gui.helper_upload {
             let bad = |why: &str| {
-                (
+                ExecHelperError::new(
                     "gui.helper_upload",
                     format!("`{text}` must be SOURCE=DIRECTORY or SOURCE@FILES=DIRECTORY: {why}"),
                 )
@@ -85,7 +110,7 @@ impl ExecHelper {
         }
         for (source, _) in &uploads {
             if !helpers.iter().any(|helper| &helper.source == source) {
-                return Err((
+                return Err(ExecHelperError::new(
                     "gui.helper_upload",
                     format!("names the source `{source}`, which has no gui.source entry"),
                 ));
@@ -109,7 +134,7 @@ impl ExecHelper {
             let names_it = helper.command.iter().any(|word| word.contains(HELPER_WORD));
             match (names_it, helper.upload.is_some()) {
                 (true, false) => {
-                    return Err((
+                    return Err(ExecHelperError::new(
                         "gui.source",
                         format!(
                             "the command of `{}` names {HELPER_WORD} and gui.helper_upload puts nothing on that source",
@@ -118,7 +143,7 @@ impl ExecHelper {
                     ));
                 }
                 (false, true) => {
-                    return Err((
+                    return Err(ExecHelperError::new(
                         "gui.helper_upload",
                         format!(
                             "puts a helper on `{}` and its gui.source command never names {HELPER_WORD}",
@@ -137,21 +162,29 @@ impl ExecHelper {
     ///
     /// # Errors
     ///
-    /// Why the text is not one.
-    pub fn parse(text: &str) -> Result<Self, String> {
+    /// [`ExecHelperError`]: why the text is not one.
+    pub fn parse(text: &str) -> Result<Self, ExecHelperError> {
+        let bad = |why: String| {
+            ExecHelperError::new(
+                "gui.source",
+                format!(
+                    "must be NAME, an exec source, or NAME=COMMAND with the command line that starts the helper: {why}"
+                ),
+            )
+        };
         let (source, line) = match text.split_once('=') {
             Some((source, line)) => (source, Some(line)),
             None => (text, None),
         };
         let source = source.trim();
         if source.is_empty() {
-            return Err(format!("`{text}` names no source"));
+            return Err(bad(format!("`{text}` names no source")));
         }
         let command = match line {
             Some(line) => {
-                let words = bohio_client::dial::split_command(line)?;
+                let words = bohio_client::dial::split_command(line).map_err(bad)?;
                 if words.is_empty() {
-                    return Err(format!("`{text}` names no command"));
+                    return Err(bad(format!("`{text}` names no command")));
                 }
                 words
             }
@@ -236,7 +269,8 @@ impl Node {
         let argv = match &helper.upload {
             Some(upload) => {
                 let path =
-                    helper_upload::upload(&parts.state.sources, &helper.source, upload, stop)?;
+                    helper_upload::upload(&parts.state.sources, &helper.source, upload, stop)
+                        .map_err(|error| error.to_string())?;
                 helper
                     .command
                     .iter()
@@ -354,8 +388,9 @@ source_retry = \"3s\"",
 
     #[test]
     fn a_configuration_that_cannot_work_is_named_by_its_key() {
-        let key =
-            |exec: &[&str], upload: &[&str]| ExecHelper::list(&gui(exec, upload)).unwrap_err().0;
+        let key = |exec: &[&str], upload: &[&str]| {
+            ExecHelper::list(&gui(exec, upload)).unwrap_err().key()
+        };
         assert_eq!(key(&["a={helper} x"], &[]), "gui.source");
         assert_eq!(key(&["a=bohio x"], &["a=/d"]), "gui.helper_upload");
         assert_eq!(key(&["a={helper}"], &["b=/d"]), "gui.helper_upload");

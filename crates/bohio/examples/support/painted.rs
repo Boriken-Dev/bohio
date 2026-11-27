@@ -171,12 +171,7 @@ impl Desktop for Painted {
                 rotation: Some(0),
             })
             .collect();
-        Ok(DesktopState {
-            user: Some("painter".to_owned()),
-            active: inner.active,
-            locked: inner.locked,
-            displays,
-        })
+        Ok(DesktopState::new(inner.active, inner.locked, displays).with_user("painter"))
     }
 
     fn capture(&self, display: &DisplayId, region: Option<Rect>) -> Result<Frame, GuiError> {
@@ -271,11 +266,6 @@ impl Desktop for Painted {
     }
 
     fn capabilities(&self) -> Capabilities {
-        Capabilities {
-            backend: "painted".to_owned(),
-            input: true,
-            clipboard: true,
-            lock_detection: true,
-        }
+        Capabilities::new("painted", true, true, true)
     }
 }

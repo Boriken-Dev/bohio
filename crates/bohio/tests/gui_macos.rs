@@ -165,9 +165,10 @@ fn a_batch_with_a_point_off_its_display_is_refused_whole_and_nothing_is_posted()
 
 #[test]
 fn a_clipboard_text_over_the_limit_is_refused_before_the_pasteboard_is_opened() {
-    let desktop = MacosDesktop::new(MacosSettings {
-        clipboard_max_bytes: 8,
-        ..MacosSettings::default()
+    let desktop = MacosDesktop::new({
+        let mut s = MacosSettings::default();
+        s.clipboard_max_bytes = 8;
+        s
     });
     let error = desktop.set_clipboard_text("123456789").unwrap_err();
     assert_eq!(error.code, ErrorCode::BadRequest);

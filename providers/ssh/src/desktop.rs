@@ -39,18 +39,16 @@ impl std::fmt::Debug for Link {
 
 /// The desktop of `link`'s host display `display`.
 pub(crate) fn desktop(link: &Arc<Link>, display: u32) -> X11Desktop {
-    let settings = X11Settings {
-        display: Some(format!("{}:{display}", link.settings.host)),
-        // A display of another machine has no session of this node's to ask about, and nothing says whether it is locked:
-        // the engine's `input_when_lock_unknown` decides whether input goes to it.
-        lock_unknown: true,
-        connector: Some(Arc::new(Channels {
-            link: Arc::clone(link),
-            display,
-            cookie: Mutex::new(None),
-        })),
-        ..X11Settings::default()
-    };
+    let mut settings = X11Settings::default();
+    settings.display = Some(format!("{}:{display}", link.settings.host));
+    // A display of another machine has no session of this node's to ask about, and nothing says whether it is locked:
+    // the engine's `input_when_lock_unknown` decides whether input goes to it.
+    settings.lock_unknown = true;
+    settings.connector = Some(Arc::new(Channels {
+        link: Arc::clone(link),
+        display,
+        cookie: Mutex::new(None),
+    }));
     X11Desktop::new(settings)
 }
 
@@ -163,11 +161,7 @@ impl Connector for Channels {
             *lock(&self.cookie) = None;
         })?;
         let (auth_name, auth_data) = self.cookie().unwrap_or_default();
-        Ok(bohio_x11::Wire {
-            stream: stream.into(),
-            auth_name,
-            auth_data,
-        })
+        Ok(bohio_x11::Wire::new(stream.into(), auth_name, auth_data))
     }
 }
 

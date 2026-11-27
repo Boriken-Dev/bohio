@@ -54,6 +54,7 @@ const PENDING: &str = "the desktop portal is waiting for the person at the deskt
 
 /// Whether and how long the portal's approval is remembered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum Persist {
     /// The portal asks every time a session starts.
     None,
@@ -87,6 +88,7 @@ impl Persist {
 
 /// How the Wayland backend runs; the `native` source builds it from `[source.native]`.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct WaylandSettings {
     /// Whether the portal remembers its approval.
     pub persist: Persist,
@@ -1277,16 +1279,15 @@ impl Inner {
     }
 
     fn state_of(&self, live: &Live) -> DesktopState {
-        DesktopState {
-            user: None,
-            active: true,
-            locked: if self.settings.headless {
+        DesktopState::new(
+            true,
+            if self.settings.headless {
                 Some(false)
             } else {
                 self.logind.hints().map(|hints| hints.locked)
             },
-            displays: live.shown().into_iter().map(|each| each.display).collect(),
-        }
+            live.shown().into_iter().map(|each| each.display).collect(),
+        )
     }
 }
 
@@ -1456,12 +1457,12 @@ impl Desktop for WaylandDesktop {
                 })
             })
         });
-        Capabilities {
-            backend: "wayland".to_owned(),
+        Capabilities::new(
+            "wayland",
             input,
-            clipboard: false,
-            lock_detection: !self.inner.settings.headless && self.inner.logind.hints().is_some(),
-        }
+            false,
+            !self.inner.settings.headless && self.inner.logind.hints().is_some(),
+        )
     }
 }
 

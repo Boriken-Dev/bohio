@@ -83,6 +83,7 @@ const _: () = {
 
 /// How the Windows backend runs; the `native` source builds it from `[source.native]`.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct WindowsSettings {
     /// How the screen is captured.
     pub capture: WindowsCapture,
@@ -194,15 +195,16 @@ impl WindowsDesktop {
 
     fn state_of(facts: &Facts) -> Result<DesktopState, GuiError> {
         let judged = session::judge(facts)?;
-        Ok(DesktopState {
-            user: user_of(facts.session),
-            active: judged.active,
-            locked: Some(judged.locked),
-            displays: Self::monitors()
+        let mut state = DesktopState::new(
+            judged.active,
+            Some(judged.locked),
+            Self::monitors()
                 .into_iter()
                 .map(|monitor| monitor.display)
                 .collect(),
-        })
+        );
+        state.user = user_of(facts.session);
+        Ok(state)
     }
 
     /// The virtual screen: the system's own figures, else the displays' union.
@@ -390,12 +392,7 @@ impl Desktop for WindowsDesktop {
     }
 
     fn capabilities(&self) -> Capabilities {
-        Capabilities {
-            backend: "windows".to_owned(),
-            input: true,
-            clipboard: true,
-            lock_detection: true,
-        }
+        Capabilities::new("windows", true, true, true)
     }
 }
 

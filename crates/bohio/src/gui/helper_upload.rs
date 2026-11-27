@@ -48,6 +48,30 @@ pub struct Upload {
     pub sticky_dir: bool,
 }
 
+/// Why a helper was not put on a machine.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum UploadError {
+    /// The local file could not be read.
+    #[error("{0}")]
+    Unreadable(String),
+    /// The file is not an executable of a kind this knows.
+    #[error("{0}")]
+    NotExecutable(String),
+    /// The file is built for something other than what the machine runs.
+    #[error("{0}")]
+    PlatformMismatch(String),
+    /// A check the operator may weaken refused the upload; the message names the setting.
+    #[error("{0}")]
+    Refused(String),
+    /// The machine failed or answered something this cannot use.
+    #[error("{0}")]
+    Machine(String),
+    /// The node stopped while the upload ran.
+    #[error("stopped")]
+    Stopped,
+}
+
 /// The kind of executable a file is, and the processors it holds code for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Built {
@@ -84,8 +108,8 @@ fn arch_of_cpu(cpu: u32) -> Option<&'static str> {
 ///
 /// # Errors
 ///
-/// The file is not an ELF, Mach-O or PE executable of a processor this knows.
-pub fn built_for(head: &[u8]) -> Result<Built, String> {
+/// [`UploadError::NotExecutable`]: the file is not an ELF, Mach-O or PE executable of a processor this knows.
+pub fn built_for(head: &[u8]) -> Result<Built, UploadError> {
     let u16_at = |at: usize, big: bool| -> Option<u16> {
         let bytes: [u8; 2] = head.get(at..at + 2)?.try_into().ok()?;
         Some(if big {
@@ -102,8 +126,11 @@ pub fn built_for(head: &[u8]) -> Result<Built, String> {
             u32::from_le_bytes(bytes)
         })
     };
-    let unknown =
-        || "the file is not an executable of a kind this knows (ELF, Mach-O or PE)".to_owned();
+    let unknown = || {
+        UploadError::NotExecutable(
+            "the file is not an executable of a kind this knows (ELF, Mach-O or PE)".to_owned(),
+        )
+    };
     let (format, arch) = if head.starts_with(b"\x7fELF") {
         let big = head.get(5) == Some(&2);
         ("elf", u16_at(18, big).and_then(arch_of_machine))
@@ -139,8 +166,11 @@ pub fn built_for(head: &[u8]) -> Result<Built, String> {
     } else {
         return Err(unknown());
     };
-    let arch =
-        arch.ok_or_else(|| "the file is built for a processor this does not know".to_owned())?;
+    let arch = arch.ok_or_else(|| {
+        UploadError::NotExecutable(
+            "the file is built for a processor this does not know".to_owned(),
+        )
+    })?;
     Ok(Built {
         format,
         arches: vec![arch],
@@ -151,11 +181,14 @@ pub fn built_for(head: &[u8]) -> Result<Built, String> {
 ///
 /// # Errors
 ///
-/// The answer is not two words, or names a system or processor this does not know.
-pub fn machine_runs(answer: &str) -> Result<(&'static str, &'static str), String> {
+/// [`UploadError::Machine`]: the answer is not two words, or names a system or processor this does not know.
+pub fn machine_runs(answer: &str) -> Result<(&'static str, &'static str), UploadError> {
     let mut words = answer.split_whitespace();
     let (Some(system), Some(machine), None) = (words.next(), words.next(), words.next()) else {
-        return Err(format!("`uname -sm` answered `{}`", answer.trim()));
+        return Err(UploadError::Machine(format!(
+            "`uname -sm` answered `{}`",
+            answer.trim()
+        )));
     };
     let upper = system.to_ascii_uppercase();
     let format = if upper.starts_with("MINGW")
@@ -179,7 +212,9 @@ pub fn machine_runs(answer: &str) -> Result<(&'static str, &'static str), String
     {
         "elf"
     } else {
-        return Err(format!("the system `{system}` is not one this knows"));
+        return Err(UploadError::Machine(format!(
+            "the system `{system}` is not one this knows"
+        )));
     };
     let lower = machine.to_ascii_lowercase();
     let arch = match lower.as_str() {
@@ -190,7 +225,11 @@ pub fn machine_runs(answer: &str) -> Result<(&'static str, &'static str), String
         "ppc64" | "ppc64le" | "powerpc64" | "powerpc64le" => "ppc64",
         "s390x" => "s390x",
         other if other.starts_with("armv") || other == "arm" => "arm",
-        other => return Err(format!("the processor `{other}` is not one this knows")),
+        other => {
+            return Err(UploadError::Machine(format!(
+                "the processor `{other}` is not one this knows"
+            )));
+        }
     };
     Ok((format, arch))
 }
@@ -199,18 +238,19 @@ pub fn machine_runs(answer: &str) -> Result<(&'static str, &'static str), String
 ///
 /// # Errors
 ///
-/// What the file is built for and what the machine runs.
-pub fn check_platform(built: &Built, answer: &str) -> Result<(), String> {
+/// [`UploadError::PlatformMismatch`] says what the file is built for and what the machine runs; [`machine_runs`]'s error when
+/// the answer cannot be read.
+pub fn check_platform(built: &Built, answer: &str) -> Result<(), UploadError> {
     let (format, arch) = machine_runs(answer)?;
     if built.format == format && built.arches.contains(&arch) {
         return Ok(());
     }
-    Err(format!(
+    Err(UploadError::PlatformMismatch(format!(
         "the helper is a {} executable for {} and the machine runs {format} for {arch} (`uname -sm`: {})",
         built.format,
         built.arches.join(" or "),
         answer.trim()
-    ))
+    )))
 }
 
 /// Runs `argv` on the exec source and answers its standard output when it exits with status 0.
@@ -220,21 +260,23 @@ fn capture(
     argv: &[&str],
     stop: &AtomicBool,
     max: usize,
-) -> Result<String, String> {
-    let exec = sources.exec(Some(source)).map_err(|error| error.message)?;
+) -> Result<String, UploadError> {
+    let exec = sources
+        .exec(Some(source))
+        .map_err(|error| UploadError::Machine(error.message))?;
     let process: Object<dyn Process> = exec
         .get()
         .start(ExecStart {
             argv: argv.iter().map(|word| (*word).to_owned()).collect(),
             ..ExecStart::default()
         })
-        .map_err(|error| error.message().to_string())?;
+        .map_err(|error| UploadError::Machine(error.message().to_string()))?;
     let mut out = Vec::new();
     let mut buffer = [0_u8; 1024];
     loop {
         if stop.load(Ordering::SeqCst) {
             let _ = process.kill();
-            return Err("stopped".to_owned());
+            return Err(UploadError::Stopped);
         }
         match process.read(1, &mut buffer, POLL_MS) {
             Ok(0) => {}
@@ -242,29 +284,32 @@ fn capture(
                 out.extend_from_slice(&buffer[..usize::try_from(count).unwrap_or(0)]);
                 if out.len() > max {
                     let _ = process.kill();
-                    return Err(format!(
+                    return Err(UploadError::Machine(format!(
                         "`{}` answered with more than the {max} bytes `[gui] helper_upload_answer_max` allows",
                         argv.join(" ")
-                    ));
+                    )));
                 }
             }
             Ok(_) => break,
-            Err(error) => return Err(error.message().to_string()),
+            Err(error) => return Err(UploadError::Machine(error.message().to_string())),
         }
     }
     let exit = loop {
         if stop.load(Ordering::SeqCst) {
             let _ = process.kill();
-            return Err("stopped".to_owned());
+            return Err(UploadError::Stopped);
         }
         match process.wait(POLL_MS) {
             Ok(Some(exit)) => break exit,
             Ok(None) => {}
-            Err(error) => return Err(error.message().to_string()),
+            Err(error) => return Err(UploadError::Machine(error.message().to_string())),
         }
     };
     if exit.code != Some(0) {
-        return Err(format!("`{}` ended with {exit:?}", argv.join(" ")));
+        return Err(UploadError::Machine(format!(
+            "`{}` ended with {exit:?}",
+            argv.join(" ")
+        )));
     }
     Ok(String::from_utf8_lossy(&out).into_owned())
 }
@@ -299,9 +344,13 @@ fn text(error: &bohio_api::guatiao::library::ProviderError) -> String {
 }
 
 /// A system with no permission bits has nothing to set: that is not a failure.
-fn executable(done: Result<(), bohio_api::guatiao::library::ProviderError>) -> Result<(), String> {
+fn executable(
+    done: Result<(), bohio_api::guatiao::library::ProviderError>,
+) -> Result<(), UploadError> {
     match done {
-        Err(error) if failure_kind(&error) != Some(word::UNSUPPORTED) => Err(text(&error)),
+        Err(error) if failure_kind(&error) != Some(word::UNSUPPORTED) => {
+            Err(UploadError::Machine(text(&error)))
+        }
         _ => Ok(()),
     }
 }
@@ -312,21 +361,22 @@ fn executable(done: Result<(), bohio_api::guatiao::library::ProviderError>) -> R
 ///
 /// # Errors
 ///
-/// The platform does not match, the directory is not one the file may go to, the file is there and is not this one, or the
-/// machine failed.
+/// [`UploadError`]: the file cannot be read or is not an executable, the platform does not match, the directory is not one
+/// the file may go to, the file is there and is not this one, or the machine failed.
 pub fn upload(
     sources: &Sources,
     source: &str,
     upload: &Upload,
     stop: &AtomicBool,
-) -> Result<String, String> {
+) -> Result<String, UploadError> {
     let binary = match &upload.binary {
         Some(path) => path.clone(),
-        None => {
-            std::env::current_exe().map_err(|error| format!("this node's own file: {error}"))?
-        }
+        None => std::env::current_exe()
+            .map_err(|error| UploadError::Unreadable(format!("this node's own file: {error}")))?,
     };
-    let shown = |error: io::Error| format!("{}: {error}", Path::new(&binary).display());
+    let shown = |error: io::Error| {
+        UploadError::Unreadable(format!("{}: {error}", Path::new(&binary).display()))
+    };
     let mut local = LocalFile::open(&binary).map_err(shown)?;
     let mut head = vec![0_u8; HEAD];
     let mut got = 0;
@@ -338,7 +388,8 @@ pub fn upload(
         got += count;
     }
     head.truncate(got);
-    let built = built_for(&head).map_err(|why| format!("{}: {why}", binary.display()))?;
+    let built = built_for(&head)
+        .map_err(|why| UploadError::NotExecutable(format!("{}: {why}", binary.display())))?;
     if upload.check_platform {
         let answer = capture(sources, source, &["uname", "-sm"], stop, upload.answer_max)?;
         check_platform(&built, &answer)?;
@@ -358,29 +409,31 @@ pub fn upload(
 
     let files = sources
         .files(Some(upload.files.as_deref().unwrap_or(source)))
-        .map_err(|error| error.message)?;
+        .map_err(|error| UploadError::Machine(error.message))?;
     let dir: Object<dyn Directory> = files
         .get()
         .open_dir(&upload.dir)
-        .map_err(|error| format!("{}: {}", upload.dir, text(&error)))?;
-    let stat = dir.stat(".", true).map_err(|error| text(&error))?;
+        .map_err(|error| UploadError::Machine(format!("{}: {}", upload.dir, text(&error))))?;
+    let stat = dir
+        .stat(".", true)
+        .map_err(|error| UploadError::Machine(text(&error)))?;
     if !upload.shared_dir {
         match stat.mode {
             Some(mode) if mode & 0o022 != 0 => {
-                return Err(format!(
+                return Err(UploadError::Refused(format!(
                     "{} is writable by other accounts (mode {:o}): one of them could replace the helper before it runs; \
                      `[gui] helper_upload_shared_dir = true` accepts that",
                     upload.dir,
                     mode & 0o7777
-                ));
+                )));
             }
             Some(_) => {}
             None => {
-                return Err(format!(
+                return Err(UploadError::Refused(format!(
                     "the source does not say who may write {}: another account may be able to replace the helper before it \
                      runs; `[gui] helper_upload_shared_dir = true` accepts that",
                     upload.dir
-                ));
+                )));
             }
         }
     } else if let Some(mode) = stat.mode
@@ -388,11 +441,11 @@ pub fn upload(
         && mode & 0o1000 != 0
         && !upload.sticky_dir
     {
-        return Err(format!(
+        return Err(UploadError::Refused(format!(
             "{} is a sticky directory writable by other accounts (mode {:o}), such as a shared temporary directory:              `[gui] helper_upload_sticky_dir = true` accepts that",
             upload.dir,
             mode & 0o7777
-        ));
+        )));
     }
     for (weakened, key) in [
         (upload.overwrite, "helper_upload_overwrite"),
@@ -420,7 +473,7 @@ pub fn upload(
                             ..OpenModel::default()
                         },
                     )
-                    .map_err(|error| text(&error))?;
+                    .map_err(|error| UploadError::Machine(text(&error)))?;
                 sha256(&mut Remote { file: &file, at: 0 }).is_ok_and(|theirs| theirs == digest)
             };
             if same {
@@ -428,15 +481,15 @@ pub fn upload(
                 return Ok(format!("{}/{name}", upload.dir.trim_end_matches('/')));
             }
             if !upload.overwrite {
-                return Err(format!(
+                return Err(UploadError::Refused(format!(
                     "{}/{name} exists and is not this helper; `[gui] helper_upload_overwrite = true` replaces it",
                     upload.dir
-                ));
+                )));
             }
             replacing = true;
         }
         Err(error) if failure_kind(&error) == Some(word::NOT_FOUND) => {}
-        Err(error) => return Err(text(&error)),
+        Err(error) => return Err(UploadError::Machine(text(&error))),
     }
 
     // A stale `.part` is removed by name (a link there is removed, never followed), and the new one is made with
@@ -452,7 +505,7 @@ pub fn upload(
                 ..OpenModel::default()
             },
         )
-        .map_err(|error| text(&error))?;
+        .map_err(|error| UploadError::Machine(text(&error)))?;
     // The file just made belongs to the account the source logs in as: the directory must too (or root), or its owner
     // can replace the helper before it runs.
     if !upload.shared_dir
@@ -463,18 +516,18 @@ pub fn upload(
     {
         drop(target);
         let _ = dir.remove_file(&part);
-        return Err(format!(
+        return Err(UploadError::Refused(format!(
             "{} is owned by another account: it could replace the helper before it runs; \
              `[gui] helper_upload_shared_dir = true` accepts that",
             upload.dir
-        ));
+        )));
     }
     let mut source_file = LocalFile::open(&binary).map_err(shown)?;
     let mut buffer = vec![0_u8; CHUNK];
     let mut at = 0_u64;
     loop {
         if stop.load(Ordering::SeqCst) {
-            return Err("stopped".to_owned());
+            return Err(UploadError::Stopped);
         }
         let count = source_file.read(&mut buffer).map_err(shown)?;
         if count == 0 {
@@ -484,9 +537,11 @@ pub fn upload(
         while done < count {
             let taken = target
                 .write_at(at, &buffer[done..count])
-                .map_err(|error| text(&error))?;
+                .map_err(|error| UploadError::Machine(text(&error)))?;
             if taken == 0 {
-                return Err("the machine took no more of the file".to_owned());
+                return Err(UploadError::Machine(
+                    "the machine took no more of the file".to_owned(),
+                ));
             }
             done += usize::try_from(taken).unwrap_or(count - done);
             at += taken;
@@ -497,12 +552,12 @@ pub fn upload(
         if failure_kind(&error) == Some(word::UNSUPPORTED) {
             Ok(())
         } else {
-            Err(text(&error))
+            Err(UploadError::Machine(text(&error)))
         }
     })?;
     drop(target);
     dir.rename(&part, &name, replacing)
-        .map_err(|error| text(&error))?;
+        .map_err(|error| UploadError::Machine(text(&error)))?;
     Ok(format!("{}/{name}", upload.dir.trim_end_matches('/')))
 }
 
@@ -534,7 +589,9 @@ mod tests {
         let stop = AtomicBool::new(false);
         let argv = endless();
         let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
-        let failed = capture(&sources, "native", &argv, &stop, 4096).unwrap_err();
+        let failed = capture(&sources, "native", &argv, &stop, 4096)
+            .unwrap_err()
+            .to_string();
         assert!(failed.contains("helper_upload_answer_max"), "{failed}");
     }
 
@@ -579,7 +636,9 @@ mod tests {
     fn a_machine_that_runs_another_platform_is_refused_and_the_same_is_not() {
         let linux_arm = built_for(&elf(0xB7)).unwrap();
         check_platform(&linux_arm, "Linux aarch64\n").expect("same");
-        let wrong_arch = check_platform(&linux_arm, "Linux x86_64\n").unwrap_err();
+        let wrong_arch = check_platform(&linux_arm, "Linux x86_64\n")
+            .unwrap_err()
+            .to_string();
         assert!(
             wrong_arch.contains("x86_64") && wrong_arch.contains("aarch64"),
             "{wrong_arch}"

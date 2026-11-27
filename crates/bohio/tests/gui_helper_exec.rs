@@ -344,7 +344,9 @@ fn an_upload_reuses_its_own_file_and_refuses_another_by_default() {
 
     // Another file of that name is not the helper to replace.
     std::fs::write(&path, b"not the helper").expect("a planted file");
-    let refused = helper_upload::upload(&sources, "native", &upload, &stop).unwrap_err();
+    let refused = helper_upload::upload(&sources, "native", &upload, &stop)
+        .unwrap_err()
+        .to_string();
     assert!(refused.contains("helper_upload_overwrite"), "{refused}");
     assert_eq!(std::fs::read(&path).unwrap(), b"not the helper");
     let weaker = Upload {
@@ -370,7 +372,8 @@ fn an_upload_reuses_its_own_file_and_refuses_another_by_default() {
         &upload_into(other.path(), Some(text)),
         &stop,
     )
-    .unwrap_err();
+    .unwrap_err()
+    .to_string();
     assert!(refused.contains("not an executable"), "{refused}");
     assert_eq!(std::fs::read_dir(other.path()).unwrap().count(), 1);
 }
@@ -388,7 +391,9 @@ fn a_directory_other_accounts_can_write_is_refused_unless_the_operator_accepts_i
     let dir = tempfile::tempdir().expect("a directory");
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
     let upload = upload_into(dir.path(), Some(program.into()));
-    let refused = helper_upload::upload(&sources, "native", &upload, &stop).unwrap_err();
+    let refused = helper_upload::upload(&sources, "native", &upload, &stop)
+        .unwrap_err()
+        .to_string();
     assert!(refused.contains("writable by other accounts"), "{refused}");
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     let path = helper_upload::upload(
@@ -422,7 +427,9 @@ fn a_sticky_shared_directory_is_refused_unless_the_sticky_setting_is_on() {
         shared_dir: true,
         ..upload_into(dir.path(), Some(program.into()))
     };
-    let refused = helper_upload::upload(&sources, "native", &upload, &stop).unwrap_err();
+    let refused = helper_upload::upload(&sources, "native", &upload, &stop)
+        .unwrap_err()
+        .to_string();
     assert!(refused.contains("sticky"), "{refused}");
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     helper_upload::upload(
@@ -476,7 +483,8 @@ fn a_helper_built_for_another_platform_is_refused_and_not_put() {
         &checked(target.path(), file.clone()),
         &stop,
     )
-    .unwrap_err();
+    .unwrap_err()
+    .to_string();
     assert!(
         refused.contains("pe executable") && refused.contains("uname"),
         "{refused}"

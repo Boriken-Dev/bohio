@@ -1032,11 +1032,10 @@ fn a_program_the_source_starts_opens_its_window_on_the_nodes_display() {
 
     // The window is on the node's display: the node's own desktop sees its blue.
     use bohio_x11::Desktop as _;
-    let desktop = bohio_x11::X11Desktop::new(bohio_x11::X11Settings {
-        display: Some(display),
-        headless: true,
-        ..bohio_x11::X11Settings::default()
-    });
+    let mut settings = bohio_x11::X11Settings::default();
+    settings.display = Some(display);
+    settings.headless = true;
+    let desktop = bohio_x11::X11Desktop::new(settings);
     let state = desktop.state().unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
     let blue = loop {
