@@ -400,7 +400,8 @@ pub fn hash_batch(link: &dyn Open, paths: &[String]) -> Result<(), String> {
 /// The compression a scenario asks for, parsed from `ALG[:LEVEL]`.
 #[cfg(feature = "compress")]
 pub fn compression(text: &str) -> Result<Option<bohio_proto::compress::Compression>, String> {
-    let wanted = bohio_proto::compress::Compression::parse(text)?;
+    let wanted =
+        bohio_proto::compress::Compression::parse(text).map_err(|error| error.to_string())?;
     Ok(match wanted.algorithm {
         bohio_proto::compress::Codec::None => None,
         bohio_proto::compress::Codec::Other(name) => {
