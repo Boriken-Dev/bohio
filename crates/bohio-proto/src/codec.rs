@@ -87,3 +87,19 @@ pub(crate) mod bytes {
         deserializer.deserialize_byte_buf(Bytes)
     }
 }
+
+/// One stream frame: `tag` then `body`.
+pub(crate) fn tagged(tag: u8, body: &[u8]) -> Vec<u8> {
+    let mut frame = Vec::with_capacity(body.len() + 1);
+    frame.push(tag);
+    frame.extend_from_slice(body);
+    frame
+}
+
+/// The tag and the body of a stream frame; [`Error::Short`] for an empty one.
+pub(crate) fn split(frame: &[u8]) -> Result<(u8, &[u8]), Error> {
+    frame
+        .split_first()
+        .map(|(tag, body)| (*tag, body))
+        .ok_or(Error::Short)
+}

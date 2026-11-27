@@ -67,7 +67,7 @@ Each `open` is decided against the peer's grant, and each running stream again a
 
 - **CBOR.** Control messages and open metadata are CBOR ([RFC 8949](https://www.rfc-editor.org/rfc/rfc8949)), always a map with text keys. A decoder reads any valid CBOR encoding of these values (definite or indefinite lengths, any integer width); the vectors show what the Rust implementation writes.
 - **Enums carry a `type` key.** A choice among shapes is a map whose `type` key names the shape in `snake_case`, with the shape's own keys beside it. A shape that wraps another message (`reply` of `info`, `stat`, `list`) holds that message's keys in the same map, beside `type`.
-- **Optional keys.** A writer writes every key, an absent value as `null`. A reader accepts a key that is missing, or `null`, as absent and uses the default the CDDL shows. Written `opt<T>` below.
+- **Optional keys.** A writer may leave out an optional key or write it as `null`; the two mean the same. A reader accepts a key that is missing, or `null`, as absent and uses the default the CDDL shows. Written `opt<T>` below.
 - **Unknown keys are ignored.** A reader never fails on a key it does not know, and a reader never writes one. An unknown error code, file kind or shell kind decodes as `other`.
 - **Trailing bytes.** A message is exactly one CBOR item: bytes after it are a decoding failure. A decoder bounds nesting (the Rust one stops at 32 levels).
 - **Frames.** A stream message of a streaming protocol (`exec`, `shell`, `read`, `write`) is one **frame**: a tag byte, then the body. The body is CBOR, raw bytes, or empty, as the table of each protocol says. A tag a reader does not know is skipped, except where the protocol says otherwise. Raw bytes are never put inside CBOR or JSON. A frame is at most the stream's message size, so a host splits output into frames of at most that size less one.
@@ -118,7 +118,7 @@ response = { id: uint, ? reply: opt<reply>, ? error: opt<error-body> }   ; exact
 call = hello / info / stat / list / mkdir / remove / rename / move / copy / truncate / symlink
      / readlink / set-times / set-mode / set-attributes / sessions / end-session / stats / which
 
-hello          = { type: "hello", ? version: uint, ? client: text }       ; version at least 1
+hello          = { type: "hello", ? version: uint, ? client: text }       ; version at least 1, 1 when the key is missing
 info           = { type: "info" }
 stat           = { type: "stat", path: text, ? follow: bool }            ; follow defaults to false
 list           = { type: "list", path: text, ? after: opt<text>, ? limit: opt<uint> }
@@ -851,9 +851,9 @@ A running node holds links, including links a peer dialed, and only the node can
 ```text
 via-request   = { peer: text, protocol: text, ? metadata: bstr }   ; metadata defaults to empty
 pair-request  = { ? lifetime_ms: opt<uint> }                       ; empty metadata is the same as {}
-pair-reply    = { armed: { pin: text, lifetime_ms: uint } }        ; first, always
-              / { paired: { peer: text } }                         ; then one of these two, then the end
-              / { ended: { reason: text } }
+pair-reply    = { type: "armed", pin: text, lifetime_ms: uint }    ; first, always
+              / { type: "paired", peer: text }                     ; then one of these two, then the end
+              / { type: "ended", reason: text }
 links-request = { ? wait_ms: opt<uint> }                           ; empty metadata is the same as {}
 links-reply   = { links: [* link-entry] }                          ; oldest first
 providers-reply = { check_access: bool, libraries: [* library-entry], ? programs: [* program-entry] }  ; libraries in the order of [providers] paths, programs in the order written
@@ -875,8 +875,8 @@ link-entry    = { peer: text, side: "dialed" / "answered", ? endpoint: opt<text>
 
 ```text
 pending-request = { id: uint, peer: text, session: text, want: [* ("view" / "input" / "clipboard")], since: uint }
-approve-output  = { pending: { requests: [* pending-request] } } / { decided: { id: uint, found: bool } }
-approve-input   = { decide: { id: uint, allow: bool } }
+approve-output  = { type: "pending", requests: [* pending-request] } / { type: "decided", id: uint, found: bool }
+approve-input   = { type: "decide", id: uint, allow: bool }
 ```
 
 `found` is false for a request that timed out or was answered already. An allowed peer is not asked again on that session for `[gui] approval_ttl`, for what it was allowed (view, input, clipboard) and no more; a denied or unanswered request ends the peer's open with `denied` and the text "not approved". `bohio gui pending`, `allow ID` and `deny ID` speak it.
@@ -892,10 +892,10 @@ helper-hello   = { session: text, ? user: opt<text>, ? state: state }        ; t
 helper-policy  = { indicator_notify: bool, input_when_locked: bool, input_when_lock_unknown: bool, max_input_rate: uint, max_snapshot_pixels: uint,
                    max_batch_events: uint, max_text: uint, clipboard_max_bytes: uint, max_fps: uint }
 helper-open    = { request: gui-request, peer: text, session: text, granted: [* ("view" / "input" / "clipboard")], policy: helper-policy }
-helper-change  = { started: { granted: [* want] } } / { ended: { snapshots: uint, frames: uint, input_events: uint,
-                   clipboard_reads: uint, clipboard_writes: uint, reason: text } } / "clipboard_read" / "clipboard_written"
-               / { refused: { reason: text } }
-helper-message = { state: { state: state } } / { event: { peer: text, change: helper-change } }
+helper-change  = { type: "started", granted: [* want] } / { type: "ended", snapshots: uint, frames: uint, input_events: uint,
+                   clipboard_reads: uint, clipboard_writes: uint, reason: text } / { type: "clipboard_read" } / { type: "clipboard_written" }
+               / { type: "refused", reason: text }
+helper-message = { type: "state", state: state } / { type: "event", peer: text, change: helper-change }
 ```
 
 The helper opens `bohio-gui-helper/1` with a `helper-hello`; the node lists the session as the verified account, a colon and `session`, and keeps the stream open: the helper sends a `helper-message` `state` whenever its state changes and an `event` for each audit event of a stream it served (counts only), and the session ends when the stream closes. The node opens one `bohio-gui/1` stream on the same connection for each stream of a peer; its open is a `helper-open`, whose `granted` is what the node's grant for the peer allows of what the request asked and whose `policy` is the node's own bounds, which the helper narrows to and never widens. The stream then speaks `bohio-gui/1` unchanged, relayed by the node, which checks each input and clipboard frame against the peer's grant as it is when the frame arrives (a refusal is the engine's `request_error`) and ends the stream at `[link] recheck` when a permission it was opened with is gone. A helper that ends, or is replaced by another of the same session, ends its relayed streams with an `error` frame `unavailable` ("the session ended"). A request names the session by its listed id; without one the node's own desktop serves it when it has one, else the helper at the screen, else the only helper, else the open is `bad_request` listing the choices.
@@ -903,7 +903,7 @@ The helper opens `bohio-gui-helper/1` with a `helper-hello`; the node lists the 
 
 ## Vectors
 
-`vectors/control.json`, `exec.json`, `shell.json`, `read.json`, `write.json`, `hash.json`, `walk.json`, `forward.json` (`bohio-connect/1`), `listen.json`, `accept.json`, `attach.json`, `search.json`, `gui.json`, `power.json` and `media.json` hold one entry per message; `vectors/delta.json` holds the [weak sums, a signature and a stream of steps](#deltas) in its own shape. Each file is:
+`vectors/control.json`, `exec.json`, `shell.json`, `read.json`, `write.json`, `hash.json`, `walk.json`, `forward.json` (`bohio-connect/1`), `listen.json`, `accept.json`, `attach.json`, `search.json`, `gui.json`, `power.json`, `media.json` and `pair.json` (`bohio-pair/1`, the local pairing stream) hold one entry per message; `vectors/delta.json` holds the [weak sums, a signature and a stream of steps](#deltas) in its own shape. Each file is:
 
 ```json
 { "protocol": "bohio-exec/1", "encoding": "...", "vectors": [ { "name": "stdout", "direction": "host_to_client", "kind": "frame",
@@ -915,7 +915,7 @@ The helper opens `bohio-gui-helper/1` with a `helper-hello`; the node lists the 
 | `name` | what the vector shows |
 | `direction` | `client_to_host` or `host_to_client`; an open's metadata is `client_to_host` |
 | `kind` | `open` (the open's metadata), `message` (a control message) or `frame` (a tag byte, then the body) |
-| `type` | the message's name in this page: `control.Request`, `control.Response`, `exec.Request`, `exec.Output`, `exec.Input`, `shell.Request`, `shell.Output`, `shell.Input`, `fs.ReadRequest`, `fs.ReadOutput`, `fs.ReadInput`, `fs.WriteRequest`, `fs.WriteOutput`, `fs.WriteInput`, `hash.Request`, `hash.Output`, `hash.Input`, `forward.ConnectRequest`, `forward.Answer`, `forward.ListenRequest`, `forward.ListenFrame`, `forward.AcceptRequest`, `session.Attach`, `session.Attached`, `search.Request`, `search.Output`, `walk.Request`, `walk.Input`, `walk.Output`, `gui.Request`, `gui.Output`, `gui.Input`, `gui.ApproveOutput`, `gui.ApproveInput`, `power.Request`, `power.Answer`, `media.Request`, `media.Answer` |
+| `type` | the message's name in this page: `control.Request`, `control.Response`, `exec.Request`, `exec.Output`, `exec.Input`, `shell.Request`, `shell.Output`, `shell.Input`, `fs.ReadRequest`, `fs.ReadOutput`, `fs.ReadInput`, `fs.WriteRequest`, `fs.WriteOutput`, `fs.WriteInput`, `hash.Request`, `hash.Output`, `hash.Input`, `forward.ConnectRequest`, `forward.Answer`, `forward.ListenRequest`, `forward.ListenFrame`, `forward.AcceptRequest`, `session.Attach`, `session.Attached`, `search.Request`, `search.Output`, `walk.Request`, `walk.Input`, `walk.Output`, `gui.Request`, `gui.Output`, `gui.Input`, `gui.ApproveOutput`, `gui.ApproveInput`, `local.PairRequest`, `local.PairReply`, `power.Request`, `power.Answer`, `media.Request`, `media.Answer` |
 | `hex` | the stream message exactly as it travels |
 | `value` | its meaning: the decoded CBOR as JSON for a message; for a frame, `tag`, and `message` (the CBOR body as JSON) or `data_hex` (the raw body) |
 | `decode_only` | the bytes are not what a writer produces (a message with a key this version does not know): a decoder accepts them and finds `value`, and a test does not compare a re-encoding |

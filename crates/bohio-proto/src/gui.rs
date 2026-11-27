@@ -38,6 +38,7 @@ use core::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::codec::{split, tagged};
 use crate::error::{Error, ErrorBody, ErrorCode};
 use crate::{decode, encode};
 
@@ -551,13 +552,16 @@ pub enum InputEvent {
     },
 }
 
-/// Text that is not a key combination.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BadCombo(pub String);
+/// Text that is not a key combination. It names which part is wrong, never the text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BadCombo {
+    /// The position of the part that is not a key, counting from 1 across the `+` separators.
+    pub part: usize,
+}
 
 impl fmt::Display for BadCombo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "`{}` is not a key", self.0)
+        write!(f, "part {} of the key combination is not a key", self.part)
     }
 }
 
@@ -597,7 +601,7 @@ impl InputEvent {
     ///
     /// # Errors
     ///
-    /// [`BadCombo`] naming the part that is not a key.
+    /// [`BadCombo`] giving the position of the part that is not a key.
     pub fn combo(text: &str) -> Result<Vec<Self>, BadCombo> {
         let parts: Vec<&str> = if text == "+" {
             vec!["+"]
@@ -605,10 +609,10 @@ impl InputEvent {
             text.split('+').collect()
         };
         let mut keys = Vec::new();
-        for part in &parts {
-            keys.push(key_name(part).ok_or_else(|| BadCombo((*part).to_owned()))?);
+        for (index, part) in parts.iter().enumerate() {
+            keys.push(key_name(part).ok_or(BadCombo { part: index + 1 })?);
         }
-        let last = keys.pop().ok_or_else(|| BadCombo(text.to_owned()))?;
+        let last = keys.pop().ok_or(BadCombo { part: 1 })?;
         let key = |key: String, action| Self::Key { key, action };
         let mut events: Vec<Self> = keys
             .iter()
@@ -930,20 +934,6 @@ const SETTLE: u8 = 0x15;
 const CLIPBOARD_GET: u8 = 0x16;
 const CLIPBOARD_SET: u8 = 0x17;
 
-fn tagged(tag: u8, body: &[u8]) -> Vec<u8> {
-    let mut frame = Vec::with_capacity(body.len() + 1);
-    frame.push(tag);
-    frame.extend_from_slice(body);
-    frame
-}
-
-fn split(frame: &[u8]) -> Result<(u8, &[u8]), Error> {
-    frame
-        .split_first()
-        .map(|(tag, body)| (*tag, body))
-        .ok_or(Error::Short)
-}
-
 /// A frame of a GUI stream, from the host.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -1143,7 +1133,7 @@ pub struct PendingRequest {
 /// What a `bohio-gui-approve/1` stream says: the waiting requests, first at once and then whenever they change, and the
 /// answer to each [`ApproveInput::Decide`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ApproveOutput {
     /// The requests waiting now.
@@ -1182,7 +1172,7 @@ impl ApproveOutput {
 
 /// What a client of `bohio-gui-approve/1` sends.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ApproveInput {
     /// Allows or denies a waiting request.
@@ -1312,7 +1302,7 @@ impl HelperOpen {
 
 /// What a helper reports of a stream it served, for the node's audit: counts only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum HelperChange {
     /// A stream opened with what it may do.
@@ -1348,7 +1338,7 @@ pub enum HelperChange {
 
 /// What a helper sends on its `bohio-gui-helper/1` stream after the hello.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum HelperMessage {
     /// The session's state changed (locked, switched away, a display changed).

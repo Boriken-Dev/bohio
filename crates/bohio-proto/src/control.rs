@@ -6,9 +6,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{ErrorBody, ErrorCode};
 use crate::fs::{Listing, Metadata, Timestamp};
-use crate::info::{Info, TransferInfo};
+use crate::info::{Info, PROTOCOL_VERSION, TransferInfo};
 use crate::session::Listed;
 use crate::signal::Signal;
+
+fn default_version() -> u32 {
+    PROTOCOL_VERSION
+}
 
 /// A call from the client.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,8 +33,8 @@ pub struct Request {
 pub enum Call {
     /// Announces the client and the highest protocol version it speaks.
     Hello {
-        /// The client's protocol version.
-        #[serde(default)]
+        /// The client's protocol version; [`PROTOCOL_VERSION`] when the key is missing.
+        #[serde(default = "default_version")]
         version: u32,
         /// A name for logs; never a credential.
         #[serde(default)]

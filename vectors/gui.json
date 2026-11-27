@@ -502,50 +502,47 @@
     },
     {
       "direction": "host_to_client",
-      "hex": "a16770656e64696e67a168726571756573747381a5626964076470656572697368613235363a30306773657373696f6e6764656661756c746477616e748164766965776573696e63651a6553f100",
+      "hex": "a264747970656770656e64696e6768726571756573747381a5626964076470656572697368613235363a30306773657373696f6e6764656661756c746477616e748164766965776573696e63651a6553f100",
       "kind": "message",
       "name": "approve_pending",
       "type": "gui.ApproveOutput",
       "value": {
-        "pending": {
-          "requests": [
-            {
-              "id": 7,
-              "peer": "sha256:00",
-              "session": "default",
-              "since": 1700000000,
-              "want": [
-                "view"
-              ]
-            }
-          ]
-        }
+        "requests": [
+          {
+            "id": 7,
+            "peer": "sha256:00",
+            "session": "default",
+            "since": 1700000000,
+            "want": [
+              "view"
+            ]
+          }
+        ],
+        "type": "pending"
       }
     },
     {
       "direction": "host_to_client",
-      "hex": "a16764656369646564a26269640765666f756e64f5",
+      "hex": "a3647479706567646563696465646269640765666f756e64f5",
       "kind": "message",
       "name": "approve_decided",
       "type": "gui.ApproveOutput",
       "value": {
-        "decided": {
-          "found": true,
-          "id": 7
-        }
+        "found": true,
+        "id": 7,
+        "type": "decided"
       }
     },
     {
       "direction": "client_to_host",
-      "hex": "a166646563696465a26269640765616c6c6f77f5",
+      "hex": "a36474797065666465636964656269640765616c6c6f77f5",
       "kind": "message",
       "name": "approve_decide",
       "type": "gui.ApproveInput",
       "value": {
-        "decide": {
-          "allow": true,
-          "id": 7
-        }
+        "allow": true,
+        "id": 7,
+        "type": "decide"
       }
     },
     {
@@ -598,40 +595,37 @@
     },
     {
       "direction": "client_to_host",
-      "hex": "a1657374617465a1657374617465a366616374697665f4666c6f636b6564f568646973706c61797380",
+      "hex": "a26474797065657374617465657374617465a366616374697665f4666c6f636b6564f568646973706c61797380",
       "kind": "message",
       "name": "helper_state",
       "type": "gui.HelperMessage",
       "value": {
         "state": {
-          "state": {
-            "active": false,
-            "displays": [],
-            "locked": true
-          }
-        }
+          "active": false,
+          "displays": [],
+          "locked": true
+        },
+        "type": "state"
       }
     },
     {
       "direction": "client_to_host",
-      "hex": "a1656576656e74a26470656572697368613235363a3030666368616e6765a165656e646564a669736e617073686f747302666672616d6573006c696e7075745f6576656e7473036f636c6970626f6172645f72656164730070636c6970626f6172645f7772697465730066726561736f6e707468652073747265616d20656e646564",
+      "hex": "a36474797065656576656e746470656572697368613235363a3030666368616e6765a7647479706565656e64656469736e617073686f747302666672616d6573006c696e7075745f6576656e7473036f636c6970626f6172645f72656164730070636c6970626f6172645f7772697465730066726561736f6e707468652073747265616d20656e646564",
       "kind": "message",
       "name": "helper_event_ended",
       "type": "gui.HelperMessage",
       "value": {
-        "event": {
-          "change": {
-            "ended": {
-              "clipboard_reads": 0,
-              "clipboard_writes": 0,
-              "frames": 0,
-              "input_events": 3,
-              "reason": "the stream ended",
-              "snapshots": 2
-            }
-          },
-          "peer": "sha256:00"
-        }
+        "change": {
+          "clipboard_reads": 0,
+          "clipboard_writes": 0,
+          "frames": 0,
+          "input_events": 3,
+          "reason": "the stream ended",
+          "snapshots": 2,
+          "type": "ended"
+        },
+        "peer": "sha256:00",
+        "type": "event"
       }
     },
     {

@@ -814,7 +814,7 @@ fn exec_cases() -> Vec<Case> {
         )
     };
     let input = |name: &str, value: exec::Input, body: Value| {
-        frame(name, TO_HOST, "exec.Input", value.encode(), body)
+        frame(name, TO_HOST, "exec.Input", value.encode().unwrap(), body)
     };
     vec![
         message(
@@ -2891,6 +2891,56 @@ fn media_cases() -> Vec<Case> {
     ]
 }
 
+fn pair_cases() -> Vec<Case> {
+    use bohio_proto::local::{PairReply, PairRequest};
+    vec![
+        message(
+            "open_with_the_default_lifetime",
+            OPEN,
+            "open",
+            "local.PairRequest",
+            &PairRequest { lifetime_ms: None },
+        ),
+        message(
+            "open_with_a_lifetime",
+            OPEN,
+            "open",
+            "local.PairRequest",
+            &PairRequest {
+                lifetime_ms: Some(60_000),
+            },
+        ),
+        message(
+            "armed",
+            TO_CLIENT,
+            "message",
+            "local.PairReply",
+            &PairReply::Armed {
+                pin: "123456".into(),
+                lifetime_ms: 60_000,
+            },
+        ),
+        message(
+            "paired",
+            TO_CLIENT,
+            "message",
+            "local.PairReply",
+            &PairReply::Paired {
+                peer: "sha256:00".into(),
+            },
+        ),
+        message(
+            "ended",
+            TO_CLIENT,
+            "message",
+            "local.PairReply",
+            &PairReply::Ended {
+                reason: "expired".into(),
+            },
+        ),
+    ]
+}
+
 fn files() -> Vec<(&'static str, &'static str, Vec<Case>)> {
     vec![
         ("control.json", "bohio/1", control()),
@@ -2908,6 +2958,7 @@ fn files() -> Vec<(&'static str, &'static str, Vec<Case>)> {
         ("attach.json", "bohio-attach/1", attach_cases()),
         ("power.json", "bohio-power/1", power_cases()),
         ("media.json", "bohio-media/1", media_cases()),
+        ("pair.json", "bohio-pair/1", pair_cases()),
     ]
 }
 
@@ -3009,7 +3060,7 @@ fn check(entry: &Value) {
         "fs.WriteRequest" => check_message::<WriteRequest>(entry, &bytes),
         "hash.Request" => check_message::<HashRequest>(entry, &bytes),
         "exec.Output" => check_frame(entry, &bytes, exec::Output::decode, |v| v.encode().unwrap()),
-        "exec.Input" => check_frame(entry, &bytes, exec::Input::decode, exec::Input::encode),
+        "exec.Input" => check_frame(entry, &bytes, exec::Input::decode, |v| v.encode().unwrap()),
         "shell.Output" => check_frame(entry, &bytes, shell::Output::decode, |v| {
             v.encode().unwrap()
         }),
@@ -3046,6 +3097,8 @@ fn check(entry: &Value) {
         "gui.HelperMessage" => check_message::<HelperMessage>(entry, &bytes),
         "gui.Output" => check_frame(entry, &bytes, GuiOutput::decode, |v| v.encode().unwrap()),
         "gui.Input" => check_frame(entry, &bytes, GuiInput::decode, |v| v.encode().unwrap()),
+        "local.PairRequest" => check_message::<bohio_proto::local::PairRequest>(entry, &bytes),
+        "local.PairReply" => check_message::<bohio_proto::local::PairReply>(entry, &bytes),
         "power.Request" => check_message::<bohio_proto::power::Request>(entry, &bytes),
         "power.Answer" => check_frame(entry, &bytes, bohio_proto::power::Answer::decode, |v| {
             v.encode().unwrap()

@@ -14,6 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::codec::tagged;
 use crate::error::{Error, ErrorBody, ErrorCode};
 use crate::{decode, encode};
 
@@ -178,13 +179,6 @@ const MATCH: u8 = 0x02;
 const ITEM_ERROR: u8 = 0x03;
 const DONE: u8 = 0x04;
 const ERROR: u8 = 0x05;
-
-fn tagged(tag: u8, body: &[u8]) -> Vec<u8> {
-    let mut frame = Vec::with_capacity(body.len() + 1);
-    frame.push(tag);
-    frame.extend_from_slice(body);
-    frame
-}
 
 /// A frame of a search, from the host.
 #[derive(Debug, Clone, PartialEq, Eq)]

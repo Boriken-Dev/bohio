@@ -19,6 +19,7 @@ use std::fmt;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::codec::bytes;
+use crate::codec::{split, tagged};
 use crate::error::{Error, ErrorBody, ErrorCode};
 use crate::fs::Timestamp;
 use crate::{decode, encode};
@@ -315,20 +316,6 @@ const DONE: u8 = 0x04;
 const ERROR: u8 = 0x05;
 const ITEM: u8 = 0x10;
 const END: u8 = 0x11;
-
-fn tagged(tag: u8, body: &[u8]) -> Vec<u8> {
-    let mut frame = Vec::with_capacity(body.len() + 1);
-    frame.push(tag);
-    frame.extend_from_slice(body);
-    frame
-}
-
-fn split(frame: &[u8]) -> Result<(u8, &[u8]), Error> {
-    frame
-        .split_first()
-        .map(|(tag, body)| (*tag, body))
-        .ok_or(Error::Short)
-}
 
 /// A frame of a hash stream, from the host.
 #[derive(Debug, Clone, PartialEq, Eq)]

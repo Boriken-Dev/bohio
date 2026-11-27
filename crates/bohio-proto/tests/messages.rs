@@ -185,7 +185,7 @@ fn every_exec_message_round_trips() {
         Input::StdinEnd,
         Input::Kill,
     ] {
-        assert_eq!(Input::decode(&input.encode()).unwrap(), input);
+        assert_eq!(Input::decode(&input.encode().unwrap()).unwrap(), input);
     }
 }
 
@@ -343,6 +343,53 @@ mod serde_bytes_like {
     }
 }
 
+/// Every decoder of the wire other than control, info and exec: none may panic on any bytes.
+fn decode_every_other_protocol(bytes: &[u8]) {
+    use bohio_proto::{forward, fs, gui, local, media, power, search, session, shell, walk};
+    let _ = shell::Request::from_metadata(bytes);
+    let _ = shell::Output::decode(bytes);
+    let _ = shell::Input::decode(bytes);
+    let _ = fs::ReadRequest::from_metadata(bytes);
+    let _ = fs::ReadOutput::decode(bytes);
+    let _ = fs::ReadInput::decode(bytes);
+    let _ = fs::WriteRequest::from_metadata(bytes);
+    let _ = fs::WriteOutput::decode(bytes);
+    let _ = fs::WriteInput::decode(bytes);
+    let _ = HashRequest::from_metadata(bytes);
+    let _ = HashOutput::decode(bytes);
+    let _ = HashInput::decode(bytes);
+    let _ = walk::WalkRequest::from_metadata(bytes);
+    let _ = walk::WalkOutput::decode(bytes);
+    let _ = walk::WalkInput::decode(bytes);
+    let _ = search::SearchRequest::from_metadata(bytes);
+    let _ = search::SearchOutput::decode(bytes);
+    let _ = session::Attach::from_metadata(bytes);
+    let _ = session::Attached::decode(bytes);
+    let _ = forward::ConnectRequest::from_metadata(bytes);
+    let _ = forward::Answer::decode(bytes);
+    let _ = forward::ListenRequest::from_metadata(bytes);
+    let _ = forward::ListenFrame::decode(bytes);
+    let _ = forward::AcceptRequest::from_metadata(bytes);
+    let _ = gui::GuiRequest::from_metadata(bytes);
+    let _ = gui::GuiOutput::decode(bytes);
+    let _ = gui::GuiInput::decode(bytes);
+    let _ = gui::ApproveOutput::decode(bytes);
+    let _ = gui::ApproveInput::decode(bytes);
+    let _ = gui::HelperHello::from_metadata(bytes);
+    let _ = gui::HelperOpen::from_metadata(bytes);
+    let _ = gui::HelperMessage::decode(bytes);
+    let _ = power::Request::from_metadata(bytes);
+    let _ = power::Answer::decode(bytes);
+    let _ = media::Request::from_metadata(bytes);
+    let _ = media::Answer::decode(bytes);
+    let _ = local::ViaRequest::from_metadata(bytes);
+    let _ = local::LinksRequest::from_metadata(bytes);
+    let _ = local::LinksReply::decode(bytes);
+    let _ = local::PairRequest::from_metadata(bytes);
+    let _ = local::PairReply::decode(bytes);
+    let _ = local::ProvidersReply::decode(bytes);
+}
+
 proptest! {
     #[test]
     fn arbitrary_bytes_never_panic_any_decoder(bytes in proptest::collection::vec(any::<u8>(), 0..512)) {
@@ -352,6 +399,7 @@ proptest! {
         let _ = ExecRequest::from_metadata(&bytes);
         let _ = Output::decode(&bytes);
         let _ = Input::decode(&bytes);
+        decode_every_other_protocol(&bytes);
     }
 
     #[test]
@@ -359,8 +407,35 @@ proptest! {
         let out = Output::Stdout(bytes.clone());
         prop_assert_eq!(Output::decode(&out.encode().unwrap()).unwrap(), out);
         let input = Input::Stdin(bytes);
-        prop_assert_eq!(Input::decode(&input.encode()).unwrap(), input);
+        prop_assert_eq!(Input::decode(&input.encode().unwrap()).unwrap(), input);
     }
+}
+
+#[test]
+fn a_hello_without_a_version_asks_for_the_current_one() {
+    let mut bytes = Vec::new();
+    let hello = ciborium::Value::Map(vec![
+        (
+            ciborium::Value::Text("id".into()),
+            ciborium::Value::Integer(1.into()),
+        ),
+        (
+            ciborium::Value::Text("call".into()),
+            ciborium::Value::Map(vec![(
+                ciborium::Value::Text("type".into()),
+                ciborium::Value::Text("hello".into()),
+            )]),
+        ),
+    ]);
+    ciborium::into_writer(&hello, &mut bytes).unwrap();
+    let request: ControlRequest = decode(&bytes).unwrap();
+    assert_eq!(
+        request.call,
+        Call::Hello {
+            version: PROTOCOL_VERSION,
+            client: String::new(),
+        }
+    );
 }
 
 fn sample_metadata() -> bohio_proto::fs::Metadata {
@@ -957,4 +1032,17 @@ fn an_enum_value_a_newer_host_sends_decodes_as_other_and_the_message_survives() 
     .unwrap();
     assert_eq!(response.id, 4);
     assert_eq!(response.reply, Some(Reply::Other));
+}
+
+#[test]
+fn a_parse_error_names_the_part_and_never_quotes_the_text() {
+    use bohio_proto::compress::ParseError;
+    use bohio_proto::gui::{BadCombo, InputEvent};
+    let error = Compression::parse("zstd:secret-text").unwrap_err();
+    assert_eq!(error, ParseError::Level);
+    assert!(!error.to_string().contains("secret"));
+    assert_eq!("zstd:3".parse::<Compression>().unwrap().level, Some(3));
+    let combo = InputEvent::combo("ctrl+secret-key").unwrap_err();
+    assert_eq!(combo, BadCombo { part: 2 });
+    assert!(!combo.to_string().contains("secret"));
 }

@@ -195,7 +195,7 @@ impl PairRequest {
 
 /// What a [`PAIR`] stream says: first [`PairReply::Armed`], then one of the others, then the end.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum PairReply {
     /// The PIN is armed: it is for the person who reads it out, and is in no log or event.

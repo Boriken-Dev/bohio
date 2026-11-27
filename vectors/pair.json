@@ -1,0 +1,60 @@
+{
+  "encoding": "hex is the stream message exactly as it travels: open metadata and control messages are bare CBOR, a frame is one tag byte then its body",
+  "protocol": "bohio-pair/1",
+  "vectors": [
+    {
+      "direction": "client_to_host",
+      "hex": "a16b6c69666574696d655f6d73f6",
+      "kind": "open",
+      "name": "open_with_the_default_lifetime",
+      "type": "local.PairRequest",
+      "value": {
+        "lifetime_ms": null
+      }
+    },
+    {
+      "direction": "client_to_host",
+      "hex": "a16b6c69666574696d655f6d7319ea60",
+      "kind": "open",
+      "name": "open_with_a_lifetime",
+      "type": "local.PairRequest",
+      "value": {
+        "lifetime_ms": 60000
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "a364747970656561726d65646370696e663132333435366b6c69666574696d655f6d7319ea60",
+      "kind": "message",
+      "name": "armed",
+      "type": "local.PairReply",
+      "value": {
+        "lifetime_ms": 60000,
+        "pin": "123456",
+        "type": "armed"
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "a26474797065667061697265646470656572697368613235363a3030",
+      "kind": "message",
+      "name": "paired",
+      "type": "local.PairReply",
+      "value": {
+        "peer": "sha256:00",
+        "type": "paired"
+      }
+    },
+    {
+      "direction": "host_to_client",
+      "hex": "a2647479706565656e64656466726561736f6e6765787069726564",
+      "kind": "message",
+      "name": "ended",
+      "type": "local.PairReply",
+      "value": {
+        "reason": "expired",
+        "type": "ended"
+      }
+    }
+  ]
+}

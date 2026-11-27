@@ -49,7 +49,7 @@ pub struct ErrorBody { pub code: ErrorCode, pub message: String }          // Er
 ```rust
 pub struct Request { pub id: u64, pub call: Call, source: Option<String> /* the files source every filesystem call of this request names */ }
 #[non_exhaustive] pub enum Call {
-    Hello { version: u32, client: String }, Info,
+    Hello { version: u32 /* PROTOCOL_VERSION when missing */, client: String }, Info,
     Stat { path, follow }, List { path, after: Option<String>, limit: Option<u64> }, Mkdir { path, parents, mode: Option<u32> },
     Remove { path, recursive }, Rename { from, to, overwrite }, Copy { from, to, overwrite, recursive, preserve }, Move { from, to, overwrite }, Truncate { path, length },
     Symlink { target, link }, Readlink { path },
@@ -170,7 +170,7 @@ pub struct Ready { session, granted: Vec<Want>, state: State }
 #[non_exhaustive] pub enum ImageFormat { Png, Jpeg, Webp, Other }   // ALL (the three), name(), from_name(); an unknown name decodes as `Other`
 pub struct Snapshot { seq, display, region, format, quality, max_width, max_height, cursor: bool, settle: Option<SettleOptions> }   // Default
 pub struct ImageHeader { seq, display, format, width, height, region, scale: f64, cursor: Option<Point>, length: u64, settled: Option<Settled> }
-#[non_exhaustive] pub enum InputEvent { Move, Button, Scroll, Key, Text, Wait }     // tagged by `type`; `InputEvent::combo("ctrl+shift+t") -> Result<Vec<_>, BadCombo>` (xdotool names)
+#[non_exhaustive] pub enum InputEvent { Move, Button, Scroll, Key, Text, Wait }     // tagged by `type`; `InputEvent::combo("ctrl+shift+t") -> Result<Vec<_>, BadCombo>` (xdotool names; `BadCombo { part }` is the 1-based position of the part that is not a key, never its text)
 pub const KEY_NAMES: &[&str];   pub fn is_key(key: &str) -> bool;  // a listed name or exactly one character
 pub struct Input { seq, events }   pub struct InputDone { seq, applied }   pub struct Settle { seq, display, region, quiet_ms, timeout_ms }   pub struct SettledFrame { seq, settled, waited_ms }
 #[non_exhaustive] pub enum WatchEncoding { Auto /* default */, Lossless, Jpeg, Other }   #[non_exhaustive] pub enum RectEncoding { ZstdRgb, RawRgb, Jpeg, Png, Other }   // `name()`, `lossless()`; "zstd_rgb", "raw_rgb", "jpeg", "png"; an unknown value decodes as `Other`
@@ -257,7 +257,7 @@ pub struct Started { pub pid: u32, pub output_compression: Option<Compression>, 
 #[non_exhaustive] pub enum Output { Started(Started), Stdout(Vec<u8>), Stderr(Vec<u8>), StdoutCompressed(Vec<u8>) /* 0x06 */, StderrCompressed(Vec<u8>) /* 0x07 */, Signalled(Signalled) /* 0x08 */, Exit(Exit), Error(ErrorBody) }   // host to client
 #[non_exhaustive] pub enum Input { Stdin(Vec<u8>), StdinCompressed(Vec<u8>) /* 0x13 */, StdinEnd, Kill, Signal(Signal) /* 0x15 */ }                              // client to host
 impl Output { pub fn encode(&self) -> Result<Vec<u8>, Error>; pub fn decode(&[u8]) -> Result<Self, Error>; }
-impl Input  { pub fn encode(&self) -> Vec<u8>;                pub fn decode(&[u8]) -> Result<Self, Error>; }
+impl Input  { pub fn encode(&self) -> Result<Vec<u8>, Error>;    pub fn decode(&[u8]) -> Result<Self, Error>; }
 ```
 
 One stream message is one frame: a tag byte, then the body. Tags: host to client `0x01` started (CBOR), `0x02` stdout (raw),
@@ -302,7 +302,7 @@ Spoken only on a running node's local endpoint, never on a peer's link (CDDL in 
 pub const VIA: &str = "bohio-via/1";   pub const LINKS: &str = "bohio-links/1";   pub const PROVIDERS: &str = "bohio-providers/1";   pub const PAIR: &str = "bohio-pair/1";
 pub struct LibraryEntry { path, state /*"loaded"|"skipped"|"failed"*/, detail, digest: Option<String> }   pub struct ProgramEntry { name, path, state /*"running"|"failed"*/, detail, digest: Option<String>, restarts: u32 }   pub struct ProvidersReply { check_access: bool, libraries: Vec<LibraryEntry>, programs: Vec<ProgramEntry> /*default empty*/ }   // encode(), decode(&[u8]); the open has no metadata
 pub struct PairRequest { lifetime_ms: Option<u64> }   // Default; to_metadata(), from_metadata (empty is the default)
-#[non_exhaustive] pub enum PairReply { Armed { pin: String, lifetime_ms: u64 }, Paired { peer: String }, Ended { reason: String } }   // encode(), decode(&[u8]); first Armed, then Paired or Ended
+#[non_exhaustive] pub enum PairReply /* tagged by `type`, as ApproveOutput, ApproveInput, HelperChange and HelperMessage are; vectors/pair.json */ { Armed { pin: String, lifetime_ms: u64 }, Paired { peer: String }, Ended { reason: String } }   // encode(), decode(&[u8]); first Armed, then Paired or Ended
 pub struct ViaRequest { peer: String, protocol: String, metadata: Vec<u8> /* a CBOR byte string */ }   // to_metadata(), from_metadata(&[u8])
 pub struct LinksRequest { wait_ms: Option<u64> }   // Default; to_metadata(), from_metadata (empty is the default)
 pub struct LinkEntry { peer, side: String /* dialed|answered */, endpoint: Option<String>, source: Option<String>, since: u64, mine: Vec<String>, theirs: Option<Vec<String>> }
@@ -315,7 +315,7 @@ pub struct LinksReply { links: Vec<LinkEntry> }    // Default; encode(), decode(
 #[non_exhaustive] pub enum Codec { Zstd, Lz4, Deflate, None, Auto, Other(String) }   // Ord; a string on the wire; Codec::KNOWN = the three that compress
 impl Codec { pub fn name(&self) -> &str; pub fn from_name(&str) -> Self; pub const fn compresses(&self) -> bool; }
 pub struct Compression { pub algorithm: Codec, pub level: Option<i32>, pub window_log: Option<u32> }   // the request, or what the host used
-impl Compression { const fn none() / auto() / new(Codec); fn level(self, i32) / window_log(self, u32); const fn is_requested(&self) -> bool; fn parse("zstd:19") -> Result<Self, String>; }
+impl Compression { const fn none() / auto() / new(Codec); fn level(self, i32) / window_log(self, u32); const fn is_requested(&self) -> bool; fn parse("zstd:19") -> Result<Self, ParseError>; }   // also FromStr; `ParseError::Level` (#[non_exhaustive]) never quotes the text
 pub struct Resume { pub token: String, pub offset: u64 }      // a prepared read, from a compressed offset
 pub struct Progress { pub prepared: u64 }                     // `0x08` frame: bytes of the file compressed so far
 ```

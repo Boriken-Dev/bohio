@@ -17,6 +17,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::codec::{split, tagged};
 use crate::compress::Compression;
 use crate::error::{Error, ErrorBody, ErrorCode};
 use crate::fs::Metadata;
@@ -156,20 +157,6 @@ const ERROR: u8 = 0x05;
 const COMPRESSED: u8 = 0x06;
 const ROOT: u8 = 0x10;
 const END: u8 = 0x11;
-
-fn tagged(tag: u8, body: &[u8]) -> Vec<u8> {
-    let mut frame = Vec::with_capacity(body.len() + 1);
-    frame.push(tag);
-    frame.extend_from_slice(body);
-    frame
-}
-
-fn split(frame: &[u8]) -> Result<(u8, &[u8]), Error> {
-    frame
-        .split_first()
-        .map(|(tag, body)| (*tag, body))
-        .ok_or(Error::Short)
-}
 
 /// A frame of a walk, from the host.
 #[derive(Debug, Clone, PartialEq, Eq)]

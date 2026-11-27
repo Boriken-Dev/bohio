@@ -43,6 +43,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::codec::bytes;
+use crate::codec::{split, tagged};
 use crate::compress::{Compression, Progress, Resume};
 use crate::error::{Error, ErrorBody};
 use crate::hash::{Algorithm, Digests, ItemError};
@@ -635,20 +636,6 @@ const READ_ITEM: u8 = 0x10;
 const READ_ITEMS_END: u8 = 0x11;
 const SIGNATURE: u8 = 0x12;
 const SIGNATURE_END: u8 = 0x13;
-
-fn tagged(tag: u8, body: &[u8]) -> Vec<u8> {
-    let mut frame = Vec::with_capacity(body.len() + 1);
-    frame.push(tag);
-    frame.extend_from_slice(body);
-    frame
-}
-
-fn split(frame: &[u8]) -> Result<(u8, &[u8]), Error> {
-    frame
-        .split_first()
-        .map(|(tag, body)| (*tag, body))
-        .ok_or(Error::Short)
-}
 
 /// A frame of a read, from the host.
 #[derive(Debug, Clone, PartialEq, Eq)]

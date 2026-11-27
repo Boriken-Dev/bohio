@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::codec::{split, tagged};
 use crate::compress::Compression;
 use crate::error::{Error, ErrorBody};
 use crate::session::SessionRequest;
@@ -236,20 +237,6 @@ const SIGNALLED: u8 = 0x08;
 const SIGNAL: u8 = 0x15;
 const STDIN_COMPRESSED: u8 = 0x13;
 
-fn tagged(tag: u8, body: &[u8]) -> Vec<u8> {
-    let mut frame = Vec::with_capacity(body.len() + 1);
-    frame.push(tag);
-    frame.extend_from_slice(body);
-    frame
-}
-
-fn split(frame: &[u8]) -> Result<(u8, &[u8]), Error> {
-    frame
-        .split_first()
-        .map(|(tag, body)| (*tag, body))
-        .ok_or(Error::Short)
-}
-
 impl Output {
     /// The frame as one stream message.
     ///
@@ -309,18 +296,18 @@ pub enum Input {
 
 impl Input {
     /// The frame as one stream message.
-    pub fn encode(&self) -> Vec<u8> {
-        match self {
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Encode`] when a CBOR body cannot be written.
+    pub fn encode(&self) -> Result<Vec<u8>, Error> {
+        Ok(match self {
             Self::Stdin(bytes) => tagged(STDIN, bytes),
             Self::StdinCompressed(bytes) => tagged(STDIN_COMPRESSED, bytes),
             Self::StdinEnd => tagged(STDIN_END, &[]),
             Self::Kill => tagged(KILL, &[]),
-            // A signal request is one plain field: it always encodes.
-            Self::Signal(signal) => tagged(
-                SIGNAL,
-                &encode(&SignalRequest { signal: *signal }).unwrap_or_default(),
-            ),
-        }
+            Self::Signal(signal) => tagged(SIGNAL, &encode(&SignalRequest { signal: *signal })?),
+        })
     }
 
     /// Reads one stream message.

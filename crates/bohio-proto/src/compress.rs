@@ -144,18 +144,14 @@ impl Compression {
     ///
     /// # Errors
     ///
-    /// The text, when the level is not a whole number.
-    pub fn parse(text: &str) -> Result<Self, String> {
+    /// [`ParseError::Level`] when the level is not a whole number.
+    pub fn parse(text: &str) -> Result<Self, ParseError> {
         let (name, level) = match text.split_once(':') {
             Some((name, level)) => (name, Some(level)),
             None => (text, None),
         };
         let level = level
-            .map(|digits| {
-                digits
-                    .parse::<i32>()
-                    .map_err(|_| format!("`{digits}` is not a whole number"))
-            })
+            .map(|digits| digits.parse::<i32>().map_err(|_| ParseError::Level))
             .transpose()?;
         Ok(Self {
             algorithm: Codec::from_name(name),
@@ -163,6 +159,23 @@ impl Compression {
             window_log: None,
         })
     }
+}
+
+impl core::str::FromStr for Compression {
+    type Err = ParseError;
+
+    fn from_str(text: &str) -> Result<Self, ParseError> {
+        Self::parse(text)
+    }
+}
+
+/// Why compression text could not be read. It never quotes the text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum ParseError {
+    /// The part after the colon is not a whole number.
+    #[error("the compression level is not a whole number")]
+    Level,
 }
 
 impl Default for Compression {

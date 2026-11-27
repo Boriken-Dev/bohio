@@ -18,6 +18,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::codec::{split, tagged};
 use crate::error::{Error, ErrorBody};
 use crate::exec::Env;
 use crate::session::SessionRequest;
@@ -278,20 +279,6 @@ const RESIZE: u8 = 0x11;
 const KILL: u8 = 0x12;
 const SIGNALLED: u8 = 0x08;
 const SIGNAL: u8 = 0x15;
-
-fn tagged(tag: u8, body: &[u8]) -> Vec<u8> {
-    let mut frame = Vec::with_capacity(body.len() + 1);
-    frame.push(tag);
-    frame.extend_from_slice(body);
-    frame
-}
-
-fn split(frame: &[u8]) -> Result<(u8, &[u8]), Error> {
-    frame
-        .split_first()
-        .map(|(tag, body)| (*tag, body))
-        .ok_or(Error::Short)
-}
 
 impl Output {
     /// The frame as one stream message.
