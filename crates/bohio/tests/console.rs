@@ -17,6 +17,7 @@ use bohio_client::control::Control;
 use bohio_client::link::{Settings, stream};
 use bohio_client::shell::{Event, Shell};
 use bohio_proto::shell::{Request, ShellKind};
+use bohio_proto::signal::Signal;
 use bohio_proto::{ErrorBody, ErrorCode};
 use cabuya::auth::{Identity, Method};
 use coqui_transport::{Channel, StreamChannel, memory};
@@ -415,6 +416,60 @@ fn a_second_attach_supersedes_the_first() {
     }
 }
 
+/// Two first attaches that arrive together make one console: the engine the loser started is ended, not left outside
+/// the session map where nothing would end it.
+#[test]
+fn two_first_attaches_make_one_console_and_leave_no_engine_behind() {
+    for round in 0..10 {
+        let name = format!("console-race-{round}");
+        let link = testing::terminal_link(&name);
+        let world = world(&fake(&name), granted());
+        let start = std::sync::Barrier::new(2);
+        let attached: Vec<Shell> = thread::scope(|scope| {
+            let attach = || {
+                scope.spawn(|| {
+                    start.wait();
+                    console(&world)
+                })
+            };
+            let (a, b) = (attach(), attach());
+            vec![a.join().unwrap(), b.join().unwrap()]
+        });
+        link.device_writes(b"one console");
+        for shell in &attached {
+            // The one that came second supersedes the first; whichever is current hears the device.
+            let _ = shell.next(Some(Duration::from_millis(200)));
+        }
+        drop(attached);
+        drop(world);
+        // The host's stop ends every console it holds, and every engine started for one.
+        let until = Instant::now() + WAIT;
+        while link.killed() < link.opened() {
+            assert!(
+                Instant::now() < until,
+                "round {round}: {} terminals opened and {} ended",
+                link.opened(),
+                link.killed()
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+/// Waits for the host to end `shell`'s attach: the stream closes with no exit.
+fn assert_detached(shell: &Shell) {
+    let until = Instant::now() + WAIT;
+    loop {
+        match shell.next(Some(Duration::from_millis(200))) {
+            Err(Error::Timeout) | Ok(Some(Event::Data(_))) => {
+                assert!(Instant::now() < until, "the kill never ended the attach");
+            }
+            Ok(Some(Event::Exit(exit))) => panic!("a console has no exit: {exit:?}"),
+            Ok(Some(Event::Signalled(_))) | Ok(None) | Err(_) => return,
+        }
+    }
+}
+
 #[test]
 fn a_program_is_unsupported_naming_the_source_and_a_kill_only_detaches() {
     let link = testing::terminal_link("console-kind");
@@ -433,8 +488,25 @@ fn a_program_is_unsupported_naming_the_source_and_a_kill_only_detaches() {
 
     let shell = console(&world);
     shell.kill().expect("the kill is sent");
+    assert_detached(&shell);
     thread::sleep(Duration::from_millis(500));
     assert_eq!(link.killed(), 0, "a client kill never ends the source");
+    drop(shell);
+
+    // A kill signal is answered as not delivered, and the attach ends too.
+    let shell = console(&world);
+    shell.signal(Signal::Kill).expect("the signal is sent");
+    let mut answered = None;
+    let until = Instant::now() + WAIT;
+    while Instant::now() < until {
+        match shell.next(Some(Duration::from_millis(200))) {
+            Ok(Some(Event::Signalled(answer))) => answered = Some(answer),
+            Ok(Some(Event::Data(_))) | Err(Error::Timeout) => {}
+            Ok(Some(Event::Exit(_)) | None) | Err(_) => break,
+        }
+    }
+    let answer = answered.expect("a kill signal is answered");
+    assert!(!answer.delivered, "{answer:?}");
     drop(shell);
     let again = console(&world);
     link.device_writes(b"still here");

@@ -512,6 +512,39 @@ fn the_sessions_a_peer_and_the_host_may_hold_are_bounded_by_settings() {
 }
 
 #[test]
+fn ending_an_exited_session_frees_its_place_among_the_peers_sessions() {
+    let _deadline = Deadline::start();
+    let node = node_with(SessionsConfig {
+        max_per_peer: 1,
+        ..SessionsConfig::default()
+    });
+    let (link, _) = node.link(grant());
+    let mut quick = Request::argv([helper(), "echo".to_owned(), "hi".to_owned()]);
+    quick.session = Some(detached());
+    let (exec, _, id) = start(&link, &quick);
+    let (out, _) = read_to_exit(&exec);
+    assert_eq!(String::from_utf8_lossy(&out).trim(), "hi");
+    let control = Control::open(&link).unwrap();
+    exited(&control, &id);
+    // The program is over and its session is kept for reading, and counts against the peer's share.
+    match Exec::start(&link, &quick).unwrap().next(WAIT) {
+        Err(Error::Remote(body)) => assert_eq!(body.code, ErrorCode::Busy),
+        other => panic!("{other:?}"),
+    }
+    control.end_session(&id, None, WAIT).unwrap();
+    assert!(
+        control
+            .sessions(WAIT)
+            .unwrap()
+            .iter()
+            .all(|session| session.id != id),
+        "ending an exited session discards it"
+    );
+    let (again, _, _) = start(&link, &quick);
+    read_to_exit(&again);
+}
+
+#[test]
 fn ending_a_session_with_a_signal_runs_the_programs_handler_and_a_kill_ends_the_tree() {
     use bohio_proto::signal::Signal as S;
     let _deadline = Deadline::start();

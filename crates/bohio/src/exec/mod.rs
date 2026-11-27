@@ -32,6 +32,7 @@ use crate::config::{CompressionConfig, ExecutionConfig};
 use crate::fs::compress::{Settings, decode_failure};
 use crate::limit::Slots;
 use crate::policy::{Grant, Permission};
+use crate::stream::{Unsent, chunk_size, send_until};
 
 /// What [`serve`] needs besides the stream.
 #[derive(Debug, Clone, Copy)]
@@ -296,7 +297,7 @@ pub fn serve(
         });
     }
 
-    let chunk = chunk_size(&shared, context.config.chunk_size);
+    let chunk = chunk_size(shared.channel.as_ref(), context.config.chunk_size);
     let (done_tx, done_rx) = mpsc::channel();
     for is_stderr in [false, true] {
         let for_pump = Arc::clone(&shared);
@@ -365,18 +366,13 @@ impl Shared {
     /// Sends one message, waiting while the stream has no room. `false` when the stream is gone
     /// or the exchange is over, and the message was not sent.
     fn send(&self, message: &[u8]) -> bool {
-        loop {
-            match self.channel.send_timeout(message, Some(self.poll)) {
-                Ok(()) => return true,
-                Err(Failure::Timeout | Failure::NoProgress) => {
-                    if self.gone.load(Ordering::Acquire) || self.done.load(Ordering::Acquire) {
-                        return false;
-                    }
-                }
-                Err(_) => {
-                    self.gone.store(true, Ordering::Release);
-                    return false;
-                }
+        let over = || self.gone.load(Ordering::Acquire) || self.done.load(Ordering::Acquire);
+        match send_until(self.channel.as_ref(), message, self.poll, &over) {
+            Ok(()) => true,
+            Err(Unsent::Stopped) => false,
+            Err(Unsent::Failed) => {
+                self.gone.store(true, Ordering::Release);
+                false
             }
         }
     }
@@ -387,16 +383,6 @@ fn encode(output: &Output) -> Vec<u8> {
         // Every body the engine builds encodes; an empty error frame is still a frame.
         vec![0x05]
     })
-}
-
-/// The largest output chunk the stream carries: the configured size, less than a message.
-fn chunk_size(shared: &Shared, configured: usize) -> usize {
-    shared
-        .channel
-        .capabilities()
-        .max_send
-        .map_or(configured, |max| configured.min(max.saturating_sub(1)))
-        .max(1)
 }
 
 /// What the request asked of compression, after the host's settings.
@@ -542,7 +528,7 @@ fn pump(
                 if !sent {
                     // Nobody is listening: keep emptying the pipe so the process is not
                     // held up on a full one while it is being ended.
-                    drain(&live, stream, &mut buffer);
+                    drain(&live, stream, &mut buffer, wait);
                     break;
                 }
             }
@@ -552,8 +538,9 @@ fn pump(
     let _ = done.send(());
 }
 
-fn drain(live: &Live, stream: u8, buffer: &mut [u8]) {
-    while matches!(live.process.read(stream, buffer, 1000), Ok(count) if count >= 0) {}
+/// Empties `stream` of the process, looking at it again every `wait` milliseconds, until it ends.
+fn drain(live: &Live, stream: u8, buffer: &mut [u8], wait: u64) {
+    while matches!(live.process.read(stream, buffer, wait), Ok(count) if count >= 0) {}
 }
 
 /// Watches the process until it has ended and its output is sent, then sends the last frame.
@@ -593,9 +580,9 @@ fn monitor(
     // The process is gone. Its output is complete once both pipes end; a descendant that still
     // holds one open is ended with the rest of the tree after `drain`.
     let mut open = 2_u8;
-    if !wait_for(pumps, &mut open, drain, &shared.sending) {
+    if !wait_for(pumps, &mut open, drain, None) {
         let _ = control.process.kill();
-        wait_for(pumps, &mut open, drain, &shared.sending);
+        wait_for(pumps, &mut open, drain, Some(&shared.sending));
     }
     let _ = control.process.kill();
 
@@ -629,10 +616,16 @@ fn ended(control: &Live) -> ProcessExit {
     )
 }
 
-/// Waits until `open` more pumps have reported or `limit` passes; whether they all reported. A pump
-/// that is handing output to a reader still being slow is waiting for the reader, not for a process
-/// that holds its pipe, so `limit` starts again for as long as one is.
-fn wait_for(pumps: &Receiver<()>, open: &mut u8, limit: Duration, sending: &AtomicUsize) -> bool {
+/// Waits until `open` more pumps have reported or `limit` passes; whether they all reported. With `sending`, a pump
+/// that is handing output to a reader still being slow is waiting for the reader, not for a process that holds its
+/// pipe, so `limit` starts again for as long as one is. That is for after the tree is ended: before it, the reader's
+/// pace would keep a descendant alive.
+fn wait_for(
+    pumps: &Receiver<()>,
+    open: &mut u8,
+    limit: Duration,
+    sending: Option<&AtomicUsize>,
+) -> bool {
     let mut deadline = Instant::now() + limit;
     while *open > 0 {
         let left = deadline.saturating_duration_since(Instant::now());
@@ -643,7 +636,7 @@ fn wait_for(pumps: &Receiver<()>, open: &mut u8, limit: Duration, sending: &Atom
                 *open = 0;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                if sending.load(Ordering::Acquire) == 0 {
+                if sending.is_none_or(|sending| sending.load(Ordering::Acquire) == 0) {
                     return false;
                 }
                 deadline = Instant::now() + limit;

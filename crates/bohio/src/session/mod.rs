@@ -82,6 +82,14 @@ fn not_found() -> ErrorBody {
     ErrorBody::new(ErrorCode::NotFound, "there is no such session")
 }
 
+/// What adding a session to the map came to.
+enum Registered {
+    /// The session is in the map.
+    New,
+    /// The console is held by an attach that came first.
+    Held(Arc<Entry>),
+}
+
 /// A piece of the program's output.
 struct Chunk {
     offset: u64,
@@ -295,7 +303,8 @@ impl Entry {
     }
 
     /// Ends the program the way `signal` says (`kill` when none): the session stays, with its exit, until kept
-    /// time passes.
+    /// time passes. A frame the engine's full lane cannot take would be lost, so the lane is closed instead, which
+    /// ends the engine's tree as a destroyed session does.
     fn end_with(&self, signal: Option<Signal>) {
         let frame = match signal {
             None | Some(Signal::Kill) => vec![KILL_FRAME],
@@ -304,7 +313,9 @@ impl Entry {
                 Err(_) => return,
             },
         };
-        let _ = self.engine.send_timeout(&frame, Some(self.poll));
+        if let Err(Failure::Timeout) = self.engine.send_timeout(&frame, Some(self.poll)) {
+            self.destroy("ended");
+        }
     }
 
     /// Ends the session now: the engine's channel closes, which ends its tree, and nothing more is read or sent.
@@ -484,8 +495,14 @@ impl Sessions {
         ))
     }
 
-    fn register(&self, entry: &Arc<Entry>, per_peer: usize) -> Result<(), ErrorBody> {
+    /// Adds `entry`; a console that another attach registered first is that one, which the caller attaches to.
+    fn register(&self, entry: &Arc<Entry>, per_peer: usize) -> Result<Registered, ErrorBody> {
         let mut entries = lock(&self.entries);
+        if entry.console
+            && let Some(held) = entries.get(&entry.id).filter(|held| !held.lock().ended)
+        {
+            return Ok(Registered::Held(Arc::clone(held)));
+        }
         if entries.len() >= self.config.max_detached
             || entries
                 .values()
@@ -496,7 +513,7 @@ impl Sessions {
             return Err(busy("the host holds as many sessions as it allows"));
         }
         entries.insert(entry.id.clone(), Arc::clone(entry));
-        Ok(())
+        Ok(Registered::New)
     }
 
     /// Starts one thread that looks at the sessions every `check_every`, once.
@@ -597,6 +614,11 @@ impl Sessions {
         if entry.console {
             // Ending a console is letting go of the source: the engine's terminal is released with its channel.
             entry.destroy("ended by an administrator");
+            lock(&self.entries).remove(&entry.id);
+        } else if entry.lock().exit.is_some() {
+            // The program is over and only its kept output and exit remain: ending the session discards them, which
+            // frees its place among the peer's sessions.
+            entry.destroy("ended after its exit");
             lock(&self.entries).remove(&entry.id);
         } else {
             entry.end_with(signal);
@@ -842,17 +864,7 @@ impl Sessions {
             .filter(|entry| !entry.lock().ended)
             .cloned();
         if let Some(entry) = held {
-            let started = shell::Output::Started(shell::Started {
-                pid: None,
-                session: Some(id),
-            })
-            .encode()
-            .unwrap_or_default();
-            if !send_frame(channel, &started, entry.poll, &AtomicBool::new(false)) {
-                return Ok(Ended::Gone);
-            }
-            let from = entry.lock().next;
-            return Ok(self.attached(&entry, channel, from));
+            return Ok(self.attach_console(&entry, channel));
         }
         let wanted = SessionRequest::default();
         let (scrollback, on_full, linger) =
@@ -903,6 +915,21 @@ impl Sessions {
             )));
         }
         self.begin(channel, peer, starting, (scrollback, on_full, linger), mine)
+    }
+
+    /// Answers `started` on `channel` and serves it attached to the live console `entry`, from the end of its output.
+    fn attach_console(&self, entry: &Arc<Entry>, channel: &Arc<dyn Channel>) -> Ended {
+        let started = shell::Output::Started(shell::Started {
+            pid: None,
+            session: Some(entry.id.clone()),
+        })
+        .encode()
+        .unwrap_or_default();
+        if !send_frame(channel, &started, entry.poll, &AtomicBool::new(false)) {
+            return Ended::Gone;
+        }
+        let from = entry.lock().next;
+        self.attached(entry, channel, from)
     }
 
     /// Waits for the engine's first frame, then registers the session and serves `channel` attached to it.
@@ -997,13 +1024,22 @@ impl Sessions {
             poll: starting.poll,
             events: Arc::clone(&self.events),
         });
-        if let Err(error) = self.register(&entry, self.config.max_per_peer) {
-            entry.destroy("the host is full");
-            let _ = channel.send(&match starting.kind {
-                Kind::Shell => encode_error_shell(&error),
-                _ => encode_error(&error),
-            });
-            return Err(error);
+        match self.register(&entry, self.config.max_per_peer) {
+            Ok(Registered::New) => {}
+            Ok(Registered::Held(winner)) => {
+                // Two first attaches started two engines: the one that registered first is the console, and this
+                // one's engine is ended.
+                entry.destroy("another attach started the console first");
+                return Ok(self.attach_console(&winner, channel));
+            }
+            Err(error) => {
+                entry.destroy("the host is full");
+                let _ = channel.send(&match starting.kind {
+                    Kind::Shell => encode_error_shell(&error),
+                    _ => encode_error(&error),
+                });
+                return Err(error);
+            }
         }
         self.ensure_sweeper();
         let for_pump = Arc::clone(&entry);
@@ -1321,6 +1357,17 @@ fn forward_input(
                 if frame.first() == Some(&COMPRESSED_INPUT) {
                     continue;
                 }
+                // A console is the node's: a client asking to end it ends its own attach and nothing more.
+                if entry.console
+                    && let Some(answer) = console_end(&frame)
+                {
+                    if let Some(answer) = answer {
+                        send_frame(channel, &answer, entry.poll, gone);
+                    }
+                    gone.store(true, Ordering::Release);
+                    entry.changed.notify_all();
+                    return;
+                }
                 if !entry.to_engine(&frame, stop) {
                     return;
                 }
@@ -1332,6 +1379,26 @@ fn forward_input(
                 return;
             }
         }
+    }
+}
+
+/// What a client frame that asks to end a console comes to: `None` for any other frame, else the answer to send
+/// first (`signalled` with `delivered: false` for a kill signal, nothing for a plain kill).
+fn console_end(frame: &[u8]) -> Option<Option<Vec<u8>>> {
+    match shell::Input::decode(frame) {
+        Ok(shell::Input::Kill) => Some(None),
+        Ok(shell::Input::Signal(Signal::Kill)) => Some(
+            shell::Output::Signalled(shell::Signalled {
+                signal: Signal::Kill,
+                delivered: false,
+                message: Some(
+                    "a console is the node's own: a kill only detaches this attach".to_owned(),
+                ),
+            })
+            .encode()
+            .ok(),
+        ),
+        _ => None,
     }
 }
 
@@ -1374,4 +1441,74 @@ pub(crate) fn covers_attach(grant: &Grant, metadata: &[u8]) -> bool {
                 .strip_prefix("console:")
                 .is_none_or(|source| grant.permits_source(source))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Quiet;
+
+    impl NodeEvents for Quiet {
+        fn event(&self, _event: &NodeEvent) {}
+    }
+
+    /// A session whose engine is the other end of `engine`.
+    fn entry(engine: End) -> Entry {
+        Entry {
+            id: "id".to_owned(),
+            owner: "owner".to_owned(),
+            console: false,
+            name: None,
+            kind: Kind::Exec,
+            program: "program".to_owned(),
+            started: SystemTime::now(),
+            on_full: OnFull::Pause,
+            scrollback: 1024,
+            linger: Duration::from_secs(60),
+            needs: Permission::Exec,
+            state: Mutex::new(State {
+                chunks: VecDeque::new(),
+                base: 0,
+                next: 0,
+                buffered: 0,
+                delivered: 0,
+                exit: None,
+                exited_at: None,
+                replies: VecDeque::new(),
+                generation: 0,
+                attached: false,
+                detached_at: Instant::now(),
+                ended: false,
+                finished: false,
+            }),
+            changed: Condvar::new(),
+            engine,
+            poll: Duration::from_millis(10),
+            events: Arc::new(Quiet),
+        }
+    }
+
+    #[test]
+    fn a_kill_the_engines_full_lane_cannot_take_is_not_dropped_but_closes_the_lane() {
+        let (mine, theirs) = pair(1);
+        // The engine reads nothing, so its lane is full.
+        mine.send(b"queued").unwrap();
+        let session = entry(mine);
+        session.end_with(None);
+        assert!(session.lock().ended, "the session is over");
+        assert!(
+            theirs.is_closed(),
+            "closing the lane is what ends the engine's tree"
+        );
+    }
+
+    #[test]
+    fn a_kill_the_lane_takes_is_sent_and_leaves_the_session_to_report_its_exit() {
+        let (mine, theirs) = pair(4);
+        let session = entry(mine);
+        session.end_with(None);
+        assert!(!session.lock().ended);
+        assert_eq!(theirs.receive(None).unwrap(), Some(vec![KILL_FRAME]));
+    }
 }

@@ -28,6 +28,7 @@ use crate::access::{Source, Sources, code_of};
 use crate::config::ShellConfig;
 use crate::limit::{Permit, Slots};
 use crate::policy::{Grant, Permission};
+use crate::stream::{Unsent, chunk_size, send_until};
 
 /// What [`serve`] needs besides the stream.
 #[derive(Debug, Clone, Copy)]
@@ -129,7 +130,7 @@ pub fn serve(
         });
     }
 
-    let chunk = chunk_size(&shared, context.config.chunk_size);
+    let chunk = chunk_size(shared.channel.as_ref(), context.config.chunk_size);
     let spawned = {
         let shared = Arc::clone(&shared);
         let open = Arc::clone(&open);
@@ -220,18 +221,13 @@ impl Shared {
     /// Sends one message, waiting while the stream has no room. `false` when the stream is gone
     /// or the exchange is over, and the message was not sent.
     fn send(&self, message: &[u8]) -> bool {
-        loop {
-            match self.channel.send_timeout(message, Some(self.poll)) {
-                Ok(()) => return true,
-                Err(Failure::Timeout | Failure::NoProgress) => {
-                    if self.gone.load(Ordering::Acquire) || self.done.load(Ordering::Acquire) {
-                        return false;
-                    }
-                }
-                Err(_) => {
-                    self.gone.store(true, Ordering::Release);
-                    return false;
-                }
+        let over = || self.gone.load(Ordering::Acquire) || self.done.load(Ordering::Acquire);
+        match send_until(self.channel.as_ref(), message, self.poll, &over) {
+            Ok(()) => true,
+            Err(Unsent::Stopped) => false,
+            Err(Unsent::Failed) => {
+                self.gone.store(true, Ordering::Release);
+                false
             }
         }
     }
@@ -256,16 +252,6 @@ fn encode(output: &Output) -> Vec<u8> {
         // Every body the engine builds encodes; an empty error frame is still a frame.
         vec![0x05]
     })
-}
-
-/// The largest output chunk the stream carries: the configured size, less than a message.
-fn chunk_size(shared: &Shared, configured: usize) -> usize {
-    shared
-        .channel
-        .capabilities()
-        .max_send
-        .map_or(configured, |max| configured.min(max.saturating_sub(1)))
-        .max(1)
 }
 
 fn refuse(code: ErrorCode, message: &'static str) -> ErrorBody {
@@ -497,11 +483,14 @@ fn monitor(
     };
 
     // The program has exited by itself: its terminal may still deliver the last of its output, so
-    // wait until it is quiet (or ended) before ending the rest of the tree.
+    // wait until it is quiet (or ended) before ending the rest of the tree. A reader that is slow to take
+    // the output does not extend this, and neither does a descendant that keeps writing past `timeout`:
+    // only the exit waits for the reader, after the tree is ended.
     if natural {
         while !shared.reader_done.load(Ordering::Acquire)
             && !shared.gone.load(Ordering::Acquire)
-            && (shared.sending.load(Ordering::Acquire) || shared.quiet_for() < drain_quiet)
+            && shared.quiet_for() < drain_quiet
+            && !timeout.is_some_and(|limit| started.elapsed() >= limit)
         {
             thread::sleep(shared.poll);
         }

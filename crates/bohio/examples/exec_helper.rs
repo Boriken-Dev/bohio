@@ -99,6 +99,19 @@ fn main() {
             let _ = writeln!(out, "{}", child.id());
             let _ = out.flush();
         }
+        // An orphan that holds the output open, then `bytes` of output the reader may not take.
+        ["orphan-flood", ms, bytes] => {
+            let me = std::env::current_exe().expect("own path");
+            let child = Command::new(me)
+                .args(["sleep", ms])
+                .stdin(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("grandchild starts");
+            let _ = writeln!(out, "{}", child.id());
+            let _ = out.flush();
+            let _ = out.write_all(&vec![b'x'; bytes.parse().unwrap_or(0)]);
+        }
         ["env", name] => {
             let _ = writeln!(
                 out,

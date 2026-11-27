@@ -575,6 +575,39 @@ fn a_signal_a_system_lacks_is_answered_not_delivered_and_the_program_runs_on() {
     assert!(link.finished_shell().iter().all(Result::is_ok));
 }
 
+/// What outlives a program on a terminal is ended once the terminal has been quiet, whether or not the reader takes the
+/// output: a client that holds the stream open and reads nothing does not keep a descendant alive.
+#[cfg(unix)]
+#[test]
+fn a_descendant_of_an_exited_program_is_ended_though_the_reader_takes_nothing() {
+    let mut link = Link::shells(
+        Grant::allowing([Permission::Shell]),
+        ShellConfig {
+            chunk_size: 1024,
+            ..ShellConfig::default()
+        },
+    );
+    link.capacity = 4096;
+    let shell = open(&link, &helper_on_terminal(&["orphan-flood", "60000", "8000"]));
+    let orphan: u32 = loop {
+        if let Some(Event::Data(bytes)) = shell.next(WAIT).expect("events arrive") {
+            break text(&bytes)
+                .lines()
+                .next()
+                .and_then(|line| line.trim().parse().ok())
+                .expect("the helper printed the orphan's id");
+        }
+    };
+    assert!(
+        gone_within(orphan, Duration::from_secs(10)),
+        "the orphan {orphan} outlived the program while the reader took nothing"
+    );
+    let (_, exit) = shell.wait(WAIT).expect("the shell exits");
+    assert_eq!(exit.code, Some(0));
+    drop(shell);
+    assert!(link.finished_shell().iter().all(Result::is_ok));
+}
+
 #[test]
 fn a_deadline_ends_a_program_on_a_terminal_and_reports_timed_out() {
     let link = link_for_programs();

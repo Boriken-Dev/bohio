@@ -444,6 +444,42 @@ fn a_descendant_holding_the_output_open_is_ended_after_the_drain_timeout() {
     );
 }
 
+/// The drain time bounds what outlives the process whether or not the reader takes its output: a client that holds the
+/// stream open and reads nothing does not keep a descendant alive.
+#[test]
+fn a_descendant_is_ended_after_the_drain_timeout_though_the_reader_takes_nothing() {
+    let mut link = Link::new(
+        Grant::allowing([Permission::Exec]),
+        ExecutionConfig {
+            drain_timeout: Span(Duration::from_millis(300)),
+            chunk_size: 1024,
+            ..ExecutionConfig::default()
+        },
+    );
+    link.capacity = 4096;
+    let exec = Exec::start(
+        &link,
+        &Request::argv([helper().as_str(), "orphan-flood", "60000", "40000"]),
+    )
+    .expect("the stream opens");
+    // The first frame holds the orphan's id; nothing more is read until the orphan has been dealt with.
+    let orphan: u32 = loop {
+        if let Some(Event::Stdout(bytes)) = exec.next(WAIT).expect("events arrive") {
+            break text(&bytes[..bytes.len().min(16)])
+                .lines()
+                .next()
+                .and_then(|line| line.parse().ok())
+                .expect("the helper printed the orphan's id");
+        }
+    };
+    assert!(
+        gone_within(orphan, Duration::from_secs(10)),
+        "the orphan {orphan} outlived the drain timeout while the reader took nothing"
+    );
+    let done = exec.wait(WAIT).expect("the process ends");
+    assert_eq!(done.exit.code, Some(0));
+}
+
 #[test]
 fn a_killed_process_reports_the_signal_on_unix_and_no_code() {
     let link = runner();
