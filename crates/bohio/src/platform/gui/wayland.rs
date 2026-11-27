@@ -311,15 +311,18 @@ pub(crate) fn layout(sources: &[Source], sizes: &[Option<(u32, u32)>]) -> Vec<Sh
 // Input.
 
 /// The Linux input event code of a mouse button (`BTN_LEFT` and the others; the portal takes evdev codes).
-const fn button_code(button: Button) -> i32 {
-    match button {
+///
+/// `None` for a button this build does not know (the protocol may add some): it is ignored.
+const fn button_code(button: Button) -> Option<i32> {
+    Some(match button {
         Button::Left => 0x110,
         Button::Right => 0x111,
         Button::Middle => 0x112,
         // BTN_SIDE and BTN_EXTRA: what every desktop treats as back and forward.
         Button::Back => 0x113,
         Button::Forward => 0x114,
-    }
+        _ => return None,
+    })
 }
 
 /// One thing sent to the portal.
@@ -449,7 +452,10 @@ pub(crate) fn plan(
             if let (Some(x), Some(y)) = (x, y) {
                 steps.push(motion(shown, display.as_ref(), *x, *y)?);
             }
-            let code = button_code(*button);
+            let Some(code) = button_code(*button) else {
+                tracing::debug!(?button, "a button this build does not know is ignored");
+                return Ok(steps);
+            };
             match action {
                 ButtonAction::Press => steps.push(Step::Button { code, down: true }),
                 ButtonAction::Release => steps.push(Step::Button { code, down: false }),
@@ -459,6 +465,10 @@ pub(crate) fn plan(
                         steps.push(Step::Button { code, down: false });
                     }
                 }
+                _ => tracing::debug!(
+                    ?action,
+                    "a button action this build does not know is ignored"
+                ),
             }
             steps
         }
@@ -491,6 +501,10 @@ pub(crate) fn plan(
         }
         InputEvent::Text { text } => text_steps(text)?,
         InputEvent::Wait { .. } => Vec::new(),
+        _ => {
+            tracing::debug!(?event, "an input event this build does not know is ignored");
+            Vec::new()
+        }
     })
 }
 
@@ -1638,10 +1652,10 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(button_code(Button::Left), 0x110);
-        assert_eq!(button_code(Button::Middle), 0x112);
-        assert_eq!(button_code(Button::Back), 0x113);
-        assert_eq!(button_code(Button::Forward), 0x114);
+        assert_eq!(button_code(Button::Left), Some(0x110));
+        assert_eq!(button_code(Button::Middle), Some(0x112));
+        assert_eq!(button_code(Button::Back), Some(0x113));
+        assert_eq!(button_code(Button::Forward), Some(0x114));
     }
 
     #[test]

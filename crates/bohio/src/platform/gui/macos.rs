@@ -380,28 +380,36 @@ fn direction(action: KeyAction) -> Direction {
     }
 }
 
-fn button_of(button: Button) -> enigo::Button {
-    match button {
+/// `None` for a button this build does not know (the protocol may add some): it is ignored.
+fn button_of(button: Button) -> Option<enigo::Button> {
+    Some(match button {
         Button::Left => enigo::Button::Left,
         Button::Right => enigo::Button::Right,
         Button::Middle => enigo::Button::Middle,
         Button::Back => enigo::Button::Back,
         Button::Forward => enigo::Button::Forward,
-    }
+        _ => return None,
+    })
 }
 
 /// Posts one step.
 fn send(enigo: &mut Enigo, step: &Step) -> Result<(), GuiError> {
     let sent = match step {
         Step::Move { x, y } => enigo.move_mouse(*x, *y, Coordinate::Abs),
-        Step::Button { button, down } => enigo.button(
-            button_of(*button),
-            if *down {
-                Direction::Press
-            } else {
-                Direction::Release
-            },
-        ),
+        Step::Button { button, down } => {
+            let Some(button) = button_of(*button) else {
+                tracing::debug!(?button, "a button this build does not know is ignored");
+                return Ok(());
+            };
+            enigo.button(
+                button,
+                if *down {
+                    Direction::Press
+                } else {
+                    Direction::Release
+                },
+            )
+        }
         Step::Scroll {
             notches,
             horizontal,
