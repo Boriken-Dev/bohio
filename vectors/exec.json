@@ -57,6 +57,31 @@
     },
     {
       "direction": "client_to_host",
+      "hex": "a667636f6d6d616e64a264747970656461726776646172677682646563686f6568656c6c6f63637764f663656e76a365636c656172f463736574a06672656d6f76658065737464696e66636c6f7365646a74696d656f75745f6d73f666736f75726365636c6162",
+      "kind": "open",
+      "name": "open_on_a_source",
+      "type": "exec.Request",
+      "value": {
+        "command": {
+          "argv": [
+            "echo",
+            "hello"
+          ],
+          "type": "argv"
+        },
+        "cwd": null,
+        "env": {
+          "clear": false,
+          "remove": [],
+          "set": {}
+        },
+        "source": "lab",
+        "stdin": "closed",
+        "timeout_ms": null
+      }
+    },
+    {
+      "direction": "client_to_host",
       "hex": "a667636f6d6d616e64a264747970656461726776646172677682646d616b6563616c6c63637764f663656e76a365636c656172f463736574a06672656d6f76658065737464696e66636c6f7365646a74696d656f75745f6d73f66773657373696f6ea5646e616d65656275696c646a7363726f6c6c6261636b1a00010000676f6e5f66756c6c6b64726f705f6f6c64657374696c696e6765725f6d7319ea6066646574616368f5",
       "kind": "open",
       "name": "open_session",

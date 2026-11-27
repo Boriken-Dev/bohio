@@ -17,6 +17,20 @@
     },
     {
       "direction": "client_to_host",
+      "hex": "a566736f75726365636c616264706174686d2f6574632f686f73746e616d65666f666673657400666c656e677468f66668617368657380",
+      "kind": "open",
+      "name": "open_on_a_source",
+      "type": "fs.ReadRequest",
+      "value": {
+        "hashes": [],
+        "length": null,
+        "offset": 0,
+        "path": "/etc/hostname",
+        "source": "lab"
+      }
+    },
+    {
+      "direction": "client_to_host",
       "hex": "a464706174686c2f7372762f6269672e62696e666f66667365741a00100000666c656e6774681a000100006668617368657380",
       "kind": "open",
       "name": "open_range",

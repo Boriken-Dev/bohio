@@ -418,6 +418,17 @@ fn control() -> Vec<Case> {
             },
         ),
         request("info", 2, Call::Info),
+        message(
+            "info_on_a_source",
+            TO_HOST,
+            "message",
+            "control.Request",
+            &ControlRequest {
+                id: 3,
+                call: Call::Info,
+                source: Some("lab".into()),
+            },
+        ),
         request(
             "stat",
             3,
@@ -814,6 +825,16 @@ fn exec_cases() -> Vec<Case> {
             &exec::Request::argv(["echo", "hello"]),
         ),
         message("open_full", OPEN, "open", "exec.Request", &full),
+        message(
+            "open_on_a_source",
+            OPEN,
+            "open",
+            "exec.Request",
+            &exec::Request {
+                source: Some("lab".into()),
+                ..exec::Request::argv(["echo", "hello"])
+            },
+        ),
         message("open_session", OPEN, "open", "exec.Request", &detached),
         message(
             "open_shell_script",
@@ -1251,6 +1272,16 @@ fn read_cases() -> Vec<Case> {
             &ReadRequest::whole("/etc/hostname"),
         ),
         message(
+            "open_on_a_source",
+            OPEN,
+            "open",
+            "fs.ReadRequest",
+            &ReadRequest {
+                source: Some("lab".into()),
+                ..ReadRequest::whole("/etc/hostname")
+            },
+        ),
+        message(
             "open_range",
             OPEN,
             "open",
@@ -1594,6 +1625,16 @@ fn write_cases() -> Vec<Case> {
         ),
         message("open_checked", OPEN, "open", "fs.WriteRequest", &checked),
         message(
+            "open_on_a_source",
+            OPEN,
+            "open",
+            "fs.WriteRequest",
+            &WriteRequest {
+                source: Some("lab".into()),
+                ..WriteRequest::replace("/srv/out.txt")
+            },
+        ),
+        message(
             "open_replace_if_unchanged",
             OPEN,
             "open",
@@ -1843,6 +1884,16 @@ fn walk_cases() -> Vec<Case> {
             &WalkRequest::default(),
         ),
         message(
+            "open_on_a_source",
+            OPEN,
+            "open",
+            "walk.Request",
+            &WalkRequest {
+                source: Some("lab".into()),
+                ..WalkRequest::default()
+            },
+        ),
+        message(
             "open_filtered",
             OPEN,
             "open",
@@ -1958,6 +2009,16 @@ fn search_cases() -> Vec<Case> {
     };
     let refused = ErrorBody::new(ErrorCode::BadRequest, "the pattern is empty");
     vec![
+        message(
+            "open_on_a_source",
+            OPEN,
+            "open",
+            "search.Request",
+            &SearchRequest {
+                source: Some("lab".into()),
+                ..SearchRequest::default()
+            },
+        ),
         message(
             "open_literal",
             OPEN,
@@ -2087,6 +2148,16 @@ fn hash_cases() -> Vec<Case> {
             "open",
             "hash.Request",
             &HashRequest::new([Algorithm::Sha256]),
+        ),
+        message(
+            "open_on_a_source",
+            OPEN,
+            "open",
+            "hash.Request",
+            &HashRequest {
+                source: Some("lab".into()),
+                ..HashRequest::new([Algorithm::Sha256])
+            },
         ),
         message(
             "open_several_with_blocks",
@@ -2415,6 +2486,16 @@ fn gui_cases() -> Vec<Case> {
             "open",
             "gui.Request",
             &GuiRequest::new([Want::View, Want::Input]),
+        ),
+        message(
+            "open_on_a_source",
+            OPEN,
+            "open",
+            "gui.Request",
+            &GuiRequest {
+                source: Some("lab".into()),
+                ..GuiRequest::new([Want::View])
+            },
         ),
         message(
             "open_default",

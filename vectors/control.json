@@ -32,6 +32,20 @@
     },
     {
       "direction": "client_to_host",
+      "hex": "a366736f75726365636c6162626964036463616c6ca1647479706564696e666f",
+      "kind": "message",
+      "name": "info_on_a_source",
+      "type": "control.Request",
+      "value": {
+        "call": {
+          "type": "info"
+        },
+        "id": 3,
+        "source": "lab"
+      }
+    },
+    {
+      "direction": "client_to_host",
       "hex": "a2626964036463616c6ca36474797065647374617464706174686d2f6574632f686f73746e616d6566666f6c6c6f77f5",
       "kind": "message",
       "name": "stat",

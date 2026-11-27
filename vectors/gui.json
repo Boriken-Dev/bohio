@@ -18,6 +18,20 @@
     },
     {
       "direction": "client_to_host",
+      "hex": "a36773657373696f6ef66477616e7481647669657766736f75726365636c6162",
+      "kind": "open",
+      "name": "open_on_a_source",
+      "type": "gui.Request",
+      "value": {
+        "session": null,
+        "source": "lab",
+        "want": [
+          "view"
+        ]
+      }
+    },
+    {
+      "direction": "client_to_host",
       "hex": "a26773657373696f6ef66477616e74f6",
       "kind": "open",
       "name": "open_default",

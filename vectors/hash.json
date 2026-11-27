@@ -17,6 +17,20 @@
     },
     {
       "direction": "client_to_host",
+      "hex": "a366736f75726365636c61626a616c676f726974686d73816673686132353666626c6f636b73f6",
+      "kind": "open",
+      "name": "open_on_a_source",
+      "type": "hash.Request",
+      "value": {
+        "algorithms": [
+          "sha256"
+        ],
+        "blocks": null,
+        "source": "lab"
+      }
+    },
+    {
+      "direction": "client_to_host",
       "hex": "a26a616c676f726974686d7383636d643566626c616b65336678786831323866626c6f636b73a36473697a65190800647765616b657273796e636a7374726f6e675f6c656e10",
       "kind": "open",
       "name": "open_several_with_blocks",

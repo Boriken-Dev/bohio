@@ -12,6 +12,16 @@
     },
     {
       "direction": "client_to_host",
+      "hex": "a166736f75726365636c6162",
+      "kind": "open",
+      "name": "open_on_a_source",
+      "type": "walk.Request",
+      "value": {
+        "source": "lab"
+      }
+    },
+    {
+      "direction": "client_to_host",
       "hex": "a66564657074680266666f6c6c6f77f567696e636c75646581672a2a2f2a2e7273676578636c7564658266746172676574652a2e746d70666861736865738164787868336b636f6d7072657373696f6ea369616c676f726974686d647a737464656c6576656c036a77696e646f775f6c6f67f6",
       "kind": "open",
       "name": "open_filtered",

@@ -4,6 +4,20 @@
   "vectors": [
     {
       "direction": "client_to_host",
+      "hex": "a366736f75726365636c61626477616c6ba165726f6f747380677061747465726e60",
+      "kind": "open",
+      "name": "open_on_a_source",
+      "type": "search.Request",
+      "value": {
+        "pattern": "",
+        "source": "lab",
+        "walk": {
+          "roots": []
+        }
+      }
+    },
+    {
+      "direction": "client_to_host",
       "hex": "a26477616c6ba165726f6f747381692f7372762f646f6373677061747465726e64544f444f",
       "kind": "open",
       "name": "open_literal",
