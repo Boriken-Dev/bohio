@@ -174,6 +174,14 @@ fn values_out_of_range_name_their_key() {
             "client.parallel_streams",
         ),
         ("[client]\nparallel_links = 0\n", "client.parallel_links"),
+        ("[client]\npower_wait = 0\n", "client.power_wait"),
+        ("[client]\nkill_after = 0\n", "client.kill_after"),
+        ("[client]\nsync_bundle_max = 0\n", "client.sync_bundle_max"),
+        (
+            "[client]\nsync_bundle_items = 0\n",
+            "client.sync_bundle_items",
+        ),
+        ("[mcp]\nmax_calls = 0\n", "mcp.max_calls"),
         (
             "[pairing]\nattempt_delay = \"5s\"\nattempt_delay_max = \"1s\"\n",
             "pairing.attempt_delay_max",
@@ -1475,4 +1483,27 @@ fn the_profile_example_files_load_under_their_own_profile() {
         let layered = Layers::load(&[profile_example(name)]).unwrap();
         assert_eq!(layered.profile.name(), name);
     }
+}
+
+#[test]
+fn the_client_and_mcp_bounds_have_documented_defaults_the_file_can_change() {
+    let defaults = parse("").unwrap();
+    assert_eq!(defaults.client.power_wait.0, Duration::from_secs(90));
+    assert_eq!(defaults.client.kill_after.0, Duration::from_secs(2));
+    assert_eq!(defaults.client.sync_bundle_max, 1_048_576);
+    assert_eq!(defaults.client.sync_bundle_items, 1000);
+    assert_eq!(defaults.mcp.max_calls, 8);
+    assert_eq!(defaults.mcp.gui_max_image_bytes, 1_048_576);
+    let set = parse(
+        "[client]\npower_wait = \"5m\"\nkill_after = \"500ms\"\nsync_bundle_max = 10\nsync_bundle_items = 3\n\
+         [mcp]\nmax_calls = 2\ngui_max_image_bytes = 5\n",
+    )
+    .unwrap();
+    assert_eq!(set.client.power_wait.0, Duration::from_secs(300));
+    assert_eq!(set.client.kill_after.0, Duration::from_millis(500));
+    assert_eq!(
+        (set.client.sync_bundle_max, set.client.sync_bundle_items),
+        (10, 3)
+    );
+    assert_eq!((set.mcp.max_calls, set.mcp.gui_max_image_bytes), (2, 5));
 }

@@ -170,6 +170,8 @@ pub struct Config {
     pub waiting: WaitingConfig,
     /// `[client]`: the waits and sizes of the `bohio` command's own client side.
     pub client: ClientConfig,
+    /// `[mcp]`: the bounds of `bohio mcp`.
+    pub mcp: McpConfig,
     /// `[control]`: the node's local endpoint.
     pub control: ControlConfig,
     /// `[power]`.
@@ -1732,6 +1734,18 @@ pub struct ClientConfig {
     /// and 8 MiB for `read`, which holds ranges in memory (at most two per stream). A smaller range balances a slow
     /// stream against a fast one and costs an open, a round trip, per range. Default `0`.
     pub parallel_range: u64,
+    /// The least a `remote power` or `remote media` call waits for the host's answer: an action may take as long as the
+    /// host's `[power] action_timeout` and then says so, so a shorter `reply_timeout` does not cut it off. Not zero.
+    /// Default `90s`.
+    pub power_wait: Span,
+    /// How soon a second Ctrl-C after the first ends the program's whole tree instead of interrupting it again
+    /// (`exec`, `shell`, `console`; `--kill-after`). Not zero. Default `2s`.
+    pub kill_after: Span,
+    /// The largest file `put` and `get` of a tree move in a bundle, in bytes; a larger one goes by itself, by delta against
+    /// the old copy (`--bundle-max`). At least 1. Default `1048576`.
+    pub sync_bundle_max: u64,
+    /// The most files in one bundle of a tree transfer (`--bundle-items`). At least 1. Default `1000`.
+    pub sync_bundle_items: usize,
     /// The profile whose client defaults (compression, delta, comparison, streams, bulk window, when to prepare) apply
     /// to what a flag of `bohio remote` leaves unset; `remote --profile` overrides it. One of `default`, `lan`,
     /// `weak-host`, `slow-link` or `fat-link`. Unset: `default`. A key this file sets itself (`parallel_streams`,
@@ -1754,6 +1768,10 @@ impl Default for ClientConfig {
             parallel_links: 1,
             parallel_range: 0,
             profile: None,
+            power_wait: Span(Duration::from_secs(90)),
+            kill_after: Span(Duration::from_secs(2)),
+            sync_bundle_max: 1_048_576,
+            sync_bundle_items: 1000,
         }
     }
 }
@@ -1765,6 +1783,8 @@ impl ClientConfig {
             ("client.gui_timeout", self.gui_timeout.0.is_zero()),
             ("client.probe_timeout", self.probe_timeout.0.is_zero()),
             ("client.links_wait", self.links_wait.0.is_zero()),
+            ("client.power_wait", self.power_wait.0.is_zero()),
+            ("client.kill_after", self.kill_after.0.is_zero()),
         ] {
             if zero {
                 return Err((key, "must not be zero"));
@@ -1778,6 +1798,12 @@ impl ClientConfig {
         }
         if self.input_queue == 0 {
             return Err(("client.input_queue", "must be at least 1"));
+        }
+        if self.sync_bundle_max == 0 {
+            return Err(("client.sync_bundle_max", "must be at least 1"));
+        }
+        if self.sync_bundle_items == 0 {
+            return Err(("client.sync_bundle_items", "must be at least 1"));
         }
         if self.parallel_streams == 0 {
             return Err(("client.parallel_streams", "must be at least 1"));
@@ -1799,6 +1825,35 @@ impl ClientConfig {
     /// The wait for one step of a transfer: `None` when `transfer_timeout` is `0`.
     pub fn transfer(&self) -> Option<Duration> {
         (!self.transfer_timeout.0.is_zero()).then_some(self.transfer_timeout.0)
+    }
+}
+
+/// `[mcp]`: what `bohio mcp` serves, each with a flag of the command that overrides it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct McpConfig {
+    /// The tool calls that run at once; one more is answered as busy (`--max-calls`). At least 1. Default `8`.
+    pub max_calls: usize,
+    /// Where a `gui` tool's `format: "auto"` turns to JPEG: a PNG screenshot larger than this many bytes is taken again as
+    /// JPEG 80 (`--gui-max-image-bytes`). Default `1048576`.
+    pub gui_max_image_bytes: u64,
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            max_calls: 8,
+            gui_max_image_bytes: 1_048_576,
+        }
+    }
+}
+
+impl McpConfig {
+    fn validate(&self) -> Result<(), (&'static str, &'static str)> {
+        if self.max_calls == 0 {
+            return Err(("mcp.max_calls", "must be at least 1"));
+        }
+        Ok(())
     }
 }
 
@@ -2694,6 +2749,9 @@ impl Config {
             return Err(invalid(&key, &message));
         }
         if let Err((key, message)) = self.client.validate() {
+            return Err(invalid(key, message));
+        }
+        if let Err((key, message)) = self.mcp.validate() {
             return Err(invalid(key, message));
         }
         if let Err((key, message)) = self.waiting.validate() {

@@ -62,6 +62,12 @@ pub(super) struct Client {
     pub(super) read_size: usize,
     /// Chunks of standard input held ahead of a connection.
     pub(super) input_queue: usize,
+    /// The least a power or media call waits.
+    pub(super) power_wait: Duration,
+    /// How soon a second Ctrl-C ends the program's tree.
+    pub(super) kill_after: Duration,
+    /// The largest file a tree transfer moves in a bundle, and the most files in one.
+    pub(super) bundle: (u64, usize),
     /// How often a loop that waits for input or a stream looks again.
     pub(super) poll: Duration,
     /// The most bytes of a screen rectangle, and the most pixels of a frame, this run holds (`[gui] max_rect_bytes` and
@@ -86,6 +92,9 @@ impl Client {
             input_chunk: client.input_chunk,
             read_size: client.read_size,
             input_queue: client.input_queue,
+            power_wait: client.power_wait.0,
+            kill_after: client.kill_after.0,
+            bundle: (client.sync_bundle_max, client.sync_bundle_items),
             poll: config.link.poll_interval.0.max(Duration::from_millis(1)),
             screen: (config.gui.max_rect_bytes, config.gui.max_snapshot_pixels),
             profile: args.profile.unwrap_or_else(|| {
@@ -2074,8 +2083,8 @@ fn sync_command(
             .unwrap_or(Compare::Meta),
         delete: args.delete,
         dry_run: args.dry_run,
-        bundle_max: args.bundle_max,
-        bundle_items: args.bundle_items,
+        bundle_max: args.bundle_max.unwrap_or(client.bundle.0),
+        bundle_items: args.bundle_items.unwrap_or(client.bundle.1),
         parallel: args.parallel,
         sync,
         bundle: bohio_client::bundle::BundleOptions {
@@ -2228,7 +2237,12 @@ fn exec_command(
             request.env.set.insert(name.to_owned(), value.to_owned());
         }
         request.session = wanted_session(&args.session);
-        return terminal_command(link, request, args.kill_after, client);
+        return terminal_command(
+            link,
+            request,
+            args.kill_after.unwrap_or(client.kill_after),
+            client,
+        );
     }
     let mut request = Request::argv(args.argv.iter().cloned());
     request.session = wanted_session(&args.session);
@@ -2256,7 +2270,12 @@ fn exec_command(
     if args.session.detach {
         return detached_exec(&exec, client);
     }
-    drive_exec(exec, args.stdin, args.kill_after, client)
+    drive_exec(
+        exec,
+        args.stdin,
+        args.kill_after.unwrap_or(client.kill_after),
+        client,
+    )
 }
 
 /// The session a command line asks for, when it asks for one.
@@ -2395,7 +2414,12 @@ fn shell_command(
     };
     let mut request = ShellRequest::kind(kind);
     request.cwd.clone_from(&args.cwd);
-    terminal_command(link, request, args.kill_after, client)
+    terminal_command(
+        link,
+        request,
+        args.kill_after.unwrap_or(client.kill_after),
+        client,
+    )
 }
 
 /// `bohio remote ... power`.
@@ -2416,7 +2440,7 @@ fn power_command(
         PowerWord::Nmi => Action::Nmi,
     };
     // An action may take as long as the host's `[power] action_timeout` and then says so; this waits a little longer.
-    let wait = client.reply.max(Duration::from_secs(90));
+    let wait = client.reply.max(client.power_wait);
     let state = bohio_client::power::act(link, args.source.as_deref(), action, Some(wait))
         .map_err(|error| explain(&error))?;
     println!("{}", power_text(&state, output::json())?);
@@ -2466,7 +2490,7 @@ fn media_command(
 ) -> Result<ExitCode, String> {
     use super::MediaOp;
     use bohio_proto::media::Image;
-    let wait = Some(client.reply.max(Duration::from_secs(90)));
+    let wait = Some(client.reply.max(client.power_wait));
     let source = args.source.as_deref();
     let slots = match &args.op {
         MediaOp::Status => bohio_client::media::status(link, source, wait),
@@ -2520,7 +2544,7 @@ fn console_command(
         &Arc::new(shell),
         interactive,
         size,
-        args.kill_after,
+        args.kill_after.unwrap_or(client.kill_after),
         client,
         true,
     )
@@ -2679,9 +2703,12 @@ fn attach_command(
         ));
     }
     match attachment {
-        bohio_client::session::Attachment::Exec(exec) => {
-            drive_exec(Arc::from(exec), args.stdin, args.kill_after, client)
-        }
+        bohio_client::session::Attachment::Exec(exec) => drive_exec(
+            Arc::from(exec),
+            args.stdin,
+            args.kill_after.unwrap_or(client.kill_after),
+            client,
+        ),
         bohio_client::session::Attachment::Shell(shell) => {
             let interactive = std::io::stdin().is_terminal();
             let size = if interactive { local_size() } else { (80, 24) };
@@ -2693,7 +2720,7 @@ fn attach_command(
                 &Arc::new(shell),
                 interactive,
                 size,
-                args.kill_after,
+                args.kill_after.unwrap_or(client.kill_after),
                 client,
                 false,
             )

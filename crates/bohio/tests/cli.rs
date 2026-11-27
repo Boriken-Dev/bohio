@@ -1003,3 +1003,35 @@ fn a_wrong_remote_invocation_exits_2_before_the_host_is_dialled() {
         );
     }
 }
+
+#[test]
+fn a_zero_for_a_count_or_a_wait_that_cannot_be_zero_is_refused_with_status_2() {
+    for args in [
+        vec!["mcp", "--host", "tcp://127.0.0.1:1", "--max-calls", "0"],
+        vec![
+            "remote",
+            "tcp://127.0.0.1:1",
+            "exec",
+            "--kill-after",
+            "0",
+            "true",
+        ],
+        vec![
+            "remote",
+            "tcp://127.0.0.1:1",
+            "put",
+            "a",
+            "b",
+            "--bundle-items",
+            "0",
+        ],
+    ] {
+        let output = bohio(&args);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{args:?}: {}",
+            text(&output.stderr)
+        );
+    }
+}

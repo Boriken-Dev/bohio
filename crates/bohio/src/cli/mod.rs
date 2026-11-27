@@ -450,6 +450,23 @@ fn parse_dynamic(text: &str) -> Result<String, String> {
         .map_err(|error| error.to_string())
 }
 
+/// A time that is not zero.
+fn parse_positive_span(text: &str) -> Result<std::time::Duration, String> {
+    let span = parse_span(text)?;
+    if span.is_zero() {
+        return Err("a time of zero is not a choice".to_owned());
+    }
+    Ok(span)
+}
+
+/// A count of at least 1.
+fn parse_count(text: &str) -> Result<usize, String> {
+    match text.parse::<usize>() {
+        Ok(count) if count >= 1 => Ok(count),
+        _ => Err(format!("`{text}` is not a count of at least 1")),
+    }
+}
+
 /// A profile name for what this run asks of the host (`parse_profile`).
 fn parse_profile(text: &str) -> Result<bohio_client::profile::Profile, String> {
     bohio_client::profile::Profile::parse(text).ok_or_else(|| {
@@ -710,8 +727,8 @@ pub struct RemoteAttachArgs {
     pub stdin: bool,
     /// How soon a second Ctrl-C after the first (`1s`, `500ms`; a bare number is seconds) ends the program's whole tree
     /// instead of interrupting it again.
-    #[arg(long, value_name = "SPAN", default_value = "2s", value_parser = parse_span)]
-    pub kill_after: std::time::Duration,
+    #[arg(long, value_name = "SPAN", value_parser = parse_positive_span)]
+    pub kill_after: Option<std::time::Duration>,
 }
 
 /// What `power` does.
@@ -800,8 +817,8 @@ pub struct RemoteConsoleArgs {
     pub from: Option<u64>,
     /// How soon a second Ctrl-C after the first (`1s`, `500ms`; a bare number is seconds) interrupts again; a console's
     /// program is never ended from here.
-    #[arg(long, value_name = "SPAN", default_value = "2s", value_parser = parse_span)]
-    pub kill_after: std::time::Duration,
+    #[arg(long, value_name = "SPAN", value_parser = parse_positive_span)]
+    pub kill_after: Option<std::time::Duration>,
 }
 
 /// `bohio remote ... end`.
@@ -859,8 +876,8 @@ pub struct RemoteExecArgs {
     /// How soon a second Ctrl-C after the first (`1s`, `500ms`; a bare number is seconds) ends the program's whole tree
     /// instead of interrupting it again. The first Ctrl-C of this command is an `interrupt` to the program, not the end of
     /// this command.
-    #[arg(long, value_name = "SPAN", default_value = "2s", value_parser = parse_span)]
-    pub kill_after: std::time::Duration,
+    #[arg(long, value_name = "SPAN", value_parser = parse_positive_span)]
+    pub kill_after: Option<std::time::Duration>,
     /// A detached session instead of a run to the end.
     #[command(flatten)]
     pub session: SessionArgs,
@@ -1098,12 +1115,12 @@ pub struct RemoteSyncArgs {
     /// Default `meta`, or the profile's.
     #[arg(long, value_enum)]
     pub compare: Option<CompareChoice>,
-    /// The largest file moved in a bundle, in bytes; larger ones go one by one, by delta against the old copy.
-    #[arg(long, value_name = "BYTES", default_value_t = 1_048_576)]
-    pub bundle_max: u64,
-    /// The most files in one bundle.
-    #[arg(long, value_name = "N", default_value_t = 1000)]
-    pub bundle_items: usize,
+    /// The largest file moved in a bundle, in bytes; larger ones go one by one, by delta against the old copy. Default `[client] sync_bundle_max` (1 MiB).
+    #[arg(long, value_name = "BYTES", value_parser = clap::value_parser!(u64).range(1..))]
+    pub bundle_max: Option<u64>,
+    /// The most files in one bundle. At least 1. Default `[client] sync_bundle_items` (1000).
+    #[arg(long, value_name = "N", value_parser = parse_count)]
+    pub bundle_items: Option<usize>,
     /// How many bundles and large files move at once.
     #[arg(long, value_name = "N", default_value_t = 4)]
     pub parallel: usize,
@@ -1246,8 +1263,8 @@ pub struct RemoteShellArgs {
     /// How soon a second Ctrl-C after the first (`1s`, `500ms`; a bare number is seconds) ends the shell's whole tree
     /// instead of interrupting it again. Only when this terminal does not deliver Ctrl-C as typing (input is not a
     /// terminal); on a terminal the typed Ctrl-C goes to the shell as it is.
-    #[arg(long, value_name = "SPAN", default_value = "2s", value_parser = parse_span)]
-    pub kill_after: std::time::Duration,
+    #[arg(long, value_name = "SPAN", value_parser = parse_positive_span)]
+    pub kill_after: Option<std::time::Duration>,
     /// A detached session instead of one that ends with this command.
     #[command(flatten)]
     pub session: SessionArgs,
@@ -1367,9 +1384,9 @@ pub struct McpArgs {
     /// Let `forward_local` listen beyond loopback: whoever reaches the listener has this key's grant on the host.
     #[arg(long)]
     pub forward_allow_remote_bind: bool,
-    /// Calls that run at once; one more is answered as busy. Default 8.
-    #[arg(long, value_name = "N", default_value_t = 8)]
-    pub max_calls: usize,
+    /// Calls that run at once; one more is answered as busy. At least 1. Default `[mcp] max_calls` (8).
+    #[arg(long, value_name = "N", value_parser = parse_count)]
+    pub max_calls: Option<usize>,
     /// List the desktop tools (`screenshot`, `click`, `move_pointer`, `drag`, `scroll`, `type`, `key`, `wait`, `displays`,
     /// `cursor_position`, `clipboard_read`, `clipboard_write`, `gui_watch`). Without this flag none is listed or callable. What a
     /// screen shows is untrusted input to the agent, and `gui.input` is the desktop user's whole authority: give the agent a
@@ -1378,8 +1395,8 @@ pub struct McpArgs {
     pub gui: bool,
     /// Where `format: "auto"` turns to JPEG: a PNG screenshot larger than this many bytes is taken again as JPEG 80. Matters with
     /// `--gui`.
-    #[arg(long, value_name = "BYTES", default_value_t = 1_048_576)]
-    pub gui_max_image_bytes: u64,
+    #[arg(long, value_name = "BYTES")]
+    pub gui_max_image_bytes: Option<u64>,
     /// What an input tool answers besides `applied`: `screenshot` is a settled screenshot of the display it acted on (it
     /// costs a snapshot a call), `none` is nothing more. Matters with `--gui`.
     #[arg(long, value_enum, value_name = "WHAT", default_value = "none")]

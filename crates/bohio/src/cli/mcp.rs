@@ -54,6 +54,11 @@ pub(super) fn run(args: &McpArgs, environment: &Environment) -> Result<ExitCode,
                 .to_owned(),
         );
     }
+    let mcp = super::commands::source(&args.config, environment)?
+        .0
+        .config()
+        .mcp
+        .clone();
     let mut hosts: Vec<Host> = Vec::new();
     for spec in &args.host {
         let (name, mut words) = host_words(spec)?;
@@ -81,7 +86,7 @@ pub(super) fn run(args: &McpArgs, environment: &Environment) -> Result<ExitCode,
             .forward_local_targets
             .clone_from(&args.forward_local_target);
         settings.forward_allow_remote_bind = args.forward_allow_remote_bind;
-        settings.gui_auto_limit = args.gui_max_image_bytes;
+        settings.gui_auto_limit = args.gui_max_image_bytes.unwrap_or(mcp.gui_max_image_bytes);
         settings.gui_after_action = args.gui_after_action == AfterAction::Screenshot;
         hosts.push(Host {
             name,
@@ -90,7 +95,7 @@ pub(super) fn run(args: &McpArgs, environment: &Environment) -> Result<ExitCode,
         });
     }
     let options = Options::default()
-        .with_max_calls(args.max_calls)
+        .with_max_calls(args.max_calls.unwrap_or(mcp.max_calls))
         .with_gui(args.gui);
     serve(hosts, &options, std::io::stdin().lock(), std::io::stdout())?;
     Ok(ExitCode::SUCCESS)
