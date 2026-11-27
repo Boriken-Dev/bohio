@@ -21,7 +21,7 @@ use super::remote::{certificate_refused, tls_trust};
 use super::{
     ApproveArgs, JoinArgs, PairArgs, PeerAction, PeerArgs, RevokeArgs, ServeArgs, StatusArgs,
 };
-use crate::config::{Config, DialConfig, Environment, Found, ListenConfig, discover};
+use crate::config::{Config, DialConfig, Environment, Found, ListenConfig, discover_trusting};
 use crate::forward::{ConnectRule, ListenRule};
 use crate::link::{
     Grants, KeptDirection, KeptState, Keys, KeysError, LogEvents, MemoryGrants, NodeEvent,
@@ -149,8 +149,7 @@ impl NodeEvents for Printed {
 
 /// `bohio serve`.
 pub(super) fn serve(args: &ServeArgs, environment: &Environment) -> Result<(), String> {
-    let mut found = discover(&args.config.config)?;
-    found.trust.clone_from(&args.trust_owner);
+    let found = discover_trusting(&args.config.config, &args.trust_owner)?;
     let config = found.config();
     if args.stdio {
         if !args.listen.is_empty() {

@@ -159,11 +159,21 @@ pub fn default_files() -> (PathBuf, Option<PathBuf>) {
 ///
 /// One line: a layer that cannot be read or parsed, or a system file another account owns or may change.
 pub fn discover(named: &[PathBuf]) -> Result<Found, String> {
-    let (system, user) = default_files();
-    discover_in(named, system, user)
+    discover_trusting(named, &ownership::trusted_from_environment())
 }
 
-/// As [`discover`], with the system file and the user's given.
+/// As [`discover`], with `trust` the accounts whose ownership of the lowest layer, its directory and the system file counts
+/// as the operator's: `serve` takes them from its flag, and every other command from `BOHIO_TRUST_OWNER`.
+///
+/// # Errors
+///
+/// As [`discover`].
+pub fn discover_trusting(named: &[PathBuf], trust: &[String]) -> Result<Found, String> {
+    let (system, user) = default_files();
+    discover_in(named, system, user, trust)
+}
+
+/// As [`discover_trusting`], with the system file and the user's given.
 ///
 /// # Errors
 ///
@@ -172,6 +182,7 @@ pub fn discover_in(
     named: &[PathBuf],
     system: PathBuf,
     user: Option<PathBuf>,
+    trust: &[String],
 ) -> Result<Found, String> {
     let named: Vec<PathBuf> = named
         .iter()
@@ -184,7 +195,7 @@ pub fn discover_in(
             layered,
             watch: named,
             create: None,
-            trust: ownership::trusted_from_environment(),
+            trust: trust.to_vec(),
         });
     }
     let user_layer = if system.is_file() {
@@ -197,7 +208,7 @@ pub fn discover_in(
         ownership::decide(
             &ownership::layer_problems(&system),
             service.check_access,
-            &ownership::trusted_from_environment(),
+            trust,
         )?;
         service.user_layer
     } else {
@@ -219,7 +230,7 @@ pub fn discover_in(
         layered,
         watch,
         create,
-        trust: ownership::trusted_from_environment(),
+        trust: trust.to_vec(),
     })
 }
 
@@ -240,7 +251,7 @@ mod tests {
         let dir = crate::private_dir::private_tempdir();
         let system = file(dir.path(), "system.cfg", "[service]\nname = \"system\"\n");
         let user = file(dir.path(), "user.cfg", "[service]\nname = \"user\"\n");
-        let both = discover_in(&[], system.clone(), Some(user.clone())).unwrap();
+        let both = discover_in(&[], system.clone(), Some(user.clone()), &[]).unwrap();
         assert_eq!(both.layered.files, [system.clone(), user.clone()]);
         assert_eq!(both.config().service.name, "user");
         assert_eq!(both.create.as_deref(), Some(user.as_path()));
@@ -250,7 +261,7 @@ mod tests {
             "system.cfg",
             "[service]\nname = \"system\"\nuser_layer = false\n",
         );
-        let off = discover_in(&[], system.clone(), Some(user.clone())).unwrap();
+        let off = discover_in(&[], system.clone(), Some(user.clone()), &[]).unwrap();
         assert_eq!(off.layered.files, std::slice::from_ref(&system));
         assert_eq!(off.config().service.name, "system");
         assert!(
@@ -260,7 +271,8 @@ mod tests {
         assert_eq!(off.watch, std::slice::from_ref(&system));
 
         // Named layers are read alone, whatever the system file says and whether or not they exist.
-        let named = discover_in(std::slice::from_ref(&user), system, Some(user.clone())).unwrap();
+        let named =
+            discover_in(std::slice::from_ref(&user), system, Some(user.clone()), &[]).unwrap();
         assert_eq!(named.layered.files, [user]);
         assert!(named.create.is_none());
     }
@@ -269,7 +281,7 @@ mod tests {
     fn a_missing_file_is_not_a_layer_and_no_file_is_the_defaults() {
         let dir = crate::private_dir::private_tempdir();
         let (system, user) = (dir.path().join("none.cfg"), dir.path().join("also.cfg"));
-        let found = discover_in(&[], system.clone(), Some(user.clone())).unwrap();
+        let found = discover_in(&[], system.clone(), Some(user.clone()), &[]).unwrap();
         assert!(found.layered.files.is_empty());
         assert_eq!(found.config(), &crate::config::Config::default());
         assert_eq!(
@@ -293,7 +305,7 @@ data_dir = '{}'
             ),
         );
         (
-            discover_in(std::slice::from_ref(&layer), layer.clone(), None).unwrap(),
+            discover_in(std::slice::from_ref(&layer), layer.clone(), None, &[]).unwrap(),
             data,
         )
     }
@@ -403,5 +415,29 @@ data_dir = '{}'
     fn a_path_another_account_owns_is_refused_even_when_the_check_is_off() {
         assert!(decide(&[problem(Kind::Foreign)], false, &[]).is_err());
         assert!(decide(&[problem(Kind::Open), problem(Kind::Foreign)], false, &[]).is_err());
+    }
+
+    #[test]
+    fn the_accounts_a_command_trusts_reach_what_discover_returns() {
+        let dir = crate::private_dir::private_tempdir();
+        let system = file(
+            dir.path(),
+            "system.cfg",
+            "[service]
+name = \"system\"
+",
+        );
+        let trust = ["alice".to_owned()];
+        let found = discover_in(&[], system, None, &trust).unwrap();
+        assert_eq!(found.trust, trust);
+        let named = file(
+            dir.path(),
+            "named.cfg",
+            "[service]
+name = \"named\"
+",
+        );
+        let found = discover_in(&[named], PathBuf::new(), None, &trust).unwrap();
+        assert_eq!(found.trust, trust);
     }
 }

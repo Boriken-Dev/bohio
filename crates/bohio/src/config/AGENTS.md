@@ -36,7 +36,8 @@ impl Layers {
 }
 pub struct Layered { pub config: Config, pub peers: Peers, pub files: Vec<PathBuf>, pub profile: Profile }   // `peers` is `config.peer`; `files` the layers read; origin(key), sets(key) above
 pub fn discover(named: &[PathBuf]) -> Result<Found, String>;     // the layers named (alone), else the system file with the user's merged over it (`[service] user_layer = false` leaves it out); a system file another account owns or may change is refused
-pub fn discover_in(named: &[PathBuf], system: PathBuf, user: Option<PathBuf>) -> Result<Found, String>;   // the same with the two files given; `default_files()` is their usual places
+pub fn discover_trusting(named: &[PathBuf], trust: &[String]) -> Result<Found, String>;   // as `discover`, the accounts whose ownership of the lowest layer, its directory and the system file counts given (`bohio serve --trust-owner`); `discover` takes `BOHIO_TRUST_OWNER`
+pub fn discover_in(named: &[PathBuf], system: PathBuf, user: Option<PathBuf>, trust: &[String]) -> Result<Found, String>;   // the same with the two files given; `default_files()` is their usual places
 pub struct Found { pub layered: Layered, pub watch: Vec<PathBuf>, pub create: Option<PathBuf>, pub trust: Vec<String> }   // `config()`; `guard(&Environment) -> Result<Vec<PathBuf>, String>` is the owner check `bohio serve` applies (makes the data directory; answers the layers to watch); `watched()`
 // `bohio::ownership`: `check(path, Guarded) -> Result<(), Problem>`, `layer_problems`, `library_problems`, `program_problems`, `may_appear`, `decide(&[Problem], check_access, trusted) -> Result<(), String>`, `trusted_from_environment()`
 pub struct Span(pub Duration);                                    // a number of seconds, or text: 250ms, 5s, 2m, 1h; Span::parse(&str) -> Option<Span>
