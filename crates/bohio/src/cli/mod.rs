@@ -374,6 +374,82 @@ fn parse_span(text: &str) -> Result<std::time::Duration, String> {
         })
 }
 
+/// A factor a wait is multiplied by after each failure: at least 1.
+fn parse_factor(text: &str) -> Result<f64, String> {
+    match text.parse::<f64>() {
+        Ok(factor) if factor >= 1.0 => Ok(factor),
+        _ => Err(format!("`{text}` is not a factor of at least 1")),
+    }
+}
+
+/// A fraction from 0 to 1.
+fn parse_fraction(text: &str) -> Result<f64, String> {
+    match text.parse::<f64>() {
+        Ok(fraction) if (0.0..=1.0).contains(&fraction) => Ok(fraction),
+        _ => Err(format!("`{text}` is not a fraction from 0 to 1")),
+    }
+}
+
+/// `NAME=VALUE`.
+fn parse_env(text: &str) -> Result<String, String> {
+    if text
+        .split_once('=')
+        .is_some_and(|(name, _)| !name.is_empty())
+    {
+        Ok(text.to_owned())
+    } else {
+        Err(format!("`{text}` is not NAME=VALUE"))
+    }
+}
+
+/// A digest algorithm this build names.
+fn parse_algorithm(text: &str) -> Result<String, String> {
+    if bohio_proto::hash::Algorithm::from_name(text).is_known() {
+        return Ok(text.to_owned());
+    }
+    let known: Vec<&str> = bohio_proto::hash::Algorithm::KNOWN
+        .iter()
+        .map(bohio_proto::hash::Algorithm::name)
+        .collect();
+    Err(format!(
+        "`{text}` is not an algorithm; the names are {}",
+        known.join(", ")
+    ))
+}
+
+/// One of the shells a host names.
+fn parse_shell(text: &str) -> Result<String, String> {
+    if bohio_proto::shell::ShellKind::KNOWN
+        .into_iter()
+        .any(|kind| kind.program() == text)
+    {
+        Ok(text.to_owned())
+    } else {
+        Err("a shell is one of sh, bash, zsh, cmd, powershell, pwsh".to_owned())
+    }
+}
+
+/// A `-L` forward.
+fn parse_local(text: &str) -> Result<String, String> {
+    text.parse::<crate::forward::LocalSpec>()
+        .map(|_| text.to_owned())
+        .map_err(|error| error.to_string())
+}
+
+/// A `-R` forward.
+fn parse_remote(text: &str) -> Result<String, String> {
+    text.parse::<crate::forward::RemoteSpec>()
+        .map(|_| text.to_owned())
+        .map_err(|error| error.to_string())
+}
+
+/// A `-D` forward.
+fn parse_dynamic(text: &str) -> Result<String, String> {
+    text.parse::<crate::forward::SocksSpec>()
+        .map(|_| text.to_owned())
+        .map_err(|error| error.to_string())
+}
+
 /// A profile name for what this run asks of the host (`parse_profile`).
 fn parse_profile(text: &str) -> Result<bohio_client::profile::Profile, String> {
     bohio_client::profile::Profile::parse(text).ok_or_else(|| {
@@ -763,7 +839,7 @@ pub struct RemoteExecArgs {
     #[arg(long, value_name = "MS")]
     pub timeout_ms: Option<u64>,
     /// A variable to set for the program, `NAME=VALUE` (repeat).
-    #[arg(long, value_name = "NAME=VALUE")]
+    #[arg(long, value_name = "NAME=VALUE", value_parser = parse_env)]
     pub env: Vec<String>,
     /// Send this process's standard input to the program.
     #[arg(long)]
@@ -795,6 +871,7 @@ pub struct RemoteExecArgs {
 
 /// `bohio remote ... read`.
 #[derive(Debug, Args)]
+#[command(group(clap::ArgGroup::new("following").args(["follow", "follow_name"]).multiple(true)))]
 pub struct RemoteReadArgs {
     /// The files source of the host that serves it (see `info`); the host's default one when absent.
     #[command(flatten)]
@@ -819,16 +896,16 @@ pub struct RemoteReadArgs {
     /// Keep the file open and print what is appended, as `tail -f` does, until interrupted. The host's `[filesystem]
     /// follow_interval` says how often it looks; the file is sent from its start unless `--tail` says otherwise. Not with
     /// the compression options.
-    #[arg(long, short = 'f', conflicts_with_all = ["compress", "prepare", "window_log"])]
+    #[arg(long, short = 'f', conflicts_with_all = ["compress", "prepare", "window_log", "parallel", "links", "range"])]
     pub follow: bool,
     /// As `--follow`, and when another file takes the path (a log rotation) follow that one from its start.
-    #[arg(short = 'F', conflicts_with_all = ["compress", "prepare", "window_log", "follow"])]
+    #[arg(short = 'F', conflicts_with_all = ["compress", "prepare", "window_log", "follow", "parallel", "links", "range"])]
     pub follow_name: bool,
     /// With `--follow` or `-F`: start this many bytes before the end of the file (`0` prints only what is appended).
-    #[arg(long, value_name = "BYTES")]
+    #[arg(long, value_name = "BYTES", requires = "following")]
     pub tail: Option<u64>,
     /// With `--follow` or `-F`: how often the host looks for more bytes (`500ms`, `2s`).
-    #[arg(long, value_name = "SPAN", value_parser = parse_span)]
+    #[arg(long, value_name = "SPAN", value_parser = parse_span, requires = "following")]
     pub interval: Option<std::time::Duration>,
 }
 
@@ -1043,7 +1120,7 @@ pub struct RemoteHashArgs {
     pub files: FilesSourceArg,
     /// A digest to compute: md5, sha1, sha256, sha384, sha512, blake3, xxh3, xxh128, xxh64 or crc32c (repeat for
     /// several, computed in one pass). Default sha256.
-    #[arg(long, value_name = "NAME")]
+    #[arg(long, value_name = "NAME", value_parser = parse_algorithm)]
     pub algorithm: Vec<String>,
     /// The files, in the host's own path text.
     #[arg(required = true, value_name = "PATH")]
@@ -1074,16 +1151,16 @@ pub struct KeepArgs {
     #[arg(long)]
     pub once: bool,
     /// The first wait before making the link again, as `retry_min` of `[peer."<id>".dial]` (`1s`).
-    #[arg(long, value_name = "TIME")]
-    pub retry_min: Option<String>,
+    #[arg(long, value_name = "TIME", value_parser = parse_span)]
+    pub retry_min: Option<std::time::Duration>,
     /// The longest wait, as `retry_max` (`60s`).
-    #[arg(long, value_name = "TIME")]
-    pub retry_max: Option<String>,
+    #[arg(long, value_name = "TIME", value_parser = parse_span)]
+    pub retry_max: Option<std::time::Duration>,
     /// What each further failure multiplies the wait by, as `retry_factor` (`2`).
-    #[arg(long, value_name = "FACTOR")]
+    #[arg(long, value_name = "FACTOR", value_parser = parse_factor)]
     pub retry_factor: Option<f64>,
     /// How far a wait may move, as a fraction of itself from 0 to 1, as `retry_jitter` (`0.1`).
-    #[arg(long, value_name = "FRACTION")]
+    #[arg(long, value_name = "FRACTION", value_parser = parse_fraction)]
     pub retry_jitter: Option<f64>,
 }
 
@@ -1100,6 +1177,7 @@ pub struct RemoteForwardArgs {
         short = 'L',
         long = "local",
         value_name = "SPEC",
+        value_parser = parse_local,
         required_unless_present_any = ["remote", "dynamic"]
     )]
     pub local: Vec<String>,
@@ -1114,6 +1192,7 @@ pub struct RemoteForwardArgs {
         short = 'R',
         long = "remote",
         value_name = "SPEC",
+        value_parser = parse_remote,
         required_unless_present_any = ["local", "dynamic"]
     )]
     pub remote: Vec<String>,
@@ -1127,6 +1206,7 @@ pub struct RemoteForwardArgs {
         short = 'D',
         long = "dynamic",
         value_name = "SPEC",
+        value_parser = parse_dynamic,
         required_unless_present_any = ["local", "remote"]
     )]
     pub dynamic: Vec<String>,
@@ -1158,7 +1238,7 @@ pub struct RemoteListenArgs {
 #[derive(Debug, Args)]
 pub struct RemoteShellArgs {
     /// One of the host's shells: sh, bash, zsh, cmd, powershell or pwsh. The host's `sh` or `cmd` by default.
-    #[arg(long, value_name = "SHELL")]
+    #[arg(long, value_name = "SHELL", value_parser = parse_shell)]
     pub kind: Option<String>,
     /// The shell's working directory on the host.
     #[arg(long, value_name = "DIR")]
@@ -1250,8 +1330,8 @@ pub struct LinksArgs {
     #[command(flatten)]
     pub config: ConfigOption,
     /// How long to wait for each peer to say what it offers. Default `[client] links_wait` (5s).
-    #[arg(long, value_name = "TIME")]
-    pub wait: Option<String>,
+    #[arg(long, value_name = "TIME", value_parser = parse_span)]
+    pub wait: Option<std::time::Duration>,
 }
 
 /// `bohio providers`.

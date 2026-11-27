@@ -344,6 +344,24 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
         Some(id) => via_plan(id, args, environment)?,
         None => direct_plan(args, environment)?,
     };
+    // A command that stays up makes the link again when it ends, unless `--once`. Its waits are checked before the
+    // host is dialled: a wrong invocation is status 2, whatever the link would have said.
+    let persist = match &args.action {
+        RemoteAction::Connect(connect) => Some(&connect.persist),
+        RemoteAction::Forward(forward) => Some(&forward.persist),
+        RemoteAction::Listen(listen) => Some(&listen.persist),
+        _ => None,
+    };
+    let waits = match persist
+        .map(|persist| backoff(args, persist, environment))
+        .transpose()
+    {
+        Ok(waits) => waits,
+        Err(message) => {
+            output::fail(&message);
+            return Ok(ExitCode::from(2));
+        }
+    };
     let link: Arc<dyn Open> = plan.dial()?;
     // A command that names a files source asks the host for that one on every file stream and call.
     let named = match &args.action {
@@ -362,13 +380,6 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
         Some(name) => Arc::new(bohio_client::Sourced::shared(link, name)),
         None => link,
     };
-    // A command that stays up makes the link again when it ends, unless `--once`.
-    let persist = match &args.action {
-        RemoteAction::Connect(connect) => Some(&connect.persist),
-        RemoteAction::Forward(forward) => Some(&forward.persist),
-        RemoteAction::Listen(listen) => Some(&listen.persist),
-        _ => None,
-    };
     let found = source(&args.config, environment)?.0;
     let settings = found.config().forward.client();
     let mut client = Client::new(found.config(), args);
@@ -385,15 +396,11 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
         Some(spread) => spread.more_links(&plan)?,
         None => Vec::new(),
     };
-    let kept = match persist {
-        Some(persist) => keeping(
-            plan,
-            &link,
-            persist,
-            backoff(args, persist, environment)?,
-            settings.options.listen_poll,
-        ),
-        None => None,
+    let kept = match (persist, waits) {
+        (Some(persist), Some(waits)) => {
+            keeping(plan, &link, persist, waits, settings.options.listen_poll)
+        }
+        _ => None,
     };
     match &args.action {
         RemoteAction::Info => {
@@ -822,16 +829,11 @@ fn backoff(
         || DialConfig::default().backoff(),
         |table| table.dial().backoff(),
     );
-    let span = |text: &str, flag: &str| {
-        crate::config::Span::parse(text)
-            .map(|span| span.0)
-            .ok_or_else(|| format!("{flag} is a time such as `1s` or `500ms`"))
-    };
-    if let Some(text) = &keep.retry_min {
-        backoff.min = span(text, "--retry-min")?;
+    if let Some(span) = keep.retry_min {
+        backoff.min = span;
     }
-    if let Some(text) = &keep.retry_max {
-        backoff.max = span(text, "--retry-max")?;
+    if let Some(span) = keep.retry_max {
+        backoff.max = span;
     }
     if let Some(factor) = keep.retry_factor {
         backoff.factor = factor;
@@ -2808,12 +2810,8 @@ fn via_plan(id: &str, args: &RemoteArgs, environment: &Environment) -> Result<Pl
 
 /// `bohio links`.
 pub(super) fn links(args: &super::LinksArgs, environment: &Environment) -> Result<(), String> {
-    let wait = match &args.wait {
-        Some(text) => {
-            crate::config::Span::parse(text)
-                .ok_or_else(|| "--wait is a time such as `5s` or `500ms`".to_owned())?
-                .0
-        }
+    let wait = match args.wait {
+        Some(wait) => wait,
         None => {
             source(&args.config, environment)?
                 .0

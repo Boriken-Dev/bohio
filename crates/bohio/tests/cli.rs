@@ -961,3 +961,45 @@ fn every_profile_example_passes_config_check_and_an_unknown_profile_does_not() {
     );
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+/// A wrong invocation of `bohio remote` is status 2 and says so before anything is dialled: the host here is a port
+/// nothing listens on, which would otherwise end the command with a link error and status 1.
+#[test]
+fn a_wrong_remote_invocation_exits_2_before_the_host_is_dialled() {
+    let host = "tcp://127.0.0.1:1";
+    for args in [
+        vec!["remote", host, "read", "x", "--tail", "5"],
+        vec!["remote", host, "read", "x", "--interval", "1s"],
+        vec!["remote", host, "read", "x", "-f", "--parallel", "2"],
+        vec![
+            "remote",
+            host,
+            "forward",
+            "-L",
+            "0=127.0.0.1:9",
+            "--retry-jitter",
+            "5",
+        ],
+        vec!["remote", host, "forward", "-L", "nonsense"],
+        vec![
+            "remote",
+            host,
+            "forward",
+            "-L",
+            "0=127.0.0.1:9",
+            "--retry-min",
+            "soon",
+        ],
+        vec!["remote", host, "exec", "--env", "NOEQUALS", "true"],
+        vec!["remote", host, "hash", "x", "--algorithm", "nonsense"],
+        vec!["remote", host, "shell", "--kind", "nonsense"],
+    ] {
+        let output = bohio(&args);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{args:?}: {}",
+            text(&output.stderr)
+        );
+    }
+}
