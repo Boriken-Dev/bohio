@@ -97,7 +97,14 @@ let peers = Arc::new(LayeredPeers::new(layered.files.clone(), &Data::new(state_d
 let node = Node::new(layered.config.node(), identity, peers.clone(), peers)?;
 ```
 
-The library does not check who may change those files: the command does that before it serves. Whoever may write a file the node reads decides who it accepts and what each may do, so keep such files where only the application's account may write.
+`Layers::load` does not check who may change the files. Whoever may write a file the node reads decides who it accepts and what each may do, so either keep such files where only the application's account may write, or make the command's check:
+
+```rust
+let found = bohio::config::discover(&[])?;               // the system file, then the user's, as `bohio` reads them
+let watch = found.guard(&environment)?;               // refuses a layer or data directory another account owns or may change
+```
+
+`discover(named)` reads the layers `named` names, or else the system file with the user's merged over it (`[service] user_layer = false` leaves the user's out), and answers a `Found`: the merged `Config`, the layers read, the layers to watch and the user file `peer approve` makes. `Found::guard` is what `bohio serve` applies before it binds: no layer, directory that holds one, data directory or identity file may be owned by another account, or changed (the data directory also read) by its group or by others, unless `[service] check_access` is `false`, which logs `non-default:` and goes on; a path another account owns is refused either way, unless `Found::trust` (the command's `--trust-owner` and `BOHIO_TRUST_OWNER`) or `[service] trusted_owners` names that account. It answers the layers `LayeredPeers` should read. The pieces are in `bohio::ownership` (`check`, `layer_problems`, `decide`, `may_appear`) for an application that guards its own files.
 
 ## Events
 

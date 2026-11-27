@@ -54,13 +54,17 @@ impl Config {
     pub fn data_dir(&self, environment: &Environment) -> PathBuf;
     pub fn non_default(&self, listeners: &[ListenConfig]) -> Vec<String>;         // one `non-default: [section] key = value: cost` line for each weakened link or forward check (`[forward] socket_mode`, `ipc_same_user`, `follow_links`, `[pairing] max_attempts = 0`, `[[listen]] socket_mode`, `remote_clients`, `origins` with `*`); `bohio serve` logs them at start
 }
-pub struct Layers;                                                // the library reads the files it is given and nothing else; the command finds them
+pub struct Layers;                                                // `load` reads the files it is given and nothing else; `discover` below finds them
 impl Layers {
     pub fn load(paths: &[PathBuf]) -> Result<Layered, ConfigError>;             // lowest first, every file must exist; none: the defaults
     pub fn parse(text: &str, label: &str) -> Result<Layered, ConfigError>;      // one layer of text
     pub fn peers(paths: &[PathBuf]) -> Result<Peers, ConfigError>;              // the live check: a missing file is skipped, only `[peer.*]` is read
 }
 pub struct Layered { pub config: Config, pub peers: Peers, pub files: Vec<PathBuf> }   // `peers` is `config.peer`; `files` the layers read
+pub fn discover(named: &[PathBuf]) -> Result<Found, String>;     // the layers named (alone), else the system file with the user's merged over it (`[service] user_layer = false` leaves it out); a system file another account owns or may change is refused
+pub fn discover_in(named: &[PathBuf], system: PathBuf, user: Option<PathBuf>) -> Result<Found, String>;   // the same with the two files given; `default_files()` is their usual places
+pub struct Found { pub layered: Layered, pub watch: Vec<PathBuf>, pub create: Option<PathBuf>, pub trust: Vec<String> }   // `config()`; `guard(&Environment) -> Result<Vec<PathBuf>, String>` is the owner check `bohio serve` applies (makes the data directory; answers the layers to watch); `watched()`
+// `bohio::ownership`: `check(path, Guarded) -> Result<(), Problem>`, `layer_problems`, `library_problems`, `program_problems`, `may_appear`, `decide(&[Problem], check_access, trusted) -> Result<(), String>`, `trusted_from_environment()`
 pub struct Span(pub Duration);                                    // a number of seconds, or text: 250ms, 5s, 2m, 1h; Span::parse(&str) -> Option<Span>
 #[non_exhaustive] pub enum ConfigError { Read { path, reason }, Parse { path, line, column, key: Option<String>, message }, Invalid { path, key, message } }
 ```

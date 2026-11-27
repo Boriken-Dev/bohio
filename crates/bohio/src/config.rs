@@ -8,12 +8,14 @@
 #![forbid(unsafe_code)]
 
 mod access;
+mod discovery;
 mod gui;
 mod hosts;
 mod layers;
 mod weakened;
 
 pub use access::{AccessConfig, NATIVE, SourceTable, SourceTables};
+pub use discovery::{Found, default_files, discover, discover_in};
 pub use gui::{ApprovalMode, GuiConfig, Indicator, LadderStep, WindowsCapture};
 pub use hosts::{Hop, HostConfig, Hosts};
 pub use layers::{Layered, Layers, Origin};

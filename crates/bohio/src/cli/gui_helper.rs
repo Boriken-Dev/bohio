@@ -12,7 +12,6 @@ use clap::Args;
 use coqui_transport::Channel as _;
 
 use super::ConfigOption;
-use super::commands::found;
 use super::host::node_settings;
 use crate::access::Sources;
 use crate::config::Environment;
@@ -64,7 +63,7 @@ fn first_set(names: &[&str]) -> Option<String> {
 
 /// Runs the helper until the node closes it.
 pub(super) fn run(args: &GuiHelperArgs, environment: &Environment) -> Result<(), String> {
-    let found = found(&args.config.config)?;
+    let found = crate::config::discover(&args.config.config)?;
     let config = found.config();
     if args.stdio {
         return run_stdio(args, config, environment);

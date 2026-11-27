@@ -14,7 +14,8 @@ use std::path::Path;
 
 /// What is checked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Guarded {
+#[non_exhaustive]
+pub enum Guarded {
     /// The configuration file: no other user may change it.
     Config,
     /// A provider library or the directory that holds it: no other user may change it.
@@ -41,7 +42,8 @@ impl Guarded {
 
 /// What is wrong with a path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Kind {
+#[non_exhaustive]
+pub enum Kind {
     /// Another account owns it: whoever that is made it, so nothing in it, `check_access` included, is the
     /// operator's.
     Foreign,
@@ -53,11 +55,14 @@ pub(crate) enum Kind {
 
 /// Why a path is refused: its [`Kind`] and one line naming the path.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Problem {
-    pub(crate) kind: Kind,
-    pub(crate) text: String,
+#[non_exhaustive]
+pub struct Problem {
+    /// Who is at fault, which decides whether `check_access = false` waives it.
+    pub kind: Kind,
+    /// One line naming the path and what is wrong with it.
+    pub text: String,
     /// For [`Kind::Foreign`], who owns the path: a user id (Unix) or a security id (Windows).
-    pub(crate) owner: Option<String>,
+    pub owner: Option<String>,
 }
 
 impl Problem {
@@ -85,7 +90,7 @@ impl Problem {
 ///
 /// A [`Problem`] saying what is wrong and with which path, or why it could not be checked.
 #[cfg(unix)]
-pub(crate) fn check(path: &Path, what: Guarded) -> Result<(), Problem> {
+pub fn check(path: &Path, what: Guarded) -> Result<(), Problem> {
     use std::os::unix::fs::MetadataExt;
     let meta = std::fs::metadata(path).map_err(|error| {
         Problem::new(
@@ -133,7 +138,7 @@ pub(crate) fn check(path: &Path, what: Guarded) -> Result<(), Problem> {
 ///
 /// Never.
 #[cfg(not(any(unix, windows)))]
-pub(crate) fn check(_path: &Path, _what: Guarded) -> Result<(), Problem> {
+pub fn check(_path: &Path, _what: Guarded) -> Result<(), Problem> {
     Ok(())
 }
 
@@ -143,7 +148,7 @@ pub(crate) fn check(_path: &Path, _what: Guarded) -> Result<(), Problem> {
 ///
 /// A [`Problem`] saying what is wrong and with which path, or why it could not be checked.
 #[cfg(windows)]
-pub(crate) fn check(path: &Path, what: Guarded) -> Result<(), Problem> {
+pub fn check(path: &Path, what: Guarded) -> Result<(), Problem> {
     let listed = windows::list(path).map_err(|reason| {
         Problem::new(
             Kind::Unknown,
@@ -180,7 +185,7 @@ pub(crate) fn check(path: &Path, what: Guarded) -> Result<(), Problem> {
 /// # Errors
 ///
 /// Every refused problem, joined into one line.
-pub(crate) fn decide(
+pub fn decide(
     problems: &[Problem],
     check_access: bool,
     trusted_owners: &[String],
@@ -243,7 +248,7 @@ fn user_id_of(_name: &str) -> Option<String> {
 
 /// The accounts the operator trusts on the command line or in `BOHIO_TRUST_OWNER` (comma separated): the only
 /// source for the lowest layer itself, which cannot vouch for its own owner.
-pub(crate) fn trusted_from_environment() -> Vec<String> {
+pub fn trusted_from_environment() -> Vec<String> {
     std::env::var("BOHIO_TRUST_OWNER")
         .map(|value| {
             value
@@ -256,7 +261,7 @@ pub(crate) fn trusted_from_environment() -> Vec<String> {
 }
 
 /// The problems of the layer file `file` and of the directory that holds it.
-pub(crate) fn layer_problems(file: &Path) -> Vec<Problem> {
+pub fn layer_problems(file: &Path) -> Vec<Problem> {
     let mut problems = Vec::new();
     if let Err(problem) = check(file, Guarded::Config) {
         problems.push(problem);
@@ -270,15 +275,15 @@ pub(crate) fn layer_problems(file: &Path) -> Vec<Problem> {
 
 /// What [`library_problems`] already found out about directories, so one that holds several libraries is checked once
 /// (on Windows a check reads the access list through the security API).
-pub(crate) type Checked = std::collections::HashMap<std::path::PathBuf, Option<Problem>>;
+pub type Checked = std::collections::HashMap<std::path::PathBuf, Option<Problem>>;
 
 /// The problems of the provider library `file` and of the directory that holds it, `checked` remembering directories.
-pub(crate) fn library_problems(file: &Path, checked: &mut Checked) -> Vec<Problem> {
+pub fn library_problems(file: &Path, checked: &mut Checked) -> Vec<Problem> {
     held_problems(file, checked, Guarded::Library)
 }
 
 /// The problems of the provider program `file` and of the directory that holds it, `checked` remembering directories.
-pub(crate) fn program_problems(file: &Path, checked: &mut Checked) -> Vec<Problem> {
+pub fn program_problems(file: &Path, checked: &mut Checked) -> Vec<Problem> {
     held_problems(file, checked, Guarded::Program)
 }
 
@@ -320,7 +325,7 @@ fn directory_of(path: &Path) -> std::path::PathBuf {
 /// Whether a layer `file` that does not exist yet may be read once it does: the nearest directory above it that
 /// exists must be one no other account may change, or another account could make the file and choose the
 /// peers. `Err` says why not.
-pub(crate) fn may_appear(file: &Path) -> Result<(), Problem> {
+pub fn may_appear(file: &Path) -> Result<(), Problem> {
     let directory = directory_of(file);
     let existing = directory
         .ancestors()

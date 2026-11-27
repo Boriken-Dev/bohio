@@ -358,7 +358,7 @@ mod platform {
         report(ServiceState::StartPending, 0, first_hint);
         let started = (|| {
             let named: Vec<PathBuf> = launch.config.iter().cloned().collect();
-            let found = commands::found(&named)?;
+            let found = crate::config::discover(&named)?;
             let entries = found.config().listen.clone();
             Ok::<_, String>((found, entries))
         })();

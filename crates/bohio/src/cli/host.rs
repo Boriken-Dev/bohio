@@ -15,13 +15,13 @@ use coqui_peer::pair::{CodeAlphabet, Pin};
 use coqui_peer::{KeyMaterial, PeerId};
 use coqui_transport::Channel;
 
-use super::commands::{Found, found, source};
+use super::commands::source;
 use super::output;
 use super::remote::{certificate_refused, tls_trust};
 use super::{
     ApproveArgs, JoinArgs, PairArgs, PeerAction, PeerArgs, RevokeArgs, ServeArgs, StatusArgs,
 };
-use crate::config::{Config, DialConfig, Environment, ListenConfig};
+use crate::config::{Config, DialConfig, Environment, Found, ListenConfig, discover};
 use crate::forward::{ConnectRule, ListenRule};
 use crate::link::{
     Grants, KeptDirection, KeptState, Keys, KeysError, LogEvents, MemoryGrants, NodeEvent,
@@ -30,7 +30,6 @@ use crate::link::{
 use crate::listen::{CertificateStore, Listening};
 use crate::local::{ANOTHER_ACCOUNT, Local, LocalLink, Server};
 use crate::node::{Endpoint, Node};
-use crate::ownership::{self as access, Guarded};
 use crate::peer::{self, Data, LayeredPeers};
 use crate::policy::{Grant, Permission};
 
@@ -150,7 +149,7 @@ impl NodeEvents for Printed {
 
 /// `bohio serve`.
 pub(super) fn serve(args: &ServeArgs, environment: &Environment) -> Result<(), String> {
-    let mut found = found(&args.config.config)?;
+    let mut found = discover(&args.config.config)?;
     found.trust.clone_from(&args.trust_owner);
     let config = found.config();
     if args.stdio {
@@ -158,7 +157,7 @@ pub(super) fn serve(args: &ServeArgs, environment: &Environment) -> Result<(), S
             return Err("--stdio serves standard input and output alone: drop --listen".to_owned());
         }
         // Standard output is the link: nothing else is written to it, and [[listen]] entries are not bound.
-        let watch = guard(&found, environment)?;
+        let watch = found.guard(environment)?;
         log_non_default(config, &[]);
         let (server, _) = node(&found, watch, environment)?;
         tracing::info!(host = %server.host(), "serving standard input and output");
@@ -177,90 +176,6 @@ fn log_non_default(config: &Config, entries: &[ListenConfig]) {
     for line in config.non_default(entries) {
         tracing::warn!("{line}");
     }
-}
-
-/// Refuses to serve from a layer or a data directory another user may change, unless `[service]
-/// check_access` is false: then what was found is logged and the host serves. A layer or directory another
-/// account owns is refused either way. Answers the layers to read the peers from while serving.
-fn guard(found: &Found, environment: &Environment) -> Result<Vec<PathBuf>, String> {
-    let config = found.config();
-    announce_unchecked(config.service.check_access);
-    // The lowest layer cannot vouch for its own owner: only the command line does. A higher layer, and the data
-    // directory, are judged by the lowest layer's `trusted_owners` too.
-    let mut trusted = found.trust.clone();
-    trusted.extend(config.service.trusted_owners.iter().cloned());
-    for (index, file) in found.layered.files.iter().enumerate() {
-        let who = if index == 0 { &found.trust } else { &trusted };
-        access::decide(
-            &access::layer_problems(file),
-            config.service.check_access,
-            who,
-        )?;
-    }
-    // The layers are the operator's, so the directory they name is made (as the node would make it) and checked.
-    let data = config.data_dir(environment);
-    make_private_dir(&data);
-    let mut problems: Vec<_> = access::check(&data, Guarded::DataDir)
-        .err()
-        .into_iter()
-        .collect();
-    let identity = data.join("identity");
-    if identity.exists() {
-        problems.extend(access::check(&identity, Guarded::Identity).err());
-    }
-    access::decide(&problems, config.service.check_access, &trusted)?;
-    Ok(watched(found))
-}
-
-/// Says once, at start, that `[service] check_access` is off.
-fn announce_unchecked(check_access: bool) {
-    if !check_access {
-        tracing::warn!(
-            "non-default: [service] check_access is false: who owns and who may write the configuration layers and the data directory is not checked, so any account that can change them decides who connects and what each peer may do (a path another account owns is still refused)"
-        );
-    }
-}
-
-/// Whether a layer that does not exist yet is read when it appears, given why its place is not trusted: the operator's own
-/// place that others may change, or that cannot be judged, is waived by `check_access = false`; another account's never.
-fn read_when_made(kind: access::Kind, check_access: bool) -> bool {
-    !check_access && kind != access::Kind::Foreign
-}
-
-/// The layers whose peers are read again while serving: each layer read at start, and each that does not exist
-/// yet in a place no other account may change. One another account could make is left out until a restart
-/// checks it, since a layer made while serving is read unchecked.
-fn watched(found: &Found) -> Vec<PathBuf> {
-    let check_access = found.config().service.check_access;
-    found
-        .watch
-        .iter()
-        .filter(|file| {
-            if found.layered.files.contains(file) {
-                return true;
-            }
-            match access::may_appear(file) {
-                Ok(()) => true,
-                Err(problem) if read_when_made(problem.kind, check_access) => {
-                    tracing::warn!(
-                        "{} is read if it is made, as `check_access` is false: {}",
-                        file.display(),
-                        problem.text
-                    );
-                    true
-                }
-                Err(problem) => {
-                    tracing::info!(
-                        "{} is not read until a restart if it is made: {}",
-                        file.display(),
-                        problem.text
-                    );
-                    false
-                }
-            }
-        })
-        .cloned()
-        .collect()
 }
 
 /// The peers a node dials, from the merged configuration: each id, endpoint text and dial settings. The text
@@ -291,7 +206,7 @@ pub(super) fn serve_endpoints(
                 .to_owned(),
         );
     }
-    let watch = guard(found, environment)?;
+    let watch = found.guard(environment)?;
     log_non_default(config, entries);
     let (server, peers) = node(found, watch, environment)?;
     let events: Arc<dyn NodeEvents> = Arc::new(Printed);
@@ -766,7 +681,7 @@ fn pair_alone(found: &Found, environment: &Environment, args: &PairArgs) -> Resu
     }
     let data = Data::new(config.data_dir(environment)).with_waiting(&config.waiting);
     let identity = data.identity().map_err(|error| error.to_string())?;
-    let watch = watched(found);
+    let watch = found.watched();
     let create = found.create.clone().filter(|file| watch.contains(file));
     let peers = LayeredPeers::new(watch, &data)
         .map_err(|error| error.to_string())?
@@ -1067,98 +982,9 @@ fn say_paired(peer: &str) {
     }
 }
 
-/// Makes the data directory (and what is missing above it) closed to other accounts where the platform has modes.
-fn make_private_dir(path: &std::path::Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        let _ = std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(path);
-    }
-    #[cfg(not(unix))]
-    let _ = std::fs::create_dir_all(path);
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Environment, announce_unchecked, desktop_environment, read_when_made};
-    use crate::ownership::{Kind, Problem, decide};
-
-    #[derive(Clone, Default)]
-    struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-
-    impl std::io::Write for Capture {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().expect("log").extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
-        type Writer = Self;
-
-        fn make_writer(&'a self) -> Self::Writer {
-            self.clone()
-        }
-    }
-
-    fn logged(run: impl FnOnce()) -> String {
-        let capture = Capture::default();
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(capture.clone())
-            .with_ansi(false)
-            .finish();
-        tracing::subscriber::with_default(subscriber, run);
-        String::from_utf8(capture.0.lock().expect("log").clone()).expect("text")
-    }
-
-    #[test]
-    fn a_service_check_that_is_off_is_logged_as_non_default_and_one_that_is_on_is_silent() {
-        let text = logged(|| announce_unchecked(false));
-        assert!(
-            text.contains("non-default: [service] check_access is false"),
-            "{text}"
-        );
-        assert!(logged(|| announce_unchecked(true)).is_empty());
-    }
-
-    #[test]
-    fn a_layer_made_later_in_an_open_place_is_read_only_when_the_check_is_off() {
-        assert!(read_when_made(Kind::Open, false));
-        assert!(read_when_made(Kind::Unknown, false));
-        assert!(!read_when_made(Kind::Open, true));
-        assert!(!read_when_made(Kind::Foreign, false));
-    }
-
-    fn problem(kind: Kind) -> Problem {
-        Problem {
-            kind,
-            text: "the data directory is open to every user".to_owned(),
-            owner: Some("4242".to_owned()),
-        }
-    }
-
-    #[test]
-    fn an_access_problem_is_an_error_until_the_operator_turns_the_check_off() {
-        assert!(decide(&[problem(Kind::Open)], true, &[]).is_err());
-        assert!(decide(&[problem(Kind::Open)], false, &[]).is_ok());
-        assert!(decide(&[problem(Kind::Unknown)], false, &[]).is_ok());
-        assert!(decide(&[], true, &[]).is_ok());
-    }
-
-    /// Whoever owns a layer wrote what it says, `check_access = false` included, so a layer another account owns
-    /// cannot turn its own check off.
-    #[test]
-    fn a_path_another_account_owns_is_refused_even_when_the_check_is_off() {
-        assert!(decide(&[problem(Kind::Foreign)], false, &[]).is_err());
-        assert!(decide(&[problem(Kind::Open), problem(Kind::Foreign)], false, &[]).is_err());
-    }
+    use super::{Environment, desktop_environment};
 
     fn native(settings: &crate::config::NodeConfig) -> toml::Table {
         settings
