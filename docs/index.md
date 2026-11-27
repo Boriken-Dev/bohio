@@ -8,7 +8,7 @@ Three rules hold the design together:
 - **One stream per operation.** A client opens a stream, names a protocol and sends the request as the open's metadata. Control messages are CBOR and file or process bytes travel raw, behind a one-byte tag, so a client in any language can speak it.
 - **No hard-coded limits.** Every bound is a setting in `bohio.cfg` with a documented default, and nothing buffers without bound.
 
-A node reaches the system it is for through **sources** (a console, a screen, power, virtual media), each a configured
+A node reaches the system it is for through **sources** (a console, a screen, power, virtual media, programs, files), each a configured
 provider: its own pseudo-terminal and screen are the `native` provider, and a serial line, a BMC or a hypervisor are others. See
 [Sources and providers](providers.md).
 
@@ -223,7 +223,7 @@ bohio peer approve <agent id> --allow info,fs.read,exec --fs-root /srv/data --pr
 claude mcp add bohio -- bohio mcp --config agent.cfg --host "lab=tcp://host.example:7620 --server <host id>"
 ```
 
-[Agents and MCP](agents.md) lists the tools, their bounds and how to configure Claude Code, Codex and other clients, and [Security](security.md#what-an-agents-tools-give) says why the grant is the only bound.
+[Agents and MCP](agent-tools.md) lists the tools, their bounds and how to configure Claude Code, Codex and other clients, and [Security](security.md#what-an-agents-tools-give) says why the grant is the only bound.
 
 ## Configuration
 
@@ -233,7 +233,7 @@ claude mcp add bohio -- bohio mcp --config agent.cfg --host "lab=tcp://host.exam
 
 - [The protocol](protocol.md): the wire, for an implementer in any language, with test vectors.
 - [Security](security.md): what the service holds, what a peer is granted, where isolation stops, and the known limits.
-- [Agents and MCP](agents.md): the tools an agent has on a host, and `bohio mcp` for any MCP client.
+- [Agents and MCP](agent-tools.md): the tools an agent has on a host, and `bohio mcp` for any MCP client.
 - [Machine-readable output](cli-json.md): `--format json` for every command, and its shapes.
 - [Profiles](profiles.md): named starting points for the transfer settings: a LAN, a weak host, a slow link, a long fast path.
 - [Embedding a node](embedding.md): running a node inside another application, from its own settings, key and peers.

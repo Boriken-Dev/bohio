@@ -22,5 +22,5 @@ nav:
   - Embedding a node: embedding.md
   - Sources and providers: providers.md
   - Using it from hostctl: hostctl.md
-  - Agents and MCP: agents.md
+  - Agents and MCP: agent-tools.md
   - Building: building.md

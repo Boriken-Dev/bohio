@@ -1535,9 +1535,10 @@ impl ForwardConfig {
 /// A PIN has `10^pin_length` values with the default digits, and a guess is made only against a PIN armed now: with `max_attempts`
 /// wrong guesses allowed, the chance that a stranger who reaches the node guesses one PIN is `max_attempts / 10^pin_length`
 /// (`10 / 10^6`, one in a hundred thousand, by default). `attempt_delay` slows a source that guesses, so `max_attempts = 0`
-/// (no limit) is bounded by time instead: from one source, the delay doubles from `attempt_delay` to `attempt_delay_max`, which is
-/// about 15 guesses in the default five minutes, but every source has its own delay, so a stranger with many addresses
-/// multiplies that. Unlimited trades the guess count for the lifetime, and is for a node that only a trusted network reaches.
+/// (no limit) is bounded by time instead: from one source, the delay doubles from `attempt_delay` to `attempt_delay_max`, and
+/// `pending_per_source` (4) guesses may run at once, which is about 60 guesses in the default five minutes. Every source has its
+/// own delay, so a stranger with many addresses multiplies that. Unlimited trades the guess count for the lifetime, and is for a
+/// node that only a trusted network reaches.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct PairingConfig {

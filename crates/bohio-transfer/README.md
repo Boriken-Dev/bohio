@@ -3,11 +3,11 @@
 [![Version](https://img.shields.io/crates/v/bohio-transfer.svg)](https://crates.io/crates/bohio-transfer)
 [![Rust version](https://img.shields.io/crates/msrv/bohio-transfer.svg)](https://crates.io/crates/bohio-transfer)
 [![License: MPL-2.0](https://img.shields.io/badge/license-MPL--2.0-blue.svg)](https://github.com/Boriken-Dev/bohio/blob/main/LICENSE)
-[![Docs](https://img.shields.io/docsrs/bohio-transfer)](https://docs.rs/bohio-transfer)
+[![Docs](https://img.shields.io/docsrs/bohio-transfer)](https://boriken-dev.github.io/bohio/rust/bohio_transfer/)
 [![CI](https://img.shields.io/github/actions/workflow/status/Boriken-Dev/bohio/test.yml)](https://github.com/Boriken-Dev/bohio/actions/workflows/test.yml)
 
 The byte-level work of Bohío, a remote host runtime: digests of several algorithms in one pass, compression (zstd, LZ4 and deflate) piece by piece, and rsync's rolling checksum, block signatures and deltas. **It does no I/O of
-its own**: it takes the bytes a caller feeds it, or a `Read` a caller passes. Documentation: <https://docs.rs/bohio-transfer>.
+its own**: it takes the bytes a caller feeds it, or a `Read` a caller passes. Documentation: <https://boriken-dev.github.io/bohio/rust/bohio_transfer/>.
 
 ## Features
 
@@ -54,6 +54,29 @@ match encoder.frame(chunk)? {
 assert_eq!(out, chunk);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
+
+## API overview
+
+| Module | Purpose |
+| --- | --- |
+| `hash` | digests of ten algorithms in one pass |
+| `compress` | zstd, LZ4 and deflate, piece by piece or in one call |
+| `rolling`, `signature`, `delta`, `apply` | rsync's rolling checksum, block signatures, the matcher and the patch |
+| `screen` (feature `screen`) | the tiles of a changed frame and the encodings of a screen stream |
+
+## Development
+
+```text
+cargo fmt --all --check
+cargo clippy -p bohio-transfer --all-targets -- -D warnings
+cargo test -p bohio-transfer
+RUSTDOCFLAGS="-D warnings" cargo doc -p bohio-transfer --no-deps
+```
+
+### Releasing
+
+Nothing is published to a registry: the workspace depends on git revisions, and a `v*` tag of the repository builds the release
+archives.
 
 ## License
 

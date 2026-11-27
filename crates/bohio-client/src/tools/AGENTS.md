@@ -4,7 +4,7 @@ Part of the `bohio-client` API header (`../../AGENTS.md` in the crate root).
 
 ## Agent tools (`bohio_client::tools`)
 
-What an agent does on a host, as typed JSON calls over any `Open`; `bohio mcp` carries the same tools over the Model Context Protocol (`docs/agents.md`).
+What an agent does on a host, as typed JSON calls over any `Open`; `bohio mcp` carries the same tools over the Model Context Protocol (`docs/agent-tools.md`).
 
 ```rust
 pub struct Tools;                                                  // Debug, Send + Sync; Drop closes the forwards it holds

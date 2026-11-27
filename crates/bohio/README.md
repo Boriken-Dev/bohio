@@ -3,13 +3,13 @@
 [![Version](https://img.shields.io/crates/v/bohio.svg)](https://crates.io/crates/bohio)
 [![Rust version](https://img.shields.io/crates/msrv/bohio.svg)](https://crates.io/crates/bohio)
 [![License: MPL-2.0](https://img.shields.io/badge/license-MPL--2.0-blue.svg)](https://github.com/Boriken-Dev/bohio/blob/main/LICENSE)
-[![Docs](https://img.shields.io/docsrs/bohio)](https://docs.rs/bohio)
+[![Docs](https://img.shields.io/docsrs/bohio)](https://boriken-dev.github.io/bohio/rust/bohio/)
 [![CI](https://img.shields.io/github/actions/workflow/status/Boriken-Dev/bohio/test.yml)](https://github.com/Boriken-Dev/bohio/actions/workflows/test.yml)
 
 Bohío is a remote host runtime: **an authenticated peer runs commands, reads files and opens
 shells on a machine without SSH, WinRM or Python**, over any coqui transport. This crate is the
 host: a library of engines, each serving one operation over a channel, and the `bohio` command.
-Documentation: <https://docs.rs/bohio>.
+Documentation: <https://boriken-dev.github.io/bohio/rust/bohio/>.
 
 ## Features
 
@@ -154,6 +154,10 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 ```
+
+On Linux `--all-features` includes `gui-wayland`, which links the system libpipewire-0.3 (`pipewire-devel` or `libpipewire-0.3-dev`) and needs
+libclang. A machine without them runs the same commands with `--features cli,serial,gui,notify,zstd,zstdmt` in place of `--all-features`
+(`-p bohio` for the clippy and test lines: the feature names are the `bohio` crate's).
 
 ### Releasing
 

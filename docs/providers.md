@@ -1,7 +1,7 @@
 # Sources and providers
 
 A Bohío node reaches the system it is for through **sources**. A source is a configured instance of a **provider**, and each
-thing a source gives is one of four **capabilities**, each a [guatiao](https://github.com/Boriken-Dev/guatiao) kind of the
+thing a source gives is one of six **capabilities**, each a [guatiao](https://github.com/Boriken-Dev/guatiao) kind of the
 `bohio-api` crate:
 
 | Capability | Kind | A source is |
@@ -10,7 +10,7 @@ thing a source gives is one of four **capabilities**, each a [guatiao](https://g
 | desktop | `bohio_desktop` (`DesktopSource`) | a screen with input: the node's own, a VNC or RDP server, a BMC's KVM |
 | power | `bohio_power` (`PowerSource`) | the system's power: a BMC, a hypervisor, a smart switch |
 | media | `bohio_media` (`MediaSource`) | virtual media: an image the system boots or installs from |
-| exec | `bohio_exec` (`ExecSource`) | processes: the node's own operating system, and later a machine reached over SSH |
+| exec | `bohio_exec` (`ExecSource`) | processes: the node's own operating system, or a machine reached over SSH |
 | fs | `bohio_files` (`FilesSource`) | a directory tree: the node's own file system, or one reached over a protocol |
 
 `native` is this node's own terminal and screen. It is a provider of the same kinds as any other, registered the same way, so
@@ -95,6 +95,8 @@ extensions. A server without `fsync@openssh.com` cannot flush a file, so with `[
 `providers/ssh/AGENTS.md`, and `docs/security.md` says what a peer holding the source can do (everything the account can) and what a weaker
 host-key check costs.
 
+`login_shell_check = true` (the default) makes the source run one probe line when the first program or terminal command with words starts, and refuse every such start (`unsupported`, naming the shell) when the account's login shell does not read single quotes as a POSIX shell does. Every word is quoted for a POSIX shell, and under `fish`, `cmd.exe` or PowerShell a peer's argument could end the quote and run another command, so a program list would restrict nothing. `false` skips the probe and is logged `non-default:`.
+
 ### The machine's desktop over SSH
 
 Two settings of an ssh source serve a desktop, with nothing of Bohío on the machine. Neither is on by default.
@@ -105,7 +107,6 @@ Two settings of an ssh source serve a desktop, with nothing of Bohío on the mac
   reach it. The screen is seen and clicked as the machine's own X session would be; the lock state of the machine's login session is
   not told (`lock_detection` is in `lacks`), and a Wayland-only machine has no X server to reach (its XWayland, such as WSLg's, serves
   the X windows alone).
-- `login_shell_check = true` (the default) makes the source run one probe line when the first program or terminal command with words starts, and refuse every such start (`unsupported`, naming the shell) when the account's login shell does not read single quotes as a POSIX shell does. Every word is quoted for a POSIX shell, and under `fish`, `cmd.exe` or PowerShell a peer's argument could end the quote and run another command, so a program list would restrict nothing. `false` skips the probe and is logged `non-default:`.
 - `x11_forward = true` makes the programs this source starts show their windows on **the node's own desktop** (the way `ssh -X` does):
   the machine's `sshd` needs `X11Forwarding yes` and an `xauth`, each program's X connections come back over the session and go to the
   node's display (`x11_local_display`, else the node's `DISPLAY`; at most `x11_max_connections` at once). It needs `x11_trusted = true`
@@ -177,7 +178,7 @@ impl TerminalSource for Echo {
 - **A kind grows by appending** methods with a default body; a model grows by fields that default. Each kind's table hash is
   pinned by `crates/bohio-api/tests/kinds.rs`, and `bohio-api.kinds.json` describes the kinds for a provider written in another
   language.
-- **Run the contract suite**: `bohio_api::contract::{terminal, desktop, power, media}` over your source, with an endpoint your
+- **Run the contract suite**: `bohio_api::contract::{terminal, desktop, power, media, exec, files}` over your source, with an endpoint your
   test starts (`socat` pseudo-terminals, a QEMU or VNC server in WSL, `bohio_api::testing`'s in-memory sources), never a production BMC.
 
 A provider linked into the node is registered with `Sources::register_library` (a `guatiao::local_providers!` library) or given

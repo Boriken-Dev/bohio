@@ -28,7 +28,7 @@ command = ["docker", "exec", "-i", "build-container", "bohio", "serve", "--stdio
 
 hostctl runs the program directly, never through a shell, and ends its tree when the host closes. The same works for `podman exec -i`, `kubectl exec -i` and `ssh host bohio serve --stdio`. This is `bohio remote --command` on the command line.
 
-The client must hold the proof and link layers. Today that is the Rust `bohio-client` crate and the `bohio remote` command; cabuya has JavaScript and Dart bindings, and a Python binding of the link would let the provider speak the wire directly. Until one exists, a provider can drive `bohio remote` as a child process for `info`, `exec`, `read` and `shell`, which is enough for `run()`, reading and `spawn()`; the file calls that change things (`write`, `mkdir`, `rename`, ...) need the wire.
+The client must hold the proof and link layers. Today that is the Rust `bohio-client` crate and the `bohio remote` command; cabuya has JavaScript and Dart bindings, and a Python binding of the link would let the provider speak the wire directly. Until one exists, a provider can drive `bohio remote` as a child process: `info`, `stats`, `which`, `exec`, `shell`, `read`, `write`, `put`, `get`, `walk`, `glob`, `hash`, `search` and `sync` (`--format json` gives a program objects to read), which is enough for `run()`, reading, writing and `spawn()`; the file calls with no command (`mkdir`, `rename`, ...) need the wire.
 
 ## `Host.run`
 

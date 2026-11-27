@@ -10,6 +10,16 @@ The file is a copy of the release overlay's `tools/build.py` in
 from, `python tools/build.py self check` fails when it differs from that commit, and a change to it is made in the overlay and
 copied here with `self update`, never edited in this repository.
 
+## The whole workspace
+
+On Linux `--all-features` includes `gui-wayland`, which links the system libpipewire-0.3 (`pipewire-devel` or `libpipewire-0.3-dev`) and needs
+libclang. A machine without them runs the same commands with `--features cli,serial,gui,notify,zstd,zstdmt` in place of `--all-features`
+(`-p bohio` for the clippy and test lines: the feature names are the `bohio` crate's).
+
+`cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace --all-features` and
+`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features` are the checks CI runs. The Wayland desktop's test runs inside
+`tools/wayland_headless.sh` (a headless sway with PipeWire and the portals).
+
 ## The deps branch
 
 The `deps` branch is an orphan branch that holds `crates/`, a cargo vendor directory with one `NAME-VERSION/` for every

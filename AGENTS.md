@@ -5,10 +5,15 @@ Contributor guidance for this checkout. Each crate has an `AGENTS.md` API header
 | Header | Covers |
 | --- | --- |
 | `crates/bohio-proto/AGENTS.md` | the wire types and the CBOR codec |
-| `crates/bohio-api/AGENTS.md` | the provider kinds (terminal, desktop, power, media) a node reaches its system through, and their contract suite |
-| `crates/bohio-transfer/AGENTS.md` | the digests, computed in one pass, and the compression codecs (no I/O of its own) |
+| `crates/bohio-api/AGENTS.md` | the provider kinds (terminal, desktop, power, media, exec, files) a node reaches its system through, and their contract suite |
+| `crates/bohio-transfer/AGENTS.md` | the digests, computed in one pass, the compression codecs, the delta matcher and the screen encodings (no I/O of its own) |
 | `crates/bohio-client/AGENTS.md` | the Rust client, the `Open` trait, the proven `Connection` and the bounded `Relay`; it lists the module headers under `crates/bohio-client/src/` |
 | `crates/bohio/AGENTS.md` | the host library: features, imports, environment variables; it lists the module headers under `crates/bohio/src/` (configuration, peer grants, engines, desktop, node, the `bohio` command) |
+| `crates/bohio-x11/AGENTS.md` | the `Desktop` trait and the X11 backend that runs over any stream |
+| `providers/ssh/AGENTS.md` | the `ssh` provider: every setting of a machine reached over SSH |
+| `providers/ssh/plugin/AGENTS.md` | the `ssh` provider as a library a node maps at run time |
+| `providers/terminal/serial/AGENTS.md` | the `serial` terminal provider: every setting of a serial console |
+| `providers/terminal/serial/plugin/AGENTS.md` | the `serial` provider as a library a node maps at run time |
 
 ## Layout
 
@@ -16,21 +21,25 @@ One Cargo workspace (`Cargo.toml`, one committed `Cargo.lock`: the repository bu
 
 | Path | What |
 | --- | --- |
-| `crates/bohio-proto/` | wire types and codec, no I/O, for any client |
-| `crates/bohio/examples/support/painted.rs` | the in-memory desktop the GUI tests paint on (included with `#[path]`; no screen is touched) |
-| `crates/bohio-api/` | the provider kinds (guatiao): terminal, desktop, power and media sources, their models and the contract suite every provider passes; in-memory test sources behind feature `testing` |
-| `providers/ssh/` | `bohio-provider-ssh`: the `ssh` provider, another machine's terminal and processes through SSH (russh over ring), with `plugin/` as the same provider as a library |
-| `providers/terminal/serial/` | `bohio-provider-serial`: the `serial` terminal provider, the console of a system reached through a serial line (a provider is an ordinary library; `plugin/` crates come with run-time loading) |
-| `crates/bohio-transfer/` | byte-level work with no I/O: digests of ten algorithms in one pass, and zstd, LZ4 and deflate compression |
-| `crates/bohio-client/` | Rust client over a `coqui_transport::Channel`; the link is an `Open`, a caller's or `connect::Connection` |
-| `crates/bohio/` | host library (engines, `platform`, configuration, grants, `link`, `peer`, `serve`) and the `bohio` binary behind feature `cli` |
-| `crates/bohio-bench/` | the benchmark harness (`publish = false`): scenarios over a link, a raw TCP control, result files |
+| `.github/actions/sdk/` | the composite action that installs the SDKs of `tools/sdk.lock` for a job |
+| `.github/workflows/` | `test.yml`, `release.yml`, `docs.yml` and `bench.yml` (below) |
 | `benchmarks/` | `README.md` (schema, scenarios, reproduce), `netem.sh` (emulated links), `scenarios.sh`, `summarize.py`, committed `results/` |
+| `crates/bohio/` | host library (engines, `platform`, configuration, grants, `link`, `peer`, `serve`) and the `bohio` binary behind feature `cli` |
+| `crates/bohio/examples/support/painted.rs` | the in-memory desktop the GUI tests paint on (included with `#[path]`; no screen is touched) |
+| `crates/bohio/tests/plugin_{echo,exec,other}/` | provider libraries the plugin tests build and load (`cdylib` members of the workspace) |
+| `crates/bohio-api/` | the provider kinds (guatiao): terminal, desktop, power, media, exec and files sources, their models and the contract suite every provider passes; in-memory test sources behind feature `testing` |
+| `crates/bohio-bench/` | the benchmark harness (`publish = false`): scenarios over a link, a raw TCP control, result files |
+| `crates/bohio-client/` | Rust client over a `coqui_transport::Channel`; the link is an `Open`, a caller's or `connect::Connection` |
+| `crates/bohio-proto/` | wire types and codec, no I/O, for any client |
+| `crates/bohio-transfer/` | byte-level work with no I/O: digests of ten algorithms in one pass, and zstd, LZ4 and deflate compression |
+| `crates/bohio-x11/` | the `Desktop` trait and the X11 backend, over any stream (an X display, or another machine's through an SSH channel) |
+| `docs/`, `mkdocs.yml` | the narrative site: the protocol (the wire, in CDDL), security, providers, agent tools and the hostctl mapping; the Rust API reference is published under `/rust/` |
 | `examples/bohio.cfg` | every setting with its default |
-| `docs/`, `mkdocs.yml` | the narrative site: the protocol (the wire, in CDDL), security and the hostctl mapping; the Rust API reference is published under `/rust/` |
+| `packaging/` | the systemd units (`systemd/bohio.service`, the GUI helper's, and `systemd/own-desktop/`: user units that run a node on the person's own desktop), the launchd plists (`launchd/`), the Windows service wrapper of the GUI helper (`windows/`) and the container image (`container/Containerfile`); the Windows service itself is `bohio service` |
+| `providers/ssh/` | `bohio-provider-ssh`: the `ssh` provider, another machine's terminal, processes and files through SSH (russh over ring), with `plugin/` as the same provider as a library |
+| `providers/terminal/serial/` | `bohio-provider-serial`: the `serial` terminal provider, the console of a system reached through a serial line (a provider is an ordinary library; `plugin/` crates come with run-time loading) |
+| `tools/` | `build.py`, a copy of the release overlay's build tool (edited there, never here; `self check` holds it equal), its `build.cfg` and `sdk.lock`: the `deps` branch, the SDK lock, offline and release builds; `own_desktop_units.sh` proves the own-desktop units, `wayland_headless.sh` runs a command inside a headless sway |
 | `vectors/` | the wire's messages as hex, written and checked by `crates/bohio-proto/tests/vectors.rs`; a clean tree after `cargo test` means they are current |
-| `tools/` | `build.py`, a copy of the release overlay's build tool (edited there, never here; `self check` holds it equal), its `build.cfg` and `sdk.lock`: the `deps` branch, the SDK lock, offline and release builds |
-| `packaging/` | the systemd unit (`systemd/bohio.service`) and the container image (`container/Containerfile`); the Windows service is `bohio service` |
 
 ## Commands
 
@@ -90,15 +99,17 @@ built `bohio` binary (cargo builds it for the test): `bohio serve` runs as a chi
 
 ## CI and release
 
-- `.github/workflows/test.yml` runs fmt, clippy, the workspace tests, a check that `vectors/` is unchanged and strict rustdoc on Linux,
-  Windows and macOS, on stable and 1.89, on demand and on `ci-*` tags. Linux installs `socat` so the serial test runs.
+- `.github/workflows/test.yml` runs fmt, clippy, the workspace tests, a check that `vectors/` is unchanged, strict rustdoc and
+  `cargo check --workspace --no-default-features` on Linux, Windows and macOS, on stable and 1.89, on demand and on `ci-*` tags or
+  branches. Linux installs `socat` so the serial test runs, and its `gui-wayland` job runs the Wayland desktop's capture test inside
+  `tools/wayland_headless.sh` (a headless sway with PipeWire and the portals).
 - `test.yml` also runs `tools` (the copy, the SDK lock and the pinned deps commit), `offline` (a build from the deps branch in a
   namespace with no network, beside a control that must fail) and the release builds: a static musl archive per Linux
   architecture, Windows x64 and ARM64 archives, a universal macOS archive and a container image per architecture, each uploaded as an
   artifact. The matrix is `python tools/build.py release matrix`; CI never commits the deps branch.
 - `.github/workflows/release.yml` (a `v*` tag, or on demand without publishing) calls `test.yml`, builds the docs strictly without
   deploying, then attaches every artifact and one `SHA256SUMS` to a GitHub release; nothing goes to a registry.
-- `.github/workflows/bench.yml` is on demand only (`workflow_dispatch`: `ref`, `baseline_ref`, `samples`, `links`): it measures on emulated links, alternating two refs, with a raw TCP control; never per push.
+- `.github/workflows/bench.yml` is on demand only (`workflow_dispatch`; its inputs are listed in the file: the two refs, `samples`, `links`, `a_settings`, `features`, `b_features` and `extra_scenarios`): it measures on emulated links, alternating two refs, with a raw TCP control; never per push.
 - `.github/workflows/docs.yml` builds the narrative site strictly with the Rust API reference and deploys Pages.
 
 Nothing is published to a registry. The workspace depends on git revisions of the Coqui crates; a `v*` tag needs the maintainer's go-ahead.

@@ -24,8 +24,8 @@ pub struct HostConfig {
     /// An endpoint to try when this one does not answer (`--fallback`).
     pub fallback: Option<String>,
     /// The hosts to go through, in order, as `--jump` does: each entry is a name of this table or an endpoint. A named
-    /// jump brings its own `server`, `ca`, `cert_hash` and `fallback`; an endpoint is trusted by the keys this node
-    /// holds.
+    /// jump brings its own `server`, `ca` and `cert_hash`; its `fallback` is not used. An endpoint is trusted by the keys
+    /// this node holds.
     pub jump: Vec<String>,
 }
 

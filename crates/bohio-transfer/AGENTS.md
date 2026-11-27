@@ -103,7 +103,7 @@ impl Decoder {
 }
 #[non_exhaustive] pub enum DecodeError { Corrupt, TooLong, Expansion, Unsupported(Unsupported), Setup(String), Write(io::ErrorKind) }
 pub fn ratio(&Compression, &Caps, sample: &[u8]) -> Result<f64, Unsupported>;                  // compressed over raw size of a sample
-pub fn compress_all(&Compression, &Caps, input: &[u8]) -> Result<Vec<u8>, CompressAllError>;   // one context over the whole input: what a prepared transfer sends
+pub fn compress_all(&Compression, &Caps, input: &[u8]) -> Result<Vec<u8>, CompressAllError>;   // one context over the whole input, in one call (a prepared read streams through `Encoder` instead)
 pub const FREE_OUTPUT: u64;                                 // 1 MiB: output a decoder produces before it compares with `max_expansion`
 ```
 

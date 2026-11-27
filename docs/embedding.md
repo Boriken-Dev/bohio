@@ -45,9 +45,9 @@ impl Grants for Roster {
 
 ## Sources
 
-A node serves its terminal, desktop, power and media from its **sources** (`bohio::access::Sources`), which `Node::new` builds
+A node serves its terminal, desktop, power, media, programs and files from its **sources** (`bohio::access::Sources`), which `Node::new` builds
 from `NodeConfig`'s `source` and `access` tables (today's node when they are empty: `native`). An application replaces or adds to
-them: `Sources::unconfigured()` has none, `with_terminal`, `with_desktop`, `with_power` and `with_media` add a source as a value
+them: `Sources::unconfigured()` has none, `with_terminal`, `with_desktop`, `with_power`, `with_media`, `with_exec` and `with_files` add a source as a value
 of the kind's trait, `register_library` registers a `guatiao::local_providers!` library so `[source.<name>]` can name its
 providers, and `with_access(Capability, names)` says which serve each capability, the first the default. `Node::with_sources`
 gives the node its sources (call it first), `Node::with_desktop(desktop)` is the shortcut that adds the application's own desktop

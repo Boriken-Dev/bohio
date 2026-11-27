@@ -3,7 +3,7 @@
 [![Version](https://img.shields.io/crates/v/bohio.svg)](https://crates.io/crates/bohio)
 [![Rust version](https://img.shields.io/crates/msrv/bohio.svg)](https://crates.io/crates/bohio)
 [![License: MPL-2.0](https://img.shields.io/badge/license-MPL--2.0-blue.svg)](https://github.com/Boriken-Dev/bohio/blob/main/LICENSE)
-[![Docs](https://img.shields.io/docsrs/bohio)](https://docs.rs/bohio)
+[![Docs](https://img.shields.io/docsrs/bohio)](https://boriken-dev.github.io/bohio/)
 [![CI](https://img.shields.io/github/actions/workflow/status/Boriken-Dev/bohio/test.yml)](https://github.com/Boriken-Dev/bohio/actions/workflows/test.yml)
 
 Bohío is a remote host runtime. **A proven peer runs commands, reads files and opens shells on a
@@ -132,18 +132,6 @@ bohio mcp --host <name> [--max-output BYTES]
 See the [`bohio` crate](https://github.com/Boriken-Dev/bohio/tree/main/crates/bohio) for the
 configuration search order, the exit statuses and the environment variables.
 
-## Documentation
-
-The site at <https://boriken-dev.github.io/bohio/> has the [protocol](https://boriken-dev.github.io/bohio/protocol/) (the wire for an
-implementer in another language; `vectors/` holds its messages as hex), [security](https://boriken-dev.github.io/bohio/security/),
-[embedding a node](https://boriken-dev.github.io/bohio/embedding/) and [hostctl](https://boriken-dev.github.io/bohio/hostctl/), plus the Rust API reference.
-
-## Deployment
-
-`packaging/systemd/bohio.service` runs `bohio serve` as the unprivileged user `bohio` under systemd, `bohio service install` registers a
-Windows service, and `packaging/container/Containerfile` builds an image whose example entrypoint is `bohio serve --stdio`, from the `deps` branch with no
-network after the toolchain (`python tools/build.py container build`; [building](https://boriken-dev.github.io/bohio/building/) lists the `.env` overrides).
-
 ## API overview
 
 | Crate | Where to look |
@@ -157,6 +145,21 @@ network after the toolchain (`python tools/build.py container build`; [building]
 | `bohio-provider-ssh` | [`providers/ssh/AGENTS.md`](https://github.com/Boriken-Dev/bohio/blob/main/providers/ssh/AGENTS.md) |
 | `bohio-provider-serial` | [`providers/terminal/serial/AGENTS.md`](https://github.com/Boriken-Dev/bohio/blob/main/providers/terminal/serial/AGENTS.md) |
 
+## Documentation
+
+The site at <https://boriken-dev.github.io/bohio/> has the narrative pages and, under [`/rust/`](https://boriken-dev.github.io/bohio/rust/), the Rust API reference:
+
+- [Overview](https://boriken-dev.github.io/bohio/), [Profiles](https://boriken-dev.github.io/bohio/profiles/) and [Building](https://boriken-dev.github.io/bohio/building/);
+- [Protocol](https://boriken-dev.github.io/bohio/protocol/), the wire for an implementer in another language (`vectors/` holds its messages as hex);
+- [Security](https://boriken-dev.github.io/bohio/security/), [Sources and providers](https://boriken-dev.github.io/bohio/providers/) and [Agents and MCP](https://boriken-dev.github.io/bohio/agent-tools/);
+- [Machine-readable output](https://boriken-dev.github.io/bohio/cli-json/), [embedding a node](https://boriken-dev.github.io/bohio/embedding/) and [hostctl](https://boriken-dev.github.io/bohio/hostctl/).
+
+## Deployment
+
+`packaging/systemd/bohio.service` runs `bohio serve` as the unprivileged user `bohio` under systemd, `bohio service install` registers a
+Windows service, and `packaging/container/Containerfile` builds an image whose example entrypoint is `bohio serve --stdio`, from the `deps` branch with no
+network after the toolchain (`python tools/build.py container build`; [building](https://boriken-dev.github.io/bohio/building/) lists the `.env` overrides).
+
 ## Development
 
 ```text
@@ -165,6 +168,10 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 ```
+
+On Linux `--all-features` includes `gui-wayland`, which links the system libpipewire-0.3 (`pipewire-devel` or `libpipewire-0.3-dev`) and needs
+libclang. A machine without them runs the same commands with `--features cli,serial,gui,notify,zstd,zstdmt` in place of `--all-features`
+(`-p bohio` for the clippy and test lines: the feature names are the `bohio` crate's).
 
 ### Releasing
 

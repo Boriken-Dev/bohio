@@ -61,7 +61,12 @@ Exit status: 0 success, 1 the operation failed (one line on standard error), 2 t
 | `BOHIO_CONFIG` | the one configuration layer when `--config` is not given; must exist when set |
 | `BOHIO_LOG` | log level or filter for standard error, default `warn` (`trace` shows every link event; none holds a secret) |
 | `NO_COLOR` | set: no colour in log lines |
+| `BOHIO_TRUST_OWNER` | accounts (comma separated) whose ownership of the lowest layer, its directory and the system file counts as the operator's; every command reads it, `serve --trust-owner` is the same |
 | `PATH` | where shells are looked for in `info`, and the programs a grant lists by `exec` and `shell` |
+| `DISPLAY`, `WAYLAND_DISPLAY`, `XDG_SESSION_TYPE`, `XDG_SESSION_ID` (Unix) | whether a desktop is reachable and which: the command fills `[source.native]`'s `x11_display`, `x11_wayland` and `x11_session` from them when the file leaves them out; `gui-helper` names its session by `XDG_SESSION_ID` or `DISPLAY` |
+| `SESSIONNAME` (Windows), `USERNAME`, `USER` | the session and the account `gui-helper` reports to the node |
+| `SystemRoot` (Windows) | where the system's own programs are looked for |
+| `CREDENTIALS_DIRECTORY` | the directory a `credential:NAME` secret is a file of (set by systemd's `LoadCredential`) |
 | `APPDATA`, `LOCALAPPDATA`, `ProgramData` (Windows); `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `HOME` (Unix) | where the user's and the system's configuration files and the data directory are looked for |
 
 ## Gotchas

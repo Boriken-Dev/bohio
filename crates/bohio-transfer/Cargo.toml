@@ -18,6 +18,7 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
+# zstd is the codec the protocol prefers; a build without it offers lz4 and deflate only.
 default = ["zstd"]
 # Zstandard through the C library (it compiles C with `cc`). Without it `zstd` is not offered and a request for it is unsupported; `lz4` and `deflate` stay.
 zstd = ["dep:zstd"]

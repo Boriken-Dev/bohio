@@ -25,6 +25,8 @@ required-features = ["cli"]
 doc = false
 
 [features]
+# What a host a person installs wants: the command, the two provider crates, zstd and the desktop encodings. An embedding
+# program that takes the library alone sets `default-features = false`.
 default = ["cli", "serial", "ssh", "zstd", "gui"]
 # Zstandard through the C library, for the compression of reads, writes and exec streams (it compiles C with `cc`). Without it `zstd` is not offered, and `lz4` and `deflate` remain.
 zstd = ["bohio-transfer/zstd", "bohio-client/zstd"]

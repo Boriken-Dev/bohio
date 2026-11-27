@@ -3,12 +3,12 @@
 [![Version](https://img.shields.io/crates/v/bohio-proto.svg)](https://crates.io/crates/bohio-proto)
 [![Rust version](https://img.shields.io/crates/msrv/bohio-proto.svg)](https://crates.io/crates/bohio-proto)
 [![License: MPL-2.0](https://img.shields.io/badge/license-MPL--2.0-blue.svg)](https://github.com/Boriken-Dev/bohio/blob/main/LICENSE)
-[![Docs](https://img.shields.io/docsrs/bohio-proto)](https://docs.rs/bohio-proto)
+[![Docs](https://img.shields.io/docsrs/bohio-proto)](https://boriken-dev.github.io/bohio/rust/bohio_proto/)
 [![CI](https://img.shields.io/github/actions/workflow/status/Boriken-Dev/bohio/test.yml)](https://github.com/Boriken-Dev/bohio/actions/workflows/test.yml)
 
 The wire types of Bohío, a remote host runtime, and their codec. **It does no I/O and knows no
 transport**: a client in any language, or a Rust one over any coqui channel, builds on these
-messages. Documentation: <https://docs.rs/bohio-proto>.
+messages. Documentation: <https://boriken-dev.github.io/bohio/rust/bohio_proto/>.
 
 ## Features
 

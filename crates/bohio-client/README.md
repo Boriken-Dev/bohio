@@ -3,13 +3,13 @@
 [![Version](https://img.shields.io/crates/v/bohio-client.svg)](https://crates.io/crates/bohio-client)
 [![Rust version](https://img.shields.io/crates/msrv/bohio-client.svg)](https://crates.io/crates/bohio-client)
 [![License: MPL-2.0](https://img.shields.io/badge/license-MPL--2.0-blue.svg)](https://github.com/Boriken-Dev/bohio/blob/main/LICENSE)
-[![Docs](https://img.shields.io/docsrs/bohio-client)](https://docs.rs/bohio-client)
+[![Docs](https://img.shields.io/docsrs/bohio-client)](https://boriken-dev.github.io/bohio/rust/bohio_client/)
 [![CI](https://img.shields.io/github/actions/workflow/status/Boriken-Dev/bohio/test.yml)](https://github.com/Boriken-Dev/bohio/actions/workflows/test.yml)
 
 A Rust client for Bohío hosts, over any coqui channel. **The operations own no link**: a caller implements
 `Open` (one stream per operation, whose open carries the request) and gets typed operations back,
 so a theater provider, a command line and the host's own tests share one client. Documentation:
-<https://docs.rs/bohio-client>.
+<https://boriken-dev.github.io/bohio/rust/bohio_client/>.
 
 ## Features
 
