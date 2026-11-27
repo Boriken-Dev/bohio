@@ -11,9 +11,6 @@ use crate::files::{Directory, FilesSource, failure_kind, word};
 use crate::model::{FileStat, OpenModel};
 use crate::vocab::{self, file_kind};
 
-/// The most listing reads the suite makes of one directory before it calls the listing endless.
-const LISTING_READS: usize = 100_000;
-
 fn fails_with(what: &str, result: Result<(), ProviderError>, words: &[&str]) {
     match result {
         Ok(()) => panic!("files: {what} succeeded and must fail with {words:?}"),
@@ -27,23 +24,24 @@ fn fails_with(what: &str, result: Result<(), ProviderError>, words: &[&str]) {
     }
 }
 
-fn names(directory: &dyn Directory, relative: &str) -> Vec<String> {
+fn names(directory: &dyn Directory, relative: &str, settings: &ContractSettings) -> Vec<String> {
     let reader = directory
         .read_dir(relative)
         .unwrap_or_else(|error| panic!("files: read_dir `{relative}` failed: {error:?}"));
     let mut found = Vec::new();
-    for _ in 0..LISTING_READS {
+    for _ in 0..settings.listing_reads {
         let page = reader
-            .next(16)
+            .next(settings.listing_page)
             .unwrap_or_else(|error| panic!("files: a listing read failed: {error:?}"));
         if page.is_empty() {
             found.sort();
             return found;
         }
         assert!(
-            page.len() <= 16,
-            "files: a listing read returned {} entries for a maximum of 16",
-            page.len()
+            page.len() as u64 <= settings.listing_page,
+            "files: a listing read returned {} entries for a maximum of {}",
+            page.len(),
+            settings.listing_page
         );
         found.extend(page.into_iter().map(|entry| entry.name));
     }
@@ -110,7 +108,6 @@ fn kind_of(stat: &FileStat) -> &str {
 ///
 /// With a message naming what the source got wrong.
 pub fn files(source: &dyn FilesSource, root: &str, settings: &ContractSettings) {
-    let _ = settings;
     let info = describe_of("files", source.describe(), source.describe());
     if !info.available {
         assert!(
@@ -135,7 +132,7 @@ pub fn files(source: &dyn FilesSource, root: &str, settings: &ContractSettings) 
         "files: the root is a directory"
     );
     assert!(
-        names(directory, ".").is_empty(),
+        names(directory, ".", settings).is_empty(),
         "files: the root is not empty"
     );
 
@@ -203,8 +200,8 @@ pub fn files(source: &dyn FilesSource, root: &str, settings: &ContractSettings) 
     directory
         .create_dir("p/q/r", None, true)
         .expect("files: create_dir with parents over what exists");
-    assert_eq!(names(directory, "."), ["a.txt", "d", "p"]);
-    assert_eq!(names(directory, "p/q"), ["r"]);
+    assert_eq!(names(directory, ".", settings), ["a.txt", "d", "p"]);
+    assert_eq!(names(directory, "p/q", settings), ["r"]);
     let nested = directory
         .open_dir("p/q")
         .expect("files: open_dir below the root");
@@ -259,8 +256,10 @@ pub fn files(source: &dyn FilesSource, root: &str, settings: &ContractSettings) 
             &[word::UNSUPPORTED],
         );
     }
-    let linked = offers(vocab::files::SYMLINK) && directory.symlink("c.txt", "l", false).is_ok();
-    if linked {
+    if offers(vocab::files::SYMLINK) {
+        directory
+            .symlink("c.txt", "l", false)
+            .expect("files: offers `symlink` and fails it");
         assert_eq!(directory.read_link("l").expect("files: read_link"), "c.txt");
         let stat = directory.stat("l", false).expect("files: stat of a link");
         assert_eq!(
@@ -297,6 +296,12 @@ pub fn files(source: &dyn FilesSource, root: &str, settings: &ContractSettings) 
             );
             directory.remove_file("up").expect("files: remove the link");
         }
+    } else {
+        fails_with(
+            "a symlink",
+            directory.symlink("c.txt", "l", false),
+            &[word::UNSUPPORTED],
+        );
     }
 
     // Attributes where offered.
@@ -345,12 +350,19 @@ pub fn files(source: &dyn FilesSource, root: &str, settings: &ContractSettings) 
     }
 
     // What a wrong but possible argument does: a failure, never a panic or a hang.
-    for relative in ["no-such", "no-such/deeper", "c.txt/under-a-file"] {
-        assert!(
-            directory.stat(relative, true).is_err(),
-            "files: stat of `{relative}` succeeded"
+    for relative in ["no-such", "no-such/deeper"] {
+        fails_with(
+            &format!("stat of `{relative}`"),
+            directory.stat(relative, true).map(drop),
+            &[word::NOT_FOUND],
         );
     }
+    fails_with(
+        "stat of a name below a file",
+        directory.stat("c.txt/under-a-file", true).map(drop),
+        // SFTP has one general failure for it, which a source over SFTP reports as `io`.
+        &[word::NOT_FOUND, word::NOT_A_DIRECTORY, word::IO],
+    );
     fails_with(
         "read_dir of a file",
         directory.read_dir("c.txt").map(drop),
@@ -375,7 +387,7 @@ pub fn files(source: &dyn FilesSource, root: &str, settings: &ContractSettings) 
     directory.remove_dir("d").expect("files: remove_dir");
     directory.remove_file("c.txt").expect("files: remove_file");
     assert!(
-        names(directory, ".").is_empty(),
+        names(directory, ".", settings).is_empty(),
         "files: the root is not empty after the suite cleaned it"
     );
 }

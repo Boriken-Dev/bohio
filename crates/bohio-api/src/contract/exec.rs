@@ -30,7 +30,7 @@ pub fn exec(source: &dyn ExecSource, start: &ExecStart, settings: &ContractSetti
         );
         return;
     }
-    let deadline = settings.slack * 5;
+    let deadline = settings.slack * settings.exec_slacks;
     let process = source
         .start(start.clone())
         .unwrap_or_else(|error| panic!("exec: start failed: {error:?}"));

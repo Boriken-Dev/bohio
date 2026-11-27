@@ -19,18 +19,34 @@ use guatiao::library::ProviderError;
 pub use self::exec::exec;
 use crate::desktop::DesktopSource;
 use crate::media::MediaSource;
-use crate::model::{InputModel, SourceInfo, TerminalOpen};
+use crate::model::{InputModel, ProgramSpec, SourceInfo, TerminalOpen};
 use crate::power::PowerSource;
 use crate::terminal::TerminalSource;
 use crate::vocab;
 
-/// What the suite waits, as parameters rather than constants.
+/// What the suite waits, takes and bounds, as parameters rather than constants.
 #[derive(Debug, Clone, Copy)]
 pub struct ContractSettings {
     /// How long past the time it was given a call may take before the suite calls it late.
     pub slack: Duration,
     /// The wait a `read` is given.
     pub read_wait: Duration,
+    /// How many slacks an exec program may run before the suite calls it endless.
+    pub exec_slacks: u32,
+    /// The most listing reads the suite makes of one directory before it calls the listing endless.
+    pub listing_reads: usize,
+    /// The maximum the suite asks of each listing read.
+    pub listing_page: u64,
+    /// What the suite types at an available terminal: real bytes, which the terminal takes whole.
+    pub terminal_input: &'static [u8],
+    /// Output the terminal must produce (as the answer to `terminal_input` or by itself) within
+    /// `terminal_output_wait`; `None` checks that a read answers, not what it answers.
+    pub terminal_output: Option<&'static [u8]>,
+    /// How long the suite waits for `terminal_output`.
+    pub terminal_output_wait: Duration,
+    /// The power actions the suite may take of a source that offers them. Taking one acts on the system, so the
+    /// default takes none and a real host is never powered off; a source over a test system names them all.
+    pub power_actions: &'static [&'static str],
 }
 
 impl Default for ContractSettings {
@@ -38,8 +54,19 @@ impl Default for ContractSettings {
         Self {
             slack: Duration::from_secs(2),
             read_wait: Duration::from_millis(100),
+            exec_slacks: 5,
+            listing_reads: 100_000,
+            listing_page: 16,
+            terminal_input: b"echo bohio\n",
+            terminal_output: None,
+            terminal_output_wait: Duration::from_secs(10),
+            power_actions: &[],
         }
     }
+}
+
+fn offered(info: &SourceInfo, word: &str) -> bool {
+    info.offers.iter().any(|offered| offered == word)
 }
 
 fn status_of(error: &ProviderError) -> Status {
@@ -117,15 +144,54 @@ pub fn terminal(source: &dyn TerminalSource, open: TerminalOpen, settings: &Cont
         usize::try_from(read).map_or(true, |count| count <= buffer.len()),
         "terminal: read answered more than the buffer holds"
     );
+    let mut seen = buffer[..usize::try_from(read).unwrap_or(0)].to_vec();
     // An empty buffer is not a reason to panic.
     let _ = terminal.read(&mut [], 0);
 
-    // Writing nothing is allowed; writing a byte takes it or says why.
+    // Writing nothing is allowed; real bytes are taken whole, or refused as `unsupported` when `write` is lacked.
     assert_eq!(
         terminal.write(&[]).unwrap_or(0),
         0,
         "terminal: an empty write took bytes"
     );
+    let typed = terminal.write(settings.terminal_input);
+    if info.lacks(vocab::terminal::WRITE) {
+        assert_eq!(
+            typed.as_ref().err().map(status_of),
+            Some(Status::GUATIAO_ERR_UNSUPPORTED),
+            "terminal: lacks `write` and does not answer unsupported: {typed:?}"
+        );
+    } else {
+        let taken = typed.unwrap_or_else(|error| panic!("terminal: write failed: {error:?}"));
+        assert_eq!(
+            taken,
+            settings.terminal_input.len() as u64,
+            "terminal: a write of {} bytes took {taken}",
+            settings.terminal_input.len()
+        );
+    }
+
+    // The output the terminal is to print arrives within the wait.
+    if let Some(want) = settings.terminal_output {
+        let end = Instant::now() + settings.terminal_output_wait;
+        let wait = u64::try_from(settings.read_wait.as_millis()).unwrap_or(u64::MAX);
+        while !seen.windows(want.len().max(1)).any(|window| window == want) && Instant::now() < end
+        {
+            let count = terminal
+                .read(&mut buffer, wait)
+                .unwrap_or_else(|error| panic!("terminal: read failed: {error:?}"));
+            if count < 0 {
+                break;
+            }
+            seen.extend_from_slice(&buffer[..usize::try_from(count).unwrap_or(0)]);
+        }
+        assert!(
+            seen.windows(want.len().max(1)).any(|window| window == want),
+            "terminal: the output {:?} never arrived, read {:?}",
+            String::from_utf8_lossy(want),
+            String::from_utf8_lossy(&seen)
+        );
+    }
 
     // What `describe` says it lacks, the terminal refuses as `unsupported`; what it offers, it does.
     let resize = terminal.resize(80, 24);
@@ -136,11 +202,7 @@ pub fn terminal(source: &dyn TerminalSource, open: TerminalOpen, settings: &Cont
             Some(Status::GUATIAO_ERR_UNSUPPORTED),
             "terminal: lacks `resize` and does not answer unsupported: {resize:?}"
         );
-    } else if info
-        .offers
-        .iter()
-        .any(|word| word == vocab::terminal::RESIZE)
-    {
+    } else if offered(&info, vocab::terminal::RESIZE) {
         assert!(
             resize.is_ok(),
             "terminal: offers `resize` and fails it: {resize:?}"
@@ -151,6 +213,13 @@ pub fn terminal(source: &dyn TerminalSource, open: TerminalOpen, settings: &Cont
             signal.as_ref().err().map(status_of),
             Some(Status::GUATIAO_ERR_UNSUPPORTED),
             "terminal: lacks `signals` and does not answer unsupported: {signal:?}"
+        );
+    } else if offered(&info, vocab::terminal::SIGNALS) {
+        let delivery = signal
+            .unwrap_or_else(|error| panic!("terminal: offers `signals` and fails it: {error:?}"));
+        assert!(
+            delivery.delivered,
+            "terminal: offers `signals` and did not deliver `interrupt`: {delivery:?}"
         );
     }
     // A size no terminal has, and a signal no one knows, are refused or ignored, never a panic.
@@ -168,6 +237,25 @@ pub fn terminal(source: &dyn TerminalSource, open: TerminalOpen, settings: &Cont
         );
     }
     let _ = terminal.kill();
+
+    // A source that starts no program refuses a request that names one.
+    if info.lacks(vocab::terminal::PROGRAMS) {
+        let request = TerminalOpen {
+            program: Some(ProgramSpec {
+                argv: vec!["bohio-contract-no-such-program".to_owned()],
+                ..ProgramSpec::default()
+            }),
+            ..TerminalOpen::default()
+        };
+        let answer = source.open(request).map(drop);
+        assert!(
+            matches!(
+                answer.as_ref().err().map(status_of),
+                Some(Status::GUATIAO_ERR_BAD_VALUE | Status::GUATIAO_ERR_UNSUPPORTED)
+            ),
+            "terminal: lacks `programs` and opened one: {answer:?}"
+        );
+    }
 }
 
 /// The suite of the desktop kind.
@@ -202,10 +290,7 @@ pub fn desktop(source: &dyn DesktopSource, settings: &ContractSettings) {
         .find(|display| display.primary)
         .or_else(|| state.displays.first());
     if let Some(display) = display
-        && info
-            .offers
-            .iter()
-            .any(|word| word == vocab::desktop::CAPTURE)
+        && offered(&info, vocab::desktop::CAPTURE)
     {
         let header = session
             .frame_size(&display.id, None)
@@ -225,29 +310,38 @@ pub fn desktop(source: &dyn DesktopSource, settings: &ContractSettings) {
     }
     // A display no desktop has is `not_found`, never a panic.
     let missing = session.frame_size("no-such-display", None);
-    assert!(
-        missing.is_err(),
-        "desktop: frame_size of a display it does not have succeeded"
+    assert_eq!(
+        missing.as_ref().err().map(status_of),
+        Some(Status::GUATIAO_ERR_NOT_FOUND),
+        "desktop: frame_size of a display it does not have is not not_found: {missing:?}"
     );
     let mut small = [0_u8; 3];
-    assert!(
-        session
-            .capture("no-such-display", None, &mut small)
-            .is_err(),
-        "desktop: capture of a display it does not have succeeded"
+    let missing = session.capture("no-such-display", None, &mut small);
+    assert_eq!(
+        missing.as_ref().err().map(status_of),
+        Some(Status::GUATIAO_ERR_NOT_FOUND),
+        "desktop: capture of a display it does not have is not not_found: {missing:?}"
     );
+    let pointer_move = || InputModel {
+        kind: vocab::input::MOVE.to_owned(),
+        x: Some(0),
+        y: Some(0),
+        ..InputModel::default()
+    };
     if info.lacks(vocab::desktop::INPUT) {
-        let event = InputModel {
-            kind: vocab::input::MOVE.to_owned(),
-            x: Some(0),
-            y: Some(0),
-            ..InputModel::default()
-        };
-        let answer = session.input(vec![event]);
+        let answer = session.input(vec![pointer_move()]);
         assert_eq!(
             answer.as_ref().err().map(status_of),
             Some(Status::GUATIAO_ERR_UNSUPPORTED),
             "desktop: lacks `input` and does not answer unsupported: {answer:?}"
+        );
+    } else if offered(&info, vocab::desktop::INPUT) {
+        let taken = session
+            .input(vec![pointer_move()])
+            .unwrap_or_else(|error| panic!("desktop: offers `input` and fails it: {error:?}"));
+        assert_eq!(
+            taken, 1,
+            "desktop: one pointer move was taken as {taken} events"
         );
     }
     if info.lacks(vocab::desktop::CLIPBOARD) {
@@ -257,6 +351,26 @@ pub fn desktop(source: &dyn DesktopSource, settings: &ContractSettings) {
             Some(Status::GUATIAO_ERR_UNSUPPORTED),
             "desktop: lacks `clipboard` and does not answer unsupported: {answer:?}"
         );
+        let answer = session.set_clipboard_text("bohio contract");
+        assert_eq!(
+            answer.as_ref().err().map(status_of),
+            Some(Status::GUATIAO_ERR_UNSUPPORTED),
+            "desktop: lacks `clipboard` and sets it: {answer:?}"
+        );
+    } else if offered(&info, vocab::desktop::CLIPBOARD) {
+        // What the clipboard held is put back, so a suite over a person's desktop leaves it as it was.
+        let before = session.clipboard_text().ok();
+        let text = "bohio contract clipboard";
+        session.set_clipboard_text(text).unwrap_or_else(|error| {
+            panic!("desktop: offers `clipboard` and fails to set it: {error:?}")
+        });
+        let read = session.clipboard_text().unwrap_or_else(|error| {
+            panic!("desktop: offers `clipboard` and fails to read it: {error:?}")
+        });
+        if let Some(before) = before {
+            let _ = session.set_clipboard_text(&before);
+        }
+        assert_eq!(read, text, "desktop: the clipboard text did not round-trip");
     }
     // An event kind no source knows is refused or ignored, never a panic.
     let _ = session.input(vec![InputModel {
@@ -306,6 +420,20 @@ pub fn power(source: &dyn PowerSource, settings: &ContractSettings) {
                 Some(Status::GUATIAO_ERR_UNSUPPORTED),
                 "power: lacks `{action}` and does not answer unsupported: {answer:?}"
             );
+        } else if offered(&info, action) && settings.power_actions.contains(&action) {
+            let answer = source
+                .act(action)
+                .unwrap_or_else(|error| panic!("power: offers `{action}` and fails it: {error:?}"));
+            assert!(
+                [
+                    vocab::power_state::ON,
+                    vocab::power_state::OFF,
+                    vocab::power_state::UNKNOWN
+                ]
+                .contains(&answer.state.as_str()),
+                "power: `{action}` answered the state `{}`, not one of on, off, unknown",
+                answer.state
+            );
         }
     }
     // A word no source knows is refused, never taken for an action.
@@ -338,19 +466,65 @@ pub fn media(source: &dyn MediaSource, settings: &ContractSettings) {
         "media: status took {:?}",
         started.elapsed()
     );
+    let inserted = source.insert_url("no-such-slot", "http://example.invalid/image.iso");
     if info.lacks(vocab::media::INSERT_URL) {
-        let answer = source.insert_url("no-such-slot", "http://example.invalid/image.iso");
         assert_eq!(
-            answer.as_ref().err().map(status_of),
+            inserted.as_ref().err().map(status_of),
             Some(Status::GUATIAO_ERR_UNSUPPORTED),
-            "media: lacks `insert_url` and does not answer unsupported: {answer:?}"
+            "media: lacks `insert_url` and does not answer unsupported: {inserted:?}"
+        );
+    } else if offered(&info, vocab::media::INSERT_URL) {
+        assert_eq!(
+            inserted.as_ref().err().map(status_of),
+            Some(Status::GUATIAO_ERR_NOT_FOUND),
+            "media: offers `insert_url` and took a slot it does not have: {inserted:?}"
         );
     }
-    assert!(
-        source.eject("no-such-slot").is_err(),
-        "media: ejected a slot it does not have"
-    );
-    let _ = slots;
+    let mut seen = Vec::new();
+    for slot in &slots {
+        assert!(
+            !slot.slot.is_empty(),
+            "media: status names a slot with no name"
+        );
+        assert!(
+            !seen.contains(&slot.slot),
+            "media: status names the slot `{}` twice",
+            slot.slot
+        );
+        seen.push(slot.slot.clone());
+        if !slot.inserted {
+            assert!(
+                slot.image.is_none() && slot.size.is_none(),
+                "media: the empty slot `{}` names an image or a size: {slot:?}",
+                slot.slot
+            );
+        }
+    }
+    let eject = source.eject("no-such-slot");
+    if info.lacks(vocab::media::EJECT) {
+        assert_eq!(
+            eject.as_ref().err().map(status_of),
+            Some(Status::GUATIAO_ERR_UNSUPPORTED),
+            "media: lacks `eject` and does not answer unsupported: {eject:?}"
+        );
+    } else {
+        assert_eq!(
+            eject.as_ref().err().map(status_of),
+            Some(Status::GUATIAO_ERR_NOT_FOUND),
+            "media: ejected a slot it does not have: {eject:?}"
+        );
+        // Ejecting what is empty changes nothing and answers the slot as it is.
+        if let Some(empty) = slots.iter().find(|slot| !slot.inserted) {
+            let ejected = source
+                .eject(&empty.slot)
+                .unwrap_or_else(|error| panic!("media: ejecting an empty slot failed: {error:?}"));
+            assert!(
+                ejected.slot == empty.slot && !ejected.inserted,
+                "media: ejecting the empty slot `{}` answered {ejected:?}",
+                empty.slot
+            );
+        }
+    }
 }
 
 mod files;

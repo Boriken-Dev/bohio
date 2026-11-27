@@ -127,8 +127,15 @@ All derive guatiao's `ToValue`, `FromValue` and `Schema`; an `Option` field is o
 
 `terminal(&dyn TerminalSource, TerminalOpen, &ContractSettings)`, `desktop`, `power`, `media`, `exec(&dyn ExecSource, &ExecStart, &ContractSettings)` (the
 request is a program that prints and ends by itself; a missing program is `NOT_FOUND` at start or a failing exit): panic with a message naming what the source got wrong.
-They check `describe` against behaviour (a source that `lacks` `resize` answers it `unsupported`), that `read` returns within its wait plus
-`ContractSettings::slack` (default 2 s) and that nothing panics on an argument that is wrong but possible.
+They check `describe` against behaviour: what a source offers it does (a terminal takes `terminal_input` whole, delivers `interrupt` when it offers
+`signals` and produces `terminal_output` when one is expected; a desktop takes a pointer move and round-trips clipboard text; a files source that
+offers `symlink` takes one; a media source answers `eject` of an unknown slot `not_found`), what it `lacks` it answers `unsupported` (`resize`,
+`signals`, `write`, `input`, `clipboard`, `symlink`, `insert_url`, `eject`, a power action; a console lacking `programs` refuses a program), a missing
+display, name or slot is the `not_found` status, `read` returns within its wait plus `slack`, and nothing panics on an argument that is wrong but possible.
+`ContractSettings` is `Copy` and every field has a default: `slack` (2 s), `read_wait` (100 ms), `exec_slacks` (5: an exec program's deadline in
+slacks), `listing_reads` (100000) and `listing_page` (16) for `files`, `terminal_input` (`echo bohio\n`), `terminal_output` (`None`: only that a read
+answers), `terminal_output_wait` (10 s) and `power_actions` (empty: the suite takes no power action; a source over a test system lists them, the
+in-memory fakes take every one). A desktop run takes real input and sets the clipboard (putting it back), so point it at a desktop a test owns.
 
 ## Testing (`bohio_api::testing`, feature `testing`)
 
