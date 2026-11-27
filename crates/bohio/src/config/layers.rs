@@ -623,7 +623,18 @@ fn build(inputs: &[Input]) -> Result<Layered, ConfigError> {
     }
     all_inputs.extend(inputs.iter().cloned());
     all_values.extend(values.iter().cloned());
-    let config: Config = merged(&formats, &all_inputs, &all_values)?;
+    let mut config: Config = merged(&formats, &all_inputs, &all_values)?;
+    // A ceiling only the profile set is a default, not the operator's bound: a file that raises a window past it raises it too.
+    if !values
+        .iter()
+        .any(|value| has_path(value, &["link", "max_window"]))
+        && let Some(max) = config.link.max_window
+    {
+        config.link.max_window = Some(
+            max.max(config.link.window)
+                .max(config.link.bulk_window.unwrap_or(0)),
+        );
+    }
     if let Err(ConfigError::Invalid { key, message, .. }) = config.validate("") {
         let segments: Vec<&str> = key.split('.').collect();
         let at = setter(&all_inputs, &all_values, &segments);

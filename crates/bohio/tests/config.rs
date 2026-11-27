@@ -1507,3 +1507,17 @@ fn the_client_and_mcp_bounds_have_documented_defaults_the_file_can_change() {
     );
     assert_eq!((set.mcp.max_calls, set.mcp.gui_max_image_bytes), (2, 5));
 }
+
+#[test]
+fn a_file_that_raises_a_window_past_a_profiles_ceiling_raises_the_ceiling_with_it() {
+    let weak = parse("[profile]\nname = \"weak-host\"\n[link]\nwindow = 2097152\n").unwrap();
+    assert_eq!(weak.link.max_window, Some(2 * MIB));
+    let lan = parse("[profile]\nname = \"lan\"\n[link]\nbulk_window = 16777216\n").unwrap();
+    assert_eq!(lan.link.max_window, Some(16 * MIB));
+    // A ceiling the file sets itself is its own: a window past it is still refused.
+    assert!(parse("[profile]\nname = \"lan\"\n[link]\nmax_window = 524288\n").is_err());
+    let own =
+        parse("[profile]\nname = \"weak-host\"\n[link]\nmax_window = 4194304\nwindow = 2097152\n")
+            .unwrap();
+    assert_eq!(own.link.max_window, Some(4 * MIB));
+}
