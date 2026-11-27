@@ -113,10 +113,18 @@ impl Local {
                         return Ok(None);
                     }
                 }
-                let channel = bohio_client::link::stream(connection, settings)?;
-                Ok(Some(Box::new(channel)))
+                match bohio_client::link::stream(connection, settings) {
+                    Ok(channel) => Ok(Some(Box::new(channel))),
+                    Err(error) => {
+                        tracing::debug!("a local client was not taken: {error}");
+                        Ok(None)
+                    }
+                }
             }
             Err(coqui_transport_pipe::Error::TimedOut) => Ok(None),
+            Err(coqui_transport_pipe::Error::Io(error)) => {
+                crate::listen::refused_accept(error, wait, settings).map(|()| None)
+            }
             Err(error) => Err(error.into()),
         }
     }
@@ -668,6 +676,8 @@ impl LocalLink {
             PairReply::Paired { .. } => {
                 Err(Error::Link("the node paired before it armed".to_owned()))
             }
+            _ => Err(Error::Link(
+            )),
         }
     }
 
@@ -686,6 +696,8 @@ impl LocalLink {
             ApproveOutput::Pending { requests } => Ok(requests),
             ApproveOutput::Decided { .. } => Err(Error::Link(
                 "the node answered a decision nobody sent".to_owned(),
+            )),
+            _ => Err(Error::Link(
             )),
         }
     }

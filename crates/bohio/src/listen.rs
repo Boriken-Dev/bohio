@@ -6,7 +6,7 @@
 #![forbid(unsafe_code)]
 
 use std::io;
-use std::net::{SocketAddr, TcpListener};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -602,24 +602,19 @@ impl Listening {
     /// The listener's own failure, which ends it.
     pub fn accept(&self, wait: Duration, settings: &Settings) -> io::Result<Option<Arrival>> {
         match self {
-            Self::Tcp(listener) => match listener.accept() {
-                Ok((connection, source)) => {
-                    connection.set_nonblocking(false)?;
-                    let channel = socket(connection, settings)?;
-                    Ok(Some(Arrival::Ready(Box::new(channel), Some(source))))
-                }
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    thread::sleep(wait.min(settings.accept_poll));
-                    Ok(None)
-                }
-                Err(error) => Err(error),
-            },
+            Self::Tcp(listener) => taken_tcp(listener.accept(), wait, settings),
             Self::Pipe(listener) => match listener.accept_timeout(Some(wait)) {
-                Ok(connection) => {
-                    let channel = stream(connection, settings)?;
-                    Ok(Some(Arrival::Ready(Box::new(channel), None)))
-                }
+                Ok(connection) => match stream(connection, settings) {
+                    Ok(channel) => Ok(Some(Arrival::Ready(Box::new(channel), None))),
+                    Err(error) => {
+                        tracing::debug!("a pipe connection was not taken: {error}");
+                        Ok(None)
+                    }
+                },
                 Err(coqui_transport_pipe::Error::TimedOut) => Ok(None),
+                Err(coqui_transport_pipe::Error::Io(error)) => {
+                    refused_accept(error, wait, settings).map(|()| None)
+                }
                 Err(error) => Err(error.into()),
             },
             Self::WebSocket(listener) => match listener.next(Some(wait)) {
@@ -650,9 +645,158 @@ impl Listening {
     }
 }
 
+/// What an accept error says about the listener.
+enum Accept {
+    /// One connection went wrong before it was taken (aborted, reset): the next may be fine.
+    Connection,
+    /// The process or the machine has no descriptor, buffer or memory to take a connection with right now.
+    Exhausted,
+}
+
+fn accept_fault(error: &io::Error) -> Option<Accept> {
+    use io::ErrorKind::{ConnectionAborted, ConnectionReset, Interrupted, OutOfMemory, TimedOut};
+    if matches!(
+        error.kind(),
+        ConnectionAborted | ConnectionReset | Interrupted | TimedOut
+    ) {
+        return Some(Accept::Connection);
+    }
+    if error.kind() == OutOfMemory {
+        return Some(Accept::Exhausted);
+    }
+    // Descriptors and buffers run out: EMFILE, ENFILE, ENOBUFS (Unix) and WSAEMFILE, WSAENOBUFS (Windows), none of
+    // which std maps to a kind. EPROTO is a connection that failed in the kernel's handshake.
+    let raw = error.raw_os_error()?;
+    #[cfg(unix)]
+    {
+        if [libc::EMFILE, libc::ENFILE, libc::ENOBUFS].contains(&raw) {
+            return Some(Accept::Exhausted);
+        }
+        if raw == libc::EPROTO {
+            return Some(Accept::Connection);
+        }
+    }
+    #[cfg(windows)]
+    if [10024, 10055].contains(&raw) {
+        return Some(Accept::Exhausted);
+    }
+    let _ = raw;
+    None
+}
+
+/// Takes an accept error that is not the listener's: the connection is dropped (or, with nothing to take it
+/// with, the listener waits a moment) and listening goes on. An error that is the listener's own comes back.
+pub(crate) fn refused_accept(
+    error: io::Error,
+    wait: Duration,
+    settings: &Settings,
+) -> io::Result<()> {
+    match accept_fault(&error) {
+        Some(Accept::Connection) => {
+            tracing::debug!("a connection was not taken: {error}");
+            thread::sleep(wait.min(settings.accept_poll));
+            Ok(())
+        }
+        Some(Accept::Exhausted) => {
+            tracing::warn!("a connection was not taken, the host is out of resources: {error}");
+            thread::sleep(wait);
+            Ok(())
+        }
+        None => Err(error),
+    }
+}
+
+/// The outcome of one accept on a TCP listener: a connection whose setup fails is that connection's failure.
+fn taken_tcp(
+    accepted: io::Result<(TcpStream, SocketAddr)>,
+    wait: Duration,
+    settings: &Settings,
+) -> io::Result<Option<Arrival>> {
+    match accepted {
+        Ok((connection, source)) => {
+            match connection
+                .set_nonblocking(false)
+                .and_then(|()| socket(connection, settings))
+            {
+                Ok(channel) => Ok(Some(Arrival::Ready(Box::new(channel), Some(source)))),
+                Err(error) => {
+                    tracing::debug!("a TCP connection from {source} was not taken: {error}");
+                    Ok(None)
+                }
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+            thread::sleep(wait.min(settings.accept_poll));
+            Ok(None)
+        }
+        Err(error) => refused_accept(error, wait, settings).map(|()| None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn raw_exhaustion() -> io::Error {
+        #[cfg(unix)]
+        return io::Error::from_raw_os_error(libc::EMFILE);
+        #[cfg(windows)]
+        return io::Error::from_raw_os_error(10024);
+    }
+
+    #[test]
+    fn a_connection_that_fails_before_it_is_taken_does_not_end_the_listener() {
+        let settings = Settings::default();
+        let wait = Duration::from_millis(1);
+        for kind in [
+            io::ErrorKind::ConnectionAborted,
+            io::ErrorKind::ConnectionReset,
+            io::ErrorKind::Interrupted,
+        ] {
+            let taken = taken_tcp(Err(io::Error::from(kind)), wait, &settings);
+            assert!(
+                matches!(taken, Ok(None)),
+                "{kind:?}: {:?}",
+                taken.as_ref().map(|a| a.is_some())
+            );
+        }
+    }
+
+    #[test]
+    fn a_host_out_of_descriptors_waits_and_keeps_listening() {
+        let settings = Settings::default();
+        let taken = taken_tcp(Err(raw_exhaustion()), Duration::from_millis(1), &settings);
+        assert!(
+            matches!(taken, Ok(None)),
+            "{:?}",
+            taken.as_ref().map(|a| a.is_some())
+        );
+    }
+
+    #[test]
+    fn an_error_of_the_listener_itself_still_ends_it() {
+        let settings = Settings::default();
+        let taken = taken_tcp(
+            Err(io::Error::from(io::ErrorKind::InvalidInput)),
+            Duration::from_millis(1),
+            &settings,
+        );
+        assert!(taken.is_err());
+    }
+
+    #[test]
+    fn a_tcp_connection_that_is_taken_is_ready_with_its_source() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let accepted = listener.accept().unwrap();
+        let source = accepted.1;
+        let taken = taken_tcp(Ok(accepted), Duration::from_millis(1), &Settings::default());
+        match taken {
+            Ok(Some(arrival)) => assert_eq!(arrival.source(), Some(source)),
+            other => panic!("{:?}", other.map(|_| ())),
+        }
+        drop(client);
+    }
 
     fn made_for(days: u64) -> Vec<u8> {
         Identity::builder()
