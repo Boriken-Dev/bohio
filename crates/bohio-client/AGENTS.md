@@ -8,7 +8,7 @@ Cargo features: `zstd` (decode zstd), `screen` (the compositor of a watch: `bohi
 `coqui-transport-serial` (each a git revision, one copy), `url`, `socket2`, `serde`, `serde_json`, `tracing` and `thiserror`. Version
 `0.0.0-alpha.0`, not published.
 
-Imports: the root holds `Open` and `Error`. Public modules: `connect`, `control`, `dial`, `exec`, `forward`, `fs`, `gui`, `link`, `media`, `power`, `profile`, `relay`, `shell`, `tools`. No `unsafe` code
+Imports: the root holds `Open` and `Error`. Public modules: `bundle`, `connect`, `control`, `dial`, `exec`, `follow`, `forward`, `fs`, `gui`, `hash`, `keep`, `link`, `media`, `parallel`, `power`, `profile`, `range`, `relay`, `search`, `session`, `shell`, `socks`, `sourced`, `sync`, `tools`, `walk`. No `unsafe` code
 (`#![forbid(unsafe_code)]`). The operations start no threads and do no I/O of their own: every call blocks on the channel it was given
 (only `connect` and `relay` start threads, and `connect` opens a socket).
 
