@@ -44,6 +44,7 @@ use crate::config::{DialConfig, Environment, Layers};
 use crate::forward::{BadSpec, LocalSpec, RemoteKeep, RemoteSpec, SocksSpec, keep_remote};
 use crate::link::KeptState;
 use crate::local::{ANOTHER_ACCOUNT, Server, Via};
+use crate::mcp::Dialer;
 use crate::node::Endpoint;
 
 /// The waits and sizes of one `bohio remote` run: `[client]`, with the flags laid over it, and `[link] poll_interval`.
@@ -2913,10 +2914,6 @@ pub(super) fn providers(
     }
     Ok(())
 }
-
-/// Makes the link to one host, as `bohio remote` would: what an MCP server calls the first time a host is used and again after
-/// the link was lost.
-pub(super) type Dialer = Box<dyn Fn() -> Result<Arc<dyn Open>, String> + Send + Sync>;
 
 /// How `args` reaches its host, and the tool settings its configuration gives: the waits of `[client]` and of the forwards.
 pub(super) fn dialer(

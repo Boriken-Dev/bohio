@@ -13,6 +13,7 @@ pub mod limit;
 pub mod link;
 pub mod listen;
 pub mod local;
+pub mod mcp;
 pub mod media;
 pub mod node;
 pub mod ownership;
