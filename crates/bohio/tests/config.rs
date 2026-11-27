@@ -1442,8 +1442,14 @@ fn an_error_in_a_value_only_the_profile_supplied_names_the_profile() {
         }
         other => panic!("{other:?}"),
     }
-    // The same conflict with a key the file does set names the file.
-    match parse("[profile]\nname = \"weak-host\"\n[link]\nwindow = 4194304\n").unwrap_err() {
+    // The same conflict with a ceiling the file sets itself names the file.
+    let conflict = "[profile]
+name = \"weak-host\"
+[link]
+window = 4194304
+max_window = 2097152
+";
+    match parse(conflict).unwrap_err() {
         ConfigError::Invalid { path, key, .. } => {
             assert_eq!(key, "link.window");
             assert_eq!(path, "bohio.cfg");
