@@ -557,7 +557,7 @@ fn a_failed_connect_is_not_tried_again_until_reconnect_after() {
     settings.port = u64::from(port);
     settings.user = Some(USER.to_owned());
     settings.agent = false;
-    settings.reconnect_after = Interval::from_secs(1 * 3600);
+    settings.reconnect_after = Interval::from_secs(3600);
     let source = ssh(settings);
     let first = first_error(&source);
     // The server appears; the source does not look until the wait is over.
@@ -1023,7 +1023,7 @@ fn each_info_of_an_openssh_source_does_not_log_in_again() {
     settings.user = Some(USER.to_owned());
     settings.client = "openssh".to_owned();
     settings.ssh_program = program;
-    settings.probe_every = Interval::from_secs(1 * 3600);
+    settings.probe_every = Interval::from_secs(3600);
     let source = ssh(settings);
     std::thread::scope(|scope| {
         for _ in 0..10 {
