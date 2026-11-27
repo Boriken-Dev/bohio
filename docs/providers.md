@@ -91,7 +91,7 @@ agent tools that touch files and on `exec`. A request that names none uses the c
 source are POSIX paths whatever system the node runs on (`posix_paths`), and the peer's `fs_root`s are held to by the node on that
 machine's paths. The source's `lacks` (in `info`) say what the server does not give: no `confined` (a link on the machine can lead out
 of a root; the node's check is by path), and no `atomic_replace`, `hard_link`, `statvfs` or `sync` where the server lacks those SFTP
-extensions. A source that cannot connect is `available = false` with the reason and the node starts all the same; every key is in
+extensions. A server without `fsync@openssh.com` cannot flush a file, so with `[filesystem] sync_writes` (the default) every write to it is refused, naming that setting; `sync_writes = false` lets it through and is node-wide, so native writes are no longer flushed either. A source that cannot connect is `available = false` with the reason and the node starts all the same; every key is in
 `providers/ssh/AGENTS.md`, and `docs/security.md` says what a peer holding the source can do (everything the account can) and what a weaker
 host-key check costs.
 

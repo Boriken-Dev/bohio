@@ -17,6 +17,8 @@ use bohio_api::guatiao::library::{Object, ProviderError};
 use bohio_api::model::{FileStat, OpenModel, TimeModel};
 use bohio_api::vocab::file_kind;
 
+use super::ops::dot;
+
 /// The source a root is opened from, and where.
 #[derive(Clone)]
 struct Origin {
@@ -49,14 +51,6 @@ fn text(path: &Path) -> io::Result<std::borrow::Cow<'_, str>> {
     } else {
         std::borrow::Cow::Borrowed(text)
     })
-}
-
-fn dot(path: &Path) -> &Path {
-    if path.as_os_str().is_empty() {
-        Path::new(".")
-    } else {
-        path
-    }
 }
 
 fn failed(error: &ProviderError) -> io::Error {

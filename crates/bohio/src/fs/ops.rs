@@ -45,12 +45,12 @@ impl<'a> Roots<'a> {
 
     /// As [`Roots::resolve`], for an operation that cannot act on a root itself.
     /// The paths `text` leads to through links, the first link's target first: what a link names is what a read of it
-    /// reaches, so a rule about names holds for those as well. At most 40 links are followed, each judged by its text
-    /// alone (a link made by a peer is held inside the roots when it is made).
+    /// reaches, so a rule about names holds for those as well. At most [`MAX_LINK_HOPS`] links are followed, each
+    /// judged by its text alone (a link made by a peer is held inside the roots when it is made).
     pub(crate) fn link_names(&self, text: &str) -> Vec<String> {
         let mut names = Vec::new();
         let mut current = text.to_owned();
-        for _ in 0..40 {
+        for _ in 0..MAX_LINK_HOPS {
             let Ok((dir, relative)) = self.resolve_entry(&current) else {
                 break;
             };
@@ -80,7 +80,12 @@ impl<'a> Roots<'a> {
     }
 }
 
-fn dot(relative: &Path) -> &Path {
+/// The most links one name is followed through: the larger of what the systems follow (Linux stops at 40, Windows
+/// at 63 reparse points), so a name that a read of the file would still reach is judged to its end.
+pub(crate) const MAX_LINK_HOPS: usize = 63;
+
+/// `.` for the empty path of a root itself, so a call that wants a name has one.
+pub(super) fn dot(relative: &Path) -> &Path {
     if relative.as_os_str().is_empty() {
         Path::new(".")
     } else {

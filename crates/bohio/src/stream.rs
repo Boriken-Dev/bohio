@@ -16,15 +16,36 @@ pub(crate) fn send_waiting(
     idle: Duration,
 ) -> bool {
     let started = Instant::now();
+    let over = || channel.is_closed() || started.elapsed() >= idle;
+    send_until(channel, message, poll, &over).is_ok()
+}
+
+/// Why a message was not sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Unsent {
+    /// `stop` said to give up while the stream had no room.
+    Stopped,
+    /// The stream failed or closed.
+    Failed,
+}
+
+/// Sends one message, waiting while the stream has no room, until `stop` says to give up. The message was not sent
+/// when this is an error.
+pub(crate) fn send_until(
+    channel: &dyn Channel,
+    message: &[u8],
+    poll: Duration,
+    stop: &dyn Fn() -> bool,
+) -> Result<(), Unsent> {
     loop {
         match channel.send_timeout(message, Some(poll)) {
-            Ok(()) => return true,
+            Ok(()) => return Ok(()),
             Err(Failure::Timeout | Failure::NoProgress) => {
-                if channel.is_closed() || started.elapsed() >= idle {
-                    return false;
+                if stop() {
+                    return Err(Unsent::Stopped);
                 }
             }
-            Err(_) => return false,
+            Err(_) => return Err(Unsent::Failed),
         }
     }
 }

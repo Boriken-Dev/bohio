@@ -19,13 +19,16 @@ use bohio_api::exec::{STDERR, STDOUT};
 use bohio_api::files::{failure, word};
 use bohio_api::guatiao::Status;
 use bohio_api::guatiao::library::{Object, ProviderError};
-use bohio_api::model::{Delivery, EnvVar, ExecStart, SourceInfo, TerminalExit};
+use bohio_api::model::{Delivery, ExecStart, SourceInfo, TerminalExit};
 use bohio_api::{ExecSource, Process, unavailable, vocab};
-use bohio_proto::exec::Env;
 
-use super::{ID, Native};
+use super::{ID, Native, env_of, exit_of};
 use crate::config::HostDeath;
 use crate::platform::{self, Control, ProcessExit, Signal, Spec, resolve_listed};
+
+/// How long the wait for a program's exit sleeps between looks at it when no setting names one: the wait is a
+/// poll of an exit that has no event to wait on.
+const WAIT_SLICE: Duration = Duration::from_millis(2);
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -78,7 +81,7 @@ impl ExecSource for Native {
             args,
             raw_args,
             cwd: request.cwd.as_deref().map(PathBuf::from),
-            env: env_of(&request),
+            env: env_of(request.clear_env, &request.env),
             stdin: request.stdin,
             on_host_death: match request.on_host_death.as_deref() {
                 Some("term") => HostDeath::Term,
@@ -111,22 +114,6 @@ impl ExecSource for Native {
         }
         .into_object())
     }
-}
-
-fn env_of(request: &ExecStart) -> Env {
-    let mut env = Env {
-        clear: request.clear_env,
-        ..Env::default()
-    };
-    for EnvVar { name, value } in &request.env {
-        match value {
-            Some(value) => {
-                env.set.insert(name.clone(), value.clone());
-            }
-            None => env.remove.push(name.clone()),
-        }
-    }
-    env
 }
 
 type Line = (OsString, Vec<OsString>, Option<OsString>);
@@ -318,13 +305,6 @@ struct Running {
     err: Pipe,
 }
 
-fn exit_of(exit: ProcessExit) -> TerminalExit {
-    TerminalExit {
-        code: exit.code.map(i64::from),
-        signal: exit.signal.map(i64::from),
-    }
-}
-
 impl Process for Running {
     fn read(&self, stream: u8, dst: &mut [u8], wait_ms: u64) -> Result<i64, ProviderError> {
         let pipe = if stream == STDERR {
@@ -365,7 +345,7 @@ impl Process for Running {
             if left.is_zero() {
                 return Ok(None);
             }
-            thread::sleep(left.min(Duration::from_millis(2)));
+            thread::sleep(left.min(WAIT_SLICE));
         }
     }
 

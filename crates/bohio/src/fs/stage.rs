@@ -400,7 +400,11 @@ impl Staged {
 
     /// The bytes of the file as they are now, read from the start into `into` (a resumed write's digests cover
     /// what an earlier stream wrote).
-    pub(crate) fn read_back(&mut self, into: &mut dyn FnMut(&[u8])) -> Result<(), ErrorBody> {
+    pub(crate) fn read_back(
+        &mut self,
+        read_size: usize,
+        into: &mut dyn FnMut(&[u8]),
+    ) -> Result<(), ErrorBody> {
         use std::io::Read;
         let mut reader = self
             .parent
@@ -410,7 +414,7 @@ impl Staged {
                     .map_or_else(|| Path::new(&self.name), Path::new),
             ))
             .map_err(|e| io_error(&e))?;
-        let mut buffer = vec![0_u8; 256 * 1024];
+        let mut buffer = vec![0_u8; read_size.max(1)];
         loop {
             match reader.read(&mut buffer) {
                 Ok(0) => return Ok(()),

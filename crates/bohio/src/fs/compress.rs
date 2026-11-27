@@ -164,6 +164,38 @@ impl<W: Write> Write for Sink<'_, W> {
     }
 }
 
+/// A writer that keeps the first error of what it writes to and takes every byte after it, so that a decoder runs to the
+/// end of a piece (its context spans the pieces) while the caller learns that the destination failed.
+pub(crate) struct Tolerant<W: Write> {
+    pub(crate) inner: W,
+    /// The first error `inner` gave; nothing is written to it after.
+    pub(crate) failed: Option<std::io::Error>,
+}
+
+impl<W: Write> Tolerant<W> {
+    pub(crate) const fn new(inner: W) -> Self {
+        Self {
+            inner,
+            failed: None,
+        }
+    }
+}
+
+impl<W: Write> Write for Tolerant<W> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if self.failed.is_none()
+            && let Err(error) = self.inner.write_all(bytes)
+        {
+            self.failed = Some(error);
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 /// The error a peer gets for compressed data that cannot be taken.
 pub(crate) fn decode_failure(error: &DecodeError) -> ErrorBody {
     match error {
@@ -176,5 +208,49 @@ pub(crate) fn decode_failure(error: &DecodeError) -> ErrorBody {
             ErrorBody::new(ErrorCode::Unsupported, error.to_string())
         }
         _ => ErrorBody::new(ErrorCode::BadRequest, error.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A destination that takes `room` bytes and then fails, as a full disk does.
+    struct Full {
+        room: usize,
+        taken: usize,
+    }
+
+    impl Write for Full {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if self.taken + bytes.len() > self.room {
+                return Err(std::io::Error::from(std::io::ErrorKind::StorageFull));
+            }
+            self.taken += bytes.len();
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_failing_destination_is_told_once_and_the_writer_takes_what_follows() {
+        let mut full = Full { room: 4, taken: 0 };
+        let mut tolerant = Tolerant::new(&mut full);
+        assert_eq!(tolerant.write(b"abc").unwrap(), 3);
+        assert!(tolerant.failed.is_none());
+        // The write that does not fit fails the destination; the decoder is still handed every byte.
+        assert_eq!(tolerant.write(b"defg").unwrap(), 4);
+        let first = tolerant.failed.as_ref().map(std::io::Error::kind);
+        assert_eq!(first, Some(std::io::ErrorKind::StorageFull));
+        assert_eq!(tolerant.write(b"h").unwrap(), 1);
+        assert_eq!(
+            tolerant.failed.as_ref().map(std::io::Error::kind),
+            first,
+            "the first error is kept"
+        );
+        assert_eq!(full.taken, 3, "nothing is written after the failure");
     }
 }

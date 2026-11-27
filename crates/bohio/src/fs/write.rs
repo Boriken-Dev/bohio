@@ -319,7 +319,7 @@ fn run(
             }
             let (mut staged, offset) = Staged::resume(&dir, &relative, &tag(), token, ttl)?;
             // The digests cover the whole file, so the bytes an earlier stream wrote go through them again.
-            staged.read_back(&mut |bytes| hasher.update(bytes))?;
+            staged.read_back(context.hash.read_size, &mut |bytes| hasher.update(bytes))?;
             ready.offset = Some(offset);
             resumed_at = offset;
             staged

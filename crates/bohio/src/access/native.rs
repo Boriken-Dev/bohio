@@ -522,7 +522,7 @@ impl TerminalSource for Native {
             program: found,
             args,
             cwd: request.cwd.as_deref().map(PathBuf::from),
-            env: env_of(&request),
+            env: env_of(request.clear_env, &request.env),
             cols: request.cols,
             rows: request.rows,
             on_host_death: match request.on_host_death.as_deref() {
@@ -553,12 +553,13 @@ impl TerminalSource for Native {
     }
 }
 
-fn env_of(request: &TerminalOpen) -> Env {
+/// The environment a request's changes make: from an empty one when `clear_env`, with each variable set or removed.
+pub(super) fn env_of(clear_env: bool, changes: &[EnvVar]) -> Env {
     let mut env = Env {
-        clear: request.clear_env,
+        clear: clear_env,
         ..Env::default()
     };
-    for EnvVar { name, value } in &request.env {
+    for EnvVar { name, value } in changes {
         match value {
             Some(value) => {
                 env.set.insert(name.clone(), value.clone());
@@ -718,7 +719,7 @@ fn answer_queries(writer: &Arc<Mutex<Box<dyn Write + Send>>>) -> std::sync::mpsc
     asks
 }
 
-fn exit_of(exit: ProcessExit) -> TerminalExit {
+pub(super) fn exit_of(exit: ProcessExit) -> TerminalExit {
     TerminalExit {
         code: exit.code.map(i64::from),
         signal: exit.signal.map(i64::from),

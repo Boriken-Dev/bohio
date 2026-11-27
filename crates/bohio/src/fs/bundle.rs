@@ -19,7 +19,7 @@ use bohio_transfer::compress::{Encoder, Piece};
 use bohio_transfer::hash::Hasher;
 use coqui_transport::{Channel, Failure};
 
-use super::compress::{Settings, Sink, decode_failure};
+use super::compress::{Settings, Sink, Tolerant, decode_failure};
 use super::hash::hasher_for;
 use super::ops::{self, Roots};
 use super::read::sampled_as_raw;
@@ -499,13 +499,19 @@ impl Open {
     ) -> Result<(), ErrorBody> {
         match &mut self.target {
             Ok(target) => {
-                let mut sink = Sink {
+                // A write that fails fails this item only: the piece is decoded to its end all the same.
+                let mut sink = Tolerant::new(Sink {
                     out: target.staged.file(),
                     hasher: &mut target.hasher,
                     written: &mut target.written,
-                };
-                if let Err(error) = decoder.feed(piece, &mut sink) {
+                });
+                let fed = decoder.feed(piece, &mut sink);
+                let failed = sink.failed.take();
+                if let Err(error) = fed {
                     return Err(decode_failure(&error));
+                }
+                if let Some(error) = failed {
+                    self.target = Err(io_error(&error));
                 }
             }
             Err(_) => {
