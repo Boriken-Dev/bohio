@@ -14,6 +14,7 @@ on:
       - "CHANGELOG.md"
       - "crates/**/*.rs"
       - "crates/**/README.md"
+      - "providers/**"
       - "Cargo.toml"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
@@ -71,7 +72,8 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
       - name: Install the narrative docs tooling
-        run: pip install mkdocs mkdocs-material pymdown-extensions
+        # The versions the site is built and checked with: a newer MkDocs or Material is taken up on purpose.
+        run: pip install "mkdocs==1.6.1" "mkdocs-material==9.7.7" "pymdown-extensions==12.3"
       - name: Build the narrative site
         run: mkdocs build --strict
         env:

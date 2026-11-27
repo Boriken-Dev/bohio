@@ -1,6 +1,6 @@
 name: Test
 
-# On demand: workflow_dispatch (optionally at a ref), or a pushed "ci-*" tag, deleted after its run.
+# On demand: workflow_dispatch (optionally at a ref), or a pushed "ci-*" tag or branch, deleted after its run.
 on:
   workflow_dispatch:
     inputs:
@@ -18,9 +18,16 @@ on:
   push:
     tags:
       - "ci-*"
+    branches:
+      - "ci-*"
 
 permissions:
   contents: read
+
+# A newer run of the same ref replaces one still going.
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   rust:
@@ -45,6 +52,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y socat xvfb libpipewire-0.3-dev libclang-dev pkg-config
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      # The library alone: every feature off must build, as every feature on does.
+      - run: cargo check --workspace --no-default-features
       # The exec and shell tests start this helper by its plain name, which a test run does not build.
       - run: cargo build -p bohio --example exec_helper --example gui_probe_x11
       - run: cargo test --workspace --all-features -- --nocapture
