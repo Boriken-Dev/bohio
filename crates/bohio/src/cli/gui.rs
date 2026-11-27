@@ -236,33 +236,8 @@ pub(super) fn run(
         }
         GuiAction::Snapshot(snapshot) => {
             let gui = want(&[Want::View])?;
-            let max = snapshot
-                .max_size
-                .as_deref()
-                .map(|text| {
-                    let (width, height) = text
-                        .split_once(['x', 'X'])
-                        .ok_or("--max-size is WIDTHxHEIGHT")?;
-                    Ok::<_, String>((
-                        width
-                            .parse::<u32>()
-                            .map_err(|_| "--max-size is WIDTHxHEIGHT")?,
-                        height
-                            .parse::<u32>()
-                            .map_err(|_| "--max-size is WIDTHxHEIGHT")?,
-                    ))
-                })
-                .transpose()?;
-            let region = snapshot
-                .region
-                .as_deref()
-                .map(|text| {
-                    let n = numbers(text, 4, "--region")?;
-                    let part =
-                        |at: usize| u32::try_from(n[at]).map_err(|_| "--region is not negative");
-                    Ok::<_, String>(Rect::new(part(0)?, part(1)?, part(2)?, part(3)?))
-                })
-                .transpose()?;
+            let max = max_size(snapshot.max_size.as_deref())?;
+            let region = region(snapshot.region.as_deref())?;
             let format = snapshot
                 .format
                 .as_deref()
@@ -419,36 +394,40 @@ pub(super) fn run(
     Ok(ExitCode::SUCCESS)
 }
 
+/// `--max-size WxH`, when given.
+fn max_size(text: Option<&str>) -> Result<Option<(u32, u32)>, String> {
+    text.map(|text| {
+        let (width, height) = text
+            .split_once(['x', 'X'])
+            .ok_or("--max-size is WIDTHxHEIGHT")?;
+        Ok::<_, String>((
+            width
+                .parse::<u32>()
+                .map_err(|_| "--max-size is WIDTHxHEIGHT")?,
+            height
+                .parse::<u32>()
+                .map_err(|_| "--max-size is WIDTHxHEIGHT")?,
+        ))
+    })
+    .transpose()
+}
+
+/// `--region X,Y,W,H`, when given.
+fn region(text: Option<&str>) -> Result<Option<Rect>, String> {
+    text.map(|text| {
+        let n = numbers(text, 4, "--region")?;
+        let part = |at: usize| u32::try_from(n[at]).map_err(|_| "--region is not negative");
+        Ok::<_, String>(Rect::new(part(0)?, part(1)?, part(2)?, part(3)?))
+    })
+    .transpose()
+}
+
 /// `gui watch`: a watch read for `watch.seconds`, with the numbers that say how the link kept up.
 fn watch_screen(gui: &Gui, watch: &WatchArgs, wait: std::time::Duration) -> Result<(), String> {
     use std::time::{Duration, Instant};
 
-    let max = watch
-        .max_size
-        .as_deref()
-        .map(|text| {
-            let (width, height) = text
-                .split_once(['x', 'X'])
-                .ok_or("--max-size is WIDTHxHEIGHT")?;
-            Ok::<_, String>((
-                width
-                    .parse::<u32>()
-                    .map_err(|_| "--max-size is WIDTHxHEIGHT")?,
-                height
-                    .parse::<u32>()
-                    .map_err(|_| "--max-size is WIDTHxHEIGHT")?,
-            ))
-        })
-        .transpose()?;
-    let region = watch
-        .region
-        .as_deref()
-        .map(|text| {
-            let n = numbers(text, 4, "--region")?;
-            let part = |at: usize| u32::try_from(n[at]).map_err(|_| "--region is not negative");
-            Ok::<_, String>(Rect::new(part(0)?, part(1)?, part(2)?, part(3)?))
-        })
-        .transpose()?;
+    let max = max_size(watch.max_size.as_deref())?;
+    let region = region(watch.region.as_deref())?;
     let encoding = watch
         .encoding
         .as_deref()

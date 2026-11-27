@@ -13,7 +13,7 @@ mod mcp;
 pub(crate) mod output;
 mod remote;
 mod secret;
-pub mod service;
+mod service;
 
 use std::ffi::OsString;
 use std::io::IsTerminal;
@@ -35,6 +35,11 @@ use crate::config::Environment;
         BOHIO_LOG      the log level or filter, for example `info` or `bohio=debug` (default `warn`)\n  \
         NO_COLOR       set to disable colour in log lines\n  \
         PATH           where programs and shells are looked for\n  \
+        BOHIO_TRUST_OWNER  accounts whose ownership of a configuration file is accepted, comma separated (every command)\n  \
+        DISPLAY, WAYLAND_DISPLAY, XDG_SESSION_TYPE, XDG_SESSION_ID  whether a desktop is reachable, and which (Unix)\n  \
+        SESSIONNAME, USERNAME, USER  the session and the account `gui-helper` reports\n  \
+        SystemRoot     where the system's own programs are looked for (Windows)\n  \
+        CREDENTIALS_DIRECTORY  where a `credential:` secret is read from (set by systemd)\n  \
         APPDATA, LOCALAPPDATA, ProgramData (Windows) and XDG_CONFIG_HOME, XDG_DATA_HOME, HOME (Unix)\n                 \
         where the system and user configuration files and the data directory are looked for\n\n\
         Exit status: 0 success, 1 the operation failed, 2 the invocation was wrong.
@@ -54,7 +59,7 @@ pub struct Cli {
     pub format: OutputFormat,
     /// What to do.
     #[command(subcommand)]
-    pub command: Command,
+    pub(crate) command: Command,
 }
 
 /// How a command writes its results.
@@ -72,7 +77,7 @@ pub enum OutputFormat {
     clippy::large_enum_variant,
     reason = "parsed once at the start of a process: boxing a variant buys nothing"
 )]
-pub enum Command {
+pub(crate) enum Command {
     /// Work with the configuration file.
     Config(ConfigArgs),
     /// Print this host's capabilities.
@@ -109,7 +114,7 @@ pub enum Command {
 
 /// `bohio config`.
 #[derive(Debug, Args)]
-pub struct ConfigArgs {
+pub(crate) struct ConfigArgs {
     /// What to do with the configuration.
     #[command(subcommand)]
     pub action: ConfigAction,
@@ -117,32 +122,30 @@ pub struct ConfigArgs {
 
 /// The `bohio config` actions.
 #[derive(Debug, Subcommand)]
-pub enum ConfigAction {
+pub(crate) enum ConfigAction {
     /// Read the configuration and report whether it is valid.
     Check(CheckArgs),
 }
 
 /// `bohio config check`.
 #[derive(Debug, Args)]
-pub struct CheckArgs {
-    /// A configuration layer, lowest first (repeat for more); they are read alone. Otherwise
-    /// `BOHIO_CONFIG` names the one layer; otherwise the system file is read and the user's merged over it.
-    #[arg(long, value_name = "FILE", env = "BOHIO_CONFIG")]
-    pub config: Vec<PathBuf>,
+pub(crate) struct CheckArgs {
+    /// The configuration.
+    #[command(flatten)]
+    pub config: ConfigOption,
 }
 
 /// `bohio info`.
 #[derive(Debug, Args)]
-pub struct InfoArgs {
-    /// A configuration layer, lowest first (repeat for more); they are read alone. Otherwise
-    /// `BOHIO_CONFIG` names the one layer; otherwise the system file is read and the user's merged over it.
-    #[arg(long, value_name = "FILE", env = "BOHIO_CONFIG")]
-    pub config: Vec<PathBuf>,
+pub(crate) struct InfoArgs {
+    /// The configuration.
+    #[command(flatten)]
+    pub config: ConfigOption,
 }
 
 /// The configuration layers every command takes.
 #[derive(Debug, Args)]
-pub struct ConfigOption {
+pub(crate) struct ConfigOption {
     /// A configuration layer, lowest first (repeat for more); they are read alone. Otherwise
     /// `BOHIO_CONFIG` names the one layer; otherwise the system file is read and the user's merged over it.
     #[arg(long, value_name = "FILE", env = "BOHIO_CONFIG")]
@@ -151,7 +154,7 @@ pub struct ConfigOption {
 
 /// `bohio serve`.
 #[derive(Debug, Args)]
-pub struct ServeArgs {
+pub(crate) struct ServeArgs {
     /// The configuration.
     #[command(flatten)]
     pub config: ConfigOption,
@@ -179,7 +182,7 @@ pub struct ServeArgs {
 
 /// `bohio status`, `bohio id` and `bohio peer list`.
 #[derive(Debug, Args)]
-pub struct StatusArgs {
+pub(crate) struct StatusArgs {
     /// The configuration.
     #[command(flatten)]
     pub config: ConfigOption,
@@ -187,7 +190,7 @@ pub struct StatusArgs {
 
 /// `bohio peer`.
 #[derive(Debug, Args)]
-pub struct PeerArgs {
+pub(crate) struct PeerArgs {
     /// What to do.
     #[command(subcommand)]
     pub action: PeerAction,
@@ -195,7 +198,7 @@ pub struct PeerArgs {
 
 /// The `bohio peer` actions.
 #[derive(Debug, Subcommand)]
-pub enum PeerAction {
+pub(crate) enum PeerAction {
     /// Accepted peers with what each may do, the proven keys waiting for approval, and stray grants.
     List(StatusArgs),
     /// Accept a peer by id (waiting, paired or new): write its `[peer.<id>]` table to a layer; with `--allow`,
@@ -208,19 +211,24 @@ pub enum PeerAction {
 
 /// The help of `--allow`: every permission the grant knows, from the enum.
 fn allow_help() -> String {
+    format!(
+        "What the peer may do: {} (repeat or separate with commas). Setting any of `--allow`, `--fs-root`, `--program`, `--connect` and `--listen` replaces the peer's whole table; without them an existing table stays and a new peer holds nothing",
+        permission_names()
+    )
+}
+
+/// Every permission the grant knows, comma separated, from the enum.
+fn permission_names() -> String {
     let names: Vec<&str> = crate::policy::Permission::ALL
         .into_iter()
         .map(crate::policy::Permission::name)
         .collect();
-    format!(
-        "What the peer may do: {} (repeat or separate with commas). Setting any of `--allow`, `--fs-root`, `--program`, `--connect` and `--listen` replaces the peer's whole table; without them an existing table stays and a new peer holds nothing",
-        names.join(", ")
-    )
+    names.join(", ")
 }
 
 /// `bohio peer approve`.
 #[derive(Debug, Args)]
-pub struct ApproveArgs {
+pub(crate) struct ApproveArgs {
     /// The configuration.
     #[command(flatten)]
     pub config: ConfigOption,
@@ -260,7 +268,7 @@ pub struct ApproveArgs {
 
 /// `bohio peer revoke`.
 #[derive(Debug, Args)]
-pub struct RevokeArgs {
+pub(crate) struct RevokeArgs {
     /// The configuration.
     #[command(flatten)]
     pub config: ConfigOption,
@@ -270,7 +278,7 @@ pub struct RevokeArgs {
 
 /// `bohio pair`.
 #[derive(Debug, Args)]
-pub struct PairArgs {
+pub(crate) struct PairArgs {
     /// The configuration.
     #[command(flatten)]
     pub config: ConfigOption,
@@ -288,7 +296,7 @@ pub struct PairArgs {
 /// above it is lost and the OS may report a send error: lower `--mtu-upper-bound` to the path's size, or turn discovery
 /// off. A flag with another endpoint is refused.
 #[derive(Debug, Args, Default)]
-pub struct MtuArgs {
+pub(crate) struct MtuArgs {
     /// The UDP payload size, in bytes, the connection starts from. Default `1200`, the least QUIC allows. A size above
     /// what the path carries stalls the link until black-hole detection falls to `--mtu-min`.
     #[arg(long, value_name = "BYTES")]
@@ -335,7 +343,7 @@ impl MtuArgs {
 
 /// `bohio join`.
 #[derive(Debug, Args)]
-pub struct JoinArgs {
+pub(crate) struct JoinArgs {
     /// The configuration.
     #[command(flatten)]
     pub config: ConfigOption,
@@ -479,7 +487,7 @@ fn parse_profile(text: &str) -> Result<bohio_client::profile::Profile, String> {
 
 /// `bohio remote`.
 #[derive(Debug, Args)]
-pub struct RemoteArgs {
+pub(crate) struct RemoteArgs {
     /// The configuration.
     #[command(flatten)]
     pub config: ConfigOption,
@@ -554,7 +562,7 @@ pub struct RemoteArgs {
 
 /// The `bohio remote` actions.
 #[derive(Debug, Subcommand)]
-pub enum RemoteAction {
+pub(crate) enum RemoteAction {
     /// Print the host's capabilities.
     Info,
     /// Run a program on the host and exit with its status.
@@ -618,7 +626,7 @@ pub enum RemoteAction {
 
 /// `bohio remote ... which`.
 #[derive(Debug, Args)]
-pub struct RemoteWhichArgs {
+pub(crate) struct RemoteWhichArgs {
     /// The program names to look up on the host's own `PATH`.
     #[arg(required = true, value_name = "NAME")]
     pub names: Vec<String>,
@@ -626,7 +634,7 @@ pub struct RemoteWhichArgs {
 
 /// `bohio remote ... search`.
 #[derive(Debug, Args)]
-pub struct RemoteSearchArgs {
+pub(crate) struct RemoteSearchArgs {
     /// The files source of the host that serves it (see `info`); the host's default one when absent.
     #[command(flatten)]
     pub files: FilesSourceArg,
@@ -666,7 +674,7 @@ pub struct RemoteSearchArgs {
 
 /// `bohio remote ... glob`.
 #[derive(Debug, Args)]
-pub struct RemoteGlobArgs {
+pub(crate) struct RemoteGlobArgs {
     /// The files source of the host that serves it (see `info`); the host's default one when absent.
     #[command(flatten)]
     pub files: FilesSourceArg,
@@ -682,7 +690,7 @@ pub struct RemoteGlobArgs {
 
 /// What `exec` and `shell` take to start a detached session.
 #[derive(Debug, Args)]
-pub struct SessionArgs {
+pub(crate) struct SessionArgs {
     /// Start a detached session: the program keeps running when this command ends or the link is lost, its output is kept on
     /// the host, and the command prints the session's id and exits. Pick it up again with `attach`. Needs `session` in the
     /// peer's grant; the host's `[sessions]` bound what it keeps.
@@ -706,7 +714,7 @@ pub struct SessionArgs {
 
 /// `--on-full`.
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
-pub enum OnFullArg {
+pub(crate) enum OnFullArg {
     /// Stop the program until the output is taken.
     Pause,
     /// Forget the oldest output.
@@ -715,7 +723,7 @@ pub enum OnFullArg {
 
 /// `bohio remote ... attach`.
 #[derive(Debug, Args)]
-pub struct RemoteAttachArgs {
+pub(crate) struct RemoteAttachArgs {
     /// The session's id, from `exec --detach`, `shell --detach` or `sessions`.
     pub id: String,
     /// Read from this output offset: `0` is all the host still keeps, and the host says on standard error how much of
@@ -734,7 +742,7 @@ pub struct RemoteAttachArgs {
 /// What `power` does.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 #[value(rename_all = "kebab-case")]
-pub enum PowerWord {
+pub(crate) enum PowerWord {
     /// The state; changes nothing.
     Status,
     /// Power on.
@@ -753,7 +761,7 @@ pub enum PowerWord {
 
 /// `bohio remote ... power`.
 #[derive(Debug, Args)]
-pub struct RemotePowerArgs {
+pub(crate) struct RemotePowerArgs {
     /// What to do.
     #[arg(value_enum)]
     pub action: PowerWord,
@@ -764,7 +772,7 @@ pub struct RemotePowerArgs {
 
 /// `bohio remote ... media`.
 #[derive(Debug, Args)]
-pub struct RemoteMediaArgs {
+pub(crate) struct RemoteMediaArgs {
     /// What to do.
     #[command(subcommand)]
     pub op: MediaOp,
@@ -775,7 +783,7 @@ pub struct RemoteMediaArgs {
 
 /// What `media` does.
 #[derive(Debug, Subcommand)]
-pub enum MediaOp {
+pub(crate) enum MediaOp {
     /// List the slots and what each holds.
     Status,
     /// Put an image in a slot.
@@ -786,7 +794,7 @@ pub enum MediaOp {
 
 /// `media insert`.
 #[derive(Debug, Args)]
-pub struct MediaInsertArgs {
+pub(crate) struct MediaInsertArgs {
     /// A URL the media source fetches itself.
     #[arg(conflicts_with = "path", required_unless_present = "path")]
     pub url: Option<String>,
@@ -800,7 +808,7 @@ pub struct MediaInsertArgs {
 
 /// `media eject`.
 #[derive(Debug, Args)]
-pub struct MediaEjectArgs {
+pub(crate) struct MediaEjectArgs {
     /// The slot.
     #[arg(long, default_value = "cd")]
     pub slot: String,
@@ -808,7 +816,7 @@ pub struct MediaEjectArgs {
 
 /// `bohio remote ... console`.
 #[derive(Debug, Args)]
-pub struct RemoteConsoleArgs {
+pub(crate) struct RemoteConsoleArgs {
     /// The terminal source; the host's default one when absent.
     #[arg(long, value_name = "NAME")]
     pub source: Option<String>,
@@ -823,7 +831,7 @@ pub struct RemoteConsoleArgs {
 
 /// `bohio remote ... end`.
 #[derive(Debug, Args)]
-pub struct RemoteEndArgs {
+pub(crate) struct RemoteEndArgs {
     /// The session's id.
     pub id: String,
     /// The signal to end it with: interrupt, terminate, hangup, quit, user1, user2 or kill. The session then reports its exit
@@ -840,7 +848,7 @@ fn parse_signal(text: &str) -> Result<bohio_proto::signal::Signal, String> {
 
 /// The files source a command names.
 #[derive(Debug, Args)]
-pub struct FilesSourceArg {
+pub(crate) struct FilesSourceArg {
     /// The files source of the host to use (an `ssh` source serves another machine's files); its default one when absent.
     #[arg(long = "source", value_name = "NAME")]
     pub source: Option<String>,
@@ -848,7 +856,7 @@ pub struct FilesSourceArg {
 
 /// `bohio remote ... exec`.
 #[derive(Debug, Args)]
-pub struct RemoteExecArgs {
+pub(crate) struct RemoteExecArgs {
     /// The program's working directory on the host.
     #[arg(long, value_name = "DIR")]
     pub cwd: Option<String>,
@@ -889,7 +897,7 @@ pub struct RemoteExecArgs {
 /// `bohio remote ... read`.
 #[derive(Debug, Args)]
 #[command(group(clap::ArgGroup::new("following").args(["follow", "follow_name"]).multiple(true)))]
-pub struct RemoteReadArgs {
+pub(crate) struct RemoteReadArgs {
     /// The files source of the host that serves it (see `info`); the host's default one when absent.
     #[command(flatten)]
     pub files: FilesSourceArg,
@@ -928,7 +936,7 @@ pub struct RemoteReadArgs {
 
 /// `bohio remote ... write`.
 #[derive(Debug, Args)]
-pub struct RemoteWriteArgs {
+pub(crate) struct RemoteWriteArgs {
     /// The files source of the host that serves it (see `info`); the host's default one when absent.
     #[command(flatten)]
     pub files: FilesSourceArg,
@@ -958,7 +966,7 @@ pub struct RemoteWriteArgs {
 
 /// Whether a transfer uses a delta against the copy already at the destination.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum DeltaChoice {
+pub(crate) enum DeltaChoice {
     /// A delta when the destination's copy is at least the host's `[delta] min_size`.
     Auto,
     /// A delta whenever the destination has a copy.
@@ -969,7 +977,7 @@ pub enum DeltaChoice {
 
 /// How far to compare before a file is moved at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum CompareChoice {
+pub(crate) enum CompareChoice {
     /// Size and modification time.
     Meta,
     /// Size, then a digest (blake3) of each side.
@@ -981,7 +989,7 @@ pub enum CompareChoice {
 /// How `get`, `put` and `read` spread one file over streams and links. Unset, each is `[client] parallel_streams`,
 /// `parallel_links` and `parallel_range`.
 #[derive(Debug, Args)]
-pub struct ParallelArgs {
+pub(crate) struct ParallelArgs {
     /// Carry the file on N streams at once, each a range of it. One stream moves at most its receive window per round
     /// trip, so N streams on a long path with room in it move N windows. With N above 1 the whole file moves (no delta,
     /// no --compare), written beside its destination and renamed into place after its SHA-256 matches the other side's.
@@ -1000,7 +1008,7 @@ pub struct ParallelArgs {
 
 /// The options `put` and `get` share.
 #[derive(Debug, Args)]
-pub struct SyncArgs {
+pub(crate) struct SyncArgs {
     /// Whether to send only what differs from the copy already at the destination. Default `auto` (the profile's).
     #[arg(long, value_enum)]
     pub delta: Option<DeltaChoice>,
@@ -1020,7 +1028,7 @@ pub struct SyncArgs {
 
 /// `bohio remote ... put`.
 #[derive(Debug, Args)]
-pub struct RemotePutArgs {
+pub(crate) struct RemotePutArgs {
     /// The files source of the host that serves it (see `info`); the host's default one when absent.
     #[command(flatten)]
     pub files: FilesSourceArg,
@@ -1038,7 +1046,7 @@ pub struct RemotePutArgs {
 
 /// `bohio remote ... get`.
 #[derive(Debug, Args)]
-pub struct RemoteGetArgs {
+pub(crate) struct RemoteGetArgs {
     /// The files source of the host that serves it (see `info`); the host's default one when absent.
     #[command(flatten)]
     pub files: FilesSourceArg,
@@ -1056,7 +1064,7 @@ pub struct RemoteGetArgs {
 
 /// `bohio remote ... walk`.
 #[derive(Debug, Args)]
-pub struct RemoteWalkArgs {
+pub(crate) struct RemoteWalkArgs {
     /// The files source of the host that serves it (see `info`); the host's default one when absent.
     #[command(flatten)]
     pub files: FilesSourceArg,
@@ -1085,7 +1093,7 @@ pub struct RemoteWalkArgs {
 
 /// Which way `sync` copies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum SyncDirection {
+pub(crate) enum SyncDirection {
     /// The local tree is copied to the host.
     Push,
     /// The host's tree is copied here.
@@ -1094,7 +1102,7 @@ pub enum SyncDirection {
 
 /// `bohio remote ... sync`.
 #[derive(Debug, Args)]
-pub struct RemoteSyncArgs {
+pub(crate) struct RemoteSyncArgs {
     /// The files source of the host that serves it (see `info`); the host's default one when absent.
     #[command(flatten)]
     pub files: FilesSourceArg,
@@ -1131,7 +1139,7 @@ pub struct RemoteSyncArgs {
 
 /// `bohio remote ... hash`.
 #[derive(Debug, Args)]
-pub struct RemoteHashArgs {
+pub(crate) struct RemoteHashArgs {
     /// The files source of the host that serves it (see `info`); the host's default one when absent.
     #[command(flatten)]
     pub files: FilesSourceArg,
@@ -1146,7 +1154,7 @@ pub struct RemoteHashArgs {
 
 /// `bohio remote ... connect`.
 #[derive(Debug, Args)]
-pub struct RemoteConnectArgs {
+pub(crate) struct RemoteConnectArgs {
     /// Where the host connects: `HOST:PORT` (an IPv6 address in brackets), `unix:PATH` or `pipe:NAME`. The peer's grant
     /// must hold `forward.connect` and a rule that matches.
     pub target: String,
@@ -1162,7 +1170,7 @@ pub struct RemoteConnectArgs {
 /// `[dial]` table (or the dial defaults), and the listeners it holds stay up meanwhile. A running bridged connection still
 /// ends with the link.
 #[derive(Debug, Args)]
-pub struct KeepArgs {
+pub(crate) struct KeepArgs {
     /// End when the link is lost (status 1) instead of making a new one. The first link is always made once: a host that
     /// cannot be reached, or that does not trust this key, ends the command at once.
     #[arg(long)]
@@ -1183,7 +1191,7 @@ pub struct KeepArgs {
 
 /// `bohio remote ... forward`.
 #[derive(Debug, Args)]
-pub struct RemoteForwardArgs {
+pub(crate) struct RemoteForwardArgs {
     /// Listen here and have the host connect to a target for each connection: `[BIND:]PORT=TARGET`,
     /// `unix:PATH=TARGET` or `pipe:NAME=TARGET`, where TARGET is `HOST:PORT`, `unix:PATH` or `pipe:NAME` (repeat). BIND is
     /// an address and defaults to `127.0.0.1`; port 0 picks a free one. Another address is used as named and reported as
@@ -1238,7 +1246,7 @@ pub struct RemoteForwardArgs {
 
 /// `bohio remote ... listen`.
 #[derive(Debug, Args)]
-pub struct RemoteListenArgs {
+pub(crate) struct RemoteListenArgs {
     /// What the host binds: `BIND:PORT` (an IPv6 address in brackets; port 0 lets the host choose), `unix:PATH` or
     /// `pipe:NAME`. The peer's grant must hold `forward.listen` and a rule that covers it.
     pub bind: String,
@@ -1253,7 +1261,7 @@ pub struct RemoteListenArgs {
 
 /// `bohio remote ... shell`.
 #[derive(Debug, Args)]
-pub struct RemoteShellArgs {
+pub(crate) struct RemoteShellArgs {
     /// One of the host's shells: sh, bash, zsh, cmd, powershell or pwsh. The host's `sh` or `cmd` by default.
     #[arg(long, value_name = "SHELL", value_parser = parse_shell)]
     pub kind: Option<String>,
@@ -1276,11 +1284,24 @@ pub fn main() -> ExitCode {
 }
 
 /// Runs the command `arguments` name (the first is the program) with `environment`.
-pub fn run(arguments: impl IntoIterator<Item = OsString>, environment: &Environment) -> ExitCode {
-    let cli = match Cli::try_parse_from(arguments) {
+pub(crate) fn run(
+    arguments: impl IntoIterator<Item = OsString>,
+    environment: &Environment,
+) -> ExitCode {
+    let arguments: Vec<OsString> = arguments.into_iter().collect();
+    let cli = match Cli::try_parse_from(&arguments) {
         Ok(cli) => cli,
         Err(error) => {
-            let _ = error.print();
+            // Under `--format json` a wrong invocation is the error object too; help and version text stay as they are.
+            if error.use_stderr() && asks_for_json(&arguments) {
+                output::set_json(true);
+                output::code("usage");
+                let text = error.to_string();
+                let first = text.lines().next().unwrap_or("");
+                output::fail(first.strip_prefix("error: ").unwrap_or(first));
+            } else {
+                let _ = error.print();
+            }
             return ExitCode::from(u8::try_from(error.exit_code()).unwrap_or(2));
         }
     };
@@ -1295,8 +1316,16 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>, environment: &Environm
     }
 }
 
+/// Whether the arguments the parser refused named `--format json` (as two words or as `--format=json`).
+fn asks_for_json(arguments: &[OsString]) -> bool {
+    arguments.iter().skip(1).enumerate().any(|(index, word)| {
+        word == "--format=json"
+            || (word == "--format" && arguments.get(index + 2).is_some_and(|next| next == "json"))
+    })
+}
+
 /// The process environment the data directory and the programs are looked for in.
-pub fn capture_environment() -> Environment {
+pub(crate) fn capture_environment() -> Environment {
     let var = |name: &str| {
         std::env::var_os(name)
             .filter(|v| !v.is_empty())
@@ -1334,7 +1363,7 @@ fn install_subscriber() {
 
 /// `bohio hosts`.
 #[derive(Debug, Args)]
-pub struct HostsArgs {
+pub(crate) struct HostsArgs {
     /// The configuration.
     #[command(flatten)]
     pub config: ConfigOption,
@@ -1342,7 +1371,7 @@ pub struct HostsArgs {
 
 /// `bohio links`.
 #[derive(Debug, Args)]
-pub struct LinksArgs {
+pub(crate) struct LinksArgs {
     /// The configuration.
     #[command(flatten)]
     pub config: ConfigOption,
@@ -1353,7 +1382,7 @@ pub struct LinksArgs {
 
 /// `bohio providers`.
 #[derive(Debug, Args)]
-pub struct ProvidersArgs {
+pub(crate) struct ProvidersArgs {
     /// The configuration.
     #[command(flatten)]
     pub config: ConfigOption,
@@ -1361,7 +1390,7 @@ pub struct ProvidersArgs {
 
 /// `bohio mcp`.
 #[derive(Debug, Args)]
-pub struct McpArgs {
+pub(crate) struct McpArgs {
     /// The configuration: this node's identity, and the keys of the hosts it trusts. Give each agent its own data directory, so
     /// each agent's key gets its own grant on a host.
     #[command(flatten)]
@@ -1405,7 +1434,7 @@ pub struct McpArgs {
 
 /// What an input tool of `bohio mcp --gui` answers besides what it applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum AfterAction {
+pub(crate) enum AfterAction {
     /// A settled screenshot of the display the input acted on.
     Screenshot,
     /// Nothing more.

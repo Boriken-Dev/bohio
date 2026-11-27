@@ -230,6 +230,7 @@ pub(super) fn serve_endpoints(
     )
     .with_events(events);
     let mut listeners = Vec::new();
+    let mut bound_endpoints = Vec::new();
     for entry in entries {
         let (listening, bound) = Listening::bind_with(entry, &settings, Some(&certificates))
             .map_err(|error| error.to_string())?;
@@ -238,8 +239,10 @@ pub(super) fn serve_endpoints(
             &bound.to_string(),
             listening.certificate_hash(),
         );
+        bound_endpoints.push(bound.to_string());
         listeners.push(listening);
     }
+    server.set_listening(bound_endpoints);
     let local = if config.control.is_enabled() {
         match Local::bind(&config.control, &server.host()) {
             Ok(local) => {
@@ -533,7 +536,8 @@ fn peer_approve(args: &ApproveArgs, environment: &Environment) -> Result<(), Str
         }
         permissions.push(Permission::from_name(name).ok_or_else(|| {
             format!(
-                "`{name}` is not a permission: info, fs.read, fs.write, exec, shell, admin, forward.connect, gui.view, gui.input, gui.clipboard, forward.listen, session"
+                "`{name}` is not a permission: {}",
+                super::permission_names()
             )
         })?);
     }
@@ -633,7 +637,7 @@ pub(super) fn pair(args: &PairArgs, environment: &Environment) -> Result<(), Str
     {
         let server = Server::for_control(&config.control);
         match LocalLink::connect_to(&control, &config.link.settings(), server) {
-            Ok(link) => return pair_running(&link, &found, &identity.peer_id(), args),
+            Ok(link) => return pair_running(&link, &identity.peer_id(), args),
             // A PIN or a "paired" from another account's endpoint would be its own, so nothing is asked of it.
             Err(bohio_client::Error::Link(text)) if text == ANOTHER_ACCOUNT => {
                 return Err(format!("{text}: another account bound the name first"));
@@ -644,23 +648,18 @@ pub(super) fn pair(args: &PairArgs, environment: &Environment) -> Result<(), Str
     pair_alone(&found, environment, args)
 }
 
-/// What `bohio pair` prints about the listeners: the entries as the configuration writes them.
-fn say_listeners(entries: &[ListenConfig]) {
-    for entry in entries {
-        announce("pairing on", &entry.endpoint, None);
+/// What `bohio pair` prints about a running node's listeners: the endpoints as it bound them.
+fn say_listeners(endpoints: &[String]) {
+    for endpoint in endpoints {
+        announce("pairing on", endpoint, None);
     }
 }
 
-fn pair_running(
-    link: &LocalLink,
-    found: &Found,
-    host: &PeerId,
-    args: &PairArgs,
-) -> Result<(), String> {
+fn pair_running(link: &LocalLink, host: &PeerId, args: &PairArgs) -> Result<(), String> {
     let pairing = link
         .pair(args.timeout)
         .map_err(|error| format!("the running node cannot arm a PIN: {error}"))?;
-    say_listeners(&found.config().listen);
+    say_listeners(pairing.listening());
     say_host_and_pin(&host.to_string(), pairing.pin());
     match pairing.wait().map_err(|error| error.to_string())? {
         PairReply::Paired { peer } => {

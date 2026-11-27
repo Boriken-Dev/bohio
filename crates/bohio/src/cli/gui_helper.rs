@@ -61,6 +61,29 @@ fn first_set(names: &[&str]) -> Option<String> {
         .find(|value| !value.is_empty())
 }
 
+/// What the helper is told about itself: the session it lends (`--session`, else the one the environment names) and the
+/// account it runs as.
+fn helper_settings(
+    args: &GuiHelperArgs,
+    config: &crate::config::Config,
+    endpoint: Endpoint,
+    node_account: String,
+) -> HelperSettings {
+    let session = args
+        .session
+        .clone()
+        .or_else(|| first_set(&["SESSIONNAME", "XDG_SESSION_ID", "DISPLAY"]))
+        .unwrap_or_else(|| "main".to_owned());
+    HelperSettings {
+        endpoint,
+        node_account,
+        session,
+        user: first_set(&["USERNAME", "USER"]),
+        gui: config.gui.clone(),
+        link: config.link.settings(),
+    }
+}
+
 /// Runs the helper until the node closes it.
 pub(super) fn run(args: &GuiHelperArgs, environment: &Environment) -> Result<(), String> {
     let found = crate::config::discover(&args.config.config).map_err(|error| error.to_string())?;
@@ -90,19 +113,7 @@ pub(super) fn run(args: &GuiHelperArgs, environment: &Environment) -> Result<(),
     let settings = node_settings(config, environment)?;
     let sources = Sources::from_config(&settings.source, &settings.access)
         .map_err(|(key, message)| format!("{key}: {message}"))?;
-    let session = args
-        .session
-        .clone()
-        .or_else(|| first_set(&["SESSIONNAME", "XDG_SESSION_ID", "DISPLAY"]))
-        .unwrap_or_else(|| "main".to_owned());
-    let helper = HelperSettings {
-        endpoint,
-        node_account,
-        session,
-        user: first_set(&["USERNAME", "USER"]),
-        gui: config.gui.clone(),
-        link: config.link.settings(),
-    };
+    let helper = helper_settings(args, config, endpoint, node_account);
     tracing::info!(endpoint = %helper.endpoint, session = %helper.session, "helping the node");
     helper::run(&helper, Arc::new(sources), &AtomicBool::new(false))
         .map_err(|error| error.to_string())?;
@@ -119,20 +130,9 @@ fn run_stdio(
     let settings = node_settings(config, environment)?;
     let sources = Sources::from_config(&settings.source, &settings.access)
         .map_err(|(key, message)| format!("{key}: {message}"))?;
-    let session = args
-        .session
-        .clone()
-        .or_else(|| first_set(&["SESSIONNAME", "XDG_SESSION_ID", "DISPLAY"]))
-        .unwrap_or_else(|| "main".to_owned());
-    let helper = HelperSettings {
-        // Unused here, and one that names nothing of the machine: the connection is the standard streams of the process.
-        endpoint: Endpoint::parse("tcp://127.0.0.1:0").map_err(|error| error.to_string())?,
-        node_account: String::new(),
-        session,
-        user: first_set(&["USERNAME", "USER"]),
-        gui: config.gui.clone(),
-        link: config.link.settings(),
-    };
+    // The endpoint is unused here and names nothing of the machine: the connection is the standard streams of the process.
+    let endpoint = Endpoint::parse("tcp://127.0.0.1:0").map_err(|error| error.to_string())?;
+    let helper = helper_settings(args, config, endpoint, String::new());
     let channel = bohio_client::link::stdio(&helper.link).map_err(|error| error.to_string())?;
     helper::serve_node(
         &channel,

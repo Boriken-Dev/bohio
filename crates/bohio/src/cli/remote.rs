@@ -40,12 +40,13 @@ use super::{
     RemoteShellArgs, RemoteSyncArgs, RemoteWalkArgs, RemoteWhichArgs, RemoteWriteArgs, SessionArgs,
     SyncDirection,
 };
-use crate::config::{DialConfig, Environment, Layers};
+use crate::config::{DialConfig, Environment, Found, Layers};
 use crate::forward::{BadSpec, LocalSpec, RemoteKeep, RemoteSpec, SocksSpec, keep_remote};
 use crate::link::KeptState;
 use crate::local::{ANOTHER_ACCOUNT, Server, Via};
 use crate::mcp::Dialer;
 use crate::node::Endpoint;
+use crate::peer::Data;
 
 /// The waits and sizes of one `bohio remote` run: `[client]`, with the flags laid over it, and `[link] poll_interval`.
 #[derive(Debug, Clone, Copy)]
@@ -216,8 +217,7 @@ pub(super) fn target(args: &RemoteArgs, config: &crate::config::Config) -> Resul
     })
 }
 
-fn direct_plan(args: &RemoteArgs, environment: &Environment) -> Result<Plan, String> {
-    let (found, data) = source(&args.config, environment)?;
+fn direct_plan(args: &RemoteArgs, found: &Found, data: &Data) -> Result<Plan, String> {
     let config = found.config();
     let target = target(args, config)?;
     let endpoint = match (&target.endpoint, &args.command) {
@@ -353,9 +353,11 @@ pub(super) fn certificate_refused(endpoint: &Endpoint, trust: &ServerTrust) -> S
 
 /// `bohio remote`.
 pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCode, String> {
+    // The layers are read once: every step below sees the same configuration.
+    let (found, data) = source(&args.config, environment)?;
     let plan = match &args.via {
-        Some(id) => via_plan(id, args, environment)?,
-        None => direct_plan(args, environment)?,
+        Some(id) => via_plan(id, &found, &data)?,
+        None => direct_plan(args, &found, &data)?,
     };
     // A command that stays up makes the link again when it ends, unless `--once`. Its waits are checked before the
     // host is dialled: a wrong invocation is status 2, whatever the link would have said.
@@ -366,7 +368,7 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
         _ => None,
     };
     let waits = match persist
-        .map(|persist| backoff(args, persist, environment))
+        .map(|persist| backoff(args, persist, &found))
         .transpose()
     {
         Ok(waits) => waits,
@@ -393,7 +395,6 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
         Some(name) => Arc::new(bohio_client::Sourced::shared(link, name)),
         None => link,
     };
-    let found = source(&args.config, environment)?.0;
     let settings = found.config().forward.client();
     let mut client = Client::new(found.config(), args);
     client.streams_set = found.layered.sets("client.parallel_streams");
@@ -538,14 +539,14 @@ pub(super) fn run(args: &RemoteArgs, environment: &Environment) -> Result<ExitCo
         RemoteAction::Forward(forward) => forward_command(
             &link,
             kept.as_ref(),
-            &backoff(args, &forward.persist, environment)?,
+            &backoff(args, &forward.persist, &found)?,
             forward,
             &settings,
         ),
         RemoteAction::Listen(listen) => listen_command(
             &link,
             kept.as_ref(),
-            &backoff(args, &listen.persist, environment)?,
+            &backoff(args, &listen.persist, &found)?,
             listen,
             &settings,
             &client,
@@ -617,8 +618,8 @@ impl Spread {
             return Ok(Vec::new());
         }
         if matches!(plan, Plan::Via { .. }) {
-            eprintln!(
-                "bohio: --links has no effect through --via: the node keeps one link to the peer"
+            output::note(
+                "--links has no effect through --via: the node keeps one link to the peer",
             );
             return Ok(Vec::new());
         }
@@ -818,12 +819,7 @@ impl Plan {
 
 /// The waits between attempts to make the link again: the `[dial]` table of the peer the command reaches when a configured one
 /// is named (`--server`, `--via`, or the endpoint of a `[peer."<id>"]` table), else the dial defaults, then the flags.
-fn backoff(
-    args: &RemoteArgs,
-    keep: &KeepArgs,
-    environment: &Environment,
-) -> Result<Backoff, String> {
-    let (found, _) = source(&args.config, environment)?;
+fn backoff(args: &RemoteArgs, keep: &KeepArgs, found: &Found) -> Result<Backoff, String> {
     let peers = &found.config().peer;
     let target = target(args, found.config())?;
     let named = args
@@ -2181,13 +2177,14 @@ fn sync_command(
     })
 }
 
-/// The exit status a finished program gives this command.
-fn status_of(exit: &bohio_proto::exec::Exit) -> ExitCode {
-    let code = if exit.timed_out {
+/// The exit status a finished program gives this command: 124 for a deadline, its code, `128` and the signal for one that
+/// ended it, else 1. A program's exit and a shell's are the same three facts.
+fn status_of(code: Option<i32>, signal: Option<i32>, timed_out: bool) -> ExitCode {
+    let code = if timed_out {
         124
-    } else if let Some(code) = exit.code {
+    } else if let Some(code) = code {
         code & 0xff
-    } else if let Some(signal) = exit.signal {
+    } else if let Some(signal) = signal {
         128 + signal
     } else {
         1
@@ -2370,7 +2367,7 @@ fn drive_exec(
             }
             Ok(Some(Event::Exit(exit))) if output::json() => {
                 output::event("exit", serde_json::json!(exit));
-                return Ok(status_of(&exit));
+                return Ok(status_of(exit.code, exit.signal, exit.timed_out));
             }
             Ok(Some(Event::Signalled(answer))) if output::json() => {
                 output::event("signalled", serde_json::json!(answer));
@@ -2385,7 +2382,9 @@ fn drive_exec(
                 let _ = err.write_all(&bytes);
                 let _ = err.flush();
             }
-            Ok(Some(Event::Exit(exit))) => return Ok(status_of(&exit)),
+            Ok(Some(Event::Exit(exit))) => {
+                return Ok(status_of(exit.code, exit.signal, exit.timed_out));
+            }
             Ok(Some(Event::Signalled(answer))) => report_undelivered(&answer),
             Ok(Some(_)) => {}
             Ok(None) => return Err("the stream ended before the program's exit".to_owned()),
@@ -2682,15 +2681,7 @@ fn drive_terminal(
     if output::json() {
         output::status(&serde_json::json!({ "done": { "exit": exit } }));
     }
-    // A deadline is 124 as it is for `exec`; a program that ended on a signal is 128 and the signal; else its code.
-    let code = if exit.timed_out {
-        124
-    } else if let Some(code) = exit.code {
-        code & 0xff
-    } else {
-        exit.signal.map_or(0, |signal| 128 + signal)
-    };
-    Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)))
+    Ok(status_of(exit.code, exit.signal, exit.timed_out))
 }
 
 /// `bohio remote ... attach`: the session's kept output from the offset asked for, then live.
@@ -2797,6 +2788,14 @@ pub(super) fn control_endpoint(
     environment: &Environment,
 ) -> Result<(Endpoint, bohio_client::link::Settings, Server), String> {
     let (found, data) = source(config, environment)?;
+    control_endpoint_of(&found, &data)
+}
+
+/// As [`control_endpoint`], for a configuration already read.
+fn control_endpoint_of(
+    found: &Found,
+    data: &Data,
+) -> Result<(Endpoint, bohio_client::link::Settings, Server), String> {
     let identity = data.identity().map_err(|error| error.to_string())?;
     let settings = found.config().link.settings();
     let text = found.config().control.endpoint_for(&identity.peer_id());
@@ -2820,17 +2819,12 @@ pub(super) fn unreachable(error: &bohio_client::Error) -> String {
 const NO_NODE: &str = "the node's local control endpoint does not answer: `bohio serve` must be running with this configuration and `[control] enabled` not false";
 
 /// The link a running node holds to `id`, through its local control endpoint.
-fn via_plan(id: &str, args: &RemoteArgs, environment: &Environment) -> Result<Plan, String> {
+fn via_plan(id: &str, found: &Found, data: &Data) -> Result<Plan, String> {
     let peer = id
         .parse::<PeerId>()
         .map_err(|_| "that is not a peer id".to_owned())?;
-    let (endpoint, settings, server) = control_endpoint(&args.config, environment)?;
-    let wait = source(&args.config, environment)?
-        .0
-        .config()
-        .client
-        .links_wait
-        .0;
+    let (endpoint, settings, server) = control_endpoint_of(found, data)?;
+    let wait = found.config().client.links_wait.0;
     Ok(Plan::Via {
         endpoint,
         settings,
@@ -2842,18 +2836,9 @@ fn via_plan(id: &str, args: &RemoteArgs, environment: &Environment) -> Result<Pl
 
 /// `bohio links`.
 pub(super) fn links(args: &super::LinksArgs, environment: &Environment) -> Result<(), String> {
-    let wait = match args.wait {
-        Some(wait) => wait,
-        None => {
-            source(&args.config, environment)?
-                .0
-                .config()
-                .client
-                .links_wait
-                .0
-        }
-    };
-    let (endpoint, settings, server) = control_endpoint(&args.config, environment)?;
+    let (found, data) = source(&args.config, environment)?;
+    let wait = args.wait.unwrap_or(found.config().client.links_wait.0);
+    let (endpoint, settings, server) = control_endpoint_of(&found, &data)?;
     let local = crate::local::LocalLink::connect_to(&endpoint, &settings, server)
         .map_err(|error| unreachable(&error))?;
     let reply = local.links(wait).map_err(|error| explain(&error))?;
@@ -2950,11 +2935,11 @@ pub(super) fn dialer(
     args: &RemoteArgs,
     environment: &Environment,
 ) -> Result<(Dialer, bohio_client::tools::Settings), String> {
+    let (found, data) = source(&args.config, environment)?;
     let plan = match &args.via {
-        Some(id) => via_plan(id, args, environment)?,
-        None => direct_plan(args, environment)?,
+        Some(id) => via_plan(id, &found, &data)?,
+        None => direct_plan(args, &found, &data)?,
     };
-    let found = source(&args.config, environment)?.0;
     let client = Client::new(found.config(), args);
     let mut settings = bohio_client::tools::Settings::default();
     settings.reply_timeout = client.reply;
@@ -3017,7 +3002,21 @@ fn item_failure(path: Option<&str>, message: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{media_text, power_text};
+    use super::{media_text, power_text, status_of};
+
+    #[test]
+    fn a_program_that_ended_with_no_code_and_no_signal_is_status_1() {
+        let status = |code, signal, timed_out| format!("{:?}", status_of(code, signal, timed_out));
+        assert_eq!(status(None, None, false), status_of_code(1));
+        assert_eq!(status(Some(3), None, false), status_of_code(3));
+        assert_eq!(status(None, Some(9), false), status_of_code(137));
+        assert_eq!(status(None, None, true), status_of_code(124));
+    }
+
+    fn status_of_code(code: u8) -> String {
+        format!("{:?}", std::process::ExitCode::from(code))
+    }
+
     use bohio_proto::media::Slot;
     use bohio_proto::power::State;
 

@@ -46,10 +46,13 @@ fn host_words(spec: &str) -> Result<(String, Vec<String>), String> {
         // A bare name: `bohio remote NAME` resolves it.
         return Ok((spec.to_owned(), vec![spec.to_owned()]));
     }
-    Ok((
-        "host".to_owned(),
-        split_command(spec).map_err(|error| error.to_string())?,
-    ))
+    let words = split_command(spec).map_err(|error| error.to_string())?;
+    // A `[remote]` name followed by flags keeps the name; any other line is the one unnamed host.
+    let name = words
+        .first()
+        .filter(|word| plain(word) && !word.starts_with('-'))
+        .map_or_else(|| "host".to_owned(), Clone::clone);
+    Ok((name, words))
 }
 
 /// Everything `bohio mcp` serves.
@@ -105,4 +108,21 @@ pub(super) fn run(args: &McpArgs, environment: &Environment) -> Result<ExitCode,
         .with_gui(args.gui);
     serve(hosts, &options, std::io::stdin().lock(), std::io::stdout())?;
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::host_words;
+
+    #[test]
+    fn a_remote_name_followed_by_flags_is_served_under_that_name() {
+        let (name, words) = host_words("lab --jump tcp://j:1").unwrap();
+        assert_eq!(name, "lab");
+        assert_eq!(words, ["lab", "--jump", "tcp://j:1"]);
+        assert_eq!(host_words("web").unwrap().0, "web");
+        assert_eq!(host_words("web=tcp://h:1").unwrap().0, "web");
+        // An endpoint, or a line that starts with a flag, is the unnamed host.
+        assert_eq!(host_words("tcp://h:1 --server x").unwrap().0, "host");
+        assert_eq!(host_words("--command 'ssh h'").unwrap().0, "host");
+    }
 }

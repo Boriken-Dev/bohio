@@ -2574,6 +2574,11 @@ fn every_command_prints_json_that_docs_cli_json_describes() {
         run(&["providers", "--config", &config, "--format", "json"]),
         "providers",
     );
+    let pending = object(
+        run(&["gui", "pending", "--config", &config, "--format", "json"]),
+        "gui pending",
+    );
+    assert!(pending["pending"].as_array().unwrap().is_empty());
 
     // A peer that pairs, is approved and is revoked, as objects; the pairing as events.
     let joiner = world.client("joiner");
@@ -2618,6 +2623,13 @@ fn every_command_prints_json_that_docs_cli_json_describes() {
     let lines = json_lines(&done.stdout);
     has_event(&shapes, "pair", "host", &lines);
     has_event(&shapes, "pair", "pin", &lines);
+    // A running node says where it bound, whatever `[[listen]]` or `--listen` asked for (here port 0).
+    assert!(
+        lines
+            .iter()
+            .any(|line| line["event"] == "pairing" && line["endpoint"] == host.endpoint.as_str()),
+        "{lines:?}"
+    );
     assert!(
         lines
             .iter()

@@ -67,7 +67,7 @@ pub struct NameArgs {
 #[derive(Debug, Args)]
 pub struct RunArgs {
     /// The configuration file, alone; otherwise `BOHIO_CONFIG`; otherwise the system file and the user's.
-    #[arg(long, value_name = "FILE")]
+    #[arg(long, value_name = "FILE", env = "BOHIO_CONFIG")]
     pub config: Option<PathBuf>,
     /// The name the service was registered under.
     #[arg(long, value_name = "NAME", default_value = DEFAULT_NAME)]

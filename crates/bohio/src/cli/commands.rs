@@ -54,7 +54,7 @@ pub(super) fn source(
 }
 
 fn config_check(args: &CheckArgs, environment: &Environment) -> Result<(), String> {
-    let found = discover(&args.config).map_err(|error| error.to_string())?;
+    let found = discover(&args.config.config).map_err(|error| error.to_string())?;
     let config = found.config();
     let files: Vec<String> = found
         .layered
@@ -143,7 +143,7 @@ fn hosts_command(args: &HostsArgs, environment: &Environment) -> Result<(), Stri
 }
 
 fn info_command(args: &InfoArgs, environment: &Environment) -> Result<(), String> {
-    let found = discover(&args.config).map_err(|error| error.to_string())?;
+    let found = discover(&args.config.config).map_err(|error| error.to_string())?;
     let info = info::collect(
         &super::host::node_settings(found.config(), environment)?,
         &environment.path.clone().unwrap_or_default(),

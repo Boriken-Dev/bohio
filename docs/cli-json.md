@@ -34,10 +34,10 @@ prints.
 ## The shapes
 
 Each line below is `COMMAND | KIND | KEYS`: the keys the object always has. A key that holds `null` says there is nothing
-to report; an object that is a protocol type (`info`, `entry`, `hashes`) may carry more keys when they have a value. `tests/link.rs` runs every command and checks its output against this table.
+to report; an object that is a protocol type (`info`, `entry`, `hashes`) may carry more keys when they have a value. `tests/link.rs` runs the commands a plain host answers (every command above except `power`, `media`, `remote gui` beyond `info`, `attach`, `listen` and `remote exec`'s `signalled` event, which need a provider, a desktop or a peer in a particular state) and checks their output against this table; the others are checked against the typed reply they print.
 
 ```shapes
-config check | object | ok,files,service,data_dir,listen,peers,dial,hosts,filesystem,execution,shell
+config check | object | ok,files,service,data_dir,listen,peers,dial,hosts,filesystem,execution,shell,profile,transfer
 info | object | protocol,service,host_id,os,arch,shells,filesystem,exec,shell,sessions,limits,transfer,forward,gui
 id | object | id
 status | object | id,method,data_dir,config,accepted,waiting,listen,dial,keeps
@@ -46,8 +46,9 @@ peer approve | object | approved,file
 peer revoke | object | revoked,removed,unwritable
 join | object | paired,file,peer
 hosts | object | hosts
+gui pending | object | pending
 links | object | links
-providers | object | check_access,libraries
+providers | object | check_access,libraries,programs
 serve/listening | event | event,endpoint
 serve/host | event | event,id
 pair/pairing | event | event,endpoint
@@ -94,7 +95,8 @@ bytes go to standard output and the exit is `{"done": {"exit": {...}}}` on stand
 ### Configuration and the node
 
 - `config check`: the shape above; `listen` is a list of endpoints, `dial` a list of `{peer, endpoint}`, `hosts` the names in
-  `[remote]`. A file that is not valid is the error object and status `1`.
+  `[remote]`, `profile` the client profile in force and `transfer` a list of `{key, value, source}` for each transfer setting and the
+  layer it came from. A file that is not valid is the error object and status `1`.
 - `info`: the host's capabilities exactly as `bohio_proto::info::Info` serializes them (see `protocol.md`, "Control").
 - `id`: `{"id": "sha256:..."}`.
 - `status`: `config` is the layer files read, `accepted` and `waiting` counts, `listen` a list of `{endpoint, state}`, `dial`
@@ -106,7 +108,7 @@ bytes go to standard output and the exit is `{"done": {"exit": {...}}}` on stand
 - `join`: the host's id as `paired`, the file written, and this side's own id as `peer`.
 - `hosts`: `{"hosts": [{name, endpoint, server, ca, cert_hash, fallback, jump}]}`, in name order.
 - `links`: `{"links": [...]}` as the node's local endpoint reports them.
-- `providers`: `{"check_access": bool, "libraries": [{"path", "state", "detail", "digest"}]}` as the node's local endpoint reports them.
+- `providers`: `{"check_access": bool, "libraries": [{"path", "state", "detail", "digest"}], "programs": [{"name", "path", "state", "detail", "digest", "restarts"}]}` as the node's local endpoint reports them.
 - `serve` streams `listening` (`endpoint`), `certificate` (`hash`, `endpoint`), `control` (`endpoint`), `host` (`id`),
   `dialing` (`endpoint`, `peer`) and, as each forward the node keeps comes up, goes down or fails, `kept` (`direction`
   `local` or `remote`, `state` `up`, `down` or `failed`, `spec`, `target`, `peer`, and `details` with the `address` of an `up`

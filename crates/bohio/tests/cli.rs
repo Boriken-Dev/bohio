@@ -164,11 +164,64 @@ fn a_wrong_invocation_exits_2() {
 }
 
 #[test]
+fn a_wrong_invocation_under_format_json_is_the_error_object_on_standard_error() {
+    for args in [
+        vec!["--format", "json", "remote", "--config", "c.cfg"],
+        vec!["nonsense", "--format=json"],
+        vec!["info", "--format", "json", "--bogus"],
+    ] {
+        let output = bohio(&args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(output.stdout.is_empty(), "{args:?}");
+        let err = text(&output.stderr);
+        assert_eq!(err.lines().count(), 1, "one object: {err}");
+        let object: serde_json::Value = serde_json::from_str(&err).expect("one JSON object");
+        assert_eq!(object["error"]["code"], "usage", "{err}");
+        assert!(
+            object["error"]["message"]
+                .as_str()
+                .is_some_and(|message| !message.is_empty() && !message.starts_with("error:")),
+            "{err}"
+        );
+    }
+    // Help is not an error: it stays text on standard output.
+    let help = bohio(&["--format", "json", "--help"]);
+    assert_eq!(help.status.code(), Some(0));
+    assert!(
+        text(&help.stdout).contains("Usage:"),
+        "{}",
+        text(&help.stdout)
+    );
+    // Without the flag the error stays the parser's own text.
+    let plain = bohio(&["nonsense"]);
+    assert!(
+        text(&plain.stderr).starts_with("error:"),
+        "{}",
+        text(&plain.stderr)
+    );
+}
+
+#[test]
 fn help_lists_the_environment_variables_the_program_reads() {
     let output = bohio(&["--help"]);
     assert_eq!(output.status.code(), Some(0));
     let help = text(&output.stdout);
-    for name in ["BOHIO_CONFIG", "BOHIO_LOG", "NO_COLOR", "PATH"] {
+    for name in [
+        "BOHIO_CONFIG",
+        "BOHIO_LOG",
+        "BOHIO_TRUST_OWNER",
+        "NO_COLOR",
+        "PATH",
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "XDG_SESSION_TYPE",
+        "XDG_SESSION_ID",
+        "SESSIONNAME",
+        "USERNAME",
+        "USER",
+        "SystemRoot",
+        "CREDENTIALS_DIRECTORY",
+    ] {
         assert!(help.contains(name), "--help names {name}");
     }
 }
@@ -192,6 +245,23 @@ fn peer_approve_help_names_every_permission() {
             permission.name()
         );
     }
+}
+
+#[test]
+fn service_run_takes_bohio_config_as_its_help_says() {
+    let cli = bohio::cli::Cli::command();
+    let run = cli
+        .find_subcommand("service")
+        .and_then(|service| service.find_subcommand("run"))
+        .expect("`bohio service run` exists");
+    let config = run
+        .get_arguments()
+        .find(|argument| argument.get_id() == "config")
+        .expect("it takes --config");
+    assert_eq!(
+        config.get_env().and_then(|name| name.to_str()),
+        Some("BOHIO_CONFIG")
+    );
 }
 
 #[test]
@@ -672,6 +742,33 @@ fn peer(args: &[&str], layers: &[&Path]) -> Output {
         .collect();
     all.extend(layers.iter().map(String::as_str));
     bohio(&all)
+}
+
+#[test]
+fn approve_with_an_unknown_permission_names_every_permission() {
+    let directory = scratch("approve-unknown");
+    let who = made_id(&directory, "who");
+    let config = directory.join("host.cfg");
+    std::fs::write(
+        &config,
+        format!(
+            "[service]\ndata_dir = '{}'\n",
+            directory.join("host-data").display()
+        ),
+    )
+    .unwrap();
+    let refused = peer(&["approve", &who, "--allow", "bogus"], &[&config]);
+    assert_eq!(refused.status.code(), Some(1));
+    let err = text(&refused.stderr);
+    assert!(err.contains("`bogus` is not a permission"), "{err}");
+    for permission in bohio::policy::Permission::ALL {
+        assert!(
+            err.contains(permission.name()),
+            "{} is named: {err}",
+            permission.name()
+        );
+    }
+    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
