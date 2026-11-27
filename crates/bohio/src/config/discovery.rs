@@ -6,8 +6,23 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{Config, Environment, Layered, Layers};
-use crate::ownership;
+use super::{Config, ConfigError, Environment, Layered, Layers, NoDataDir};
+use crate::ownership::{self, Refused};
+
+/// Why the configuration could not be found, or the node may not serve from it: the cause, for a host that acts on it.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum DiscoverError {
+    /// A layer cannot be read or parsed, or holds a value that is out of range.
+    #[error("{0}")]
+    Config(#[from] ConfigError),
+    /// A layer, the data directory or the identity is owned or may be changed by another account.
+    #[error("{0}")]
+    Refused(#[from] Refused),
+    /// The environment names no data directory and the configuration names none.
+    #[error("{0}")]
+    NoDataDir(#[from] NoDataDir),
+}
 
 /// What the configuration layers named, or found, come to.
 #[derive(Debug)]
@@ -39,8 +54,8 @@ impl Found {
     ///
     /// # Errors
     ///
-    /// One line naming every path that is refused and why.
-    pub fn guard(&self, environment: &Environment) -> Result<Vec<PathBuf>, String> {
+    /// [`DiscoverError::Refused`] naming every path that is refused and why, [`DiscoverError::NoDataDir`].
+    pub fn guard(&self, environment: &Environment) -> Result<Vec<PathBuf>, DiscoverError> {
         let config = self.config();
         announce_unchecked(config.service.check_access);
         // The lowest layer cannot vouch for its own owner: only the command line does. A higher layer, and the data
@@ -56,7 +71,7 @@ impl Found {
             )?;
         }
         // The layers are the operator's, so the directory they name is made (as the node would make it) and checked.
-        let data = config.data_dir(environment);
+        let data = config.data_dir(environment)?;
         make_private_dir(&data);
         let mut problems: Vec<_> = ownership::check(&data, ownership::Guarded::DataDir)
             .err()
@@ -157,8 +172,9 @@ pub fn default_files() -> (PathBuf, Option<PathBuf>) {
 ///
 /// # Errors
 ///
-/// One line: a layer that cannot be read or parsed, or a system file another account owns or may change.
-pub fn discover(named: &[PathBuf]) -> Result<Found, String> {
+/// [`DiscoverError::Config`] for a layer that cannot be read or parsed, [`DiscoverError::Refused`] for a system file another
+/// account owns or may change.
+pub fn discover(named: &[PathBuf]) -> Result<Found, DiscoverError> {
     discover_trusting(named, &ownership::trusted_from_environment())
 }
 
@@ -168,7 +184,7 @@ pub fn discover(named: &[PathBuf]) -> Result<Found, String> {
 /// # Errors
 ///
 /// As [`discover`].
-pub fn discover_trusting(named: &[PathBuf], trust: &[String]) -> Result<Found, String> {
+pub fn discover_trusting(named: &[PathBuf], trust: &[String]) -> Result<Found, DiscoverError> {
     let (system, user) = default_files();
     discover_in(named, system, user, trust)
 }
@@ -183,14 +199,14 @@ pub fn discover_in(
     system: PathBuf,
     user: Option<PathBuf>,
     trust: &[String],
-) -> Result<Found, String> {
+) -> Result<Found, DiscoverError> {
     let named: Vec<PathBuf> = named
         .iter()
         .filter(|path| !path.as_os_str().is_empty())
         .cloned()
         .collect();
     if !named.is_empty() {
-        let layered = Layers::load(&named).map_err(|error| error.to_string())?;
+        let layered = Layers::load(&named)?;
         return Ok(Found {
             layered,
             watch: named,
@@ -199,10 +215,7 @@ pub fn discover_in(
         });
     }
     let user_layer = if system.is_file() {
-        let service = Layers::load(std::slice::from_ref(&system))
-            .map_err(|error| error.to_string())?
-            .config
-            .service;
+        let service = Layers::load(std::slice::from_ref(&system))?.config.service;
         // Every command reads the system file, the client's identity and the control endpoint included, so one
         // another account made or may change is refused before anything uses it.
         ownership::decide(
@@ -225,7 +238,7 @@ pub fn discover_in(
         .filter(|path| path.is_file())
         .cloned()
         .collect();
-    let layered = Layers::load(&files).map_err(|error| error.to_string())?;
+    let layered = Layers::load(&files)?;
     Ok(Found {
         layered,
         watch,
@@ -330,7 +343,23 @@ data_dir = '{}'
         let layer = found.layered.files[0].clone();
         std::fs::set_permissions(&layer, std::fs::Permissions::from_mode(0o666)).unwrap();
         let refused = found.guard(&environment).unwrap_err();
-        assert!(refused.contains("node.cfg"), "{refused}");
+        assert!(refused.to_string().contains("node.cfg"), "{refused}");
+        // A host can tell the cause: a refused path carries its problems, and an unreadable layer is another variant.
+        let super::DiscoverError::Refused(refused) = refused else {
+            panic!("a refused path is DiscoverError::Refused");
+        };
+        assert!(
+            refused
+                .problems
+                .iter()
+                .all(|problem| problem.kind == Kind::Open)
+        );
+        let broken = file(dir.path(), "broken.cfg", "[service\n");
+        let unreadable = discover_in(&[broken], PathBuf::new(), None, &[]).unwrap_err();
+        assert!(
+            matches!(unreadable, super::DiscoverError::Config(_)),
+            "{unreadable:?}"
+        );
 
         let dir = crate::private_dir::private_tempdir();
         let (found, _) = layered_in(

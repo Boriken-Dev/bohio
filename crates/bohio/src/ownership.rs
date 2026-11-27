@@ -178,18 +178,39 @@ pub fn check(path: &Path, what: Guarded) -> Result<(), Problem> {
     }
 }
 
+/// The paths [`decide`] refused: each is a [`Problem`], and the text is their lines joined.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refused {
+    /// The refused problems, in the order they were found.
+    pub problems: Vec<Problem>,
+}
+
+impl core::fmt::Display for Refused {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for (at, problem) in self.problems.iter().enumerate() {
+            if at > 0 {
+                f.write_str("; ")?;
+            }
+            f.write_str(&problem.text)?;
+        }
+        Ok(())
+    }
+}
+
+impl core::error::Error for Refused {}
+
 /// The problems of `layers` (each file and the directory that holds it) as `check_access` decides them: a path
 /// another account owns is refused whatever the setting says, since that account could have written the
 /// setting; the rest are refused while `check_access` holds, and otherwise logged.
 ///
 /// # Errors
 ///
-/// Every refused problem, joined into one line.
+/// [`Refused`], holding every refused problem.
 pub fn decide(
     problems: &[Problem],
     check_access: bool,
     trusted_owners: &[String],
-) -> Result<(), String> {
+) -> Result<(), Refused> {
     let (refused, waived): (Vec<&Problem>, Vec<&Problem>) = problems.iter().partition(|problem| {
         if problem.kind == Kind::Foreign {
             !problem
@@ -213,11 +234,9 @@ pub fn decide(
     if refused.is_empty() {
         Ok(())
     } else {
-        let texts: Vec<&str> = refused
-            .iter()
-            .map(|problem| problem.text.as_str())
-            .collect();
-        Err(texts.join("; "))
+        Err(Refused {
+            problems: refused.into_iter().cloned().collect(),
+        })
     }
 }
 
@@ -230,14 +249,36 @@ fn trusts(trusted: &[String], owner: &str) -> bool {
     })
 }
 
-/// The id `/etc/passwd` gives the account `name`.
+/// The id of the account `name`: `/etc/passwd` first, then the system's own lookup, which reaches accounts that
+/// `nsswitch` takes from LDAP, SSSD or NIS.
 #[cfg(unix)]
 fn user_id_of(name: &str) -> Option<String> {
+    user_id_in_passwd(name).or_else(|| user_id_by_lookup(name))
+}
+
+#[cfg(unix)]
+fn user_id_in_passwd(name: &str) -> Option<String> {
     let table = std::fs::read_to_string("/etc/passwd").ok()?;
     table.lines().find_map(|line| {
         let mut fields = line.split(':');
         (fields.next() == Some(name)).then(|| fields.nth(1).map(str::to_owned))?
     })
+}
+
+/// `id -u NAME`, which asks the C library (and so every account source the host is set up with) for the account.
+#[cfg(unix)]
+fn user_id_by_lookup(name: &str) -> Option<String> {
+    use std::process::{Command, Stdio};
+    let output = Command::new("id")
+        .args(["-u", "--", name])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    let id = String::from_utf8(output.stdout).ok()?;
+    let id = id.trim();
+    (output.status.success() && !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| id.to_owned())
 }
 
 /// Windows entries are security ids.
@@ -695,5 +736,17 @@ mod real_tests {
         assert_eq!(refused.kind, Kind::Open, "{}", refused.text);
         let missing = directory.path().join("absent.cfg");
         assert!(crate::platform::winacl::read(&missing).is_err());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod lookup_tests {
+    #[test]
+    fn an_account_the_passwd_file_lacks_is_found_through_the_system_lookup() {
+        // `id` asks the C library, which also reads the sources `/etc/passwd` is not.
+        assert_eq!(super::user_id_by_lookup("root").as_deref(), Some("0"));
+        assert_eq!(super::user_id_by_lookup("no-such-account-here"), None);
+        assert_eq!(super::user_id_by_lookup("-u"), None);
+        assert_eq!(super::user_id_of("root").as_deref(), Some("0"));
     }
 }

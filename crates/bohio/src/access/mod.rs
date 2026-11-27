@@ -38,6 +38,18 @@ pub use native::{ID as NATIVE_ID, Native, NativeSettings};
 use crate::config::{AccessConfig, NATIVE, SourceTable, SourceTables};
 use crate::secret::{self, NoSecrets, Secret, SecretResolver};
 
+/// Calls `$apply!(field)` once for the table of each capability, in the order `info` lists them.
+macro_rules! each_table {
+    ($apply:ident) => {
+        $apply!(terminal);
+        $apply!(desktop);
+        $apply!(power);
+        $apply!(media);
+        $apply!(exec);
+        $apply!(files);
+    };
+}
+
 /// What a source gives a node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[non_exhaustive]
@@ -200,6 +212,29 @@ struct State {
 }
 
 impl State {
+    /// The names of the sources serving `capability`, the default first.
+    const fn order(&self, capability: Capability) -> &Vec<String> {
+        match capability {
+            Capability::Terminal => &self.terminal.order,
+            Capability::Desktop => &self.desktop.order,
+            Capability::Power => &self.power.order,
+            Capability::Media => &self.media.order,
+            Capability::Exec => &self.exec.order,
+            Capability::Files => &self.files.order,
+        }
+    }
+
+    fn order_mut(&mut self, capability: Capability) -> &mut Vec<String> {
+        match capability {
+            Capability::Terminal => &mut self.terminal.order,
+            Capability::Desktop => &mut self.desktop.order,
+            Capability::Power => &mut self.power.order,
+            Capability::Media => &mut self.media.order,
+            Capability::Exec => &mut self.exec.order,
+            Capability::Files => &mut self.files.order,
+        }
+    }
+
     fn empty() -> Self {
         Self {
             terminal: Table::empty(),
@@ -250,9 +285,6 @@ impl Resolve<'_> {
     }
 }
 
-/// The default of `[secrets] max_bytes`.
-pub const DEFAULT_SECRET_BYTES: usize = 65_536;
-
 impl core::fmt::Debug for Sources {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Sources").finish_non_exhaustive()
@@ -276,7 +308,10 @@ impl Sources {
         Self {
             registry: Mutex::new(builtin_registry()),
             state: RwLock::new(State::empty()),
-            secrets: Mutex::new((Arc::new(NoSecrets), DEFAULT_SECRET_BYTES)),
+            secrets: Mutex::new((
+                Arc::new(NoSecrets),
+                crate::config::SecretsConfig::default().max_bytes,
+            )),
             deferring: AtomicBool::new(false),
             literal: AtomicBool::new(false),
             last: Mutex::new(None),
@@ -505,12 +540,12 @@ impl Sources {
         for (name, table) in &tables {
             if old.tables.get(name) == Some(table) && !rebuild.contains(name) {
                 // The same table: the same instances, and what runs on them goes on.
-                keep(&old.terminal, &mut fresh.terminal, name);
-                keep(&old.desktop, &mut fresh.desktop, name);
-                keep(&old.power, &mut fresh.power, name);
-                keep(&old.media, &mut fresh.media, name);
-                keep(&old.exec, &mut fresh.exec, name);
-                keep(&old.files, &mut fresh.files, name);
+                macro_rules! kept {
+                    ($field:ident) => {
+                        keep(&old.$field, &mut fresh.$field, name)
+                    };
+                }
+                each_table!(kept);
                 continue;
             }
             if !build(&registry, name, table, &mut fresh, mode)? {
@@ -518,36 +553,16 @@ impl Sources {
             }
         }
         // What an embedder added stays.
-        for (name, held) in &old.terminal.by_name {
-            if held.embedded {
-                fresh.terminal.by_name.insert(name.clone(), held.clone());
-            }
+        macro_rules! embedded {
+            ($field:ident) => {
+                for (name, held) in &old.$field.by_name {
+                    if held.embedded {
+                        fresh.$field.by_name.insert(name.clone(), held.clone());
+                    }
+                }
+            };
         }
-        for (name, held) in &old.desktop.by_name {
-            if held.embedded {
-                fresh.desktop.by_name.insert(name.clone(), held.clone());
-            }
-        }
-        for (name, held) in &old.power.by_name {
-            if held.embedded {
-                fresh.power.by_name.insert(name.clone(), held.clone());
-            }
-        }
-        for (name, held) in &old.media.by_name {
-            if held.embedded {
-                fresh.media.by_name.insert(name.clone(), held.clone());
-            }
-        }
-        for (name, held) in &old.exec.by_name {
-            if held.embedded {
-                fresh.exec.by_name.insert(name.clone(), held.clone());
-            }
-        }
-        for (name, held) in &old.files.by_name {
-            if held.embedded {
-                fresh.files.by_name.insert(name.clone(), held.clone());
-            }
-        }
+        each_table!(embedded);
         fresh.terminal.order = order_of(
             Capability::Terminal,
             &access.terminals(),
@@ -576,12 +591,13 @@ impl Sources {
         let previous = std::mem::replace(&mut *state, fresh);
         drop(state);
         // An instance that is not in the new state is retired; one that is, is not.
-        retire_missing(&previous.terminal, &self.state_ref(), |s| &s.terminal);
-        retire_missing(&previous.desktop, &self.state_ref(), |s| &s.desktop);
-        retire_missing(&previous.power, &self.state_ref(), |s| &s.power);
-        retire_missing(&previous.media, &self.state_ref(), |s| &s.media);
-        retire_missing(&previous.exec, &self.state_ref(), |s| &s.exec);
-        retire_missing(&previous.files, &self.state_ref(), |s| &s.files);
+        let now = self.state_ref();
+        macro_rules! retired {
+            ($field:ident) => {
+                retire_missing(&previous.$field, &now, |state| &state.$field)
+            };
+        }
+        each_table!(retired);
         Ok(())
     }
 
@@ -599,12 +615,12 @@ impl Sources {
         let previous = std::mem::replace(&mut *ours, taken);
         drop(ours);
         let now = self.state_ref();
-        retire_missing(&previous.terminal, &now, |s| &s.terminal);
-        retire_missing(&previous.desktop, &now, |s| &s.desktop);
-        retire_missing(&previous.power, &now, |s| &s.power);
-        retire_missing(&previous.media, &now, |s| &s.media);
-        retire_missing(&previous.exec, &now, |s| &s.exec);
-        retire_missing(&previous.files, &now, |s| &s.files);
+        macro_rules! retired {
+            ($field:ident) => {
+                retire_missing(&previous.$field, &now, |state| &state.$field)
+            };
+        }
+        each_table!(retired);
         drop(now);
         let registry = std::mem::replace(
             &mut *other
@@ -641,89 +657,11 @@ impl Sources {
     /// The names of each capability's default source, which a peer reaches without being named.
     pub(crate) fn default_names(&self) -> Vec<String> {
         let state = self.state_ref();
-        [
-            state.terminal.order.first(),
-            state.desktop.order.first(),
-            state.power.order.first(),
-            state.media.order.first(),
-            state.exec.order.first(),
-            state.files.order.first(),
-        ]
-        .into_iter()
-        .flatten()
-        .cloned()
-        .collect()
-    }
-
-    /// Adds a terminal source of the embedder's own, as `name`. It is not a default until [`Sources::with_access`] says
-    /// so.
-    #[must_use]
-    pub fn with_terminal(self, name: &str, source: Arc<dyn TerminalSource>) -> Self {
-        self.add_terminal(name, source);
-        self
-    }
-
-    /// As [`Sources::with_terminal`], on sources already shared.
-    pub fn add_terminal(&self, name: &str, source: Arc<dyn TerminalSource>) {
-        self.state_mut()
-            .terminal
-            .by_name
-            .insert(name.to_owned(), Source::new(name, source, true));
-    }
-
-    /// Adds a desktop source of the embedder's own.
-    #[must_use]
-    pub fn with_desktop(self, name: &str, source: Arc<dyn DesktopSource>) -> Self {
-        self.add_desktop(name, source);
-        self
-    }
-
-    /// As [`Sources::with_desktop`], on sources already shared.
-    pub fn add_desktop(&self, name: &str, source: Arc<dyn DesktopSource>) {
-        self.state_mut()
-            .desktop
-            .by_name
-            .insert(name.to_owned(), Source::new(name, source, true));
-    }
-
-    /// Adds a power source of the embedder's own.
-    #[must_use]
-    pub fn with_power(self, name: &str, source: Arc<dyn PowerSource>) -> Self {
-        self.state_mut()
-            .power
-            .by_name
-            .insert(name.to_owned(), Source::new(name, source, true));
-        self
-    }
-
-    /// Adds a media source of the embedder's own.
-    #[must_use]
-    pub fn with_media(self, name: &str, source: Arc<dyn MediaSource>) -> Self {
-        self.state_mut()
-            .media
-            .by_name
-            .insert(name.to_owned(), Source::new(name, source, true));
-        self
-    }
-
-    /// Adds an exec source of the embedder's own.
-    #[must_use]
-    pub fn with_exec(self, name: &str, source: Arc<dyn ExecSource>) -> Self {
-        self.state_mut()
-            .exec
-            .by_name
-            .insert(name.to_owned(), Source::new(name, source, true));
-        self
-    }
-
-    /// Adds a files source of the embedder's own.
-    #[must_use]
-    pub fn with_files(self, name: &str, source: Arc<dyn FilesSource>) -> Self {
-        self.state_mut()
-            .files
-            .by_name
-            .insert(name.to_owned(), Source::new(name, source, true));
-        self
+        Capability::ALL
+            .into_iter()
+            .filter_map(|capability| state.order(capability).first())
+            .cloned()
+            .collect()
     }
 
     /// Sets which sources serve `capability`, the first being the default. A name no source has is ignored here and refused
@@ -736,15 +674,7 @@ impl Sources {
     ) -> Self {
         let names: Vec<String> = names.into_iter().map(str::to_owned).collect();
         {
-            let mut state = self.state_mut();
-            match capability {
-                Capability::Terminal => state.terminal.order = names,
-                Capability::Desktop => state.desktop.order = names,
-                Capability::Power => state.power.order = names,
-                Capability::Media => state.media.order = names,
-                Capability::Exec => state.exec.order = names,
-                Capability::Files => state.files.order = names,
-            }
+            *self.state_mut().order_mut(capability) = names;
         }
         self
     }
@@ -752,14 +682,7 @@ impl Sources {
     /// Makes `name` the default of `capability`, keeping the others after it.
     pub(crate) fn make_default(&self, capability: Capability, name: &str) {
         let mut state = self.state_mut();
-        let order = match capability {
-            Capability::Terminal => &mut state.terminal.order,
-            Capability::Desktop => &mut state.desktop.order,
-            Capability::Power => &mut state.power.order,
-            Capability::Media => &mut state.media.order,
-            Capability::Exec => &mut state.exec.order,
-            Capability::Files => &mut state.files.order,
-        };
+        let order = state.order_mut(capability);
         order.retain(|held| held != name);
         order.insert(0, name.to_owned());
     }
@@ -811,15 +734,7 @@ impl Sources {
     /// The names of the sources serving `capability`, the default first.
     #[must_use]
     pub fn names(&self, capability: Capability) -> Vec<String> {
-        let state = self.state_ref();
-        match capability {
-            Capability::Terminal => state.terminal.order.clone(),
-            Capability::Desktop => state.desktop.order.clone(),
-            Capability::Power => state.power.order.clone(),
-            Capability::Media => state.media.order.clone(),
-            Capability::Exec => state.exec.order.clone(),
-            Capability::Files => state.files.order.clone(),
-        }
+        self.state_ref().order(capability).clone()
     }
 
     /// The exec source `name`, or the default one when `None`.
@@ -931,13 +846,46 @@ impl Sources {
     /// Ends every instance: what runs on them ends `unavailable`. A node that stops calls it.
     pub fn retire(&self) {
         let state = self.state_ref();
-        state.terminal.retire_all();
-        state.desktop.retire_all();
-        state.power.retire_all();
-        state.media.retire_all();
-        state.exec.retire_all();
-        state.files.retire_all();
+        macro_rules! retire {
+            ($field:ident) => {
+                state.$field.retire_all()
+            };
+        }
+        each_table!(retire);
     }
+}
+
+/// Writes `with_<kind>` and `add_<kind>` for each kind of source an embedder may add: one pair for every capability.
+macro_rules! embedder_sources {
+    ($(($field:ident, $source:ident, $with:ident, $add:ident, $what:literal)),+ $(,)?) => {
+        impl Sources {
+            $(
+                #[doc = concat!("Adds ", $what, " source of the embedder's own, as `name`. It is not a default until [`Sources::with_access`] says so.")]
+                #[must_use]
+                pub fn $with(self, name: &str, source: Arc<dyn $source>) -> Self {
+                    self.$add(name, source);
+                    self
+                }
+
+                #[doc = concat!("As [`Sources::", stringify!($with), "`], on sources already shared.")]
+                pub fn $add(&self, name: &str, source: Arc<dyn $source>) {
+                    self.state_mut()
+                        .$field
+                        .by_name
+                        .insert(name.to_owned(), Source::new(name, source, true));
+                }
+            )+
+        }
+    };
+}
+
+embedder_sources! {
+    (terminal, TerminalSource, with_terminal, add_terminal, "a terminal"),
+    (desktop, DesktopSource, with_desktop, add_desktop, "a desktop"),
+    (power, PowerSource, with_power, add_power, "a power"),
+    (media, MediaSource, with_media, add_media, "a media"),
+    (exec, ExecSource, with_exec, add_exec, "an exec"),
+    (files, FilesSource, with_files, add_files, "a files"),
 }
 
 fn keep<K: ?Sized>(old: &Table<K>, fresh: &mut Table<K>, name: &str) {

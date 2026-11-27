@@ -227,6 +227,33 @@ fn an_empty_terminal_list_refuses_shells_although_the_platform_has_a_pty() {
     }
 }
 
+#[test]
+fn info_says_no_shell_is_served_when_access_names_no_terminal() {
+    use bohio_proto::control::Reply;
+    let info_of = |world: &World| match Control::open(&world.link)
+        .expect("control opens")
+        .call(Call::Info, Some(WAIT))
+        .expect("info")
+    {
+        Reply::Info(info) => info,
+        other => panic!("not info: {other:?}"),
+    };
+    let grant = Grant::allowing([Permission::Info]);
+    let with = info_of(&world(NodeConfig::default(), None, grant.clone()));
+    assert!(with.shell.enabled && !with.shells.is_empty());
+    let without = info_of(&world(
+        node_config(
+            "[access]
+terminal = []
+",
+        ),
+        None,
+        grant,
+    ));
+    assert!(!without.shell.enabled, "{:?}", without.shell);
+    assert!(without.shells.is_empty(), "{:?}", without.shells);
+}
+
 fn tables(text: &str) -> SourceTables {
     #[derive(serde::Deserialize)]
     struct Whole {
@@ -310,10 +337,10 @@ fn a_reload_that_changes_a_source_ends_the_stream_running_on_it() {
     assert!(body.message.contains("reconfigured"), "{}", body.message);
 }
 
-fn snapshot_options() -> bohio_client::gui::SnapshotOptions {
-    bohio_client::gui::SnapshotOptions {
+fn snapshot_options() -> bohio_client::gui::Snapshot {
+    bohio_client::gui::Snapshot {
         display: Some(DisplayId("fake-1".to_owned())),
-        ..bohio_client::gui::SnapshotOptions::default()
+        ..bohio_client::gui::Snapshot::default()
     }
 }
 
@@ -338,4 +365,43 @@ fn native_is_one_source_among_others_and_the_default_changes_with_access() {
         "native"
     );
     let _: PeerId = Identity::generate(Method::DEFAULT).expect("id").peer_id();
+}
+
+struct Still;
+
+impl bohio_api::PowerSource for Still {
+    fn describe(
+        &self,
+    ) -> Result<bohio_api::SourceInfo, bohio_api::guatiao::library::ProviderError> {
+        Ok(bohio_api::SourceInfo::default())
+    }
+
+    fn state(&self) -> Result<bohio_api::PowerState, bohio_api::guatiao::library::ProviderError> {
+        Ok(bohio_api::PowerState {
+            state: "on".to_owned(),
+            done: true,
+        })
+    }
+
+    fn act(
+        &self,
+        _action: &str,
+    ) -> Result<bohio_api::PowerState, bohio_api::guatiao::library::ProviderError> {
+        self.state()
+    }
+}
+
+#[test]
+fn every_capability_has_a_with_and_an_add_for_an_embedders_source() {
+    let sources = Sources::unconfigured();
+    sources.add_power("mine", Arc::new(Still));
+    assert!(sources.power(Some("mine")).is_ok());
+    let sources = Sources::unconfigured()
+        .with_power("again", Arc::new(Still))
+        .with_access(bohio::access::Capability::Power, ["again"]);
+    assert_eq!(
+        sources.names(bohio::access::Capability::Power),
+        ["again".to_owned()]
+    );
+    assert!(sources.power(None).is_ok());
 }

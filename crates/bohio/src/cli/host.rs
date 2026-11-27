@@ -54,7 +54,12 @@ fn node(
     environment: &Environment,
 ) -> Result<(Node, Arc<LayeredPeers>), String> {
     let config = found.config();
-    let data = Data::new(config.data_dir(environment)).with_waiting(&config.waiting);
+    let data = Data::new(
+        config
+            .data_dir(environment)
+            .map_err(|error| error.to_string())?,
+    )
+    .with_waiting(&config.waiting);
     let identity = data.identity().map_err(|error| error.to_string())?;
     let create = found.create.clone().filter(|file| watch.contains(file));
     let peers = Arc::new(
@@ -63,7 +68,7 @@ fn node(
             .with_create(create),
     );
     let node = Node::new(
-        node_settings(config, environment),
+        node_settings(config, environment)?,
         identity,
         peers.clone(),
         peers.clone(),
@@ -149,14 +154,17 @@ impl NodeEvents for Printed {
 
 /// `bohio serve`.
 pub(super) fn serve(args: &ServeArgs, environment: &Environment) -> Result<(), String> {
-    let found = discover_trusting(&args.config.config, &args.trust_owner)?;
+    let found = discover_trusting(&args.config.config, &args.trust_owner)
+        .map_err(|error| error.to_string())?;
     let config = found.config();
     if args.stdio {
         if !args.listen.is_empty() {
             return Err("--stdio serves standard input and output alone: drop --listen".to_owned());
         }
         // Standard output is the link: nothing else is written to it, and [[listen]] entries are not bound.
-        let watch = found.guard(environment)?;
+        let watch = found
+            .guard(environment)
+            .map_err(|error| error.to_string())?;
         log_non_default(config, &[]);
         let (server, _) = node(&found, watch, environment)?;
         tracing::info!(host = %server.host(), "serving standard input and output");
@@ -205,15 +213,22 @@ pub(super) fn serve_endpoints(
                 .to_owned(),
         );
     }
-    let watch = found.guard(environment)?;
+    let watch = found
+        .guard(environment)
+        .map_err(|error| error.to_string())?;
     log_non_default(config, entries);
     let (server, peers) = node(found, watch, environment)?;
     let events: Arc<dyn NodeEvents> = Arc::new(Printed);
     let server = server.with_events(Arc::clone(&events));
     let settings = config.link.settings();
     // A certificate the host makes for WebTransport is kept with the node's other state, so a restart keeps its hash.
-    let certificates = CertificateStore::new(config.data_dir(environment).join("certificates"))
-        .with_events(events);
+    let certificates = CertificateStore::new(
+        config
+            .data_dir(environment)
+            .map_err(|error| error.to_string())?
+            .join("certificates"),
+    )
+    .with_events(events);
     let mut listeners = Vec::new();
     for entry in entries {
         let (listening, bound) = Listening::bind_with(entry, &settings, Some(&certificates))
@@ -693,7 +708,12 @@ fn pair_alone(found: &Found, environment: &Environment, args: &PairArgs) -> Resu
         }
         (None, false) => {}
     }
-    let data = Data::new(config.data_dir(environment)).with_waiting(&config.waiting);
+    let data = Data::new(
+        config
+            .data_dir(environment)
+            .map_err(|error| error.to_string())?,
+    )
+    .with_waiting(&config.waiting);
     let identity = data.identity().map_err(|error| error.to_string())?;
     let watch = found.watched();
     let create = found.create.clone().filter(|file| watch.contains(file));
@@ -716,7 +736,10 @@ fn pair_alone(found: &Found, environment: &Environment, args: &PairArgs) -> Resu
             entry,
             &settings,
             Some(&CertificateStore::new(
-                config.data_dir(environment).join("certificates"),
+                config
+                    .data_dir(environment)
+                    .map_err(|error| error.to_string())?
+                    .join("certificates"),
             )),
         )
         .map_err(|error| {
@@ -764,9 +787,11 @@ fn pair_alone(found: &Found, environment: &Environment, args: &PairArgs) -> Resu
 pub(super) fn join(args: &JoinArgs, environment: &Environment) -> Result<(), String> {
     let (found, data) = source(&args.config, environment)?;
     let config = found.config();
-    let endpoint = Endpoint::parse(&args.endpoint)?;
+    let endpoint = Endpoint::parse(&args.endpoint).map_err(|error| error.to_string())?;
     let endpoint = match &args.fallback {
-        Some(text) => endpoint.with_fallback(Endpoint::parse(text)?)?,
+        Some(text) => endpoint
+            .with_fallback(Endpoint::parse(text).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())?,
         None => endpoint,
     };
     let endpoint = args.mtu.apply(endpoint)?;
@@ -830,17 +855,19 @@ pub(super) fn join(args: &JoinArgs, environment: &Environment) -> Result<(), Str
 pub(super) fn node_settings(
     config: &crate::config::Config,
     environment: &Environment,
-) -> crate::config::NodeConfig {
+) -> Result<crate::config::NodeConfig, String> {
+    let data_dir = config
+        .data_dir(environment)
+        .map_err(|error| error.to_string())?;
     let mut settings = config.node();
     settings
         .compression
         .prepare_dir
-        .get_or_insert_with(|| config.data_dir(environment).join("prepared"));
+        .get_or_insert_with(|| data_dir.join("prepared"));
     desktop_environment(&mut settings, environment);
     if environment.wayland.is_some() {
         // Where the portal's restore token is kept when `wayland_persist = "always"`.
-        let restore = config
-            .data_dir(environment)
+        let restore = data_dir
             .join("gui-wayland-restore")
             .to_string_lossy()
             .into_owned();
@@ -852,7 +879,7 @@ pub(super) fn node_settings(
             .entry("wayland_restore_file".to_owned())
             .or_insert(toml::Value::String(restore));
     }
-    settings
+    Ok(settings)
 }
 
 /// The display and session the command was started in, as the `native` source's own settings: a key the file sets is the

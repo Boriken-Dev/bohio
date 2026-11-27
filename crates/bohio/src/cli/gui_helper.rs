@@ -63,7 +63,7 @@ fn first_set(names: &[&str]) -> Option<String> {
 
 /// Runs the helper until the node closes it.
 pub(super) fn run(args: &GuiHelperArgs, environment: &Environment) -> Result<(), String> {
-    let found = crate::config::discover(&args.config.config)?;
+    let found = crate::config::discover(&args.config.config).map_err(|error| error.to_string())?;
     let config = found.config();
     if args.stdio {
         return run_stdio(args, config, environment);
@@ -81,13 +81,13 @@ pub(super) fn run(args: &GuiHelperArgs, environment: &Environment) -> Result<(),
             );
         }
     };
-    let endpoint = Endpoint::parse(&text)?;
+    let endpoint = Endpoint::parse(&text).map_err(|error| error.to_string())?;
     let node_account = args
         .node_account
         .clone()
         .or_else(|| config.gui.node_account.clone())
         .unwrap_or_else(|| DEFAULT_NODE_ACCOUNT.to_owned());
-    let settings = node_settings(config, environment);
+    let settings = node_settings(config, environment)?;
     let sources = Sources::from_config(&settings.source, &settings.access)
         .map_err(|(key, message)| format!("{key}: {message}"))?;
     let session = args
@@ -116,7 +116,7 @@ fn run_stdio(
     config: &crate::config::Config,
     environment: &Environment,
 ) -> Result<(), String> {
-    let settings = node_settings(config, environment);
+    let settings = node_settings(config, environment)?;
     let sources = Sources::from_config(&settings.source, &settings.access)
         .map_err(|(key, message)| format!("{key}: {message}"))?;
     let session = args

@@ -42,14 +42,19 @@ pub(super) fn source(
     option: &ConfigOption,
     environment: &Environment,
 ) -> Result<(Found, Data), String> {
-    let found = discover(&option.config)?;
-    let data =
-        Data::new(found.config().data_dir(environment)).with_waiting(&found.config().waiting);
+    let found = discover(&option.config).map_err(|error| error.to_string())?;
+    let data = Data::new(
+        found
+            .config()
+            .data_dir(environment)
+            .map_err(|error| error.to_string())?,
+    )
+    .with_waiting(&found.config().waiting);
     Ok((found, data))
 }
 
 fn config_check(args: &CheckArgs, environment: &Environment) -> Result<(), String> {
-    let found = discover(&args.config)?;
+    let found = discover(&args.config).map_err(|error| error.to_string())?;
     let config = found.config();
     let files: Vec<String> = found
         .layered
@@ -57,12 +62,15 @@ fn config_check(args: &CheckArgs, environment: &Environment) -> Result<(), Strin
         .iter()
         .map(|path| path.display().to_string())
         .collect();
+    let data_dir = config
+        .data_dir(environment)
+        .map_err(|error| error.to_string())?;
     if output::json() {
         output::object(&serde_json::json!({
             "ok": true,
             "files": files,
             "service": config.service.name,
-            "data_dir": config.data_dir(environment).display().to_string(),
+            "data_dir": data_dir.display().to_string(),
             "listen": config.listen.iter().map(|l| l.endpoint.as_str()).collect::<Vec<_>>(),
             "peers": config.peer.len(),
             "dial": config.peer.dials().map(|(id, endpoint, _)| serde_json::json!({ "peer": id, "endpoint": endpoint })).collect::<Vec<_>>(),
@@ -85,7 +93,7 @@ fn config_check(args: &CheckArgs, environment: &Environment) -> Result<(), Strin
         println!("ok: {}", files.join(", "));
     }
     println!("service: {}", config.service.name);
-    println!("data_dir: {}", config.data_dir(environment).display());
+    println!("data_dir: {}", data_dir.display());
     println!("listen: {}", config.listen.len());
     println!("peers: {}", config.peer.len());
     println!("dial: {}", config.peer.dials().count());
@@ -135,9 +143,9 @@ fn hosts_command(args: &HostsArgs, environment: &Environment) -> Result<(), Stri
 }
 
 fn info_command(args: &InfoArgs, environment: &Environment) -> Result<(), String> {
-    let found = discover(&args.config)?;
+    let found = discover(&args.config).map_err(|error| error.to_string())?;
     let info = info::collect(
-        &super::host::node_settings(found.config(), environment),
+        &super::host::node_settings(found.config(), environment)?,
         &environment.path.clone().unwrap_or_default(),
     );
     if output::json() {

@@ -344,7 +344,15 @@ fn ignore_upper(
                 }
             }
         }
-        if dropped && let Ok(text) = toml::to_string(&values[index]) {
+        if dropped {
+            // The layer's own bytes still hold the key that was dropped: a layer that cannot be written again without it
+            // is refused, never merged as it was.
+            let text = toml::to_string(&values[index]).map_err(|_| ConfigError::Invalid {
+                path: kept[index].label.clone(),
+                key: "service.upper_layer_keys".to_owned(),
+                message: "the layer cannot be read again once the keys only the lowest layer may set are removed"
+                    .to_owned(),
+            })?;
             kept[index].bytes = text.into_bytes();
         }
     }
@@ -376,14 +384,7 @@ fn merged<T: serde::de::DeserializeOwned>(
                 Error::Conversion { path, message } => {
                     // The layers are each valid alone: the merged value differs in what a higher
                     // layer set over a lower one, so the highest layer that sets the key is named.
-                    let segments: Vec<&str> = path
-                        .as_deref()
-                        .map(|path| {
-                            path.split(['.', '['])
-                                .map(|part| part.trim_end_matches(']'))
-                                .collect()
-                        })
-                        .unwrap_or_default();
+                    let segments: Vec<&str> = path.as_deref().map(segments_of).unwrap_or_default();
                     let at = setter(inputs, values, &segments);
                     let input = &inputs[at];
                     conversion(input, path, message)
@@ -534,12 +535,21 @@ fn has_path(value: &Value, segments: &[&str]) -> bool {
     }
 }
 
-/// The index of the highest layer that sets `segments`, or the lowest when none does.
+/// The table names of a key such as `providers.program[2].command`: an index is dropped, since a layer holding the array
+/// holds the rest (see [`has_path`]).
+fn segments_of(key: &str) -> Vec<&str> {
+    key.split('.')
+        .map(|part| part.split_once('[').map_or(part, |(name, _)| name))
+        .collect()
+}
+
+/// The index of the highest layer that sets `segments`; when none does (a default that is out of range, an entry of an
+/// array), the highest layer, which is the file and not the profile whenever there is a file.
 fn setter(inputs: &[Input], values: &[Value], segments: &[&str]) -> usize {
     (0..inputs.len())
         .rev()
         .find(|index| has_path(&values[*index], segments))
-        .unwrap_or(0)
+        .unwrap_or_else(|| inputs.len().saturating_sub(1))
 }
 
 /// Every table name under `[peer]` is a peer id.
@@ -647,8 +657,7 @@ fn build(inputs: &[Input]) -> Result<Layered, ConfigError> {
         );
     }
     if let Err(ConfigError::Invalid { key, message, .. }) = config.validate("") {
-        let segments: Vec<&str> = key.split('.').collect();
-        let at = setter(&all_inputs, &all_values, &segments);
+        let at = setter(&all_inputs, &all_values, &segments_of(&key));
         return Err(ConfigError::Invalid {
             path: all_inputs[at].label.clone(),
             key,

@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use bohio::config::{Config, ConfigError, Environment, Layers, ServiceConfig, Span};
+use bohio::config::{Config, ConfigError, Environment, Layers, NoDataDir, ServiceConfig, Span};
 use bohio::policy::Permission;
 use cabuya::auth::{Identity, Method};
 
@@ -332,22 +332,84 @@ fn environment(windows: bool) -> Environment {
 fn the_data_directory_defaults_under_the_users_data_directory() {
     assert_eq!(
         environment(true).default_data_dir(),
-        Path::new("L").join("bohio")
+        Ok(Path::new("L").join("bohio"))
     );
     assert_eq!(
         environment(false).default_data_dir(),
-        Path::new("D").join("bohio")
+        Ok(Path::new("D").join("bohio"))
     );
     let mut config = Config::default();
     assert_eq!(
         config.data_dir(&environment(false)),
-        Path::new("D").join("bohio")
+        Ok(Path::new("D").join("bohio"))
     );
     config.service.data_dir = Some("/var/lib/bohio".into());
     assert_eq!(
         config.data_dir(&environment(false)),
-        Path::new("/var/lib/bohio")
+        Ok(Path::new("/var/lib/bohio").to_path_buf())
     );
+}
+
+#[test]
+fn an_environment_with_no_data_directory_is_refused_and_not_the_working_directory() {
+    let bare = Environment::default();
+    assert_eq!(bare.default_data_dir(), Err(NoDataDir));
+    assert_eq!(
+        Environment {
+            windows: true,
+            home: Some("H".into()),
+            ..Environment::default()
+        }
+        .default_data_dir(),
+        Err(NoDataDir)
+    );
+    let mut config = Config::default();
+    assert_eq!(config.data_dir(&bare), Err(NoDataDir));
+    assert!(NoDataDir.to_string().contains("[service] data_dir"));
+    // A directory the file names needs no environment.
+    config.service.data_dir = Some("/var/lib/bohio".into());
+    assert!(config.data_dir(&bare).is_ok());
+}
+
+#[test]
+fn every_socket_mode_key_takes_the_same_two_forms_and_refuses_the_same_text() {
+    use bohio::config::Mode;
+    let config = parse(
+        "[[listen]]
+endpoint = \"pipe://a\"
+socket_mode = 0o660
+[[listen]]
+endpoint = \"pipe://b\"
+socket_mode = \"0o640\"
+[control]
+socket_mode = 0o600
+[forward]
+socket_mode = \"0o600\"
+",
+    )
+    .unwrap();
+    assert_eq!(config.listen[0].socket_mode, Some(Mode(0o660)));
+    assert_eq!(config.listen[1].socket_mode, Some(Mode(0o640)));
+    assert_eq!(config.control.socket_mode, Some(Mode(0o600)));
+    assert_eq!(config.forward.socket_mode, Mode(0o600));
+    for bad in [
+        "[[listen]]
+endpoint = \"pipe://a\"
+socket_mode = \"rw\"
+",
+        "[[listen]]
+endpoint = \"pipe://a\"
+socket_mode = \"0o10000\"
+",
+        "[control]
+socket_mode = \"660\"
+",
+        "[control]
+socket_mode = -1
+",
+    ] {
+        assert!(parse(bad).is_err(), "{bad} was accepted");
+    }
 }
 
 #[test]
@@ -1452,6 +1514,26 @@ max_window = 2097152
     match parse(conflict).unwrap_err() {
         ConfigError::Invalid { path, key, .. } => {
             assert_eq!(key, "link.window");
+            assert_eq!(path, "bohio.cfg");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn an_error_in_an_entry_of_a_list_names_the_file_and_not_the_profile() {
+    let text = "[profile]
+name = \"slow-link\"
+[[providers.program]]
+name = \"a\"
+command = [\"x\"]
+[[providers.program]]
+name = \"b\"
+command = []
+";
+    match parse(text).unwrap_err() {
+        ConfigError::Invalid { path, key, .. } => {
+            assert_eq!(key, "providers.program[2].command");
             assert_eq!(path, "bohio.cfg");
         }
         other => panic!("{other:?}"),

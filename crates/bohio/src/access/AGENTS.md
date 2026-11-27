@@ -13,7 +13,7 @@ impl Sources {
     pub fn load_libraries(&self, config: &ProvidersConfig) -> ProvidersReport;   // maps [providers] paths and starts [[providers.program]] into the registry (Node::new does, before it builds the sources); a library never replaces a built-in provider id
     pub fn libraries(&self) -> ProvidersReport;    // what the start did: { check_access, libraries: Vec<Library { path, state: Loaded|Skipped|Failed, detail, digest: Option<"sha256:..">  }>, programs: Vec<Program { name, path, state: Running|Failed, detail, digest, restarts }> (live: an exit is noticed here) }
     pub fn reconfigure(&self, source, access) -> Result<(), (String, String)>;      // unchanged tables keep their instance; a changed one is rebuilt and the old retired
-    pub fn with_terminal / with_desktop / with_power / with_media(self, name, Arc<dyn Kind>) -> Self;   // an embedder's own source; add_terminal/add_desktop on &self
+    pub fn with_terminal / with_desktop / with_power / with_media / with_exec / with_files(self, name, Arc<dyn Kind>) -> Self;   // an embedder's own source; add_terminal / add_desktop / add_power / add_media / add_exec / add_files on &self
     pub fn with_access(self, Capability, names) -> Self;
     pub fn terminal / desktop / power / media(&self, name: Option<&str>) -> Result<Source<dyn Kind>, ErrorBody>;   // None: the default; unsupported when none
     pub fn names(&self, Capability) -> Vec<String>;  pub fn fs(&self) -> Switch;  pub fn exec(&self) -> Switch;

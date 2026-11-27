@@ -471,10 +471,13 @@ fn set_peer(
                 .parse::<DocumentMut>()
                 .map_err(|_| PeerError::Write("the grant cannot be written".to_owned()))?
                 .into_table();
-            if let Some(old) = peers.get(name).and_then(Item::as_table) {
+            // A table written inline (`name = { endpoint = "..." }`) is the same table, so it keeps these too.
+            if let Some(old) = peers.get(name).and_then(Item::as_table_like) {
                 // The old table's own comments and place in the file stay, and what says where it is dialed.
-                *table.decor_mut() = old.decor().clone();
-                table.set_position(old.position());
+                if let Some(written) = peers.get(name).and_then(Item::as_table) {
+                    *table.decor_mut() = written.decor().clone();
+                    table.set_position(written.position());
+                }
                 for key in ["endpoint", "dial"] {
                     if let Some(kept) = old.get(key) {
                         table.insert(key, kept.clone());
@@ -484,7 +487,7 @@ fn set_peer(
                 for key in ["local", "remote"] {
                     if let Some(kept) = old
                         .get("forward")
-                        .and_then(Item::as_table)
+                        .and_then(Item::as_table_like)
                         .and_then(|forward| forward.get(key))
                     {
                         if table.get("forward").and_then(Item::as_table).is_none() {
@@ -702,5 +705,30 @@ mod windows_tests {
             .filter_map(Result::ok)
             .collect();
         assert_eq!(leftovers.len(), 1, "no temporary file stays: {leftovers:?}");
+    }
+}
+
+#[cfg(test)]
+mod set_tests {
+    use toml_edit::DocumentMut;
+
+    use super::set_peer;
+    use crate::policy::{Grant, Permission};
+
+    #[test]
+    fn a_peer_written_inline_keeps_its_endpoint_dial_and_forwards_when_it_is_approved() {
+        let mut document: DocumentMut = concat!(
+            "[peer]\n",
+            "p = { endpoint = \"tcp://host.example:7620\", dial = { retry_min = \"2s\" }, forward = { local = [\"a\"], remote = [\"b\"] } }\n",
+        )
+        .parse()
+        .unwrap();
+        let grant = Grant::allowing([Permission::Info]);
+        set_peer(&mut document, "p", Some(&grant), None).unwrap();
+        let text = document.to_string();
+        assert!(text.contains("tcp://host.example:7620"), "{text}");
+        assert!(text.contains("retry_min"), "{text}");
+        assert!(text.contains("local") && text.contains("remote"), "{text}");
+        assert!(text.contains("info"), "{text}");
     }
 }

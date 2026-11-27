@@ -15,7 +15,9 @@ mod layers;
 mod weakened;
 
 pub use access::{AccessConfig, NATIVE, SourceTable, SourceTables};
-pub use discovery::{Found, default_files, discover, discover_in, discover_trusting};
+pub use discovery::{
+    DiscoverError, Found, default_files, discover, discover_in, discover_trusting,
+};
 pub use gui::{ApprovalMode, GuiConfig, Indicator, LadderStep, WindowsCapture};
 pub use hosts::{Hop, HostConfig, Hosts};
 pub use layers::{Layered, Layers, Origin};
@@ -55,10 +57,24 @@ pub struct Environment {
     pub session_id: Option<String>,
 }
 
+/// The environment names no user data directory, and the configuration names none either.
+///
+/// An identity made under the working directory would be a different key for each directory the command starts in, so
+/// none is made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "there is no data directory: set `[service] data_dir`, or `HOME` or `XDG_DATA_HOME` (`LOCALAPPDATA` on Windows)"
+)]
+pub struct NoDataDir;
+
 impl Environment {
     /// The directory holding the host's identity and waiting list when the configuration names none:
     /// under the user's data directory.
-    pub fn default_data_dir(&self) -> PathBuf {
+    ///
+    /// # Errors
+    ///
+    /// [`NoDataDir`] when the environment has none (`HOME` and `XDG_DATA_HOME` unset, `LOCALAPPDATA` on Windows).
+    pub fn default_data_dir(&self) -> Result<PathBuf, NoDataDir> {
         let base = if self.windows {
             self.local_app_data.clone()
         } else {
@@ -66,7 +82,7 @@ impl Environment {
                 .clone()
                 .or_else(|| self.home.as_ref().map(|h| h.join(".local").join("share")))
         };
-        base.unwrap_or_else(|| PathBuf::from(".")).join("bohio")
+        base.map(|base| base.join("bohio")).ok_or(NoDataDir)
     }
 }
 
@@ -268,10 +284,10 @@ pub struct ListenConfig {
     /// `scheme://address`: `tcp://127.0.0.1:7620`, `pipe://bohio`, `pipe:///run/bohio.sock`,
     /// `ws://127.0.0.1:7621`, `wss://0.0.0.0:7622`, `serial:///dev/ttyUSB0`. Required.
     pub endpoint: String,
-    /// `pipe`, Unix: the socket's mode as octal text with the `0o` prefix. Default `"0o600"`: the
-    /// owner alone.
+    /// `pipe`, Unix: the socket's mode, as octal text with the `0o` prefix or a TOML octal integer. Default `"0o600"`:
+    /// the owner alone.
     #[serde(default)]
-    pub socket_mode: Option<String>,
+    pub socket_mode: Option<Mode>,
     /// `pipe`, Windows: whether clients on other hosts may connect through file sharing. Default
     /// `false`.
     #[serde(default)]
@@ -388,26 +404,12 @@ impl ListenConfig {
         ];
         for (key, text) in texts {
             if let Some(text) = text {
-                options.set(key, &text).map_err(|reason| (key, reason))?;
+                options
+                    .set(key, &text)
+                    .map_err(|reason| (key, reason.to_string()))?;
             }
         }
         Ok(options)
-    }
-
-    /// The pipe socket mode the key gives.
-    ///
-    /// # Errors
-    ///
-    /// Why the text is not octal with the `0o` prefix, at most `0o7777`.
-    pub fn socket_mode_bits(&self) -> Result<Option<u32>, String> {
-        let Some(text) = &self.socket_mode else {
-            return Ok(None);
-        };
-        text.strip_prefix("0o")
-            .and_then(|digits| u32::from_str_radix(digits, 8).ok())
-            .filter(|bits| *bits <= 0o7777)
-            .map(Some)
-            .ok_or_else(|| format!("`{text}` is not an octal mode such as `0o660`"))
     }
 }
 
@@ -430,10 +432,14 @@ pub struct LinkConfig {
     /// The most links open at once across peers, counting those still proving themselves; a
     /// connection past it is closed unread. At least 1. Default `128`.
     pub max_connections: usize,
-    /// The most connections from one source (an IPv4 address, or an IPv6 /64) still proving
+    /// The most connections from one source (an IPv4 address, or an IPv6 prefix of `ipv6_prefix` bits) still proving
     /// themselves at once; one past it is closed unread, so one source cannot hold every
     /// `max_connections` slot. Behind a proxy every peer shares its source. At least 1. Default `16`.
     pub max_unproven_per_source: usize,
+    /// The IPv6 prefix length the connections still proving themselves are grouped by, from 1 to 128: a smaller prefix
+    /// groups more addresses as one source, so a holder with a whole /48 is held to one source's share. `[pairing]` and
+    /// `[waiting]` have their own for what they count. Default `64`.
+    pub ipv6_prefix: u8,
     /// The most links one proven peer may have open at once; a link past it is closed after its
     /// proof, so one peer cannot hold every `max_connections` slot. At least 1. Default `16`.
     pub max_links_per_peer: usize,
@@ -523,6 +529,7 @@ impl Default for LinkConfig {
             max_streams_per_peer: 256,
             max_connections: 128,
             max_unproven_per_source: 16,
+            ipv6_prefix: 64,
             max_links_per_peer: 16,
             proof_timeout: Span(link.proof_timeout),
             window: link.window,
@@ -719,10 +726,10 @@ pub struct ControlConfig {
     /// A `pipe://` endpoint. Default `pipe://bohio-` and the first 16 hex digits of the node's id, so two accounts'
     /// nodes never share a Windows pipe name.
     pub endpoint: Option<String>,
-    /// Unix: the socket's mode as octal text with the `0o` prefix. Default `"0o600"`: the owner alone. Setting it
-    /// (or `socket_group` or `security_descriptor`) makes the operator's choice the only check: with none set a
-    /// client that is not this user is closed unread as well.
-    pub socket_mode: Option<String>,
+    /// Unix: the socket's mode, as octal text with the `0o` prefix or a TOML octal integer. Default `"0o600"`: the owner
+    /// alone. Setting it (or `socket_group` or `security_descriptor`) makes the operator's choice the only check: with
+    /// none set a client that is not this user is closed unread as well.
+    pub socket_mode: Option<Mode>,
     /// Unix: the socket's group, a name or a numeric id. Default the process's own.
     pub socket_group: Option<String>,
     /// Windows: the pipe's security descriptor (SDDL). Default this user alone.
@@ -749,22 +756,6 @@ impl ControlConfig {
         self.socket_mode.is_some()
             || self.socket_group.is_some()
             || self.security_descriptor.is_some()
-    }
-
-    /// The socket mode's bits.
-    ///
-    /// # Errors
-    ///
-    /// Why the text is not an octal mode with the `0o` prefix.
-    pub fn socket_mode_bits(&self) -> Result<Option<u32>, String> {
-        let Some(text) = &self.socket_mode else {
-            return Ok(None);
-        };
-        text.strip_prefix("0o")
-            .and_then(|digits| u32::from_str_radix(digits, 8).ok())
-            .filter(|bits| *bits <= 0o7777)
-            .map(Some)
-            .ok_or_else(|| format!("`{text}` is not an octal mode such as `0o660`"))
     }
 }
 
@@ -1918,7 +1909,8 @@ impl<'de> Deserialize<'de> for Span {
     }
 }
 
-/// Permission bits for a Unix socket, written in octal with a `0o` prefix (`"0o600"`) or as a TOML octal integer (`0o600`).
+/// Permission bits for a Unix socket, written in octal with a `0o` prefix (`"0o600"`) or as a TOML octal integer (`0o600`):
+/// what `[forward]`, `[[listen]]` and `[control]` `socket_mode` read.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Mode(pub u32);
 
@@ -2341,6 +2333,9 @@ impl NodeConfig {
             return Err(invalid("link.recheck", "must not be zero"));
         }
         let link = &self.link;
+        if !(1..=128).contains(&link.ipv6_prefix) {
+            return Err(invalid("link.ipv6_prefix", "must be from 1 to 128"));
+        }
         for (key, zero) in [
             ("link.max_connections", link.max_connections == 0),
             (
@@ -2709,11 +2704,15 @@ impl Config {
     }
 
     /// The data directory: the configured one, else the environment's default.
-    pub fn data_dir(&self, environment: &Environment) -> PathBuf {
-        self.service
-            .data_dir
-            .clone()
-            .unwrap_or_else(|| environment.default_data_dir())
+    ///
+    /// # Errors
+    ///
+    /// [`NoDataDir`] when none is configured and the environment has none.
+    pub fn data_dir(&self, environment: &Environment) -> Result<PathBuf, NoDataDir> {
+        match &self.service.data_dir {
+            Some(directory) => Ok(directory.clone()),
+            None => environment.default_data_dir(),
+        }
     }
 
     /// What a node runs on, from this file's `[service] name` and every table of [`NodeConfig`]: `[link]`, `[filesystem]`,
@@ -2884,9 +2883,6 @@ impl Config {
             if let Err((key, reason)) = listen.serial_options() {
                 return Err(invalid(&format!("listen.{key}"), &reason));
             }
-            if let Err(reason) = listen.socket_mode_bits() {
-                return Err(invalid("listen.socket_mode", &reason));
-            }
         }
         if let Some(endpoint) = &self.control.endpoint
             && !endpoint.starts_with("pipe://")
@@ -2895,9 +2891,6 @@ impl Config {
                 "control.endpoint",
                 "must be a `pipe://` endpoint: the control endpoint is local",
             ));
-        }
-        if let Err(reason) = self.control.socket_mode_bits() {
-            return Err(invalid("control.socket_mode", &reason));
         }
         for (name, table) in self.peer.declared() {
             let key = format!("peer.{name}.forward");
@@ -2949,7 +2942,10 @@ impl Config {
             let mut trust = bohio_client::dial::ServerTrust::default();
             for hash in &dial.cert_hash {
                 if let Err(reason) = trust.pin(hash) {
-                    return Err(invalid(&format!("peer.{name}.dial.cert_hash"), &reason));
+                    return Err(invalid(
+                        &format!("peer.{name}.dial.cert_hash"),
+                        &reason.to_string(),
+                    ));
                 }
             }
         }
@@ -2988,12 +2984,13 @@ fn check_dialed(endpoint: &str, fallback: Option<&str>) -> Result<(), String> {
         }
         None
     } else {
-        Some(Endpoint::parse(endpoint)?)
+        Some(Endpoint::parse(endpoint).map_err(|error| error.to_string())?)
     };
     match (parsed, fallback) {
         (Some(parsed), Some(text)) => Endpoint::parse(text)
             .and_then(|fallback| parsed.with_fallback(fallback))
-            .map(|_| ()),
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
         (None, Some(_)) => Err(
             "a fallback is a `ws://` or `wss://` endpoint that follows a `webtransport://` one"
                 .to_owned(),

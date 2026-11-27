@@ -9,7 +9,8 @@ Profiles (`bohio::profile`): `pub const fn table(profile: bohio_client::profile:
 ```rust
 pub struct Environment { pub windows: bool, pub local_app_data: Option<PathBuf>, pub xdg_data_home: Option<PathBuf>, pub home: Option<PathBuf>,
     pub path: Option<OsString> }                                  // Default; the binary fills it from the process (cli::capture_environment)
-impl Environment { pub fn default_data_dir(&self) -> PathBuf; }
+impl Environment { pub fn default_data_dir(&self) -> Result<PathBuf, NoDataDir>; }   // NoDataDir: neither HOME nor XDG_DATA_HOME (LOCALAPPDATA on Windows) is set; never the working directory
+#[derive(Copy)] pub struct NoDataDir;                        // std::error::Error; set `[service] data_dir`
 
 pub struct Config { pub service: ServiceConfig, pub profile: ProfileConfig /*`[profile]`: name, default "default"*/, pub listen: Vec<ListenConfig>, pub link: LinkConfig, pub filesystem: FilesystemConfig,
                     pub hash: HashConfig, pub walk: WalkConfig, pub search: SearchConfig, pub delta: DeltaConfig, pub compression: CompressionConfig, pub execution: ExecutionConfig, pub shell: ShellConfig,
@@ -25,7 +26,7 @@ impl Config {
     pub fn node(&self) -> NodeConfig;                                            // `[service] name` and every `NodeConfig` section
     pub fn from_toml(text: &str, path: &str) -> Result<Self, ConfigError>;       // one layer of text; `path` only labels errors
     pub fn load(path: &Path) -> Result<Self, ConfigError>;                       // one layer, a file
-    pub fn data_dir(&self, environment: &Environment) -> PathBuf;
+    pub fn data_dir(&self, environment: &Environment) -> Result<PathBuf, NoDataDir>;
     pub fn non_default(&self, listeners: &[ListenConfig]) -> Vec<String>;         // one `non-default: [section] key = value: cost` line for each weakened link or forward check (`[forward] socket_mode`, `ipc_same_user`, `follow_links`, `[pairing] max_attempts = 0`, `[[listen]] socket_mode`, `remote_clients`, `origins` with `*`); `bohio serve` logs them at start
 }
 pub struct Layers;                                                // `load` reads the files it is given and nothing else; `discover` below finds them
@@ -35,11 +36,11 @@ impl Layers {
     pub fn peers(paths: &[PathBuf]) -> Result<Peers, ConfigError>;              // the live check: a missing file is skipped, only `[peer.*]` is read
 }
 pub struct Layered { pub config: Config, pub peers: Peers, pub files: Vec<PathBuf>, pub profile: Profile }   // `peers` is `config.peer`; `files` the layers read; origin(key), sets(key) above
-pub fn discover(named: &[PathBuf]) -> Result<Found, String>;     // the layers named (alone), else the system file with the user's merged over it (`[service] user_layer = false` leaves it out); a system file another account owns or may change is refused
-pub fn discover_trusting(named: &[PathBuf], trust: &[String]) -> Result<Found, String>;   // as `discover`, the accounts whose ownership of the lowest layer, its directory and the system file counts given (`bohio serve --trust-owner`); `discover` takes `BOHIO_TRUST_OWNER`
-pub fn discover_in(named: &[PathBuf], system: PathBuf, user: Option<PathBuf>, trust: &[String]) -> Result<Found, String>;   // the same with the two files given; `default_files()` is their usual places
+pub fn discover(named: &[PathBuf]) -> Result<Found, DiscoverError>;     // the layers named (alone), else the system file with the user's merged over it (`[service] user_layer = false` leaves it out); a system file another account owns or may change is refused
+pub fn discover_trusting(named: &[PathBuf], trust: &[String]) -> Result<Found, DiscoverError>;   // as `discover`, the accounts whose ownership of the lowest layer, its directory and the system file counts given (`bohio serve --trust-owner`); `discover` takes `BOHIO_TRUST_OWNER`
+pub fn discover_in(named: &[PathBuf], system: PathBuf, user: Option<PathBuf>, trust: &[String]) -> Result<Found, DiscoverError>;   // the same with the two files given; `default_files()` is their usual places
 pub struct Found { pub layered: Layered, pub watch: Vec<PathBuf>, pub create: Option<PathBuf>, pub trust: Vec<String> }   // `config()`; `guard(&Environment) -> Result<Vec<PathBuf>, String>` is the owner check `bohio serve` applies (makes the data directory; answers the layers to watch); `watched()`
-// `bohio::ownership`: `check(path, Guarded) -> Result<(), Problem>`, `layer_problems`, `library_problems`, `program_problems`, `may_appear`, `decide(&[Problem], check_access, trusted) -> Result<(), String>`, `trusted_from_environment()`
+// `bohio::ownership`: `check(path, Guarded) -> Result<(), Problem>`, `layer_problems`, `library_problems`, `program_problems`, `may_appear`, `decide(&[Problem], check_access, trusted) -> Result<(), Refused>` (`Refused { problems: Vec<Problem> }`, Display joins the lines), `trusted_from_environment()`
 pub struct Span(pub Duration);                                    // a number of seconds, or text: 250ms, 5s, 2m, 1h; Span::parse(&str) -> Option<Span>
 #[non_exhaustive] pub enum ConfigError { Read { path, reason }, Parse { path, line, column, key: Option<String>, message }, Invalid { path, key, message } }
 ```
@@ -57,7 +58,7 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[service] stop_wait` | `10s` | Windows: how long the service manager is told a start or a stop may take, and how long `service uninstall` waits for a running service to stop (`--wait` overrides); not zero |
 | `[service] data_dir` | `bohio` under `%LOCALAPPDATA%` / `$XDG_DATA_HOME` (else `~/.local/share`) | identity and the waiting list |
 | `[[listen]] endpoint` | none | `tcp://host:port`, `pipe://name` or `pipe:///path.sock`, `ws://host:port`, `wss://host:port`, `webtransport://host:port`, `serial://port?baud=N`; required in each entry |
-| `[[listen]] socket_mode` | `"0o600"` | `pipe`, Unix: the socket's mode, octal text with the `0o` prefix |
+| `[[listen]] socket_mode` | `"0o600"` | `pipe`, Unix: the socket's mode, octal text with the `0o` prefix or a TOML octal integer (`Mode`, as `[forward]` and `[control]` take it) |
 | `[[listen]] remote_clients` | `false` | `pipe`, Windows: clients on other hosts through file sharing |
 | `[[listen]] origins` | none | `ws`, `wss`, `webtransport`: the origins a browser may connect from; none (or empty) refuses every request that names an origin and serves a client that names none; `["*"]` allows any, logged `non-default:` |
 | `[[listen]] tls_cert`, `tls_key` | none | `wss`, `webtransport`: PEM files, the certificate (leaf first, then its intermediates) and its private key; both or neither; `wss` needs both; read at start, never logged; a `webtransport` entry with neither makes its own certificate |
@@ -70,7 +71,8 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[link] key_recheck` | unset (`2 x recheck`) | how often the link itself asks whether the peer's key is still accepted; when it is not, each running stream is closed with a revoke and the link ends; not zero |
 | `[link] max_streams` | `64` | streams per peer; at least 1 |
 | `[link] max_connections` | `128` | links open at once across peers, those still proving included; one past it is closed unread; at least 1 |
-| `[link] max_unproven_per_source` | `16` | connections from one source (an IPv4 address or an IPv6 /64) still proving themselves; one past it is closed unread; a pipe, serial line or stdio link has no source; at least 1 |
+| `[link] ipv6_prefix` | `64` | the IPv6 prefix length (1 to 128) the connections still proving themselves are grouped by; `[pairing]` and `[waiting]` have their own |
+| `[link] max_unproven_per_source` | `16` | connections from one source (an IPv4 address or an IPv6 prefix of `ipv6_prefix` bits) still proving themselves; one past it is closed unread; a pipe, serial line or stdio link has no source; at least 1 |
 | `[link] max_links_per_peer` | `16` | links one proven peer may have open; one past it is closed after its proof; at least 1 |
 | `[link] window` | `1048576` | bytes a peer may send on one stream ahead of what the host has read (the credit window); at least 1. Not negotiated: each sender starts a stream with its own as credit, so keep it equal on both sides (a side whose window is larger can end the other's streams as broken; each side logs a difference in `window` or `max_frame` that the peer's `link/1` shows, once per link, and refuses nothing). One stream moves at most `window` per round trip |
 | `[link] bulk_window` | unset (`window`) | the receive window this side grants a bulk stream it receives: a client's `bohio-read/1`, a host's `bohio-write/1`; widens a stream by granting credit, so it may differ between sides and needs no change at the peer; at most `max_window`; a value below `window` changes nothing; costs that much memory for each bulk stream whose reader falls behind |

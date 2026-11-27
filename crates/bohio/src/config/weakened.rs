@@ -26,11 +26,11 @@ impl Config {
         }
         for entry in entries {
             let at = &entry.endpoint;
-            if let Some(mode) = &entry.socket_mode
-                && entry.socket_mode_bits().ok().flatten() != Some(0o600)
+            if let Some(mode) = entry.socket_mode
+                && mode.0 != 0o600
             {
                 lines.push(format!(
-                    "non-default: [[listen]] socket_mode = {mode} on {at}: the socket is open to the accounts that mode allows"
+                    "non-default: [[listen]] socket_mode = {mode:?} on {at}: the socket is open to the accounts that mode allows"
                 ));
             }
             if entry.remote_clients == Some(true) {
@@ -80,7 +80,7 @@ mod tests {
         config.forward.follow_links = true;
         config.pairing.max_attempts = 0;
         let mut pipe = entry("pipe://app");
-        pipe.socket_mode = Some("0o660".to_owned());
+        pipe.socket_mode = Some(super::super::Mode(0o660));
         pipe.remote_clients = Some(true);
         let mut web = entry("ws://127.0.0.1:0");
         web.origins = Some(vec!["https://a.example".to_owned(), "*".to_owned()]);
