@@ -174,6 +174,46 @@ fn refuse(message: String) -> ProviderError {
     ProviderError::new(Status::GUATIAO_ERR_BAD_VALUE, &message)
 }
 
+/// A name that is handed to a client as one word (a host, an account): not empty, not starting with `-` (the system's `ssh`
+/// would read it as an option, and `-oProxyCommand=...` runs a command), no whitespace or control character, and for a host
+/// no `@` (that is `user@host`, which would override `user`).
+fn plain_word<'a>(key: &str, text: &'a str, host: bool) -> Result<&'a str, ProviderError> {
+    if text.is_empty() {
+        return Err(refuse(format!(
+            "{key} names no {}",
+            if host { "machine" } else { "account" }
+        )));
+    }
+    if text.starts_with('-') {
+        return Err(refuse(format!(
+            "{key} starts with `-`, which the system's ssh would take as an option: `{text}`"
+        )));
+    }
+    if text.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(refuse(format!(
+            "{key} holds whitespace or a control character: `{}`",
+            text.escape_debug()
+        )));
+    }
+    if host && text.contains('@') {
+        return Err(refuse(format!(
+            "host holds `@` (give the account as `user`): `{text}`"
+        )));
+    }
+    Ok(text)
+}
+
+/// A value that ends up in a command line or an option text holds no control character (a line break would start another option).
+fn no_control(key: &str, text: Option<&str>) -> Result<(), ProviderError> {
+    match text {
+        Some(text) if text.chars().any(char::is_control) => Err(refuse(format!(
+            "{key} holds a control character: `{}`",
+            text.escape_debug()
+        ))),
+        _ => Ok(()),
+    }
+}
+
 /// The number of a local X display name (`:0`, `:12.0`).
 pub(crate) fn display_number(key: &str, text: &str) -> Result<u32, ProviderError> {
     text.trim()
@@ -469,9 +509,9 @@ impl SshSettings {
 
     /// As [`SshSettings::read`], with `home` as the account's home directory.
     pub(crate) fn read_with(&self, home: Option<PathBuf>) -> Result<Settings, ProviderError> {
-        if self.host.trim().is_empty() {
-            return Err(refuse("host names no machine".to_owned()));
-        }
+        let host = plain_word("host", self.host.trim(), true)?;
+        no_control("identity", self.identity.as_deref())?;
+        no_control("known_hosts", self.known_hosts.as_deref())?;
         let port = u16::try_from(self.port)
             .ok()
             .filter(|port| *port != 0)
@@ -532,6 +572,7 @@ impl SshSettings {
                     .find_map(|name| std::env::var(name).ok().filter(|value| !value.is_empty()))
             })
             .ok_or_else(|| refuse("user is not set and the node has no account name".to_owned()))?;
+        plain_word("user", &user, false)?;
         if self.x11_forward && !self.x11_trusted {
             return Err(refuse(
                 "x11_forward needs x11_trusted = true: this build cannot ask the node's display for an untrusted authorization, so a forwarded program is a trusted one (see docs/security.md)"
@@ -558,6 +599,10 @@ impl SshSettings {
                 if self.ssh_program.trim().is_empty() {
                     return Err(refuse("ssh_program names no program".to_owned()));
                 }
+                no_control("ssh_program", Some(&self.ssh_program))?;
+                for arg in &self.ssh_args {
+                    no_control("ssh_args", Some(arg))?;
+                }
                 Some(OpenSsh {
                     program: self.ssh_program.clone(),
                     args: self.ssh_args.clone(),
@@ -568,7 +613,7 @@ impl SshSettings {
             }
         };
         Ok(Settings {
-            host: self.host.trim().to_owned(),
+            host: host.to_owned(),
             port,
             user,
             identity,
@@ -795,5 +840,86 @@ mod x11_tests {
                 .message()
                 .contains("x11_max_strangers")
         );
+    }
+}
+
+#[cfg(test)]
+mod injection_tests {
+    use super::SshSettings;
+
+    fn refused(edit: impl FnOnce(&mut SshSettings)) -> String {
+        let mut settings = SshSettings::new("host.invalid");
+        settings.user = Some("someone".to_owned());
+        edit(&mut settings);
+        settings.read_with(None).unwrap_err().message().to_string()
+    }
+
+    #[test]
+    fn a_host_that_would_be_an_option_is_refused_for_both_clients() {
+        for client in ["russh", "openssh"] {
+            for host in [
+                "-oProxyCommand=touch x",
+                "  -oProxyCommand=x",
+                "-h",
+                "a b",
+                "a\tb",
+                "a\nb",
+                "a\u{7}b",
+                "me@host",
+            ] {
+                let message = refused(|settings| {
+                    settings.client = client.to_owned();
+                    settings.host = host.to_owned();
+                });
+                assert!(message.contains("host"), "{client} {host:?}: {message}");
+            }
+        }
+        let message = refused(|settings| settings.host = "-oProxyCommand=x".to_owned());
+        assert!(message.contains("starts with `-`"), "{message}");
+    }
+
+    #[test]
+    fn a_user_that_would_be_an_option_is_refused() {
+        for user in ["-oProxyCommand=x", " -x", "a b", "a\nb", "", "  "] {
+            let message = refused(|settings| settings.user = Some(user.to_owned()));
+            assert!(message.contains("user"), "{user:?}: {message}");
+        }
+    }
+
+    #[test]
+    fn a_path_with_a_control_character_is_refused() {
+        let message = refused(|settings| settings.identity = Some("/k\n-oX".to_owned()));
+        assert!(message.contains("identity"), "{message}");
+        let message = refused(|settings| settings.known_hosts = Some("/k\0".to_owned()));
+        assert!(message.contains("known_hosts"), "{message}");
+    }
+
+    #[test]
+    fn the_openssh_program_and_arguments_hold_no_control_character() {
+        let message = refused(|settings| {
+            settings.client = "openssh".to_owned();
+            settings.ssh_args = vec!["-o".to_owned(), "A=b\nProxyCommand x".to_owned()];
+        });
+        assert!(message.contains("ssh_args"), "{message}");
+        let message = refused(|settings| {
+            settings.client = "openssh".to_owned();
+            settings.ssh_program = "ssh\n".to_owned();
+        });
+        assert!(message.contains("ssh_program"), "{message}");
+    }
+
+    #[test]
+    fn ordinary_names_pass() {
+        for host in [
+            "example.invalid",
+            "10.0.0.1",
+            "fe80::1%eth0",
+            "[::1]",
+            "a-b.c",
+        ] {
+            let mut settings = SshSettings::new(host);
+            settings.user = Some("someone".to_owned());
+            assert!(settings.read_with(None).is_ok(), "{host}");
+        }
     }
 }

@@ -249,6 +249,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The ssh provider with `client = "openssh"` no longer lets a host that starts with `-` reach the system `ssh` as an option (`-oProxyCommand=...` ran a command). A `host` or `user` that starts with `-` or holds whitespace or a control character, a `host` holding `@`, and an `identity`, `known_hosts`, `ssh_program` or `ssh_args` entry holding a control character are refused when the settings are read, for both clients; the `openssh` client also puts `--` before the host, and quotes a `known_hosts` path with whitespace as one `-o` value. `ssh_args` stays the operator's own options.
+
 - The desktop does less work per frame: a capture asks the desktop for its state at most once (a region none), a watch asks for the pointer only when it sends it, logind's bus connection is kept while logind answers (a session it does not know no longer reconnects at every frame), and the X11 clipboard's owner waits for a request instead of waking 200 times a second. A frame a provider sizes larger than the region asked, or than `[gui] max_snapshot_pixels`, is refused before the host allocates it.
 - A `[peer.<id>]` table named in another form of an id (upper case, bare hex) is refused at load, naming the canonical form, where the node used to accept the file and never match the key.
 - A watch survives a display that changes size (a rotation, a docking, an RDP client resizing): it reads the state again and sends a key frame of the new size instead of ending with `internal`.

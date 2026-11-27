@@ -17,9 +17,9 @@ Provider id `ssh`. `[source.<name>] provider = "ssh"` and:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `host` | required | name or address |
+| `host` | required | name or address; refused when it starts with `-`, holds whitespace, a control character or `@` (the system `ssh` would read it as an option or as `user@host`), for both clients |
 | `port` | `22` | 1 to 65535 |
-| `user` | `USER` / `USERNAME` | the account on the host |
+| `user` | `USER` / `USERNAME` | the account on the host; refused when it starts with `-` or holds whitespace or a control character |
 | `identity` | first of `~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa` that exists | a private key file (`~/` expanded) |
 | `agent` | `true` | try the keys an agent holds first: the OpenSSH agent's pipe `\\.\pipe\openssh-ssh-agent` (or the pipe `SSH_AUTH_SOCK` names) then Pageant on Windows, `SSH_AUTH_SOCK` elsewhere; no agent is not an error |
 | `password`, `passphrase` | none | **references** (`file:PATH` or `credential:NAME`), never the secret; the node reads them when it builds the source |

@@ -13,10 +13,19 @@ use bohio_api::guatiao::library::ProviderError;
 use tokio::process::Command;
 
 use crate::link::{Link, refuse};
-use crate::settings::{HostKeyCheck, Settings};
+use crate::settings::{HostKeyCheck, OpenSsh, Settings};
 
 /// What a null `known_hosts` file is called here.
 const NO_KNOWN_HOSTS: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
+
+/// A path as the value of an `-o` option: with whitespace it is quoted, or `ssh` would read it as several files.
+fn option_value(path: &str) -> String {
+    if path.chars().any(char::is_whitespace) {
+        format!("\"{}\"", path.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        path.to_owned()
+    }
+}
 
 /// The options this provider sets from the source's settings, before the account's own and `ssh_args`.
 pub(crate) fn options(settings: &Settings) -> Vec<String> {
@@ -48,7 +57,7 @@ pub(crate) fn options(settings: &Settings) -> Vec<String> {
     if settings.check != HostKeyCheck::Off && settings.known_hosts_set {
         option(format!(
             "UserKnownHostsFile={}",
-            settings.known_hosts.display()
+            option_value(&settings.known_hosts.to_string_lossy())
         ));
     }
     if !settings.agent {
@@ -67,6 +76,23 @@ pub(crate) fn options(settings: &Settings) -> Vec<String> {
     args
 }
 
+/// The arguments of `ssh`: the options, `before`, the host and `after`.
+pub(crate) fn argv(
+    settings: &Settings,
+    ssh: &OpenSsh,
+    before: &[&str],
+    after: &[&str],
+) -> Vec<String> {
+    let mut args = options(settings);
+    args.extend(ssh.args.iter().cloned());
+    args.extend(before.iter().map(|word| (*word).to_owned()));
+    // `--` ends the options: a host is a destination whatever its first character.
+    args.push("--".to_owned());
+    args.push(settings.host.clone());
+    args.extend(after.iter().map(|word| (*word).to_owned()));
+    args
+}
+
 /// The process that runs `ssh`, with its options and then `before` (flags such as `-tt` or `-s`), the host and `after` (the
 /// command, or the subsystem).
 pub(crate) fn command(
@@ -82,11 +108,7 @@ pub(crate) fn command(
         ));
     };
     let mut command = Command::new(&ssh.program);
-    command.args(options(settings));
-    command.args(&ssh.args);
-    command.args(before);
-    command.arg(&settings.host);
-    command.args(after);
+    command.args(argv(settings, ssh, before, after));
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -134,4 +156,47 @@ async fn login(link: &Link, limit: Duration) -> Result<(), String> {
     tokio::time::timeout(limit, run)
         .await
         .unwrap_or_else(|_| Err(format!("{}: no answer in time", link.target())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::argv;
+    use crate::settings::SshSettings;
+
+    fn read(edit: impl FnOnce(&mut SshSettings)) -> crate::settings::Settings {
+        let mut settings = SshSettings::new("host.invalid");
+        settings.user = Some("someone".to_owned());
+        settings.client = "openssh".to_owned();
+        edit(&mut settings);
+        settings.read_with(None).unwrap()
+    }
+
+    #[test]
+    fn the_host_follows_a_double_dash() {
+        let settings = read(|_| {});
+        let ssh = settings.openssh.clone().unwrap();
+        let args = argv(&settings, &ssh, &["-tt"], &["ls", "-l"]);
+        let at = args.iter().position(|word| word == "--").unwrap();
+        assert_eq!(args[at + 1], "host.invalid", "{args:?}");
+        assert_eq!(args[at + 2..], ["ls", "-l"], "{args:?}");
+        assert!(args[..at].iter().any(|word| word == "-tt"), "{args:?}");
+        assert_eq!(args.iter().filter(|word| *word == "--").count(), 1);
+    }
+
+    #[test]
+    fn a_known_hosts_path_with_a_space_is_one_option_value() {
+        use super::option_value;
+        assert_eq!(option_value("/a/known_hosts"), "/a/known_hosts");
+        assert_eq!(option_value("/a b/k"), "\"/a b/k\"");
+        assert_eq!(option_value("C:\\a b\\k\""), "\"C:\\\\a b\\\\k\\\"\"");
+    }
+
+    #[test]
+    fn a_known_hosts_path_with_a_line_break_never_reaches_an_option() {
+        let mut settings = SshSettings::new("host.invalid");
+        settings.user = Some("someone".to_owned());
+        settings.client = "openssh".to_owned();
+        settings.known_hosts = Some("/k\n-oProxyCommand=x".to_owned());
+        assert!(settings.read_with(None).is_err());
+    }
 }
