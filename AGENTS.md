@@ -7,8 +7,8 @@ Contributor guidance for this checkout. Each crate has an `AGENTS.md` API header
 | `crates/bohio-proto/AGENTS.md` | the wire types and the CBOR codec |
 | `crates/bohio-api/AGENTS.md` | the provider kinds (terminal, desktop, power, media) a node reaches its system through, and their contract suite |
 | `crates/bohio-transfer/AGENTS.md` | the digests, computed in one pass, and the compression codecs (no I/O of its own) |
-| `crates/bohio-client/AGENTS.md` | the Rust client, the `Open` trait, the proven `Connection` and the bounded `Relay` |
-| `crates/bohio/AGENTS.md` | the host library, configuration, peer grants and the `bohio` command |
+| `crates/bohio-client/AGENTS.md` | the Rust client, the `Open` trait, the proven `Connection` and the bounded `Relay`; it lists the module headers under `crates/bohio-client/src/` |
+| `crates/bohio/AGENTS.md` | the host library: features, imports, environment variables; it lists the module headers under `crates/bohio/src/` (configuration, peer grants, engines, desktop, node, the `bohio` command) |
 
 ## Layout
 
