@@ -511,7 +511,7 @@ fn an_approved_peer_gets_info_runs_exec_and_reads_a_file() {
     );
     assert!(two.stderr.contains("absent.txt"), "{}", two.stderr);
     let unknown = remote(&client, &host, &["hash", "--algorithm", "whirlpool", &path]);
-    assert_eq!(unknown.code, Some(1));
+    assert_eq!(unknown.code, Some(2));
 
     // The peer holds no write permission, so a write through the library is refused at the open.
     let link = connect(&client, &host).expect("the link is up");
