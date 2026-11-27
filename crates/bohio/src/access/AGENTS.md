@@ -29,7 +29,7 @@ lists the sources of each capability, the first the default: `terminal` and `des
 (absent: the command fills them from `DISPLAY`, `WAYLAND_DISPLAY` or `XDG_SESSION_TYPE`, and `XDG_SESSION_ID`; `Environment::{display, wayland, session_id}`), `x11_in_wayland` `false`, `x11_system_bus` (absent), `x11_bus_wait` `1s`, `x11_key_wait` `20ms`,
 `x11_clipboard_wait` `500ms`, `x11_selection` `"CLIPBOARD"`, `x11_max_repeat` `1000`, `own_session` `"none"` (`none`, `x11`, `wayland`), `own_runtime_dir` (absent: `/run/user/UID`), `own_session_check_server` `true` (the X server on the own desktop's abstract socket must be run by the node's uid; `false` is logged `non-default:`), for the Wayland desktop (feature `gui-wayland`; used when the session is Wayland and `x11_in_wayland` is not set) `wayland_persist` `"node"` (`none`, `node`, `always`),
 `wayland_restore_file` (absent: the command puts `gui-wayland-restore` in the data directory when `WAYLAND_DISPLAY` is set), `wayland_capture_wait` `5s` (not zero), `wayland_start_wait` `10s`, `wayland_retry` `30s`, `wayland_max_repeat` `1000`, and for the macOS desktop `macos_capture_wait` `10s` (not zero) and `macos_max_repeat` `1000`.
-`Node::with_sources(Sources)` replaces them (call it first); `Node::sources()` reaches them for a reload; `[gui] backend` and the `[gui] windows_*` keys moved here.
+`Node::with_sources(Sources)` replaces them (call it first); `Node::sources()` reaches them for a reload; the desktop is chosen by `[access] desktop`, and the Windows capture keys are `[source.native]` keys, not `[gui]` ones.
 
 ## Power, media, secrets and the console
 

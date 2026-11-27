@@ -1,7 +1,7 @@
 # `bohio` — API header
 
 Header-file-style reference for the `bohio` crate: every public item with its signature, contract and gotchas, so the
-crate can be used without reading its source. It ships inside the package and is self-contained. Development documentation lives
+crate can be used without reading its source. It ships inside the package with the module headers listed below, and is self-contained. Development documentation lives
 with the source at <https://github.com/Boriken-Dev/bohio>.
 
 | Feature | Adds | Needed for | Default |
@@ -19,7 +19,7 @@ MSRV Rust 1.89. A library-only build (`default-features = false`) depends on `bo
 `win32job` (Windows). Version `0.0.0-alpha.0`, not published.
 
 Imports: the root holds `Config`, `ConfigError`, `Environment`, `Grant`, `Peers`, `Permission`. Public modules:
-`access`, `config`, `control`, `exec`, `forward`, `fs`, `gui`, `info`, `limit`, `link`, `listen`, `local`, `media`, `node`, `pair`, `peer`, `policy`, `power`, `secret`, `session`, `shell`, `cli` (feature `cli`). `unsafe_code` is denied crate-wide, forbidden in every module that needs none, and allowed only in the seven files of the table below, whose reasons `tests/unsafe_files.rs` records. The library prints nothing, reads no environment variable and installs no logger; it starts threads only inside
+`access`, `config`, `control`, `exec`, `forward`, `fs`, `gui`, `info`, `limit`, `link`, `listen`, `local`, `mcp`, `media`, `node`, `ownership`, `pair`, `peer`, `policy`, `power`, `profile`, `secret`, `session`, `shell`, `stats`, `cli` (feature `cli`). `unsafe_code` is denied crate-wide, forbidden in every module that needs none, and allowed only in the seven files of the table below, whose reasons `tests/unsafe_files.rs` records. The library prints nothing, reads no environment variable and installs no logger; it starts threads only inside
 `exec::serve`, `shell::serve`, the transfer and control engines, `node::Node` (a thread per connection, per stream and per relay) and
 `pair::Armed` waits and the pairing a node answers.
 

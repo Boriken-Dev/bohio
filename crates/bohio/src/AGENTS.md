@@ -5,7 +5,8 @@ Part of the `bohio` API header (`../AGENTS.md`): the modules that are one file e
 ## Control stream (`bohio::control`)
 
 ```rust
-pub struct Context<'a> { pub filesystem: fs::Context<'a>, pub info: &'a Info, pub current: Option<Current<'a>>, pub gui: Option<GuiProbe<'a>>, pub sessions: Option<SessionsView<'a>> }   // Copy
+pub struct Context<'a> { pub filesystem: fs::Context<'a>, pub info: &'a Info, pub current: Option<Current<'a>>, pub gui: Option<GuiProbe<'a>>, pub access: Option<AccessProbe<'a>>, pub files: Option<FilesProbe<'a>>,
+                         pub sessions: Option<SessionsView<'a>>, pub path: Option<&'a OsStr> /*the host's own PATH, for `which`*/ }   // Copy; each probe is what `info` or a call asks at that call, none when absent
 pub struct Current<'a>(pub &'a dyn Fn() -> Result<Grant, ErrorBody>);                         // Copy; the grant as it is now
 pub fn serve(channel: &Arc<dyn Channel>, context: &Context<'_>) -> u64;                       // requests answered
 ```
@@ -65,14 +66,14 @@ pub struct MemoryKeys;                                             // new(), acc
 pub struct MemoryGrants;                                           // new(), set(PeerId, Grant), remove(&PeerId) -> bool; FromIterator<(PeerId, Grant)>; no entry: Grant::none()
 
 pub trait NodeEvents: Send + Sync { fn event(&self, event: &NodeEvent); }   // runs on the link's thread: return quickly
-#[non_exhaustive] pub enum NodeEvent { LinkUp { peer, side }, LinkDown { peer }, Opened { peer, protocol }, Refused { peer, protocol }, Revoked { peer, protocol }, Dialing { peer, endpoint }, DialFailed { peer, endpoint, reason, retry_in }, Kept { peer, direction, spec, state }, Paired { peer }, PairingRefused { source, attempts, reason }, Stranger { peer, source }, Forwarded { peer, kind, target, outcome }, Gui { peer, session, change: GuiChange }, Session { peer, session: String, change: SessionChange } }   // an id, a protocol, an address: never a key, PIN or request; SessionChange { Started, Attached, Detached, Ended { reason } }
+#[non_exhaustive] pub enum NodeEvent { LinkUp { peer, side }, LinkDown { peer }, Opened { peer, protocol }, Refused { peer, protocol }, Revoked { peer, protocol }, Dialing { peer, endpoint }, DialFailed { peer, endpoint, reason, retry_in }, Power { peer, source, action, outcome }, Media { peer, source, op, slot, outcome }, CertificateRenewed { endpoint, hash }, Kept { peer, direction, spec, state }, Paired { peer }, PairingRefused { source, attempts, reason }, Stranger { peer, source }, Forwarded { peer, kind, target, outcome }, Gui { peer, session, change: GuiChange }, Session { peer, session: String, change: SessionChange } }   // an id, a protocol, an address: never a key, PIN or request; SessionChange { Started, Attached, Detached, Ended { reason } }
 pub struct LogEvents;                                              // the default: log lines
 
 pub mod pair;   // Armed { pin(), lifetime(), wait(up_to) -> Option<PairEnd>, withdraw() } (Debug hides the PIN); #[non_exhaustive] PairEnd { Paired(PeerId), Expired, UsedUp, Replaced, Withdrawn, Failed(String) }
 // PairingConfig { timeout, max_attempts, attempt_delay, attempt_delay_max, pin_length, pending, pending_per_source, ipv6_prefix, exchange_timeout } is `[pairing]`; ClientConfig { reply_timeout, transfer_timeout, gui_timeout, input_chunk, read_size, input_queue, probe_timeout, links_wait, parallel_streams, parallel_links, parallel_range, profile: Option<String> } is `[client]` (`transfer()` is `None` for `0`); one PIN at a time, in memory; a connection's first message `cabuya::pairing::MARKER` makes it a pairing (else a proof)
 
-pub const PROTOCOLS: [(&str, &[Permission]); 9];                   // each protocol with the permissions of which a peer needs one to open it (`bohio-connect/1` and `tcp/1` need `forward.connect`, `bohio-gui/1` `gui.view` or `gui.input`)
-pub const PROTOCOLS: [(&str, &[Permission]); 12];                  // each protocol with the permissions of which a peer needs one to open it (`bohio-connect/1` and `tcp/1` need `forward.connect`, `bohio-listen/1` and `bohio-accept/1` `forward.listen`, `bohio-attach/1` `session`; `bohio/1` also opens for `session`)
+pub const PROTOCOLS: [(&str, &[Permission]); 16];                  // each protocol with the permissions of which a peer needs one to open it: `bohio-connect/1` and `tcp/1` need `forward.connect`, `bohio-listen/1` and `bohio-accept/1` `forward.listen`,
+                                                                   // `bohio-gui/1` `gui.view` or `gui.input`, `bohio-attach/1` `session`, `bohio-power/1` `power`, `bohio-media/1` `media`; `bohio/1` opens for `info`, `fs.read`, `fs.write` or `session`
 pub struct NodePeers;                                              // cabuya::peers::PeerStore over `Keys` and `Grants`: NodePeers::new(keys, grants); an accepted key may open each protocol its grant holds a permission for, which is what `link/1` offers it
 pub fn offered(grant: &Grant) -> Vec<&'static str>;                       // the PROTOCOLS tokens `grant` holds a permission for: what a node offers that peer
 pub fn admission(grants: Arc<dyn Grants>, protocol: &'static str) -> cabuya::link::Admission;   // asks `grants` afresh each call
@@ -118,7 +119,7 @@ Roles are read from the link, not configured: a node offers a peer the tokens it
 nothing offers nothing and still opens streams on it. Nothing is added to the wire.
 
 `LayeredPeers` is the command's pair: `[peer.<id>]` of the layer files (what accepts a key and what it may do) and, in the data directory, the waiting list
-(`peers/waiting/`; `peers/accepted/` is no longer read). A layer that cannot be read or parsed refuses everything, logged once per distinct error.
+(`peers/waiting/`). A layer that cannot be read or parsed refuses everything, logged once per distinct error.
 `approve` writes the peer's table with `toml_edit`, keeping every other byte of the file (comments, layout): into the layer that already holds the table (an
 error when it cannot be written), else the last of `files` this account can write, else `create` (made with its parents, readable by its owner alone); it removes
 the id's waiting entry and never changes an existing table unless a grant is given. `revoke` removes the table from every layer that holds it and its waiting entry,
@@ -131,8 +132,8 @@ same with the host's key, so it trusts the host through its own `[peer.<host>]` 
 ```rust
 #[non_exhaustive] pub enum Listening { Tcp(TcpListener), Pipe(coqui_transport_pipe::Listener), WebSocket(coqui_transport_web::websocket::Listener), WebTransport { listener: coqui_transport_web::webtransport::Listener, certificate: Certificate }, Serial { path: String, options: SerialOptions } }
 impl Listening {
-    pub fn bind(config: &ListenConfig, settings: &Settings) -> Result<(Listening, Endpoint), ServeError>;   // the endpoint as bound: port 0 becomes the port chosen
-    pub fn bind_with(config: &ListenConfig, settings: &Settings, store: Option<&CertificateStore>) -> Result<(Listening, Endpoint), ServeError>;   // `bind`, with the made WebTransport certificate kept in the store (`CertificateStore::new(dir).with_events(events)`: a restart serves the same hash; a renewal is `NodeEvent::CertificateRenewed { endpoint, hash }`); `bind` keeps none
+    pub fn bind(config: &ListenConfig, settings: &Settings) -> Result<(Listening, Endpoint), NodeError>;   // the endpoint as bound: port 0 becomes the port chosen
+    pub fn bind_with(config: &ListenConfig, settings: &Settings, store: Option<&CertificateStore>) -> Result<(Listening, Endpoint), NodeError>;   // `bind`, with the made WebTransport certificate kept in the store (`CertificateStore::new(dir).with_events(events)`: a restart serves the same hash; a renewal is `NodeEvent::CertificateRenewed { endpoint, hash }`); `bind` keeps none
     pub fn accept(&self, wait: Duration, settings: &Settings) -> io::Result<Option<Arrival>>;               // None when none came; not for Serial
     pub fn certificate_hash(&self) -> Option<String>;                                                        // WebTransport: `sha256:...` of the certificate now presented, for `--cert-hash`
 }
@@ -175,3 +176,16 @@ and `Via::connect` refuse a `pipe://` endpoint the system does not report as ser
 another account could bind the name first; `remote --via`, `links` and `pair` say so, and `pair` does not fall back to serving alone.
 `bohio::limit`: `Slots::new(limit)`, `Slots::acquire() -> Option<Permit<'_>>`, `Slots::with_share(limit, per_key)` and `acquire_for(key)` (at most `per_key` permits for one key, a peer), `in_use()`, `limit()`; a `Permit` frees its slot
 when dropped. One `Slots` is shared by every stream that counts against a bound.
+
+## Model Context Protocol server (`bohio::mcp`)
+
+The agent tools of `bohio_client::tools` over MCP, for any reader and writer (no `cli` feature). `bohio mcp` resolves each `--host` as `remote` does and passes standard input and output.
+
+```rust
+pub struct Host { pub name: String /*letters, digits, `_`, `.`, `-`: what a call's `host` argument says*/, pub dial: Dialer, pub settings: bohio_client::tools::Settings }
+pub type Dialer = Box<dyn Fn() -> Result<Arc<dyn Open>, String> + Send + Sync>;   // makes a host's link: at its first use, and once more when a stream cannot be opened on a lost one
+pub struct Options { pub max_calls: usize /*8; one more is `busy`*/, pub gui: bool /*false: the desktop tools are neither listed nor callable*/ }   // Default
+pub fn serve(hosts: Vec<Host>, options: &Options, input: impl BufRead, output: impl Write + Send + 'static) -> Result<(), String>;   // until `input` ends, then cancels what runs; Err: no host, or a name twice
+```
+
+Newline-delimited JSON-RPC 2.0, `tools` only; revisions `2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05`. One link to each host, made on first use and once more after a loss; a call runs on a thread of its own and `notifications/cancelled` ends it. A tool result is JSON text plus `structuredContent` (and `image` blocks); a refusal is `isError: true` with `code: message`. `host` is a tool argument, required with more than one host; `put`, `get` and `forward_remote` are unavailable until `Settings` names `local_roots` and `forward_local_targets`. `docs/agents.md` and `docs/embedding.md` have the tools and an embedding.

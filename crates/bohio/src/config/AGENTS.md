@@ -4,20 +4,25 @@ Part of the `bohio` API header (`../../AGENTS.md` in the crate root): its featur
 
 ## Configuration (`bohio::config`)
 
-Profiles (`bohio::profile`): `pub const fn table(profile: bohio_client::profile::Profile) -> &'static str` is the TOML a profile lays under the files (empty for `default`; `lan`, `weak-host`, `slow-link` and `fat-link` set only keys of `[filesystem]`, `[link]`, `[compression]`, `[hash]`, `[walk]` and `[delta]`, and no `[peer.*]`); `NodeConfig::with_profile(profile) -> NodeConfig` is the defaults with that table over them, for an embedding application; `Config::transfer_keys(&self) -> Vec<(&'static str, String)>` is every key a profile or a transfer depends on with its effective value as text, in the order `config check` prints it. `Layered` (from `Layers::load`/`parse`) gains `profile: Profile`, `origin("link.bulk_window") -> Origin` (`File(label)`, `Profile(profile)` or `Default`; `Display` is `file LABEL`, `profile NAME`, `default`) and `sets(key) -> bool` (a layer, not the profile, sets it). Merge order, lowest first: the profile's table, then each file layer; an error in a value only the profile supplied names the layer `profile NAME`.
+Profiles (`bohio::profile`): `pub const fn table(profile: bohio_client::profile::Profile) -> &'static str` is the TOML a profile lays under the files (empty for `default`; `lan`, `weak-host`, `slow-link` and `fat-link` set only keys of `[filesystem]`, `[link]`, `[compression]`, `[hash]`, `[walk]` and `[delta]`, and no `[peer.*]`); `NodeConfig::with_profile(profile) -> NodeConfig` is the defaults with that table over them, for an embedding application; `Config::transfer_keys(&self) -> Vec<(&'static str, String)>` is every key a profile or a transfer depends on with its effective value as text, in the order `config check` prints it. `Layered` (from `Layers::load`/`parse`) holds the `profile` that `[profile] name` chose; `origin("link.bulk_window") -> Origin` says where a key's value came from (`File(label)`, `Profile(profile)` or `Default`; `Display` is `file LABEL`, `profile NAME`, `default`) and `sets(key) -> bool` whether a layer, not the profile, sets it. Merge order, lowest first: the profile's table, then each file layer; an error in a value only the profile supplied names the layer `profile NAME`.
 
 ```rust
 pub struct Environment { pub windows: bool, pub local_app_data: Option<PathBuf>, pub xdg_data_home: Option<PathBuf>, pub home: Option<PathBuf>,
     pub path: Option<OsString> }                                  // Default; the binary fills it from the process (cli::capture_environment)
 impl Environment { pub fn default_data_dir(&self) -> PathBuf; }
 
-pub struct Config { pub service: ServiceConfig, pub profile: ProfileConfig /*`[profile]`: name, default "default"*/, pub listen: Vec<ListenConfig>, pub link: LinkConfig, pub filesystem: FilesystemConfig, pub hash: HashConfig, pub delta: DeltaConfig, pub gui: GuiConfig,
-                    pub execution: ExecutionConfig, pub shell: ShellConfig, pub forward: ForwardConfig, pub pairing: PairingConfig, pub waiting: WaitingConfig, pub client: ClientConfig, pub control: ControlConfig, pub peer: Peers }     // Default; unknown keys refused; `peer` is `[peer.<id>]`
-pub struct NodeConfig { pub name: String, pub link: LinkConfig, pub filesystem: FilesystemConfig, pub hash: HashConfig, pub delta: DeltaConfig,
-                        pub execution: ExecutionConfig, pub shell: ShellConfig, pub forward: ForwardConfig, pub pairing: PairingConfig }   // Default, Deserialize, unknown keys refused: what a Node runs on, read by an app from any section of its own settings
+pub struct Config { pub service: ServiceConfig, pub profile: ProfileConfig /*`[profile]`: name, default "default"*/, pub listen: Vec<ListenConfig>, pub link: LinkConfig, pub filesystem: FilesystemConfig,
+                    pub hash: HashConfig, pub walk: WalkConfig, pub search: SearchConfig, pub delta: DeltaConfig, pub compression: CompressionConfig, pub execution: ExecutionConfig, pub shell: ShellConfig,
+                    pub sessions: SessionsConfig, pub forward: ForwardConfig, pub gui: GuiConfig, pub pairing: PairingConfig, pub waiting: WaitingConfig, pub client: ClientConfig, pub control: ControlConfig,
+                    pub power: PowerConfig, pub media: MediaConfig, pub secrets: SecretsConfig, pub providers: ProvidersConfig, pub source: SourceTables, pub access: AccessConfig,
+                    pub peer: Peers, pub remote: Hosts }     // Default; unknown keys refused; `peer` is `[peer.<id>]`, `remote` is `[remote.<name>]`
+pub struct NodeConfig { pub name: String, pub link: LinkConfig, pub filesystem: FilesystemConfig, pub hash: HashConfig, pub walk: WalkConfig, pub search: SearchConfig, pub delta: DeltaConfig,
+                        pub compression: CompressionConfig, pub execution: ExecutionConfig, pub shell: ShellConfig, pub sessions: SessionsConfig, pub forward: ForwardConfig, pub gui: GuiConfig,
+                        pub pairing: PairingConfig, pub power: PowerConfig, pub media: MediaConfig, pub secrets: SecretsConfig, pub providers: ProvidersConfig, pub source: SourceTables,
+                        pub access: AccessConfig }   // Default, Deserialize, unknown keys refused: what a Node runs on, read by an app from any section of its own settings
 impl NodeConfig { pub fn validate(&self, label: &str) -> Result<(), ConfigError>; }   // every range check; `Node::new` calls it
 impl Config {
-    pub fn node(&self) -> NodeConfig;                                            // `[service] name`, `[link]`, `[filesystem]`, `[execution]`, `[shell]`
+    pub fn node(&self) -> NodeConfig;                                            // `[service] name` and every `NodeConfig` section
     pub fn from_toml(text: &str, path: &str) -> Result<Self, ConfigError>;       // one layer of text; `path` only labels errors
     pub fn load(path: &Path) -> Result<Self, ConfigError>;                       // one layer, a file
     pub fn data_dir(&self, environment: &Environment) -> PathBuf;
@@ -29,7 +34,7 @@ impl Layers {
     pub fn parse(text: &str, label: &str) -> Result<Layered, ConfigError>;      // one layer of text
     pub fn peers(paths: &[PathBuf]) -> Result<Peers, ConfigError>;              // the live check: a missing file is skipped, only `[peer.*]` is read
 }
-pub struct Layered { pub config: Config, pub peers: Peers, pub files: Vec<PathBuf> }   // `peers` is `config.peer`; `files` the layers read
+pub struct Layered { pub config: Config, pub peers: Peers, pub files: Vec<PathBuf>, pub profile: Profile }   // `peers` is `config.peer`; `files` the layers read; origin(key), sets(key) above
 pub fn discover(named: &[PathBuf]) -> Result<Found, String>;     // the layers named (alone), else the system file with the user's merged over it (`[service] user_layer = false` leaves it out); a system file another account owns or may change is refused
 pub fn discover_in(named: &[PathBuf], system: PathBuf, user: Option<PathBuf>) -> Result<Found, String>;   // the same with the two files given; `default_files()` is their usual places
 pub struct Found { pub layered: Layered, pub watch: Vec<PathBuf>, pub create: Option<PathBuf>, pub trust: Vec<String> }   // `config()`; `guard(&Environment) -> Result<Vec<PathBuf>, String>` is the owner check `bohio serve` applies (makes the data directory; answers the layers to watch); `watched()`
@@ -125,6 +130,11 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[link] max_streams_per_peer` | `256` | the most streams one peer has open over all its links; one past it is refused; at least 1 |
 | `[walk] recheck_entries` | `1000` | entries a walk sends between looks at the peer's grant; 0: once for each root |
 | `[filesystem] chunk_size` | `65536` | most file bytes in one frame, and the buffer a copy reads with; at least 1; a smaller message bound of the stream wins |
+| `[filesystem] max_tree_entries` | `1000000` | entries a recursive `copy`, or a `move` across filesystems, goes through before it stops with `busy`; `0` is no limit |
+| `[filesystem] max_bundle_items` | `1000000` | files one bundle (`bohio-read/1` or `bohio-write/1` with `items`) carries before it stops with `busy`; `0` is no limit |
+| `[filesystem] resume_ttl` | `0` | how long a resumable `replace` keeps its temporary file after its stream ended early; `0` keeps none, and such a request is `unsupported`; a kept file takes the disk space of what was received |
+| `[filesystem] follow_interval` | `250ms` | how often a followed read looks for appended bytes when its request names no interval; not zero |
+| `[filesystem] max_follows` | `16` | followed reads running at once across peers (a follow holds one of these and no transfer slot; `idle_timeout` does not end it); one past it is `busy`; at least 1 |
 | `[filesystem] write_hashes` | `["sha256"]` | the digests a write answers when its request names none; each must be in `[hash] algorithms`; empty answers none |
 | `[hash] max_streams` | `4` | concurrent `bohio-hash/1` streams across peers (`busy` past it); at least 1 |
 | `[hash] rate` | `0` | most bytes a second one hash stream reads; `0` is unlimited |
@@ -194,12 +204,12 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 **Layers.** `Layers::load` reads each file alone (syntax, unknown keys, types: the error names the file, line, column and key) and then merges them with
 `anycfg` over `toml::Value`: tables merge by key, arrays and scalars replace (an array is one setting, so a higher layer can narrow a root list or `[[listen]]`;
 merging elements would only widen). Out-of-range values, checked on the merged value, are `ConfigError::Invalid` naming the key (`link.max_streams`, ...) and the
-highest layer that sets it, as is a `[peer.<name>]` whose name is not a peer id. A key only the lowest layer may set (`[service] check_access`, `user_layer`, `trusted_owners`, `upper_layer_keys`; `[providers] check_access`, `ld_so`, `allow_reserved_signal_handlers`; `[secrets]`'s three checks; ten `[gui]` helper keys) is ignored, and logged, in a higher layer unless the lowest layer's `[service] upper_layer_keys` names it as `section.key`. The command
+highest layer that sets it, as is a `[peer.<name>]` whose name is not a peer id. A key only the lowest layer may set (`[service] check_access`, `user_layer`, `trusted_owners`, `upper_layer_keys`; `[providers] check_access`, `ld_so`, `allow_reserved_signal_handlers`; `[secrets]`'s three checks; the thirteen `[gui]` helper keys of `LOWEST_ONLY` in `config/layers.rs`: `helper_accounts`, `helper_endpoint`, `node_account`, `source`, `source_retry` and the `helper_upload*` and `helper_socket_dir_check` ones) is ignored, and logged, in a higher layer unless the lowest layer's `[service] upper_layer_keys` names it as `section.key`. The command
 finds the layers (the library reads no environment variable): `--config FILE` (repeatable, lowest first) or else `BOHIO_CONFIG` name them, alone; else the system
 file (`%ProgramData%\bohio\bohio.cfg`, `/etc/bohio/bohio.cfg`) then the user's (`%APPDATA%\bohio\bohio.cfg`, `$XDG_CONFIG_HOME/bohio/bohio.cfg`, else
 `~/.config/bohio/bohio.cfg`), each if it exists; none: the defaults. The `[peer.*]` tables are read again from the files at every question (`peer::LayeredPeers`);
 every other section is read when the host starts. A default layer that does not exist when `serve` starts is read once made only when the nearest directory above it
-that exists passes the access check below (so `%ProgramData%ohioohio.cfg`, which every Windows user may create, is read only after a restart); every command
+that exists passes the access check below (so `%ProgramData%\bohio\bohio.cfg`, which every Windows user may create, is read only after a restart); every command
 checks the system file when it exists, as `serve` checks every layer.
 
 ## Peer grants (`bohio::policy`)
@@ -212,16 +222,17 @@ impl Grant { pub fn none() -> Self; pub fn allowing(permissions) -> Self; pub fn
              pub fn allows(&self, Permission) -> bool; pub fn permissions(&self) -> impl Iterator<Item = Permission>; pub fn fs_roots(&self) -> &[PathBuf];
              pub fn permits_program(&self, program: &str) -> bool; pub fn permits_shell_script(&self) -> bool;
              pub fn with_env(self, names) -> Self; pub fn env_names(&self) -> &[String]; pub fn permits_env(&self, env: &bohio_proto::exec::Env) -> bool;
+             pub fn with_sources(self, names) -> Self; pub fn with_default_sources(self, names) -> Self; pub fn sources(&self) -> Option<&[String]>; pub fn permits_source(&self, name: &str) -> bool;
              pub fn with_connect(self, rules) -> Self; pub fn forward(&self) -> &ForwardGrant; pub fn permits_connect(&self, target: &bohio_proto::forward::Target) -> bool;
              pub fn with_listen(self, rules) -> Self; pub fn permits_listen(&self, bind: &bohio_proto::forward::Bind) -> bool; }   // permits_connect: `forward.connect` and a `connect` rule that matches; permits_listen: `forward.listen` and a `listen` rule that matches
 pub struct ForwardGrant;                                         // `[peer.<id>.forward]`: connect() and listen() -> &[String], the rule texts; an empty list allows nothing
 pub struct Peers;                                                // Default = no peer; Deserialize (the `[peer]` table of `bohio.cfg`)
-pub struct PeerTable;                                            // one `[peer.<id>]`: grant(), endpoint() -> Option<&str>, dial() -> &DialConfig
-impl Peers { pub fn grant_for(&self, peer: &str) -> Grant; pub fn table(&self, peer: &str) -> Option<&PeerTable>; pub fn dials(&self) -> impl Iterator<Item = (&str, &str, &DialConfig)>; pub fn has(&self, peer: &str) -> bool; pub fn ids(&self) -> impl Iterator<Item = &str>;
+pub struct PeerTable;                                            // one `[peer.<id>]`: grant(), endpoint() -> Option<&str>, dial() -> &DialConfig, forward_local() and forward_remote() -> &[String]
+impl Peers { pub fn grant_for(&self, peer: &str) -> Grant; pub fn table(&self, peer: &str) -> Option<&PeerTable>; pub fn dials(&self) -> impl Iterator<Item = (&str, &str, &DialConfig)>; pub fn has(&self, peer: &str) -> bool; pub fn ids(&self) -> impl Iterator<Item = &str>; pub fn all_roots(&self) -> Vec<PathBuf>; pub fn declared(&self) -> impl Iterator<Item = (&str, &PeerTable)>;
              pub fn len(&self) -> usize; pub fn is_empty(&self) -> bool; }
 ```
 
-`[peer."<id>"]` (the id is `sha256:` and 64 hex digits, so it is quoted as a key) with `allow = [..]`, `fs_roots = [..]`, `sources = [..]` (the sources beyond each capability's default the peer may use; `Grant::with_sources`, `permits_source`; absent: the defaults alone), `[peer."<id>".exec]` with
+`[peer."<id>"]` (the id is `sha256:` and 64 hex digits, so it is quoted as a key) with `allow = [..]`, `fs_roots = [..]`, `sources = [..]` (the sources beyond each capability's default the peer may use: `Grant::with_sources`, `with_default_sources`, `permits_source`; absent: the defaults alone), `[peer."<id>".exec]` with
 `programs = [..]` and `env = [..]`, and `[peer."<id>".forward]` with `connect = [RULE..]`. A table, even an empty one, accepts the key. An unknown key or permission is `ConfigError::Parse`. A peer with no table, or
 no `allow`, holds nothing. `programs` empty means any program and
 explicit shell scripts; non-empty means only those programs, each named exactly as the peer asks for it, and no shell script
