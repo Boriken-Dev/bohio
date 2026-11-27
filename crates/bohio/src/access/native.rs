@@ -67,6 +67,10 @@ pub struct NativeSettings {
     /// The most bytes of clipboard text the desktop reads or writes. At least 1. Default `1048576`.
     #[map(default = 1_048_576)]
     pub clipboard_max_bytes: u64,
+    /// The most clicks of one button event and wheel notches of one scroll event on any desktop (Windows, X11, Wayland,
+    /// macOS); more is `bad_request`. At least 1. Default `1000`.
+    #[map(default = 1_000)]
+    pub max_repeat: u64,
     /// The X display the Linux desktop serves (`:0`). The `bohio` command fills it from `DISPLAY` when the file leaves it
     /// out; an embedding host sets it. Without one the node has no desktop on Linux.
     pub x11_display: Option<String>,
@@ -95,10 +99,6 @@ pub struct NativeSettings {
     /// The selection that is the clipboard: `CLIPBOARD`, `PRIMARY` or any other name. Default `CLIPBOARD`.
     #[map(default = String::from("CLIPBOARD"))]
     pub x11_selection: String,
-    /// The most clicks of one button event and wheel notches of one scroll event on X11; more is `bad_request`. At least
-    /// 1. Default `1000`.
-    #[map(default = 1_000)]
-    pub x11_max_repeat: u64,
     /// Whether the Wayland desktop's portal remembers its approval: `none` (asked at every session), `node` (once for each
     /// run of the node) or `always` (a restore token kept in `wayland_restore_file`, so a portal that honours it asks once
     /// for good). Only a build with the `gui-wayland` feature has the backend. Default `node`.
@@ -124,10 +124,6 @@ pub struct NativeSettings {
     /// before sharing asks again when the session is reopened. Default `60s`.
     #[map(default = String::from("60s"))]
     pub wayland_idle: String,
-    /// The most clicks of one button event and wheel notches of one scroll event on Wayland; more is `bad_request`. At
-    /// least 1. Default `1000`.
-    #[map(default = 1_000)]
-    pub wayland_max_repeat: u64,
     /// The desktop a node run as a service account serves of its own (Linux): `none` (the session the command was started
     /// in), `x11` (the account's user units run a headless compositor and an X server on display `:UID`; capture and
     /// XTest input) or `wayland` (a compositor and the desktop portals; needs the `gui-wayland` feature). The runtime
@@ -152,10 +148,6 @@ pub struct NativeSettings {
     /// capture). Default `10s`.
     #[map(default = String::from("10s"))]
     pub macos_capture_wait: String,
-    /// The most clicks of one button event and wheel notches of one scroll event on macOS; more is `bad_request`. At
-    /// least 1. Default `1000`.
-    #[map(default = 1_000)]
-    pub macos_max_repeat: u64,
 }
 
 impl Default for NativeSettings {
@@ -169,6 +161,7 @@ impl Default for NativeSettings {
             windows_capture_idle: "10s".to_owned(),
             windows_clipboard_wait: "500ms".to_owned(),
             clipboard_max_bytes: 1_048_576,
+            max_repeat: 1_000,
             x11_display: None,
             x11_wayland: None,
             x11_in_wayland: false,
@@ -178,20 +171,17 @@ impl Default for NativeSettings {
             x11_key_wait: "20ms".to_owned(),
             x11_clipboard_wait: "500ms".to_owned(),
             x11_selection: "CLIPBOARD".to_owned(),
-            x11_max_repeat: 1_000,
             wayland_persist: "node".to_owned(),
             wayland_restore_file: None,
             wayland_capture_wait: "5s".to_owned(),
             wayland_start_wait: "10s".to_owned(),
             wayland_retry: "30s".to_owned(),
             wayland_idle: "60s".to_owned(),
-            wayland_max_repeat: 1_000,
             own_session: "none".to_owned(),
             own_runtime_dir: None,
             own_session_check_server: true,
             own_runtime_dir_check: true,
             macos_capture_wait: "10s".to_owned(),
-            macos_max_repeat: 1_000,
         }
     }
 }
@@ -261,22 +251,12 @@ impl NativeSettings {
                 "wayland_capture_wait is a time such as 5s, and not zero: a capture would never be waited for",
             ));
         }
-        if self.wayland_max_repeat == 0 {
-            return Err(refuse(
-                "wayland_max_repeat is 0: no click or notch is allowed",
-            ));
-        }
-        if self.x11_max_repeat == 0 {
-            return Err(refuse("x11_max_repeat is 0: no click or notch is allowed"));
+        if self.max_repeat == 0 {
+            return Err(refuse("max_repeat is 0: no click or notch is allowed"));
         }
         if Span::parse(&self.macos_capture_wait).is_none_or(|span| span.0.is_zero()) {
             return Err(refuse(
                 "macos_capture_wait is a time such as 10s, and not zero: a capture would never be waited for",
-            ));
-        }
-        if self.macos_max_repeat == 0 {
-            return Err(refuse(
-                "macos_max_repeat is 0: no click or notch is allowed",
             ));
         }
         if self.x11_selection.is_empty() {
@@ -366,7 +346,7 @@ impl NativeSettings {
         settings.clipboard_max_bytes =
             usize::try_from(self.clipboard_max_bytes).unwrap_or(usize::MAX);
         settings.selection = self.x11_selection.clone();
-        settings.max_repeat = u32::try_from(self.x11_max_repeat).unwrap_or(u32::MAX);
+        settings.max_repeat = u32::try_from(self.max_repeat).unwrap_or(u32::MAX);
         settings
     }
 
@@ -401,7 +381,7 @@ impl NativeSettings {
             system_bus: self.x11_system_bus.clone().filter(|bus| !bus.is_empty()),
             bus_wait: span(&self.x11_bus_wait),
             headless: self.own_session != "none",
-            max_repeat: u32::try_from(self.wayland_max_repeat).unwrap_or(u32::MAX),
+            max_repeat: u32::try_from(self.max_repeat).unwrap_or(u32::MAX),
         }
     }
 
@@ -411,7 +391,7 @@ impl NativeSettings {
             capture_wait: Span::parse(&self.macos_capture_wait)
                 .map_or(Duration::ZERO, |span| span.0),
             clipboard_max_bytes: usize::try_from(self.clipboard_max_bytes).unwrap_or(usize::MAX),
-            max_repeat: u32::try_from(self.macos_max_repeat).unwrap_or(u32::MAX),
+            max_repeat: u32::try_from(self.max_repeat).unwrap_or(u32::MAX),
         }
     }
 
@@ -424,6 +404,7 @@ impl NativeSettings {
             capture_idle: span(&self.windows_capture_idle),
             clipboard_wait: span(&self.windows_clipboard_wait),
             clipboard_max_bytes: usize::try_from(self.clipboard_max_bytes).unwrap_or(usize::MAX),
+            max_repeat: u32::try_from(self.max_repeat).unwrap_or(u32::MAX),
         }
     }
 }
@@ -924,5 +905,59 @@ mod tests {
     fn the_own_desktop_is_reached_through_the_check_of_who_runs_it_unless_the_setting_is_off() {
         assert!(own_desktop(true));
         assert!(!own_desktop(false));
+    }
+}
+
+/// The defaults are written where the file is read (`#[map(default)]`), in `Default`, and in each backend's own settings:
+/// these hold the copies equal.
+#[cfg(test)]
+mod defaults {
+    use bohio_api::guatiao::{FromValue as _, Value};
+
+    use super::NativeSettings;
+
+    #[test]
+    fn an_empty_table_reads_as_the_default() {
+        let read = NativeSettings::from_value(&Value::from(super::super::value::from_table(
+            &toml::Table::new(),
+        )))
+        .expect("an empty table is valid");
+        assert_eq!(read, NativeSettings::default());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_x11_backends_default_is_the_native_default() {
+        assert_eq!(
+            format!("{:?}", NativeSettings::default().x11_plain()),
+            format!("{:?}", crate::gui::X11Settings::default())
+        );
+    }
+
+    #[cfg(all(target_os = "linux", feature = "gui-wayland"))]
+    #[test]
+    fn the_wayland_backends_default_is_the_native_default() {
+        assert_eq!(
+            format!("{:?}", NativeSettings::default().wayland()),
+            format!("{:?}", crate::gui::WaylandSettings::default())
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_macos_backends_default_is_the_native_default() {
+        assert_eq!(
+            format!("{:?}", NativeSettings::default().macos()),
+            format!("{:?}", crate::gui::MacosSettings::default())
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_windows_backends_default_is_the_native_default() {
+        assert_eq!(
+            format!("{:?}", NativeSettings::default().windows()),
+            format!("{:?}", crate::gui::WindowsSettings::default())
+        );
     }
 }

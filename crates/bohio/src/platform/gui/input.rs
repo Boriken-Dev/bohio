@@ -331,7 +331,16 @@ pub(crate) fn plan(
     event: &InputEvent,
     state: &DesktopState,
     virtual_screen: Virtual,
+    max_repeat: u32,
 ) -> Result<Vec<Op>, GuiError> {
+    let repeat = |count: u32| -> Result<u32, GuiError> {
+        if count > max_repeat {
+            return Err(GuiError::bad_request(format!(
+                "that repeats {count} times; this host repeats at most {max_repeat}"
+            )));
+        }
+        Ok(count)
+    };
     Ok(match event {
         InputEvent::Move { display, x, y } => {
             vec![move_op(on_virtual(
@@ -379,7 +388,7 @@ pub(crate) fn plan(
                 ButtonAction::Press => ops.push(mouse(false)),
                 ButtonAction::Release => ops.push(mouse(true)),
                 ButtonAction::Click => {
-                    for _ in 0..count.unwrap_or(1).max(1) {
+                    for _ in 0..repeat(count.unwrap_or(1).max(1))? {
                         ops.push(mouse(false));
                         ops.push(mouse(true));
                     }
@@ -418,9 +427,11 @@ pub(crate) fn plan(
                 flags,
             };
             if *dy != 0 {
+                repeat(dy.unsigned_abs())?;
                 ops.push(wheel(MOUSEEVENTF_WHEEL, dy.saturating_neg()));
             }
             if *dx != 0 {
+                repeat(dx.unsigned_abs())?;
                 ops.push(wheel(MOUSEEVENTF_HWHEEL, *dx));
             }
             ops
@@ -509,6 +520,7 @@ mod tests {
             },
             &state,
             virtual_screen,
+            u32::MAX,
         )
         .unwrap();
         assert_eq!(ops.len(), 1);
@@ -528,6 +540,7 @@ mod tests {
             },
             &state,
             virtual_screen,
+            u32::MAX,
         )
         .unwrap();
         let main = plan(
@@ -538,6 +551,7 @@ mod tests {
             },
             &state,
             virtual_screen,
+            u32::MAX,
         )
         .unwrap();
         let (Op::Mouse { x: sx, y: sy, .. }, Op::Mouse { x: mx, y: my, .. }) = (second[0], main[0])
@@ -560,6 +574,7 @@ mod tests {
                 },
                 &state,
                 virtual_screen,
+                u32::MAX,
             )
             .unwrap_err();
             assert_eq!(error.code, bohio_proto::ErrorCode::BadRequest);
@@ -581,6 +596,7 @@ mod tests {
             },
             &state,
             virtual_screen,
+            u32::MAX,
         )
         .unwrap();
         let flags: Vec<u32> = ops
@@ -627,6 +643,7 @@ mod tests {
             },
             &state,
             virtual_screen,
+            u32::MAX,
         )
         .unwrap();
         assert_eq!(
@@ -657,6 +674,7 @@ mod tests {
             },
             &state,
             virtual_screen,
+            u32::MAX,
         )
         .unwrap();
         assert_eq!(huge.len(), 1);
@@ -752,7 +770,7 @@ mod tests {
             key("s", KeyAction::Click),
             key("control", KeyAction::Release),
         ] {
-            ops.extend(plan(&event, &state, virtual_screen).unwrap());
+            ops.extend(plan(&event, &state, virtual_screen, u32::MAX).unwrap());
         }
         assert_eq!(
             ops,
@@ -797,5 +815,34 @@ mod tests {
         .map(|(vk, unit, flags)| Op::Key { vk, unit, flags });
         assert_eq!(ops, expected);
         assert!(text_ops("").is_empty());
+    }
+
+    #[test]
+    fn a_click_or_a_scroll_past_the_repeat_bound_is_refused_and_the_bound_itself_is_taken() {
+        let (state, virtual_screen) = two();
+        let click = |count: u32| InputEvent::Button {
+            button: Button::Left,
+            action: ButtonAction::Click,
+            count: Some(count),
+            display: None,
+            x: None,
+            y: None,
+        };
+        let scroll = |dy: i32| InputEvent::Scroll {
+            display: None,
+            x: None,
+            y: None,
+            dx: 0,
+            dy,
+        };
+        assert_eq!(plan(&click(3), &state, virtual_screen, 3).unwrap().len(), 6);
+        for event in [click(4), scroll(4), scroll(-4)] {
+            let error = plan(&event, &state, virtual_screen, 3).unwrap_err();
+            assert_eq!(error.code, bohio_proto::ErrorCode::BadRequest);
+        }
+        assert_eq!(
+            plan(&scroll(-3), &state, virtual_screen, 3).unwrap().len(),
+            1
+        );
     }
 }

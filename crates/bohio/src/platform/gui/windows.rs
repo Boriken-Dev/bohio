@@ -95,6 +95,8 @@ pub struct WindowsSettings {
     pub clipboard_wait: Duration,
     /// The most bytes of clipboard text read or written.
     pub clipboard_max_bytes: usize,
+    /// The most clicks of one button event and wheel notches of one scroll event; more is `bad_request`.
+    pub max_repeat: u32,
 }
 
 impl Default for WindowsSettings {
@@ -105,6 +107,7 @@ impl Default for WindowsSettings {
             capture_idle: Duration::from_secs(10),
             clipboard_wait: Duration::from_millis(500),
             clipboard_max_bytes: 1024 * 1024,
+            max_repeat: 1000,
         }
     }
 }
@@ -290,7 +293,7 @@ impl Desktop for WindowsDesktop {
         // Every event is planned before any is sent, so one that names a point off its display refuses the batch whole.
         let planned: Vec<Vec<Op>> = events
             .iter()
-            .map(|event| input::plan(event, &state, virtual_screen))
+            .map(|event| input::plan(event, &state, virtual_screen, self.settings.max_repeat))
             .collect::<Result<_, _>>()?;
         let mut applied = 0_u32;
         for ops in planned {
@@ -400,6 +403,10 @@ fn io(what: &str, error: &windows::core::Error) -> GuiError {
     GuiError::io(format!("{what}: {error}"))
 }
 
+/// How long the clipboard waits before it is opened again while another program holds it open; `clipboard_wait` bounds the
+/// retries.
+const CLIPBOARD_RETRY: Duration = Duration::from_millis(10);
+
 /// The clipboard, open for the calling thread until dropped.
 struct Clipboard;
 
@@ -416,7 +423,7 @@ impl Clipboard {
                         "another program holds the clipboard: {error}"
                     )));
                 }
-                Err(_) => thread::sleep(Duration::from_millis(10)),
+                Err(_) => thread::sleep(CLIPBOARD_RETRY),
             }
         }
     }

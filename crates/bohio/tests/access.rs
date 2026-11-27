@@ -65,13 +65,12 @@ fn a_refused_source_or_access_table_names_its_key() {
 
     // The Linux desktop's keys are checked on every platform, so a file is the same wherever it is read.
     for bad in [
-        "x11_max_repeat = 0",
+        "max_repeat = 0",
         "x11_bus_wait = \"0s\"",
         "x11_key_wait = \"soon\"",
         "x11_selection = \"\"",
         "macos_capture_wait = \"0s\"",
         "macos_capture_wait = \"soon\"",
-        "macos_max_repeat = 0",
     ] {
         let (key, _) = invalid(&format!("[source.native]\n{bad}\n"));
         assert_eq!(key, "source.native", "{bad}");
