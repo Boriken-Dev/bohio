@@ -35,8 +35,10 @@ use crate::limit::{Counted, Slots};
 use crate::link::{ForwardKind, ForwardOutcome, NodeEvent, NodeEvents};
 use crate::policy::Grant;
 
+#[cfg(feature = "cli")]
+pub(crate) use keep::same_port;
 pub use keep::{Declarations, Declared, RemoteKeep, keep_remote};
-pub(crate) use keep::{Keeper, run as keep_forwards, same_port};
+pub(crate) use keep::{Keeper, run as keep_forwards};
 pub use listen::{Listeners, covers_listen, listen_kinds, serve_accept, serve_listen};
 pub use rules::{Addresses, BadRule, ConnectRule, ListenRule, PortSet, tcp_target};
 pub use spec::{BadSpec, Bound, LocalSpec, RemoteSpec, SocksSpec};
