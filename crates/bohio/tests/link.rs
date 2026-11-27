@@ -2575,7 +2575,7 @@ fn every_command_prints_json_that_docs_cli_json_describes() {
         "providers",
     );
     let pending = object(
-        run(&["gui", "pending", "--config", &config, "--format", "json"]),
+        run(&["gui", "--config", &config, "pending", "--format", "json"]),
         "gui pending",
     );
     assert!(pending["pending"].as_array().unwrap().is_empty());
