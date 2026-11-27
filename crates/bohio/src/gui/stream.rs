@@ -322,7 +322,12 @@ impl Stream<'_> {
                 );
             }
         }
-        let cursor_now = self.desktop.cursor();
+        // The pointer is asked for only by a watch that sends it.
+        let cursor_now = if self.watch.as_ref().is_some_and(|watch| watch.cursor) {
+            self.desktop.cursor()
+        } else {
+            None
+        };
         let watch = self.watch.as_mut().expect("a watch is running");
         if sending.is_empty() {
             return Ok(self.send_cursor_alone(&display_id, cursor_now));

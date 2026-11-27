@@ -27,6 +27,7 @@ struct Inner {
     log: Vec<String>,
     clipboard: String,
     calls: u32,
+    cursor_calls: u32,
 }
 
 /// The painted desktop. Display `0` is 320 by 200 and primary; display `1` is 160 by 100.
@@ -71,6 +72,7 @@ impl Painted {
                 log: Vec::new(),
                 clipboard: String::new(),
                 calls: 0,
+                cursor_calls: 0,
             }),
         }
     }
@@ -132,6 +134,11 @@ impl Painted {
     /// How many calls reached the desktop (state, capture, input, clipboard).
     pub fn calls(&self) -> u32 {
         self.lock().calls
+    }
+
+    /// How many times the pointer's place was asked for.
+    pub fn cursor_calls(&self) -> u32 {
+        self.lock().cursor_calls
     }
 
     /// The width, height and pixels of a display.
@@ -249,7 +256,8 @@ impl Desktop for Painted {
     }
 
     fn cursor(&self) -> Option<(DisplayId, i32, i32)> {
-        let inner = self.lock();
+        let mut inner = self.lock();
+        inner.cursor_calls += 1;
         let (index, x, y) = inner.pointer;
         Some((inner.screens[index].id.clone(), x, y))
     }

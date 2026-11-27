@@ -55,34 +55,67 @@ impl Logind {
                     Some(address) => Builder::address(address.as_str()),
                     None => Builder::system(),
                 };
-                *held = Some(builder.method_timeout(self.timeout).build().await.ok()?);
+                *held = Some(builder.method_timeout(self.timeout).build().await?);
             }
-            let connection = held.as_ref()?;
-            let manager = Proxy::new(connection, NAME, MANAGER, "org.freedesktop.login1.Manager")
-                .await
-                .ok()?;
-            let path: OwnedObjectPath = match &self.session {
-                Some(id) => manager.call("GetSession", &(id.as_str(),)).await.ok()?,
-                None => manager
-                    .call("GetSessionByPID", &(std::process::id(),))
-                    .await
-                    .ok()?,
-            };
-            let session = Proxy::new(
-                connection,
-                NAME,
-                path.as_ref(),
-                "org.freedesktop.login1.Session",
-            )
-            .await
-            .ok()?;
-            let locked: bool = session.get_property("LockedHint").await.ok()?;
-            Some(Hints { locked })
+            let connection = held
+                .as_ref()
+                .ok_or_else(|| zbus::Error::Failure("no connection".to_owned()))?;
+            self.ask(connection).await
         });
-        if asked.is_none() {
-            // The bus may have gone away: connect again at the next question.
-            *held = None;
+        match asked {
+            Ok(hints) => Some(hints),
+            Err(error) => {
+                if !bus_answered(&error) {
+                    // The bus may have gone away: connect again at the next question.
+                    *held = None;
+                }
+                None
+            }
         }
-        asked
+    }
+
+    async fn ask(&self, connection: &Connection) -> Result<Hints, zbus::Error> {
+        let manager =
+            Proxy::new(connection, NAME, MANAGER, "org.freedesktop.login1.Manager").await?;
+        let path: OwnedObjectPath = match &self.session {
+            Some(id) => manager.call("GetSession", &(id.as_str(),)).await?,
+            None => {
+                manager
+                    .call("GetSessionByPID", &(std::process::id(),))
+                    .await?
+            }
+        };
+        let session = Proxy::new(
+            connection,
+            NAME,
+            path.as_ref(),
+            "org.freedesktop.login1.Session",
+        )
+        .await?;
+        let locked: bool = session.get_property("LockedHint").await?;
+        Ok(Hints { locked })
+    }
+}
+
+/// Whether an error is the bus or logind answering (no such session, no such property) rather than the connection
+/// failing: an answer leaves the connection good for the next question.
+fn bus_answered(error: &zbus::Error) -> bool {
+    matches!(error, zbus::Error::MethodError(..) | zbus::Error::FDO(_))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_answer_from_the_bus_keeps_the_connection_and_a_broken_connection_does_not() {
+        let unknown = zbus::Error::FDO(Box::new(zbus::fdo::Error::UnknownObject(
+            "no such session".to_owned(),
+        )));
+        assert!(bus_answered(&unknown));
+        let gone = zbus::Error::InputOutput(std::sync::Arc::new(std::io::Error::from(
+            std::io::ErrorKind::BrokenPipe,
+        )));
+        assert!(!bus_answered(&gone));
     }
 }

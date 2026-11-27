@@ -462,6 +462,19 @@ fn a_watch_fits_the_frame_to_the_size_asked_and_reports_the_scale() {
 }
 
 #[test]
+fn a_watch_that_does_not_send_the_pointer_does_not_ask_for_it() {
+    let world = world(config(), viewer());
+    let gui = open(&world, &[Want::View]);
+    gui.watch(&lossless(15)).unwrap();
+    let painter = Painter::start(&world.desktop);
+    for _ in 0..3 {
+        update(&gui, Duration::from_secs(10)).expect("an update");
+    }
+    drop(painter);
+    assert_eq!(world.desktop.cursor_calls(), 0);
+}
+
+#[test]
 fn the_pointer_alone_is_a_cursor_frame() {
     let world = world(config(), viewer());
     let gui = open(&world, &[Want::View, Want::Input]);
