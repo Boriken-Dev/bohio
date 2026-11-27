@@ -522,3 +522,31 @@ fn closing_the_stream_stops_the_host_and_the_raw_frames_decode() {
     let served = f.link.finished_fs();
     assert_eq!(served.len(), 1);
 }
+
+#[test]
+fn a_directory_with_more_names_than_the_search_can_read_is_cut_and_marked_truncated() {
+    let f = fixture_with(SearchConfig {
+        max_files: 5,
+        ..SearchConfig::default()
+    });
+    // No file is ever read, so the file bound is never reached by reading: only the names kept can say it.
+    for index in 0..30 {
+        std::fs::create_dir(f.root.join(format!("d{index:02}"))).unwrap();
+    }
+    let results = run(&f.link, &["."], "hit", &SearchOptions::default());
+    assert!(results.done.truncated);
+    assert_eq!(results.done.files, 0);
+    // Few enough names are listed whole.
+    let g = fixture_with(SearchConfig {
+        max_files: 5,
+        ..SearchConfig::default()
+    });
+    for index in 0..3 {
+        std::fs::create_dir(g.root.join(format!("d{index:02}"))).unwrap();
+    }
+    assert!(
+        !run(&g.link, &["."], "hit", &SearchOptions::default())
+            .done
+            .truncated
+    );
+}

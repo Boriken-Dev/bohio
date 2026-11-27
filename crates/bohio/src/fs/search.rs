@@ -142,6 +142,7 @@ fn run(
         sent: 0,
         skipped: Skipped::default(),
         truncated: false,
+        cut: false,
         failed: false,
     };
     for (root, text) in request.walk.roots.iter().enumerate() {
@@ -162,7 +163,7 @@ fn run(
         files: searcher.read,
         matches: searcher.sent,
         skipped: searcher.skipped,
-        truncated: searcher.truncated,
+        truncated: searcher.truncated || searcher.cut,
     });
     let poll = files.config.poll_interval.0;
     if !send_waiting(
@@ -205,6 +206,8 @@ struct Searcher<'a> {
     sent: u64,
     skipped: Skipped,
     truncated: bool,
+    /// A directory had more names than the search could still read, and only the first were kept.
+    cut: bool,
     /// The stream cannot go on (the client left).
     failed: bool,
 }
@@ -373,11 +376,18 @@ impl Searcher<'_> {
                 return None;
             }
         };
+        // Only the smallest names a search can still afford are kept (one more than it can read, so the cut is seen):
+        // a huge directory costs one pass and a bounded amount of memory, as in a walk.
+        let room = usize::try_from(self.max_files.saturating_sub(self.read)).unwrap_or(usize::MAX);
         let mut names: BTreeSet<String> = BTreeSet::new();
         for entry in read {
             let Ok(entry) = entry else { continue };
             if let Ok(name) = entry.file_name().into_string() {
                 names.insert(name);
+                if names.len() > room.saturating_add(1) {
+                    names.pop_last();
+                    self.cut = true;
+                }
             }
         }
         Some(Level {
