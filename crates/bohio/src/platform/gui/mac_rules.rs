@@ -394,6 +394,11 @@ pub(crate) fn plan(
                         }
                     }
                 }
+                _ => {
+                    return Err(GuiError::bad_request(
+                        "this host does not take that button action",
+                    ));
+                }
             }
             steps
         }
@@ -426,6 +431,7 @@ pub(crate) fn plan(
         }],
         InputEvent::Text { text } => text_steps(text),
         InputEvent::Wait { .. } => Vec::new(),
+        _ => return Err(GuiError::bad_request("this host does not take that input")),
     })
 }
 

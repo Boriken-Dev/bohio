@@ -662,14 +662,15 @@ pub(crate) fn text_steps(text: &str, map: &KeyMap) -> Result<Vec<Step>, GuiError
     Ok(steps)
 }
 
-fn button_detail(button: Button) -> u8 {
-    match button {
+fn button_detail(button: Button) -> Result<u8, GuiError> {
+    Ok(match button {
         Button::Left => 1,
         Button::Middle => 2,
         Button::Right => 3,
         Button::Back => 8,
         Button::Forward => 9,
-    }
+        _ => return Err(GuiError::unsupported("this host has no such mouse button")),
+    })
 }
 
 /// The steps of one event, in order. `wait` has none (the engine pauses itself).
@@ -709,7 +710,7 @@ pub(crate) fn plan(
             if let (Some(x), Some(y)) = (x, y) {
                 steps.push(motion(display.as_ref(), *x, *y)?);
             }
-            let detail = button_detail(*button);
+            let detail = button_detail(*button)?;
             match action {
                 ButtonAction::Press => steps.push(Step::Button { detail, down: true }),
                 ButtonAction::Release => steps.push(Step::Button {
@@ -724,6 +725,11 @@ pub(crate) fn plan(
                             down: false,
                         });
                     }
+                }
+                _ => {
+                    return Err(GuiError::unsupported(
+                        "this host does not take that button action",
+                    ));
                 }
             }
             steps
@@ -759,6 +765,7 @@ pub(crate) fn plan(
         }
         InputEvent::Text { text } => text_steps(text, map)?,
         InputEvent::Wait { .. } => Vec::new(),
+        _ => return Err(GuiError::unsupported("this host does not take that input")),
     })
 }
 

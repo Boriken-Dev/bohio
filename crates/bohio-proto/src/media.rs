@@ -122,6 +122,7 @@ pub struct Slots {
 
 /// The host's one answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Answer {
     /// The slots.
     Slots(Slots),

@@ -110,6 +110,7 @@ fn button_name(button: Button) -> &'static str {
         Button::Middle => "middle",
         Button::Back => "back",
         Button::Forward => "forward",
+        _ => "unknown",
     }
 }
 
@@ -129,6 +130,7 @@ fn button_action_name(action: ButtonAction) -> &'static str {
         ButtonAction::Press => "press",
         ButtonAction::Release => "release",
         ButtonAction::Click => "click",
+        _ => "unknown",
     }
 }
 
@@ -137,6 +139,7 @@ fn key_action_name(action: KeyAction) -> &'static str {
         KeyAction::Press => "press",
         KeyAction::Release => "release",
         KeyAction::Click => "click",
+        _ => "unknown",
     }
 }
 

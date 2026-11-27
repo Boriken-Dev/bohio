@@ -68,6 +68,7 @@ impl From<&str> for DisplayId {
 /// What a peer asks to do on a desktop: each is a permission of its own on the host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Want {
     /// Snapshots, and the settle wait.
     View,
@@ -75,6 +76,9 @@ pub enum Want {
     Input,
     /// Reading and writing the clipboard's text.
     Clipboard,
+    /// A value this version does not know: a newer peer sent it.
+    #[serde(other)]
+    Other,
 }
 
 impl Want {
@@ -84,6 +88,7 @@ impl Want {
             Self::View => "view",
             Self::Input => "input",
             Self::Clipboard => "clipboard",
+            Self::Other => "other",
         }
     }
 }
@@ -251,6 +256,7 @@ pub struct Ready {
 /// The formats an image is encoded in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ImageFormat {
     /// Lossless; text stays legible.
     Png,
@@ -258,6 +264,9 @@ pub enum ImageFormat {
     Jpeg,
     /// Lossless WebP.
     Webp,
+    /// A value this version does not know: a newer peer sent it.
+    #[serde(other)]
+    Other,
 }
 
 impl ImageFormat {
@@ -270,6 +279,7 @@ impl ImageFormat {
             Self::Png => "png",
             Self::Jpeg => "jpeg",
             Self::Webp => "webp",
+            Self::Other => "other",
         }
     }
 
@@ -366,6 +376,7 @@ pub struct ImageHeader {
 /// A mouse button.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Button {
     /// The primary button.
     Left,
@@ -382,6 +393,7 @@ pub enum Button {
 /// What a button does.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ButtonAction {
     /// Go down and hold.
     Press,
@@ -395,6 +407,7 @@ pub enum ButtonAction {
 /// What a key does.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum KeyAction {
     /// Go down and hold.
     Press,
@@ -468,6 +481,7 @@ pub fn is_key(key: &str) -> bool {
 /// One input event.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum InputEvent {
     /// Moves the pointer.
     Move {
@@ -686,6 +700,7 @@ pub struct ClipboardText {
 /// What a watch's rectangles are encoded with when the client leaves the choice to the host or pins one.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum WatchEncoding {
     /// The host picks per rectangle: lossless when it compresses below `lossless_max_bpp` bytes a pixel, else JPEG; a
     /// rectangle that stays unchanged is later resent lossless.
@@ -695,11 +710,15 @@ pub enum WatchEncoding {
     Lossless,
     /// Every rectangle JPEG.
     Jpeg,
+    /// A value this version does not know: a newer peer sent it.
+    #[serde(other)]
+    Other,
 }
 
 /// How one rectangle of an update is encoded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum RectEncoding {
     /// RGB24 rows, one zstd frame for the rectangle; lossless.
     ZstdRgb,
@@ -709,6 +728,9 @@ pub enum RectEncoding {
     Jpeg,
     /// A PNG of the rectangle; lossless.
     Png,
+    /// A value this version does not know: a newer peer sent it.
+    #[serde(other)]
+    Other,
 }
 
 impl RectEncoding {
@@ -719,12 +741,13 @@ impl RectEncoding {
             Self::RawRgb => "raw_rgb",
             Self::Jpeg => "jpeg",
             Self::Png => "png",
+            Self::Other => "other",
         }
     }
 
     /// Whether decoding gives back exactly what was encoded.
     pub const fn lossless(self) -> bool {
-        !matches!(self, Self::Jpeg)
+        matches!(self, Self::ZstdRgb | Self::RawRgb | Self::Png)
     }
 }
 
@@ -1121,6 +1144,7 @@ pub struct PendingRequest {
 /// answer to each [`ApproveInput::Decide`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ApproveOutput {
     /// The requests waiting now.
     Pending {
@@ -1159,6 +1183,7 @@ impl ApproveOutput {
 /// What a client of `bohio-gui-approve/1` sends.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ApproveInput {
     /// Allows or denies a waiting request.
     Decide {
@@ -1288,6 +1313,7 @@ impl HelperOpen {
 /// What a helper reports of a stream it served, for the node's audit: counts only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum HelperChange {
     /// A stream opened with what it may do.
     Started {
@@ -1323,6 +1349,7 @@ pub enum HelperChange {
 /// What a helper sends on its `bohio-gui-helper/1` stream after the hello.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum HelperMessage {
     /// The session's state changed (locked, switched away, a display changed).
     State {

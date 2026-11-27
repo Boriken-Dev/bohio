@@ -26,6 +26,9 @@ pub enum Signal {
     User2,
     /// The whole tree is ended at once and cannot object (`SIGKILL`).
     Kill,
+    /// A value this version does not know: a newer peer sent it.
+    #[serde(other)]
+    Other,
 }
 
 impl Signal {
@@ -50,6 +53,7 @@ impl Signal {
             Self::User1 => "user1",
             Self::User2 => "user2",
             Self::Kill => "kill",
+            Self::Other => "other",
         }
     }
 

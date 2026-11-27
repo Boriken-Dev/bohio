@@ -99,6 +99,11 @@ pub(crate) fn encode(
                     "the image cannot be encoded",
                 )
             })?,
+        _ => {
+            return Err(GuiError::unsupported(
+                "this host does not encode that image format",
+            ));
+        }
     }
     Ok(bytes)
 }

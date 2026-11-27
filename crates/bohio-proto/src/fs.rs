@@ -256,6 +256,7 @@ pub struct ReadFollow {
 /// What a follow keeps looking at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum FollowBy {
     /// The file that was opened, even when it is renamed or removed.
     Handle,

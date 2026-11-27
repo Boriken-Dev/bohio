@@ -348,6 +348,7 @@ pub fn encode_rect(
                 .map_err(|_| ScreenError::Encode)?;
             Ok(out)
         }
+        _ => Err(ScreenError::Unsupported(encoding)),
     }
 }
 
@@ -444,6 +445,7 @@ pub fn decode_rect(
             }
             Ok(rgb)
         }
+        _ => Err(ScreenError::Unsupported(encoding)),
     }
 }
 

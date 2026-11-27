@@ -380,6 +380,7 @@ fn permits(grant: &Grant, want: Want) -> bool {
             grant.allows(Permission::GuiClipboard)
                 && (grant.allows(Permission::GuiView) || grant.allows(Permission::GuiInput))
         }
+        _ => false,
     }
 }
 
@@ -986,6 +987,7 @@ impl Stream<'_> {
                     state.display(display.as_ref())?;
                     dx.unsigned_abs().saturating_add(dy.unsigned_abs()).max(1)
                 }
+                _ => return Err(bad("this host does not take that input")),
             });
         }
         if waits > config.max_batch_wait.0 {

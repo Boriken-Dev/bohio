@@ -268,6 +268,9 @@ pub enum Reply {
         /// One entry per session, oldest first.
         sessions: Vec<Listed>,
     },
+    /// A value this version does not know: a newer peer sent it.
+    #[serde(other)]
+    Other,
 }
 
 /// What a host is running on: the answer of a `stats` call. Every field is what the operating system reports now; a

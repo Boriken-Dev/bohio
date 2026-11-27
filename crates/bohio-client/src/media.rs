@@ -25,6 +25,7 @@ pub fn call(
         Ok(Some(frame)) => match Answer::decode(&frame)? {
             Answer::Slots(slots) => Ok(slots.slots),
             Answer::Error(body) => Err(Error::Remote(body)),
+            _ => Err(Error::Protocol(bohio_proto::Error::Decode)),
         },
         Ok(None) => Err(Error::Closed),
         Err(failure) => Err(Error::from(failure)),

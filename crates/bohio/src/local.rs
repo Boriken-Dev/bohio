@@ -677,6 +677,7 @@ impl LocalLink {
                 Err(Error::Link("the node paired before it armed".to_owned()))
             }
             _ => Err(Error::Link(
+                "the node sent a reply this client does not know".to_owned(),
             )),
         }
     }
@@ -698,6 +699,7 @@ impl LocalLink {
                 "the node answered a decision nobody sent".to_owned(),
             )),
             _ => Err(Error::Link(
+                "the node sent a reply this client does not know".to_owned(),
             )),
         }
     }

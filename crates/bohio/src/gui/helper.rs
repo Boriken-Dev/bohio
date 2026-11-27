@@ -465,10 +465,11 @@ pub fn narrowed(user: &GuiConfig, policy: &HelperPolicy) -> GuiConfig {
 
 /// What the helper's permissions are for a stream the node decided: exactly what was granted.
 fn grant_of(granted: &[Want]) -> Grant {
-    Grant::allowing(granted.iter().map(|want| match want {
-        Want::View => Permission::GuiView,
-        Want::Input => Permission::GuiInput,
-        Want::Clipboard => Permission::GuiClipboard,
+    Grant::allowing(granted.iter().filter_map(|want| match want {
+        Want::View => Some(Permission::GuiView),
+        Want::Input => Some(Permission::GuiInput),
+        Want::Clipboard => Some(Permission::GuiClipboard),
+        _ => None,
     }))
 }
 
@@ -1034,14 +1035,18 @@ fn hello(held: &Held<'_>, stream: &dyn LinkStream, accepted: &Accepted) {
                     );
                     if !entry.accepts_event(&peer, last) {
                         tracing::debug!("a helper reported an event for a peer it is not serving");
-                    } else if let Ok(peer) = peer.parse::<PeerId>() {
+                    } else if let (Ok(peer), Some(change)) =
+                        (peer.parse::<PeerId>(), change_of(change))
+                    {
                         held.events.event(&NodeEvent::Gui {
                             peer,
                             session: entry.id.clone(),
-                            change: change_of(change),
+                            change,
                         });
                     }
                 }
+                // A message this node does not know is not one it acts on.
+                Ok(_) => {}
                 Err(_) => break,
             },
             Err(Failure::Timeout) => {
@@ -1057,8 +1062,8 @@ fn hello(held: &Held<'_>, stream: &dyn LinkStream, accepted: &Accepted) {
     held.shared.ended.store(true, Ordering::SeqCst);
 }
 
-fn change_of(change: HelperChange) -> GuiChange {
-    match change {
+fn change_of(change: HelperChange) -> Option<GuiChange> {
+    Some(match change {
         HelperChange::Started { granted } => GuiChange::Started { granted },
         HelperChange::Ended {
             snapshots,
@@ -1078,7 +1083,8 @@ fn change_of(change: HelperChange) -> GuiChange {
         HelperChange::ClipboardRead => GuiChange::ClipboardRead,
         HelperChange::ClipboardWritten => GuiChange::ClipboardWritten,
         HelperChange::Refused { reason } => GuiChange::Refused { reason },
-    }
+        _ => return None,
+    })
 }
 
 fn helper_change(change: &GuiChange) -> HelperChange {

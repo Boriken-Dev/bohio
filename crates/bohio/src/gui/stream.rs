@@ -349,7 +349,7 @@ impl Stream<'_> {
                     RectEncoding::Jpeg,
                     encode_one(&pixels, *rect, RectEncoding::Jpeg, &params)?,
                 ),
-                (None, WatchEncoding::Auto) => {
+                (None, _) => {
                     let exact = encode_one(&pixels, *rect, lossless(), &params)?;
                     if exact.len() as f64 <= bpp * area {
                         (lossless(), exact)

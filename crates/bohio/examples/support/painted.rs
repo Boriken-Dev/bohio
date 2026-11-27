@@ -236,11 +236,13 @@ impl Desktop for Painted {
                         KeyAction::Press => "press",
                         KeyAction::Release => "release",
                         KeyAction::Click => "click",
+                        _ => "unknown",
                     };
                     inner.log.push(format!("key:{key}:{action}"));
                 }
                 InputEvent::Text { text } => inner.log.push(format!("text:{text}")),
                 InputEvent::Wait { .. } => {}
+                _ => return Err(GuiError::bad_request("not an input this desktop takes")),
             }
         }
         Ok(u32::try_from(events.len()).unwrap_or(u32::MAX))

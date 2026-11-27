@@ -317,6 +317,8 @@ fn button_flags(button: Button, up: bool) -> (u32, u32) {
         (Button::Back, true) => (MOUSEEVENTF_XUP, XBUTTON1),
         (Button::Forward, false) => (MOUSEEVENTF_XDOWN, XBUTTON2),
         (Button::Forward, true) => (MOUSEEVENTF_XUP, XBUTTON2),
+        // `plan` refuses any other button before this is asked.
+        _ => (0, 0),
     }
 }
 
@@ -358,6 +360,12 @@ pub(crate) fn plan(
                     *y,
                 )?));
             }
+            if !matches!(
+                button,
+                Button::Left | Button::Right | Button::Middle | Button::Back | Button::Forward
+            ) {
+                return Err(GuiError::bad_request("this host has no such mouse button"));
+            }
             let mouse = |up: bool| {
                 let (flags, data) = button_flags(*button, up);
                 Op::Mouse {
@@ -375,6 +383,11 @@ pub(crate) fn plan(
                         ops.push(mouse(false));
                         ops.push(mouse(true));
                     }
+                }
+                _ => {
+                    return Err(GuiError::bad_request(
+                        "this host does not take that button action",
+                    ));
                 }
             }
             ops
@@ -419,6 +432,7 @@ pub(crate) fn plan(
         }
         InputEvent::Text { text } => text_ops(text),
         InputEvent::Wait { .. } => Vec::new(),
+        _ => return Err(GuiError::bad_request("this host does not take that input")),
     })
 }
 

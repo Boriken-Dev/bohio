@@ -874,3 +874,87 @@ fn a_byte_string_longer_than_the_decoders_scratch_buffer_round_trips() {
         batch
     );
 }
+
+#[test]
+fn an_enum_value_a_newer_host_sends_decodes_as_other_and_the_message_survives() {
+    use bohio_proto::gui::{GuiInfo, ImageFormat, RectEncoding, Want, WatchEncoding};
+    use bohio_proto::signal::{Signal, Signalled};
+
+    #[derive(Serialize)]
+    struct Word(&'static str);
+    for (name, decoded) in [
+        (
+            "signal",
+            decode::<Signal>(&encode(&Word("suspend")).unwrap()).map(|v| v == Signal::Other),
+        ),
+        (
+            "want",
+            decode::<Want>(&encode(&Word("camera")).unwrap()).map(|v| v == Want::Other),
+        ),
+        (
+            "image format",
+            decode::<ImageFormat>(&encode(&Word("avif")).unwrap()).map(|v| v == ImageFormat::Other),
+        ),
+        (
+            "rect encoding",
+            decode::<RectEncoding>(&encode(&Word("h264")).unwrap())
+                .map(|v| v == RectEncoding::Other),
+        ),
+        (
+            "watch encoding",
+            decode::<WatchEncoding>(&encode(&Word("av1")).unwrap())
+                .map(|v| v == WatchEncoding::Other),
+        ),
+    ] {
+        assert_eq!(decoded.ok(), Some(true), "{name}");
+    }
+
+    #[derive(Serialize)]
+    struct NewerSignalled {
+        signal: &'static str,
+        delivered: bool,
+    }
+    let signalled: Signalled = decode(
+        &encode(&NewerSignalled {
+            signal: "suspend",
+            delivered: false,
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(signalled.signal, Signal::Other);
+
+    #[derive(Serialize)]
+    struct NewerGui {
+        formats: Vec<&'static str>,
+    }
+    let gui: GuiInfo = decode(
+        &encode(&NewerGui {
+            formats: vec!["png", "avif"],
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(gui.formats, [ImageFormat::Png, ImageFormat::Other]);
+
+    // A reply type this version lacks is a reply of no known kind, not a message that cannot be read.
+    #[derive(Serialize)]
+    struct NewerReply {
+        id: u64,
+        reply: Tagged,
+    }
+    #[derive(Serialize)]
+    struct Tagged {
+        r#type: &'static str,
+    }
+    let response: Response = decode(
+        &encode(&NewerReply {
+            id: 4,
+            reply: Tagged { r#type: "teleport" },
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(response.id, 4);
+    assert_eq!(response.reply, Some(Reply::Other));
+}
