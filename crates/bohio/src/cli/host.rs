@@ -374,13 +374,28 @@ pub(super) fn status(args: &StatusArgs, environment: &Environment) -> Result<(),
     Ok(())
 }
 
+/// Where to connect to reach a listener bound to `address`: an address that means every interface is reached on the
+/// loopback of its family, since a connect to it is refused on some systems.
+fn reachable_address(mut address: std::net::SocketAddr) -> std::net::SocketAddr {
+    if address.ip().is_unspecified() {
+        address.set_ip(if address.is_ipv4() {
+            std::net::Ipv4Addr::LOCALHOST.into()
+        } else {
+            std::net::Ipv6Addr::LOCALHOST.into()
+        });
+    }
+    address
+}
+
 /// Whether something answers at `endpoint`, by connecting where that is safe to do and, for a
 /// serial line, whether the device is there.
 fn answers(endpoint: &Endpoint, wait: Duration) -> &'static str {
-    let connects =
-        |address: &std::net::SocketAddr| TcpStream::connect_timeout(address, wait).is_ok();
+    let connects = |address: &std::net::SocketAddr| {
+        TcpStream::connect_timeout(&reachable_address(*address), wait).is_ok()
+    };
     let reachable = |yes: bool| if yes { "reachable" } else { "not reachable" };
     match endpoint {
+        Endpoint::Tcp(address) if address.port() == 0 => "port chosen when the node starts",
         Endpoint::Tcp(address) => reachable(connects(address)),
         Endpoint::WebSocket(url) => reachable(
             url.socket_addrs(|| None)
@@ -983,7 +998,7 @@ fn say_paired(peer: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Environment, desktop_environment};
+    use super::{Environment, answers, desktop_environment};
 
     fn native(settings: &crate::config::NodeConfig) -> toml::Table {
         settings
@@ -1030,5 +1045,20 @@ mod tests {
         let mut settings = crate::config::NodeConfig::default();
         desktop_environment(&mut settings, &Environment::default());
         assert!(settings.source.is_empty());
+    }
+
+    #[test]
+    fn status_reaches_an_all_addresses_listener_and_says_a_port_chosen_at_start() {
+        use crate::node::Endpoint;
+        let wait = std::time::Duration::from_secs(5);
+        let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let all = Endpoint::parse(&format!("tcp://0.0.0.0:{port}")).unwrap();
+        assert_eq!(answers(&all, wait), "reachable");
+        let unnumbered = Endpoint::parse("tcp://0.0.0.0:0").unwrap();
+        assert_eq!(
+            answers(&unnumbered, wait),
+            "port chosen when the node starts"
+        );
     }
 }
