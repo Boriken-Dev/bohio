@@ -188,7 +188,7 @@ mod platform {
     use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
     use windows_service::{Error, service_dispatcher};
 
-    use super::super::{commands, host};
+    use super::super::host;
     use super::{Environment, Path, PathBuf, Registration};
 
     const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
