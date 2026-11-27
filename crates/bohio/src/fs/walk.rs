@@ -147,9 +147,10 @@ fn run(
             .saturating_sub(1024)
             .max(1),
         sent: 0,
+        visited: 0,
         checked: 0,
         skipped: 0,
-        exhausted: false,
+        exhausted: None,
         pace: Pace::new(files.hash.rate, poll),
         failed: false,
     };
@@ -206,11 +207,13 @@ struct Walker<'a> {
     /// The most bytes of estimated entries in one frame.
     limit: usize,
     sent: u64,
-    /// `sent` when the grant was last read.
+    /// Names looked at, whether or not they were sent: what the grant recheck and `[walk] max_visited` count.
+    visited: u64,
+    /// `visited` when the grant was last read.
     checked: u64,
     skipped: u64,
-    /// `[walk] max_entries` was reached: nothing more is walked.
-    exhausted: bool,
+    /// The `[walk]` bound that was reached (`max_entries` or `max_visited`): nothing more is walked.
+    exhausted: Option<&'static str>,
     pace: Pace,
     /// The stream cannot go on (the client left).
     failed: bool,
@@ -286,14 +289,14 @@ impl Walker<'_> {
         }
     }
 
-    /// Reads the peer's grant again once `[walk] recheck_entries` entries have gone since the last look, and holds the
+    /// Reads the peer's grant again once `[walk] recheck_entries` names have been looked at since the last look, and holds the
     /// root being walked (`text`) to it: a root removed while the stream runs ends with `outside_root`.
     fn recheck(&mut self, text: &str) -> Result<(), ErrorBody> {
         let every = self.context.walk.recheck_entries;
-        if every == 0 || self.sent.saturating_sub(self.checked) < every {
+        if every == 0 || self.visited.saturating_sub(self.checked) < every {
             return Ok(());
         }
-        self.checked = self.sent;
+        self.checked = self.visited;
         let grant = grant_now(&self.context.files)?;
         let files = Context {
             grant: &grant,
@@ -308,27 +311,24 @@ impl Walker<'_> {
     fn room(&mut self, root: u64) -> bool {
         let max = self.context.walk.max_entries;
         if max != 0 && self.sent >= max {
-            if !self.exhausted {
-                self.exhausted = true;
-                self.flush(root);
-                let body = ErrorBody::new(
-                    ErrorCode::Busy,
-                    "the walk reached [walk] max_entries and stopped",
-                );
-                self.item_error(root, None, &body);
-            }
+            self.stop(root, "max_entries");
             return false;
         }
         true
     }
 
+    /// Ends the walk at the bound `limit` names, saying so once.
+    fn stop(&mut self, root: u64, limit: &'static str) {
+        if self.exhausted.is_none() {
+            self.exhausted = Some(limit);
+            self.flush(root);
+            self.item_error(root, None, &stopped(limit));
+        }
+    }
+
     fn walk_root(&mut self, root: u64, text: &str) {
-        if self.exhausted {
-            let body = ErrorBody::new(
-                ErrorCode::Busy,
-                "the walk reached [walk] max_entries and stopped",
-            );
-            self.item_error(root, None, &body);
+        if let Some(limit) = self.exhausted {
+            self.item_error(root, None, &stopped(limit));
             return;
         }
         if let Err(body) = self.walk_root_checked(root, text) {
@@ -368,7 +368,9 @@ impl Walker<'_> {
             stack.push(level);
         }
         while let Some(level) = stack.last_mut() {
-            if self.failed {
+            // A client that closed the stream is not walked for, whatever the walk finds or skips.
+            if self.failed || self.channel.is_closed() {
+                self.failed = true;
                 return Ok(());
             }
             self.recheck(text)?;
@@ -377,6 +379,12 @@ impl Walker<'_> {
                 continue;
             };
             level.next += 1;
+            self.visited += 1;
+            let max_visited = self.context.walk.max_visited;
+            if max_visited != 0 && self.visited > max_visited {
+                self.stop(root, "max_visited");
+                return Ok(());
+            }
             let child = level.relative.join(&name);
             let text = if level.prefix.is_empty() {
                 name.clone()
@@ -525,14 +533,15 @@ impl Walker<'_> {
                 }
             }
         }
-        let remaining = {
-            let max = self.context.walk.max_entries;
+        let left = |max: u64, used: u64| {
             if max == 0 {
                 usize::MAX
             } else {
-                usize::try_from(max.saturating_sub(self.sent)).unwrap_or(usize::MAX)
+                usize::try_from(max.saturating_sub(used)).unwrap_or(usize::MAX)
             }
         };
+        let walk = self.context.walk;
+        let remaining = left(walk.max_entries, self.sent).min(left(walk.max_visited, self.visited));
         let read = match dir.read_dir(relative) {
             Ok(read) => read,
             Err(error) => {
@@ -562,6 +571,14 @@ impl Walker<'_> {
             depth,
         })
     }
+}
+
+/// The error a walk past one of its `[walk]` bounds ends with.
+fn stopped(limit: &str) -> ErrorBody {
+    ErrorBody::new(
+        ErrorCode::Busy,
+        format!("the walk reached [walk] {limit} and stopped"),
+    )
 }
 
 /// The device and inode of `meta`, where the host reports them.

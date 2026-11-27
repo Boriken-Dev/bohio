@@ -844,8 +844,8 @@ impl Default for FilesystemConfig {
 /// `[walk]`: the bounds of `bohio-walk/1`, which lists whole trees on one stream.
 ///
 /// A walk reads every directory it enters (and every file, for the digests a request asks for), so a peer that
-/// may read can make the host spend its disk: `max_streams` bounds how many walks run, `max_entries` how far one
-/// goes. Digests are paced by `[hash] rate`.
+/// may read can make the host spend its disk: `max_streams` bounds how many walks run, `max_entries` how many
+/// entries one sends and `max_visited` how many names it looks at. Digests are paced by `[hash] rate`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct WalkConfig {
@@ -855,7 +855,10 @@ pub struct WalkConfig {
     /// The most entries one walk stream sends, over all its roots; past it the walk ends with an item error
     /// and `done`. `0` is no limit. Default `1000000`.
     pub max_entries: u64,
-    /// How many entries a walk sends between looks at the peer's grant, which end the root being walked with
+    /// The most names one walk looks at over all its roots, whether or not `include` and `exclude` let them through:
+    /// past it the walk ends as it does at `max_entries`. `0` is no limit. Default `10000000`.
+    pub max_visited: u64,
+    /// How many names a walk looks at between looks at the peer's grant, which end the root being walked with
     /// `outside_root` (or `denied`) when the root was removed from the peer's `fs_roots` or `fs.read` was taken away
     /// since. `0` looks once for each root only. Default `1000`.
     pub recheck_entries: u64,
@@ -866,6 +869,7 @@ impl Default for WalkConfig {
         Self {
             max_streams: 4,
             max_entries: 1_000_000,
+            max_visited: 10_000_000,
             recheck_entries: 1000,
         }
     }

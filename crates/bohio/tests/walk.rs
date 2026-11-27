@@ -590,3 +590,40 @@ fn a_root_removed_from_the_peers_roots_while_a_walk_runs_ends_with_outside_root(
     // A grant with no root at all is `denied`; one that names other roots is `outside_root`.
     assert_eq!(failures, [":Denied"]);
 }
+
+#[test]
+fn a_walk_whose_filter_matches_nothing_still_ends_at_max_visited() {
+    let tight = fixture();
+    let link = Link::files(
+        Grant::allowing(READ).with_fs_roots([tight.root.clone()]),
+        FilesystemConfig::default(),
+    )
+    .walking(WalkConfig {
+        max_visited: 10,
+        ..WalkConfig::default()
+    });
+    for index in 0..30 {
+        std::fs::write(tight.root.join(format!("f{index:02}")), b"x").unwrap();
+    }
+    let options = WalkOptions {
+        include: vec!["*.nothing".to_owned()],
+        ..WalkOptions::default()
+    };
+    let mut iter = walk(&link, &["."], &options).unwrap();
+    let mut entries = 0;
+    let mut stops = 0;
+    for item in iter.by_ref() {
+        match item.unwrap() {
+            WalkItem::Entry { .. } => entries += 1,
+            WalkItem::Failure(failure) => {
+                assert_eq!(failure.code, ErrorCode::Busy);
+                assert!(failure.message.contains("max_visited"), "{failure:?}");
+                stops += 1;
+            }
+        }
+    }
+    // Only the root itself was listed; the filter sent nothing, and the walk still stopped.
+    assert_eq!(entries, 1);
+    assert_eq!(stops, 1);
+    assert_eq!(iter.done().unwrap().entries, 1);
+}
