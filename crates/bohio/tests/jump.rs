@@ -393,7 +393,8 @@ fn remote_jump_to_a_stdio_endpoint_runs_the_program_on_the_jump() {
         "--jump-server",
         jump_server.as_str(),
         "info",
-        "--json",
+        "--format",
+        "json",
     ];
     let mut run = Spawned::start(bohio(&args));
     assert_eq!(run.finish(), Some(0), "{}", run.stderr());

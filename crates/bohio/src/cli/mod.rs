@@ -40,14 +40,29 @@ use crate::config::Environment;
         Exit status: 0 success, 1 the operation failed, 2 the invocation was wrong."
 )]
 pub struct Cli {
-    /// Print results as JSON for a program to read: one object, or for a command that streams one object on each line; a
+    /// `json` prints results for a program to read: one object, or for a command that streams one object on each line; a
     /// command whose output is the payload (a file, a connection, a terminal) writes it unchanged and reports its status as
     /// one object on standard error. Errors are `{"error": {"code", "message"}}` on standard error. See docs/cli-json.md.
-    #[arg(long, global = true)]
-    pub json: bool,
+    #[arg(
+        long,
+        global = true,
+        value_enum,
+        value_name = "FORMAT",
+        default_value = "text"
+    )]
+    pub format: OutputFormat,
     /// What to do.
     #[command(subcommand)]
     pub command: Command,
+}
+
+/// How a command writes its results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum OutputFormat {
+    /// Lines a person reads.
+    Text,
+    /// Objects a program reads.
+    Json,
 }
 
 /// The commands.
@@ -1171,7 +1186,7 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>, environment: &Environm
             return ExitCode::from(u8::try_from(error.exit_code()).unwrap_or(2));
         }
     };
-    output::set_json(cli.json);
+    output::set_json(cli.format == OutputFormat::Json);
     install_subscriber();
     match commands::run(&cli.command, environment) {
         Ok(code) => code,

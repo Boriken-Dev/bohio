@@ -99,7 +99,7 @@ impl Client {
     }
 }
 
-/// The code an error is reported with under `--json`: the host's, or what kind of failure it was.
+/// The code an error is reported with under `--format json`: the host's, or what kind of failure it was.
 fn code_of(error: &Error) -> String {
     match error {
         Error::Remote(body) => serde_json::to_value(body.code)
@@ -1276,7 +1276,7 @@ fn sync_options(
     })
 }
 
-/// The one line `put` and `get` print, or under `--json` one object.
+/// The one line `put` and `get` print, or under `--format json` one object.
 fn report_moved(moved: &Moved) -> Result<ExitCode, String> {
     if output::json() {
         output::object(&serde_json::json!({
@@ -2941,7 +2941,7 @@ pub(super) fn dialer(
     Ok((Box::new(move || plan.dial()), settings))
 }
 
-/// Tells where a forward listens: `KIND ADDRESS -> TARGET` (`socks5 ADDRESS` has no target), or an event under `--json`.
+/// Tells where a forward listens: `KIND ADDRESS -> TARGET` (`socks5 ADDRESS` has no target), or an event under `--format json`.
 fn announce(kind: &str, address: &str, to: Option<&str>) {
     if output::json() {
         output::event(
@@ -2966,7 +2966,7 @@ fn non_default(bind: &str) {
     }
 }
 
-/// The end of a command whose output is its payload: under `--json` the final status, one object on standard error.
+/// The end of a command whose output is its payload: under `--format json` the final status, one object on standard error.
 fn done_status() -> ExitCode {
     if output::json() {
         output::status(&serde_json::json!({ "done": {} }));
@@ -2974,7 +2974,7 @@ fn done_status() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Something a streaming command could not read, and went on: `bohio: PATH: MESSAGE` on standard error, or under `--json` a
+/// Something a streaming command could not read, and went on: `bohio: PATH: MESSAGE` on standard error, or under `--format json` a
 /// `failure` event in the stream.
 fn item_failure(path: Option<&str>, message: &str) {
     if output::json() {

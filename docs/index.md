@@ -212,7 +212,7 @@ bohio remote tcp://host.example:7620 stats
 bohio remote tcp://host.example:7620 which git python3
 ```
 
-A search reads what a read would and never follows a link out of the root; [Security](security.md#what-search-stats-which-and-a-follow-give-a-peer) says what it costs the host. Every command takes the global `--json` for output a script can parse ([the shapes](cli-json.md)), and a host named in `[remote.NAME]` of the configuration is reached as `bohio remote NAME ...`.
+A search reads what a read would and never follows a link out of the root; [Security](security.md#what-search-stats-which-and-a-follow-give-a-peer) says what it costs the host. Every command takes the global `--format json` for output a script can parse ([the shapes](cli-json.md)), and a host named in `[remote.NAME]` of the configuration is reached as `bohio remote NAME ...`.
 
 ## An agent on a host
 
@@ -234,7 +234,7 @@ claude mcp add bohio -- bohio mcp --config agent.cfg --host "lab=tcp://host.exam
 - [The protocol](protocol.md): the wire, for an implementer in any language, with test vectors.
 - [Security](security.md): what the service holds, what a peer is granted, where isolation stops, and the known limits.
 - [Agents and MCP](agents.md): the tools an agent has on a host, and `bohio mcp` for any MCP client.
-- [Machine-readable output](cli-json.md): `--json` for every command, and its shapes.
+- [Machine-readable output](cli-json.md): `--format json` for every command, and its shapes.
 - [Profiles](profiles.md): named starting points for the transfer settings: a LAN, a weak host, a slow link, a long fast path.
 - [Embedding a node](embedding.md): running a node inside another application, from its own settings, key and peers.
 - [Using it from hostctl](hostctl.md): how a hostctl provider maps `run`, paths, shells and capability selection onto Bohío.

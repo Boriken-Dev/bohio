@@ -211,7 +211,7 @@ path = "/dev/ttyUSB0"
   the same key (`source.<name>.provider`).
 - **One failure stops nothing else.** Each library is loaded alone. The node logs one line for each at start and
   `bohio providers` (on the node's local endpoint) prints the same: `loaded`, `skipped` or `failed`, the library's path, why or
-  what it offers, and its SHA-256 (`bohio providers --json` for a script). A stale copy of a library beside a newer one
+  what it offers, and its SHA-256 (`bohio providers --format json` for a script). A stale copy of a library beside a newer one
   (the same library id) is `skipped` and names the copy that was loaded; a provider id a built-in already holds stays the
   built-in's (a library never replaces `native` or a built-in `serial`), and the library's report says so.
 - **The owner check is a default.** A library, or the directory that holds it, that another account owns or may write is

@@ -32,7 +32,7 @@ profile = "slow-link"   # what `bohio remote` asks for; `remote --profile NAME` 
 file can name another than the system file), and an unknown name is refused naming `profile.name` and the names there are.
 
 `bohio config check` prints every transfer setting as `key = value (source)`, where the source is `file PATH`, `profile NAME`
-or `default`, so you can see what a profile changed and what you did. `--json` prints the same as objects
+or `default`, so you can see what a profile changed and what you did. `--format json` prints the same as objects
 (`{"key", "value", "source"}`) under `transfer`.
 
 ## Overriding one

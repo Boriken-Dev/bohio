@@ -73,7 +73,14 @@ fn config_check_of_a_missing_file_fails_and_a_missing_default_file_does_not() {
 
 #[test]
 fn config_check_json_is_one_document() {
-    let output = bohio(&["config", "check", "--config", &example(), "--json"]);
+    let output = bohio(&[
+        "config",
+        "check",
+        "--config",
+        &example(),
+        "--format",
+        "json",
+    ]);
     assert_eq!(output.status.code(), Some(0));
     let report: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("one JSON document");
@@ -104,7 +111,7 @@ fn info_prints_the_hosts_capabilities() {
 
 #[test]
 fn info_json_decodes_as_the_protocols_info() {
-    let output = bohio(&["info", "--config", &example(), "--json"]);
+    let output = bohio(&["info", "--config", &example(), "--format", "json"]);
     assert_eq!(output.status.code(), Some(0));
     let info: bohio_proto::info::Info = serde_json::from_slice(&output.stdout).expect("Info");
     assert_eq!(info.protocol, bohio_proto::PROTOCOL_VERSION);
@@ -133,7 +140,13 @@ fn info_reports_a_disabled_capability_as_disabled() {
         "[execution]\nenabled = false\n[shell]\nenabled = false\n",
     )
     .unwrap();
-    let output = bohio(&["info", "--config", &file.to_string_lossy(), "--json"]);
+    let output = bohio(&[
+        "info",
+        "--config",
+        &file.to_string_lossy(),
+        "--format",
+        "json",
+    ]);
     let info: bohio_proto::info::Info = serde_json::from_slice(&output.stdout).unwrap();
     assert!(!info.exec.enabled && !info.shell.enabled && info.filesystem.enabled);
     std::fs::remove_dir_all(directory).unwrap();
@@ -185,6 +198,30 @@ fn peer_approve_help_names_every_permission() {
 fn the_argument_definition_is_consistent() {
     bohio::cli::Cli::command().debug_assert();
     assert!(bohio::cli::Cli::try_parse_from(["bohio", "info"]).is_ok());
+}
+
+#[test]
+fn the_output_format_is_text_or_json_and_json_alone_is_not_a_flag() {
+    use bohio::cli::{Cli, OutputFormat};
+    let parsed =
+        |args: &[&str]| Cli::try_parse_from(std::iter::once("bohio").chain(args.iter().copied()));
+    assert_eq!(parsed(&["info"]).unwrap().format, OutputFormat::Text);
+    assert_eq!(
+        parsed(&["info", "--format", "json"]).unwrap().format,
+        OutputFormat::Json
+    );
+    assert_eq!(
+        parsed(&["--format", "json", "info"]).unwrap().format,
+        OutputFormat::Json
+    );
+    assert_eq!(
+        parsed(&["info", "--format", "text"]).unwrap().format,
+        OutputFormat::Text
+    );
+    assert!(parsed(&["info", "--format", "yaml"]).is_err());
+    assert!(parsed(&["info", "--json"]).is_err());
+    let refused = bohio(&["info", "--json"]);
+    assert_eq!(refused.status.code(), Some(2));
 }
 
 /// Makes `path` unwritable for this account (or writable again): the read-only attribute on Windows, the
@@ -481,7 +518,10 @@ fn the_user_file_is_found_where_the_platform_keeps_it_and_merged_over_the_system
     );
     let environment = locations(&user_root, &system_root);
 
-    let report = checked(&bohio_in(&["config", "check", "--json"], &environment));
+    let report = checked(&bohio_in(
+        &["config", "check", "--format", "json"],
+        &environment,
+    ));
     let files: Vec<&str> = report["files"]
         .as_array()
         .unwrap()
@@ -508,7 +548,8 @@ fn the_user_file_is_found_where_the_platform_keeps_it_and_merged_over_the_system
         &[
             "config",
             "check",
-            "--json",
+            "--format",
+            "json",
             "--config",
             &named.to_string_lossy(),
         ],
@@ -522,7 +563,7 @@ fn the_user_file_is_found_where_the_platform_keeps_it_and_merged_over_the_system
     by_variable.push(("BOHIO_CONFIG", named.clone()));
     let mut command = Command::new(env!("CARGO_BIN_EXE_bohio"));
     command
-        .args(["config", "check", "--json"])
+        .args(["config", "check", "--format", "json"])
         .env_remove("BOHIO_LOG");
     for (name, value) in &by_variable {
         command.env(name, value);
@@ -543,7 +584,7 @@ fn user_layer_false_in_the_system_file_leaves_the_user_file_out() {
         "[service]\nname = \"system\"\nuser_layer = false\n",
     );
     let report = checked(&bohio_in(
-        &["config", "check", "--json"],
+        &["config", "check", "--format", "json"],
         &locations(&user_root, &system_root),
     ));
     assert_eq!(report["service"], "system", "{report}");
@@ -878,7 +919,8 @@ fn config_check_json_lists_the_transfer_keys_as_objects() {
         "check",
         "--config",
         &profile_example("fat-link"),
-        "--json",
+        "--format",
+        "json",
     ]);
     assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();

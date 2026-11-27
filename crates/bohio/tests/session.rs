@@ -680,7 +680,7 @@ fn the_command_line_detaches_lists_attaches_after_a_killed_client_and_ends() {
     let sleeping = first_line(&sleeper.stdout());
     let mut end = remote(&node, &config, &server, &["end", &sleeping]);
     assert_eq!(end.finish(), Some(0), "{}", end.stderr());
-    let mut json = remote(&node, &config, &server, &["sessions", "--json"]);
+    let mut json = remote(&node, &config, &server, &["sessions", "--format", "json"]);
     assert_eq!(json.finish(), Some(0), "{}", json.stderr());
     let listed = String::from_utf8_lossy(&json.stdout()).into_owned();
     assert!(listed.contains("\"killed\":true"), "{listed}");

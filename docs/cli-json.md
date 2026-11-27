@@ -1,10 +1,10 @@
 # Machine-readable output
 
-`--json` (anywhere on the command line, for every command) makes `bohio` write results a program reads instead of lines a
-person reads. The flag is global: `bohio remote HOST stats --json` and `bohio --json remote HOST stats` are the same. There is
+`--format json` (anywhere on the command line, for every command) makes `bohio` write results a program reads instead of lines a
+person reads. The flag is global: `bohio remote HOST stats --format json` and `bohio --format json remote HOST stats` are the same. There is
 no other format switch.
 
-Exit statuses do not change with `--json`: `0` success, `1` the operation failed, `2` the invocation was wrong (and, for
+Exit statuses do not change with `--format json`: `0` success, `1` the operation failed, `2` the invocation was wrong (and, for
 `search`, `1` for no match and `2` for something that could not be read; `which` is `1` when a name was not found).
 
 One command does not follow the flag: `remote console` is a terminal, so its bytes are its payload. Everything else on this page
@@ -16,7 +16,7 @@ does what it says.
 | --- | --- | --- |
 | **Result** (one answer: `info`, `id`, `peer list`, `stats`, `sessions`, `put`, ...) | one JSON object on one line | nothing, or one `{"note": TEXT}` object per diagnostic |
 | **Stream** (`serve`, `pair`, `remote exec`, `walk`, `glob`, `search`, `hash`, `forward`, `gui watch`) | JSON Lines: one object per line, each with an `event` key naming it | as above |
-| **Payload** (`remote read`, `connect`, `listen`, `shell`, `attach` of a shell, `gui snapshot -o -`) | the payload, byte for byte, as without `--json` | the final status as one `{"done": {...}}` object, and the events named below |
+| **Payload** (`remote read`, `connect`, `listen`, `shell`, `attach` of a shell, `gui snapshot -o -`) | the payload, byte for byte, as without `--format json` | the final status as one `{"done": {...}}` object, and the events named below |
 
 An error ends the command with `{"error": {"code": CODE, "message": TEXT}}` on standard error and a status of `1` (a
 command that failed after printing some results leaves them on standard output). `CODE` is what failed: for a refusal by the
@@ -85,7 +85,7 @@ error | stderr | error
 `remote exec` is a stream: `started` (the process id), then `stdout` and `stderr` as the program writes them, a `signalled`
 when the host answers a signal this side sent for Ctrl-C (`signal`, `delivered`, and `message` when it was not), and last
 `exit` (`code`, or `signal` for a program a signal ended, and `timed_out`; the same fields `exec`'s exit has on the wire). The
-command's own status is the program's, as without `--json`. `exec --pty` and `shell` are payload commands: the terminal's
+command's own status is the program's, as without `--format json`. `exec --pty` and `shell` are payload commands: the terminal's
 bytes go to standard output and the exit is `{"done": {"exit": {...}}}` on standard error.
 
 ## What each command prints

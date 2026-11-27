@@ -34,7 +34,7 @@ Documentation: <https://docs.rs/bohio>.
   Beyond `info`, `fs.read`, `fs.write`, `exec` and `shell`, a grant can carry `session`, `forward.connect` and `forward.listen`
   (each with the targets or binds it covers), and the desktop, power and media permissions.
 - Forwarding (`-L`, `-R`, `-D`, `connect`, `listen`, `--jump`), forwards a node keeps across link losses, detached sessions, signals,
-  search, `stats`, `which` and `read --follow` on the host, `--json` output and named hosts, and `bohio mcp` for agents.
+  search, `stats`, `which` and `read --follow` on the host, `--format json` output and named hosts, and `bohio mcp` for agents.
 - Threads, not an async runtime: one thread per stream, bounded by configuration.
 - Every bound is a setting with a documented default; nothing is hard-coded.
 
@@ -92,7 +92,7 @@ Run from the repository root:
 ```text
 bohio config check --config examples/bohio.cfg
 bohio info --config examples/bohio.cfg
-bohio info --config examples/bohio.cfg --json
+bohio info --config examples/bohio.cfg --format json
 ```
 
 `bohio config check` reads the configuration and prints `ok` with a summary, or one line naming

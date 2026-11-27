@@ -448,7 +448,7 @@ fn an_approved_peer_gets_info_runs_exec_and_reads_a_file() {
         &["--allow", "info,exec,fs.read", "--fs-root", &root_text],
     );
 
-    let info = remote(&client, &host, &["info", "--json"]);
+    let info = remote(&client, &host, &["info", "--format", "json"]);
     assert_eq!(info.code, Some(0), "{}", info.stderr);
     assert!(
         info.stdout
@@ -992,7 +992,8 @@ fn the_command_walks_a_tree_and_syncs_it_both_ways_moving_only_what_differs() {
         &host,
         &[
             "walk",
-            "--json",
+            "--format",
+            "json",
             "--hash",
             "crc32c",
             "--include",
@@ -2245,7 +2246,11 @@ fn the_command_searches_globs_and_reports_the_host_with_no_exec_granted() {
     let bad = remote(&client, &host, &["search", "(", &root_text]);
     assert_eq!(bad.code, Some(1), "{}", bad.stdout);
     assert!(bad.stderr.contains("refused"), "{}", bad.stderr);
-    let json = remote(&client, &host, &["search", "--json", "needle", &root_text]);
+    let json = remote(
+        &client,
+        &host,
+        &["search", "--format", "json", "needle", &root_text],
+    );
     assert_eq!(json.code, Some(0), "{}", json.stderr);
     // One event for the match, and the host's counts last.
     let lines: Vec<serde_json::Value> = json
@@ -2271,7 +2276,7 @@ fn the_command_searches_globs_and_reports_the_host_with_no_exec_granted() {
     );
 
     // What the host runs on, and where its programs are.
-    let stats = remote(&client, &host, &["stats", "--json"]);
+    let stats = remote(&client, &host, &["stats", "--format", "json"]);
     assert_eq!(stats.code, Some(0), "{}", stats.stderr);
     let stats: serde_json::Value = serde_json::from_str(stats.stdout.trim()).unwrap();
     assert!(stats["memory"]["total"].as_u64().unwrap() > 0, "{stats}");
@@ -2419,7 +2424,7 @@ fn has_event(
     has_shape(shapes, &format!("{command}/{event}"), found);
 }
 
-/// Every command, run with `--json`, prints what `docs/cli-json.md` says (and nothing else on standard output).
+/// Every command, run with `--format json`, prints what `docs/cli-json.md` says (and nothing else on standard output).
 #[test]
 fn every_command_prints_json_that_docs_cli_json_describes() {
     let shapes = json_shapes();
@@ -2460,15 +2465,21 @@ fn every_command_prints_json_that_docs_cli_json_describes() {
 
     // The node and its files.
     object(
-        run(&["config", "check", "--config", &config, "--json"]),
+        run(&["config", "check", "--config", &config, "--format", "json"]),
         "config check",
     );
-    object(run(&["info", "--config", &config, "--json"]), "info");
-    let id = object(run(&["id", "--config", &config, "--json"]), "id");
+    object(
+        run(&["info", "--config", &config, "--format", "json"]),
+        "info",
+    );
+    let id = object(run(&["id", "--config", &config, "--format", "json"]), "id");
     assert_eq!(id["id"], host.id);
-    object(run(&["status", "--config", &config, "--json"]), "status");
+    object(
+        run(&["status", "--config", &config, "--format", "json"]),
+        "status",
+    );
     let listed = object(
-        run(&["peer", "list", "--config", &config, "--json"]),
+        run(&["peer", "list", "--config", &config, "--format", "json"]),
         "peer list",
     );
     assert!(
@@ -2480,19 +2491,33 @@ fn every_command_prints_json_that_docs_cli_json_describes() {
                 && peer["allow"].as_array().is_some_and(|a| !a.is_empty())),
         "{listed}"
     );
-    let hosts = object(run(&["hosts", "--config", &config, "--json"]), "hosts");
+    let hosts = object(
+        run(&["hosts", "--config", &config, "--format", "json"]),
+        "hosts",
+    );
     assert_eq!(hosts["hosts"][0]["name"], "demo");
     assert_eq!(hosts["hosts"][0]["endpoint"], "tcp://127.0.0.1:1");
-    object(run(&["links", "--config", &config, "--json"]), "links");
     object(
-        run(&["providers", "--config", &config, "--json"]),
+        run(&["links", "--config", &config, "--format", "json"]),
+        "links",
+    );
+    object(
+        run(&["providers", "--config", &config, "--format", "json"]),
         "providers",
     );
 
     // A peer that pairs, is approved and is revoked, as objects; the pairing as events.
     let joiner = world.client("joiner");
     let mut door = Proc::start(
-        &["pair", "--config", &config, "--timeout", "60s", "--json"],
+        &[
+            "pair",
+            "--config",
+            &config,
+            "--timeout",
+            "60s",
+            "--format",
+            "json",
+        ],
         None,
         "warn",
     );
@@ -2514,7 +2539,8 @@ fn every_command_prints_json_that_docs_cli_json_describes() {
         &pin,
         "--config",
         &joiner.config,
-        "--json",
+        "--format",
+        "json",
     ]);
     let joined = object(joined, "join");
     assert_eq!(joined["paired"], host.id);
@@ -2530,13 +2556,16 @@ fn every_command_prints_json_that_docs_cli_json_describes() {
     );
     let approved_json = object(
         run(&[
-            "peer", "approve", &joiner.id, "--allow", "info", "--config", &config, "--json",
+            "peer", "approve", &joiner.id, "--allow", "info", "--config", &config, "--format",
+            "json",
         ]),
         "peer approve",
     );
     assert_eq!(approved_json["approved"]["id"], joiner.id);
     object(
-        run(&["peer", "revoke", &joiner.id, "--config", &config, "--json"]),
+        run(&[
+            "peer", "revoke", &joiner.id, "--config", &config, "--format", "json",
+        ]),
         "peer revoke",
     );
 
@@ -2549,7 +2578,8 @@ fn every_command_prints_json_that_docs_cli_json_describes() {
             &other.config,
             "--listen",
             "tcp://127.0.0.1:0",
-            "--json",
+            "--format",
+            "json",
         ],
         None,
         "warn",
@@ -2583,7 +2613,8 @@ fn every_command_prints_json_that_docs_cli_json_describes() {
             &alone.to_string_lossy(),
             "--timeout",
             "60s",
-            "--json",
+            "--format",
+            "json",
         ],
         None,
         "warn",
@@ -2602,7 +2633,7 @@ fn every_command_prints_json_that_docs_cli_json_describes() {
 
     // What a peer asks of the host.
     let ask = |args: &[&str]| {
-        let mut all = vec!["--json"];
+        let mut all = vec!["--format", "json"];
         all.extend_from_slice(args);
         remote(&client, &host, &all)
     };
@@ -2714,7 +2745,8 @@ fn every_command_prints_json_that_docs_cli_json_describes() {
             "forward",
             "-L",
             &format!("127.0.0.1:0=127.0.0.1:{target_port}"),
-            "--json",
+            "--format",
+            "json",
         ],
         None,
         "warn",
@@ -2751,7 +2783,8 @@ fn every_command_prints_json_that_docs_cli_json_describes() {
         "check",
         "--config",
         "definitely-not-here.cfg",
-        "--json",
+        "--format",
+        "json",
     ]);
     assert_eq!(bad.code, Some(1));
     assert_eq!(json_lines(&bad.stderr)[0]["error"]["code"], "failed");

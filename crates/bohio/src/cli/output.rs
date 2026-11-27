@@ -1,4 +1,4 @@
-//! How a command writes: text for a person, or with `--json` objects a program reads.
+//! How a command writes: text for a person, or with `--format json` objects a program reads.
 //!
 //! One process runs one command, so the mode is a process-wide flag set once, after the arguments are read. In JSON mode a
 //! command prints one JSON object on standard output, or for a streaming command one object per line (each with an
@@ -58,7 +58,7 @@ pub(super) fn set_json(on: bool) {
     JSON.store(on, Ordering::SeqCst);
 }
 
-/// Whether the command was given `--json`.
+/// Whether the command was given `--format json`.
 pub(super) fn json() -> bool {
     JSON.load(Ordering::SeqCst)
 }

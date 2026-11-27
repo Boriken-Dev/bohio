@@ -26,7 +26,7 @@ machines and containers. It is an application: the `coqui-*` names are reserved 
   pairs with every other, each target decided by a rule in the peer's grant.
 - **Programs that survive a lost link**: detached sessions with scrollback, signals to a running program, and a program on
   a terminal with a deadline.
-- **Search, `stats`, `which` and `read --follow`** on the host for a peer that only reads, and `--json` for every command.
+- **Search, `stats`, `which` and `read --follow`** on the host for a peer that only reads, and `--format json` for every command.
 - **Agent tools**: `bohio mcp` serves a host's files, programs and sessions to any Model Context Protocol client,
   bounded by the key's grant; `bohio_client::tools` is the same surface for an embedding agent.
 - **One stream per operation** with a versioned, language-independent protocol: control messages
@@ -105,7 +105,7 @@ approved by its id over any transport (`bohio peer approve`), and pairing by PIN
 
 ```text
 bohio config check --config examples/bohio.cfg
-bohio info --config examples/bohio.cfg --json
+bohio info --config examples/bohio.cfg --format json
 bohio serve | status | id | pair | join <endpoint>
 bohio peer list | approve <id> [--allow ...] | revoke <id>
 bohio remote <endpoint> info | exec -- <argv> | read <path> | write <path> | shell | search | glob | stats | which

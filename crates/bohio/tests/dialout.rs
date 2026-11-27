@@ -351,7 +351,7 @@ fn a_controller_runs_info_read_and_exec_on_a_host_that_dialed_it() {
     let up = linked(&grant, "");
     let (controller, host) = (&up.pair.controller, &up.pair.host);
 
-    let info = via(controller, host, &["info", "--json"]);
+    let info = via(controller, host, &["info", "--format", "json"]);
     assert_eq!(info.code, Some(0), "{}", info.stderr);
     assert!(
         info.stdout
@@ -626,7 +626,13 @@ fn bohio_links_shows_each_side_and_what_each_offers() {
         line.contains("offers-from-peer: bohio-exec/1,bohio/1"),
         "{line}"
     );
-    let json = run_ok(&["links", "--json", "--config", &controller.config()]);
+    let json = run_ok(&[
+        "links",
+        "--format",
+        "json",
+        "--config",
+        &controller.config(),
+    ]);
     assert!(
         json.stdout.contains("\"side\":\"answered\""),
         "{}",

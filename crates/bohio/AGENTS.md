@@ -804,7 +804,7 @@ another account could bind the name first; `remote --via`, `links` and `pair` sa
 pub fn main() -> ExitCode;                                       // arguments and environment from the process
 pub fn run(arguments: impl IntoIterator<Item = OsString>, environment: &Environment) -> ExitCode;
 pub fn capture_environment() -> Environment;
-pub struct Cli { pub json: bool, pub command: Command }       // clap Parser; `--json` is global; Command: Config, Info, Serve, Status, Id, Peer, Pair, Join, Remote, Links, Hosts, Gui, Service
+pub struct Cli { pub format: OutputFormat, pub command: Command }       // clap Parser; `--format json` is global; Command: Config, Info, Serve, Status, Id, Peer, Pair, Join, Remote, Links, Hosts, Gui, Service
 ```
 
 Every command takes `--config FILE`, repeatable, lowest layer first (otherwise `BOHIO_CONFIG`, one file; otherwise the system file with the user's merged over it, unless the
@@ -813,8 +813,8 @@ a person or a script reads is printed to standard output and flushed; diagnostic
 
 | Command | What it does |
 | --- | --- |
-| `config check` | reads the configuration and prints `ok` with a summary (including `dial: <count>` and `hosts: <count>`), then `profile: NAME` and each transfer key as `key = value (file PATH \| profile NAME \| default)` (`--json`: `profile` and `transfer`, a list of `{key, value, source}`); a `[remote]` table with no `endpoint`, a `jump` that names no host or a host that is its own jump is refused naming the key |
-| `info` | prints this host's capabilities (with `--json` the `bohio_proto::info::Info`) |
+| `config check` | reads the configuration and prints `ok` with a summary (including `dial: <count>` and `hosts: <count>`), then `profile: NAME` and each transfer key as `key = value (file PATH \| profile NAME \| default)` (`--format json`: `profile` and `transfer`, a list of `{key, value, source}`); a `[remote]` table with no `endpoint`, a `jump` that names no host or a host that is its own jump is refused naming the key |
+| `info` | prints this host's capabilities (with `--format json` the `bohio_proto::info::Info`) |
 | `serve [--listen ENDPOINT]...` | also dials each peer whose `[peer.<id>]` table has an `endpoint` (printing `dialing <endpoint> peer <id>`; with no `[[listen]]` and no `--listen`, a node that only dials is fine); serves each `[[listen]]` endpoint and `--listen` (`tcp://host:port`, port 0 picks one; `pipe://name`, `ws://host:port`, `wss://host:port` (needs a `[[listen]]` entry with `tls_cert` and `tls_key`), `webtransport://host:port`, `serial://port?baud=N`) until killed; prints `listening <endpoint>` for each, then `host <id>` |
 | `serve --stdio` | serves one link on standard input and output until it ends; prints nothing to standard output, logs to standard error; excludes `--listen` and binds no `[[listen]]` |
 | `links [--wait TIME]` | lists the links the running node of this configuration holds, through its local control endpoint (default wait `[client] links_wait`, `5s`, for each peer's offers): `<peer> <dialed\|answered> <endpoint or source> offers-to-peer: ... offers-from-peer: ...` |
@@ -855,7 +855,7 @@ a person or a script reads is printed to standard output and flushed; diagnostic
 | `remote <endpoint> listen [--keep] <bind>` | the host binds `BIND:PORT`, `unix:PATH` or `pipe:NAME`, prints `listening ADDRESS` on standard error, and one arriving connection meets standard input and output (netcat `-l` on the host); exit 0 when both directions ended in order. `--keep` takes the next arrival after each ends (what is typed between connections goes to the next) until the link ends and, with `--once`, exit 1; without it a lost link is made again and the host is asked to listen for the same port (`listening ADDRESS` again). Works over `--via` |
 | `remote <endpoint> shell [--kind sh\|bash\|zsh\|cmd\|powershell\|pwsh] [--cwd D] [--kill-after SPAN] [--detach ...]` | an interactive shell; the local terminal is put in raw mode when standard input is one, and its size is followed; `--detach` starts a session (as for `exec`) |
 
-`--json` is a flag of `bohio` itself (global, so it may follow any subcommand) and the only output switch: a result command prints one JSON object, a streaming command (`serve`, `pair`,
+`--format json` is a flag of `bohio` itself (global, so it may follow any subcommand) and the only output switch: a result command prints one JSON object, a streaming command (`serve`, `pair`,
 `remote exec`, `walk`, `glob`, `search`, `hash`, `forward`) one object per line with an `event` key, and a command whose output is a payload (`remote read`, `connect`, `listen`, a
 terminal) writes it unchanged and reports its final status as one `{"done": ...}` object on standard error; an error is `{"error": {"code", "message"}}` on standard error. The module
 `cli::output` holds the mode (a process-wide flag: one process runs one command), `object`, `event`, `status`, `note` and the code an error is reported with (`output::code`, set by

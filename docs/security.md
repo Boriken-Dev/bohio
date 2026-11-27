@@ -120,7 +120,7 @@ A walk, a bundle and a move are the same reads and writes in fewer streams, so t
 
 ## What a host's text does to the operator's terminal
 
-A host chooses the text it sends: file and directory names, `info` fields, a `stats` hostname, error messages and the reasons a link or stream closes with. In text mode (no `--json`) `bohio remote` writes each of these with every control character (C0, DEL and C1: an escape sequence, a carriage return, a bell) as `\xNN` or `\u{..}`, a newline in a name too, so a malicious or compromised host cannot rewrite what the operator sees, fake a prompt or a refusal, or set the terminal's clipboard (OSC 52). `--json` output escapes them as JSON does. What a command carries as its payload (`cat`, `get`, a program's output, a shell) is unchanged: a program's own escape sequences are what a terminal session is for.
+A host chooses the text it sends: file and directory names, `info` fields, a `stats` hostname, error messages and the reasons a link or stream closes with. In text mode (no `--format json`) `bohio remote` writes each of these with every control character (C0, DEL and C1: an escape sequence, a carriage return, a bell) as `\xNN` or `\u{..}`, a newline in a name too, so a malicious or compromised host cannot rewrite what the operator sees, fake a prompt or a refusal, or set the terminal's clipboard (OSC 52). `--format json` output escapes them as JSON does. What a command carries as its payload (`cat`, `get`, a program's output, a shell) is unchanged: a program's own escape sequences are what a terminal session is for.
 
 ## What search, `stats`, `which` and a follow give a peer
 

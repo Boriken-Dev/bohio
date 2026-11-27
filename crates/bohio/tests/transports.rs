@@ -340,7 +340,7 @@ impl World {
             &root,
         ]);
 
-        let info = self.remote_ok(target, &["info", "--json"], attempts);
+        let info = self.remote_ok(target, &["info", "--format", "json"], attempts);
         assert!(
             info.stdout
                 .contains(&format!("\"host_id\":\"{}\"", self.host_id)),
@@ -1088,7 +1088,10 @@ fn a_fallback_on_another_host_is_dialled_when_the_operator_names_it() {
     let (world, _host, port, silent) = fallback_world("ws://127.0.0.2:0");
     let blocked = format!("webtransport://{}", silent.local_addr().unwrap());
     let ws = format!("ws://127.0.0.2:{port}");
-    let fell_back = world.remote(&["--fallback", &ws, &blocked], &["info", "--json"]);
+    let fell_back = world.remote(
+        &["--fallback", &ws, &blocked],
+        &["info", "--format", "json"],
+    );
     assert_eq!(
         fell_back.code,
         Some(0),
@@ -1113,7 +1116,10 @@ fn a_plain_fallback_beyond_loopback_is_dialled_when_the_operator_names_it() {
     // The WebTransport endpoint names a different host than the fallback, which is plain on a routed address.
     let blocked = format!("webtransport://{}", silent.local_addr().unwrap());
     let ws = format!("ws://{address}:{port}");
-    let fell_back = world.remote(&["--fallback", &ws, &blocked], &["info", "--json"]);
+    let fell_back = world.remote(
+        &["--fallback", &ws, &blocked],
+        &["info", "--format", "json"],
+    );
     assert_eq!(
         fell_back.code,
         Some(0),
@@ -1155,7 +1161,10 @@ fn a_blocked_udp_path_falls_back_to_the_websocket_endpoint_and_a_refused_certifi
     let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     let blocked = format!("webtransport://{}", silent.local_addr().unwrap());
     let started = Instant::now();
-    let fell_back = world.remote(&["--fallback", &ws, &blocked], &["info", "--json"]);
+    let fell_back = world.remote(
+        &["--fallback", &ws, &blocked],
+        &["info", "--format", "json"],
+    );
     assert_eq!(
         fell_back.code,
         Some(0),
@@ -1195,7 +1204,7 @@ fn a_blocked_udp_path_falls_back_to_the_websocket_endpoint_and_a_refused_certifi
     // The control: the right hash on the same pair reaches the WebTransport host itself.
     let pinned = world.remote(
         &["--cert-hash", &hash, "--fallback", &ws, &live],
-        &["info", "--json"],
+        &["info", "--format", "json"],
     );
     assert_eq!(pinned.code, Some(0), "{}", pinned.stderr);
 }
