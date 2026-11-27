@@ -106,6 +106,23 @@ let watch = found.guard(&environment)?;               // refuses a layer or data
 
 `discover(named)` reads the layers `named` names, or else the system file with the user's merged over it (`[service] user_layer = false` leaves the user's out), and answers a `Found`: the merged `Config`, the layers read, the layers to watch and the user file `peer approve` makes. `Found::guard` is what `bohio serve` applies before it binds: no layer, directory that holds one, data directory or identity file may be owned by another account, or changed (the data directory also read) by its group or by others, unless `[service] check_access` is `false`, which logs `non-default:` and goes on; a path another account owns is refused either way, unless `Found::trust` (the command's `--trust-owner` and `BOHIO_TRUST_OWNER`) or `[service] trusted_owners` names that account. It answers the layers `LayeredPeers` should read. The pieces are in `bohio::ownership` (`check`, `layer_problems`, `decide`, `may_appear`) for an application that guards its own files.
 
+## An MCP server
+
+An application that hosts an agent serves the same Model Context Protocol surface `bohio mcp` does (the tools of `bohio_client::tools`, newline-delimited JSON-RPC 2.0 over any reader and writer), with no `cli` feature and no child process. It names the hosts the agent may use, each with the function that makes its link and the tools' settings, and gives the server the client's streams:
+
+```rust
+use bohio::mcp::{Host, Options, serve};
+
+let hosts = vec![Host {
+    name: "lab".into(),
+    dial: Box::new(move || Ok(Arc::new(node.peer(&lab).ok_or("no link to lab")?) as Arc<dyn Open>)),
+    settings: Settings::default(),
+}];
+serve(hosts, &Options::default().with_max_calls(4), reader, writer)?;   // returns when `reader` ends
+```
+
+The link is made the first time a call needs it, and once more when a stream cannot be opened on a lost one. `Options::with_gui(true)` lists the desktop tools (the screen is untrusted input to the agent, and `gui.input` is the desktop user's whole authority). A call runs on a thread of its own; `notifications/cancelled` ends it, and one beyond `max_calls` (default 8) is answered `busy`. When `reader` ends the server cancels what runs, waits for it and returns. The command resolves a host spec to a link as `bohio remote` does; an application decides that for itself.
+
 ## Events
 
 `NodeEvents` hears links coming up and down, streams opened, refused and revoked, dial attempts and failures, pairings and strangers; each event names a peer id, a protocol or an address and never a key, a PIN or a request. The default logs them through `tracing`.

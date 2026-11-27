@@ -6,7 +6,7 @@ key. Two surfaces give it the tools:
 - `bohio_client::tools`, a Rust library an embedding agent (a harness, a theater, a build tool) calls in process over any
   `Open` link. A tool is a name, a JSON Schema for its arguments, the permissions it needs, and a function: `Tools::call(name,
   arguments, &Cancel)` answers JSON and images, so a protocol server needs to know no tool by name.
-- `bohio mcp`, a Model Context Protocol server on standard input and output over the same tools, for any MCP client.
+- `bohio mcp`, a Model Context Protocol server on standard input and output over the same tools, for any MCP client. An application that hosts an agent runs the same server in its own process with `bohio::mcp::serve` ([Embedding a node](embedding.md#an-mcp-server)).
 
 The tool names mirror the local tools of coding agents (`exec` is Bash, `read` Read, `write` Write, `edit` Edit, `glob` Glob, `search` Grep),
 so a harness can run with its local tools disallowed and these in their place.
