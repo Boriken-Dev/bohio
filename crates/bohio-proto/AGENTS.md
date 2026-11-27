@@ -7,7 +7,7 @@ with the source at <https://github.com/Boriken-Dev/bohio>.
 No Cargo features. MSRV Rust 1.89. Depends on `serde`, `ciborium` and `thiserror`. Version `0.0.0-alpha.0`, not published.
 
 Imports: the root holds `decode`, `decode_with_depth`, `encode`, `DEFAULT_DEPTH`, `Error`, `ErrorBody`, `ErrorCode` and
-`PROTOCOL_VERSION`. Public modules: `codec`, `control`, `error`, `exec`, `forward`, `fs`, `gui`, `hash`, `info`, `local`, `media`, `power`, `protocol`, `search`, `shell`, `walk`. No `unsafe` code
+`PROTOCOL_VERSION`. Public modules: `codec`, `compress`, `control`, `error`, `exec`, `forward`, `fs`, `gui`, `hash`, `info`, `local`, `media`, `power`, `protocol`, `search`, `session`, `shell`, `signal`, `walk`. No `unsafe` code
 (`#![forbid(unsafe_code)]`); no I/O; no process-wide state.
 
 ## Protocols (`bohio_proto::protocol`)
@@ -32,7 +32,7 @@ pub fn decode_with_depth<T: DeserializeOwned>(bytes: &[u8], depth: usize) -> Res
 ```
 
 CBOR, structs as maps with string keys, enums with data tagged by a `"type"` key in snake case. `decode` ignores keys the type
-does not name, refuses trailing bytes and nesting past `depth` (`Error::Decode`). Missing optional keys take their defaults.
+does not name, refuses trailing bytes and nesting past `depth` (`Error::Decode`). Missing optional keys take their defaults. An enum value a newer host sends that this version lacks decodes as the enum's `Other` (`Signal`, `Want`, `ImageFormat`, `RectEncoding`, `WatchEncoding`, `Reply`; `Codec`, `Algorithm`, `ShellKind`, `FileKind` and `ErrorCode` have theirs), so one new value does not fail the message it is in; a host that is sent `Other` refuses it.
 
 ## Errors (`bohio_proto::error`)
 
@@ -51,14 +51,17 @@ pub struct Request { pub id: u64, pub call: Call, source: Option<String> /* the 
 #[non_exhaustive] pub enum Call {
     Hello { version: u32, client: String }, Info,
     Stat { path, follow }, List { path, after: Option<String>, limit: Option<u64> }, Mkdir { path, parents, mode: Option<u32> },
-    Remove { path, recursive }, Rename { from, to, overwrite }, Copy { from, to, overwrite }, Symlink { target, link }, Readlink { path },
+    Remove { path, recursive }, Rename { from, to, overwrite }, Copy { from, to, overwrite, recursive, preserve }, Move { from, to, overwrite }, Truncate { path, length },
+    Symlink { target, link }, Readlink { path },
     SetTimes { path, accessed: Option<Timestamp>, modified: Option<Timestamp> }, SetMode { path, mode: u32 },
     SetAttributes { path, readonly: Option<bool> },   // `bool`s default false
-    Sessions, EndSession { id: String, signal: Option<Signal> } }   // the caller's detached sessions; end one (kill when no signal)
+    Sessions, EndSession { id: String, signal: Option<Signal> },   // the caller's detached sessions; end one (kill when no signal)
+    Stats, Which { names: Vec<String> } }   // both need `info`
 pub struct Response { pub id: u64, pub reply: Option<Reply>, pub error: Option<ErrorBody> }   // exactly one is present
 impl Response { pub const fn ok(id, reply) -> Self; pub const fn failed(id, error) -> Self; pub fn into_result(self) -> Result<Reply, ErrorBody>; }
 #[non_exhaustive] pub enum Reply { Hello { version: u32, transfer: TransferInfo }, Info(Box<Info>), Stat(Box<Metadata>), List(Listing), Done,
-                                    Link { target: String }, Sessions { sessions: Vec<session::Listed> } }
+                                    Link { target: String }, Stats(Box<Stats>), Which { found: BTreeMap<String, Option<String>> }, Sessions { sessions: Vec<session::Listed> },
+                                    Other /* a reply type this version lacks */ }
 ```
 
 The control stream's messages are bare CBOR, one request or response per stream message (no tag byte). `Done` answers every call
@@ -83,7 +86,7 @@ pub struct DeltaBase { size: u64, modified: Option<Timestamp>, hashes: Digests }
 #[non_exhaustive] pub struct ReadDone { pub hashes: Digests }                        // the digests the request named, of the bytes sent
 #[non_exhaustive] pub enum ReadOutput { Header(ReadHeader), Data(Vec<u8>), Compressed(Vec<u8>) /* 0x06 */, Progress(Progress) /* 0x08 */, Copy(DeltaCopy) /* 0x09 */, Done(ReadDone), Error(ErrorBody) }
 #[non_exhaustive] pub enum ReadInput { Signature(SignatureBatch) /* 0x12 */, SignatureEnd /* 0x13 */ }   // client to host, a delta read only
-#[non_exhaustive] pub enum WriteMode { Replace /* default */, Create, Append, At { offset: u64 }, Delta { block_size: u64, base: DeltaBase } }   // tagged by "type"; no longer Copy (Delta holds digests); a delta needs fs.read as well
+#[non_exhaustive] pub enum WriteMode { Replace /* default */, Create, Append, At { offset: u64 }, Delta { block_size: u64, base: DeltaBase } }   // tagged by "type"; not Copy (Delta holds digests); a delta needs fs.read as well
 pub struct WriteRequest { path, mode: WriteMode, parents: bool, file_mode: Option<u32>, expect: Digests, hashes: Option<Vec<Algorithm>>, compression: Option<Compression>, base: Option<DeltaBase> /* a replace only if the target still is this: `changed` otherwise, needs fs.read */ }   // WriteRequest::replace(path); hashes None: the host's write_hashes; compression: what the client sends, never Auto
 pub struct WriteDone { pub written: u64, pub hashes: Digests }
 #[non_exhaustive] pub enum WriteOutput { Ready, Done(WriteDone), Error(ErrorBody) }
@@ -112,7 +115,7 @@ pub struct BundleEnd { items: u64 }   // ReadOutput::End (0x07) and WriteOutput:
 pub struct WriteItem { path, mode: WriteMode /* replace or create */, parents: bool, file_mode: Option<u32>, modified: Option<Timestamp>, expect: Digests }   // WriteInput::Item (0x16), ItemsEnd (0x17); End (0x11) ends an item's data
 pub struct Ready { token: Option<String>, offset: Option<u64> }   pub struct Flushed { written: u64 }   // WriteOutput::Ready(Ready) (an empty body is Ready::default(); WriteOutput::ready()), Flushed (0x02); WriteInput::Flush (0x12)
 // ReadRequest.items, ReadHeader.{index, modified, mode} (a bundle's item), ReadDone.index, WriteRequest.{items, resume}, WriteDone.index, WriteMode::Resume { token }, ReadRequest::bundle(), WriteRequest::bundle()
-// Metadata gains device, inode, links: Option<u64> (absent where the host cannot report them). Control gains Call::Move { from, to, overwrite }, Call::Truncate { path, length } and Copy { recursive, preserve }. TransferInfo gains walk, walk_limits (WalkLimits { max_streams, max_entries }), bundles, resume.
+// Metadata also holds device, inode, links: Option<u64> (absent where the host cannot report them). TransferInfo holds walk, walk_limits (WalkLimits { max_streams, max_entries }), bundles, resume.
 ```
 
 ## Hash (`bohio_proto::hash`)
@@ -160,17 +163,17 @@ pub struct AcceptRequest { pub token: String, pub id: u64 }                     
 ```rust
 pub const GUI: &str = "bohio-gui/1";   // in `protocol`
 pub struct GuiRequest { pub session: Option<String>, pub want: Option<Vec<Want>> }   // `new(want)`, `wants()` (default [View], sorted), to_metadata / from_metadata
-pub enum Want { View, Input, Clipboard }                          // "view", "input", "clipboard"
+#[non_exhaustive] pub enum Want { View, Input, Clipboard, Other }   // "view", "input", "clipboard"; a value a newer peer sends decodes as `Other`
 pub struct DisplayId(pub String);   pub struct Rect { x, y, width, height: u32 }  // `fits(w, h)`, `area()`
 pub struct Display { id, name, primary, x, y: i32, width, height, scale: f64, rotation }   pub struct State { active, locked: Option<bool>, displays }
 pub struct Ready { session, granted: Vec<Want>, state: State }
-pub enum ImageFormat { Png, Jpeg, Webp }                          // ALL, name(), from_name()
+#[non_exhaustive] pub enum ImageFormat { Png, Jpeg, Webp, Other }   // ALL (the three), name(), from_name(); an unknown name decodes as `Other`
 pub struct Snapshot { seq, display, region, format, quality, max_width, max_height, cursor: bool, settle: Option<SettleOptions> }   // Default
 pub struct ImageHeader { seq, display, format, width, height, region, scale: f64, cursor: Option<Point>, length: u64, settled: Option<Settled> }
-pub enum InputEvent { Move, Button, Scroll, Key, Text, Wait }     // tagged by `type`; `InputEvent::combo("ctrl+shift+t") -> Result<Vec<_>, BadCombo>` (xdotool names)
+#[non_exhaustive] pub enum InputEvent { Move, Button, Scroll, Key, Text, Wait }     // tagged by `type`; `InputEvent::combo("ctrl+shift+t") -> Result<Vec<_>, BadCombo>` (xdotool names)
 pub const KEY_NAMES: &[&str];   pub fn is_key(key: &str) -> bool;  // a listed name or exactly one character
 pub struct Input { seq, events }   pub struct InputDone { seq, applied }   pub struct Settle { seq, display, region, quiet_ms, timeout_ms }   pub struct SettledFrame { seq, settled, waited_ms }
-pub enum WatchEncoding { Auto /* default */, Lossless, Jpeg }   pub enum RectEncoding { ZstdRgb, RawRgb, Jpeg, Png }   // `name()`, `lossless()`; "zstd_rgb", "raw_rgb", "jpeg", "png"
+#[non_exhaustive] pub enum WatchEncoding { Auto /* default */, Lossless, Jpeg, Other }   #[non_exhaustive] pub enum RectEncoding { ZstdRgb, RawRgb, Jpeg, Png, Other }   // `name()`, `lossless()`; "zstd_rgb", "raw_rgb", "jpeg", "png"; an unknown value decodes as `Other`
 pub struct Watch { seq, display, region, fps, encoding, quality, max_width, max_height, max_rate: Option<u64>, cursor: bool, refine: Option<bool>, key: bool }   // Default; an absent field is the host default
 pub struct Unwatch { seq }   pub struct Ack { frame: u64 }   pub struct UpdateRect { x, y, width, height, encoding: RectEncoding, length: u64 }   // `rect()`
 pub struct UpdateHeader { frame, display, width, height, scale: f64, key: bool, rects: Vec<UpdateRect>, cursor: Option<Point>, level: u32, ack_ms: Option<u64> }   pub struct CursorFrame { display, x, y, visible }
@@ -178,13 +181,13 @@ pub struct ClipboardGet { seq }   pub struct ClipboardSet { seq, text }   pub st
 #[non_exhaustive] pub enum GuiOutput { Ready, Image, Data(Vec<u8>), Update, Cursor, Error, InputDone, Settled, Clipboard, State, RequestError }   // encode / decode; tags 0x01 0x02 0x03 0x04 0x05 0x06 0x07 0x08 0x09 0x0a 0x0b
 #[non_exhaustive] pub enum GuiInput { Snapshot, Watch, Unwatch, Ack, Input, Settle, ClipboardGet, ClipboardSet }                                  // tags 0x10 0x11 0x12 0x13 0x14 0x15 0x16 0x17
 pub struct GuiInfo { enabled, available, reason, backend, input, clipboard, lock_detection, formats, sessions: Vec<GuiSession> }   // `info.gui`
-pub enum ApproveOutput { Pending { requests: Vec<PendingRequest> }, Decided { id, found } }   pub enum ApproveInput { Decide { id, allow } }   // `bohio-gui-approve/1` (`local::GUI_APPROVE`)
+#[non_exhaustive] pub enum ApproveOutput { Pending { requests: Vec<PendingRequest> }, Decided { id, found } }   #[non_exhaustive] pub enum ApproveInput { Decide { id, allow } }   // `bohio-gui-approve/1` (`local::GUI_APPROVE`)
 pub struct HelperHello { session, user, state }   pub struct HelperPolicy { indicator_notify, input_when_locked, input_when_lock_unknown, max_input_rate, max_snapshot_pixels, max_batch_events, max_text, clipboard_max_bytes, max_fps }
-pub struct HelperOpen { request: GuiRequest, peer, session, granted: Vec<Want>, policy }   pub enum HelperMessage { State { state }, Event { peer, change: HelperChange } }   pub enum HelperChange { Started, Ended, ClipboardRead, ClipboardWritten, Refused }
+pub struct HelperOpen { request: GuiRequest, peer, session, granted: Vec<Want>, policy }   #[non_exhaustive] pub enum HelperMessage { State { state }, Event { peer, change: HelperChange } }   #[non_exhaustive] pub enum HelperChange { Started, Ended, ClipboardRead, ClipboardWritten, Refused }
                                                        // `bohio-gui-helper/1` (`local::GUI_HELPER`): the helper's first stream, and the open metadata of the `bohio-gui/1` streams a node opens on it
 ```
 
-`Info` is no longer `Eq` (a scale is a float). An `update` rectangles' bytes follow in `Data` frames, exactly the sum of their `length`s.
+`Info` is not `Eq` (a scale is a float). An `update` rectangles' bytes follow in `Data` frames, exactly the sum of their `length`s.
 
 ## Info (`bohio_proto::info`)
 
@@ -210,8 +213,8 @@ Every field has a default and unknown keys are ignored: a client works with a ho
 pub const POWER: &str = "bohio-power/1";  pub const MEDIA: &str = "bohio-media/1";   // one request, one answer; tag 0x01 the result, 0x05 an error
 power::Request { source: Option<String>, action: Action }  Action { Status, On, Off, SoftOff, Cycle, Reset, Nmi }  power::State { state: String, done: bool }  power::Answer { State, Error }
 media::Request { source, op: Op { Status, Insert, Eject }, slot: Option<String>, image: Option<Image> }  Image { Url { url }, Path { path } }  media::Slot { slot, inserted, image, size }  media::Slots  media::Answer { Slots, Error }
-info::AccessInfo { terminal, desktop, power, media: Vec<SourceEntry>, fs, exec: String }  info::SourceEntry { name, provider, default, available, reason, offers, lacks }   // Info.access
-shell::Program::Console { source: Option<String> }  shell::Request::console(Option<&str>)  shell::Started.pid: Option<u32>  gui::GuiRequest.source: Option<String>
+info::AccessInfo { terminal, desktop, power, media, fs, exec: Vec<SourceEntry> }  info::SourceEntry { name, provider, default, available, reason, offers, lacks }   // Info.access
+shell::Program::Console { source: Option<String> }  shell::Request::console(Option<&str>)  shell::Started.pid: Option<u32>  gui::GuiRequest.source: Option<String>   // `source` is also on the control, read, write, hash, walk, search and exec requests
 ```
 
 ## Shells (`bohio_proto::shell`)
@@ -226,7 +229,7 @@ pub struct Request { pub program: Program, pub cwd: Option<String>, pub env: exe
 impl Request { pub fn kind(ShellKind) -> Self; pub fn argv(argv) -> Self;
                pub fn to_metadata(&self) -> Result<Vec<u8>, Error>; pub fn from_metadata(&[u8]) -> Result<Self, Error>; }
 #[non_exhaustive] pub enum Program { Kind { kind: ShellKind }, Argv { argv: Vec<String> } }       // tagged by "type"
-pub struct Started { pub pid: u32, pub session: Option<String> }                                   // Started::new(pid)
+pub struct Started { pub pid: Option<u32> /* none for a console */, pub session: Option<String> }   // Started::new(pid)
 pub struct Exit { pub code: Option<i32>, pub signal: Option<i32>, pub timed_out: bool, pub killed: bool }   // Default
 pub struct Size { pub cols: u16, pub rows: u16 }
 #[non_exhaustive] pub enum Output { Started(Started), Data(Vec<u8>), Signalled(Signalled) /* 0x08 */, Exit(Exit), Error(ErrorBody) }   // host to client
@@ -244,7 +247,7 @@ version does not know, which a reader may skip.
 ## Exec (`bohio_proto::exec`)
 
 ```rust
-pub struct Request { pub command: Command, pub cwd: Option<String>, pub env: Env, pub stdin: Stdin, pub timeout_ms: Option<u64>, pub output_compression: Option<Compression>, pub stdin_compression: Option<Compression>,
+pub struct Request { pub source: Option<String> /* the exec source; the node's default when absent */, pub command: Command, pub cwd: Option<String>, pub env: Env, pub stdin: Stdin, pub timeout_ms: Option<u64>, pub output_compression: Option<Compression>, pub stdin_compression: Option<Compression>,
                      pub session: Option<session::SessionRequest> /* detached: needs the peer's `session` */ }
 impl Request { pub fn argv(argv) -> Self; pub fn shell(kind: ShellKind, script) -> Self;
                pub fn to_metadata(&self) -> Result<Vec<u8>, Error>; pub fn from_metadata(&[u8]) -> Result<Self, Error>; }
@@ -253,8 +256,6 @@ pub struct Started { pub pid: u32, pub output_compression: Option<Compression>, 
 #[non_exhaustive] pub enum Stdin { Closed /* default */, Open }
 #[non_exhaustive] pub enum Output { Started(Started), Stdout(Vec<u8>), Stderr(Vec<u8>), StdoutCompressed(Vec<u8>) /* 0x06 */, StderrCompressed(Vec<u8>) /* 0x07 */, Signalled(Signalled) /* 0x08 */, Exit(Exit), Error(ErrorBody) }   // host to client
 #[non_exhaustive] pub enum Input { Stdin(Vec<u8>), StdinCompressed(Vec<u8>) /* 0x13 */, StdinEnd, Kill, Signal(Signal) /* 0x15 */ }                              // client to host
-#[non_exhaustive] pub enum Output { Started(Started), Stdout(Vec<u8>), Stderr(Vec<u8>), Exit(Exit), Error(ErrorBody) }   // host to client
-#[non_exhaustive] pub enum Input { Stdin(Vec<u8>), StdinEnd, Kill }                                                    // client to host
 impl Output { pub fn encode(&self) -> Result<Vec<u8>, Error>; pub fn decode(&[u8]) -> Result<Self, Error>; }
 impl Input  { pub fn encode(&self) -> Vec<u8>;                pub fn decode(&[u8]) -> Result<Self, Error>; }
 ```
@@ -268,7 +269,7 @@ directly and never through a shell; `Command::Shell` is only for a caller that c
 ## Signals (`bohio_proto::signal`)
 
 ```rust
-#[non_exhaustive] pub enum Signal { Interrupt, Terminate, Hangup, Quit, User1, User2, Kill }   // snake_case on the wire; Signal::ALL, name(), from_name(), Display
+#[non_exhaustive] pub enum Signal { Interrupt, Terminate, Hangup, Quit, User1, User2, Kill, Other }   // snake_case on the wire; Signal::ALL (the seven), name(), from_name(), Display; an unknown name decodes as `Other`
 pub struct SignalRequest { pub signal: Signal }                                                // the body of the client's 0x15 frame (exec and shell)
 pub struct Signalled { pub signal: Signal, pub delivered: bool, pub message: Option<String> }   // the host's 0x08 answer; `delivered: false` is an answer, not an error
 ```
@@ -301,7 +302,7 @@ Spoken only on a running node's local endpoint, never on a peer's link (CDDL in 
 pub const VIA: &str = "bohio-via/1";   pub const LINKS: &str = "bohio-links/1";   pub const PROVIDERS: &str = "bohio-providers/1";   pub const PAIR: &str = "bohio-pair/1";
 pub struct LibraryEntry { path, state /*"loaded"|"skipped"|"failed"*/, detail, digest: Option<String> }   pub struct ProgramEntry { name, path, state /*"running"|"failed"*/, detail, digest: Option<String>, restarts: u32 }   pub struct ProvidersReply { check_access: bool, libraries: Vec<LibraryEntry>, programs: Vec<ProgramEntry> /*default empty*/ }   // encode(), decode(&[u8]); the open has no metadata
 pub struct PairRequest { lifetime_ms: Option<u64> }   // Default; to_metadata(), from_metadata (empty is the default)
-pub enum PairReply { Armed { pin: String, lifetime_ms: u64 }, Paired { peer: String }, Ended { reason: String } }   // encode(), decode(&[u8]); first Armed, then Paired or Ended
+#[non_exhaustive] pub enum PairReply { Armed { pin: String, lifetime_ms: u64 }, Paired { peer: String }, Ended { reason: String } }   // encode(), decode(&[u8]); first Armed, then Paired or Ended
 pub struct ViaRequest { peer: String, protocol: String, metadata: Vec<u8> /* a CBOR byte string */ }   // to_metadata(), from_metadata(&[u8])
 pub struct LinksRequest { wait_ms: Option<u64> }   // Default; to_metadata(), from_metadata (empty is the default)
 pub struct LinkEntry { peer, side: String /* dialed|answered */, endpoint: Option<String>, source: Option<String>, since: u64, mine: Vec<String>, theirs: Option<Vec<String>> }
@@ -336,12 +337,12 @@ pub struct SearchItemError { root: u64, path: Option<String>, code: ErrorCode, m
 pub struct Skipped { binary: u64, large: u64, unreadable: u64 }   pub struct SearchDone { files: u64, matches: u64, skipped: Skipped, truncated: bool }
 #[non_exhaustive] pub enum SearchOutput { File(SearchFile), Match(SearchMatch), ItemError(SearchItemError), Done(SearchDone), Error(ErrorBody) }   // encode()/decode(&[u8])
 
-// follow: ReadRequest gains `follow: Option<ReadFollow>` (None in `ReadRequest::whole`), ReadHeader gains `follow: bool`, ReadOutput gains `Truncated(Truncated)` (host frame 0x0a)
+// follow: ReadRequest.follow: Option<ReadFollow> (None in `ReadRequest::whole`), ReadHeader.follow: bool, ReadOutput::Truncated(Truncated) (host frame 0x0a)
 #[derive(Default)] pub struct ReadFollow { by: Option<FollowBy> /* None: Handle */, interval_ms: Option<u64> /* at least 1; None: the host's [filesystem] follow_interval */, tail: Option<u64> /* bytes before the end; 0: only what is appended */ }
-pub enum FollowBy { Handle, Name }   pub struct Truncated { size: u64, replaced: bool }
+#[non_exhaustive] pub enum FollowBy { Handle, Name }   pub struct Truncated { size: u64, replaced: bool }
 
 // control: Call::Stats and Call::Which { names: Vec<String> } (both need `info`); Reply::Stats(Box<Stats>) and Reply::Which { found: BTreeMap<String, Option<String>> }
 #[derive(Default)] pub struct Stats { hostname: Option<String>, uptime_s: u64, cpus: u64, load: Option<[f64; 3]> /* None on Windows */, memory: Memory { total, available }, swap: Swap { total, free }, disks: Vec<Disk { mount, filesystem: String, total, available: u64 }> }
 
-// info: TransferInfo gains `search: bool`, `search_limits: SearchLimits { max_searches, max_file_bytes, max_line_bytes, max_matches, max_files, max_context, deadline_ms: u64 }` and `follow: bool`
+// info: TransferInfo.search: bool, `search_limits: SearchLimits { max_searches, max_file_bytes, max_line_bytes, max_matches, max_files, max_context, deadline_ms: u64 }` and `follow: bool` are part of TransferInfo
 ```

@@ -112,7 +112,7 @@ A streaming protocol sends an error as its `0x05` frame, always the last the hos
 The stream carries any number of calls. Each message is one CBOR `request` from the client or one `response` from the host, with no tag byte. A host answers in the order the requests arrive; `id` lets a client match them, and any `id` is accepted (a `request` that cannot be read is answered with id `0` and `bad_request`). The stream stays open until the client closes it.
 
 ```text
-request  = { id: uint, call: call }
+request  = { id: uint, call: call, ? source: text }   ; source: the files source the call names (see "Sources"); absent: the node's default
 response = { id: uint, ? reply: opt<reply>, ? error: opt<error-body> }   ; exactly one of reply, error is not null
 
 call = hello / info / stat / list / mkdir / remove / rename / move / copy / truncate / symlink
@@ -235,7 +235,7 @@ Each stream has its own flow-control window, so `n` streams carry `n` windows. A
 `bohio-read/1`. The open's metadata is a CBOR `read-request`; the client sends nothing more on the stream.
 
 ```text
-read-request = { path: text, ? offset: uint, ? length: opt<uint>, ? hashes: [* text],   ; length null: to the end; hashes: algorithm names
+read-request = { ? source: text, path: text, ? offset: uint, ? length: opt<uint>, ? hashes: [* text],   ; length null: to the end; hashes: algorithm names
                  ? compression: compression,                                           ; how the host sends the bytes; absent or "none": raw
                  ? prepare: bool,                                                      ; compress the whole range first, then send it
                  ? resume: { token: text, offset: uint },                              ; continue a prepared read at a compressed offset
@@ -291,13 +291,13 @@ A follow holds one of `[filesystem] max_follows` slots (default 16; one past it 
 `bohio-write/1`. The open's metadata is a CBOR `write-request`.
 
 ```text
-write-request = { path: text, ? mode: write-mode, ? parents: bool, ? file_mode: opt<uint>,
+write-request = { ? source: text, path: text, ? mode: write-mode, ? parents: bool, ? file_mode: opt<uint>,
                   ? expect: { * text => text },          ; algorithm name => the digest the data must have, in hex
                   ? hashes: opt<[* text]>,                ; digests to answer; null: the host's [filesystem] write_hashes (sha256 by default)
                   ? compression: compression,            ; what the client sends: a concrete algorithm, never "auto"; absent or "none": raw
+                  ? items: bool,                          ; a bundle: the files come as `0x16` items (see Bundles); `path` is then empty
                   ? resume: bool,                         ; a replace that the host keeps if the stream ends early (see Streaming writes)
                   ? base: delta-base }                    ; a replace only if the target is still as the client saw it (see Replace against a base)
-                  ? resume: bool }                        ; a replace that the host keeps if the stream ends early (see Streaming writes)
 write-mode    = { type: "replace" } / { type: "create" } / { type: "append" } / { type: "at", offset: uint }   ; replace by default
               / { type: "delta", block_size: uint, base: delta-base }   ; build the new file from the target and what follows (see Deltas)
               / { type: "resume", token: text }                         ; continue a write that asked to resume
@@ -335,7 +335,7 @@ A host computes the union of `hashes` and `expect` in one pass and answers only 
 The entries of whole trees on one stream, so listing a tree costs one open and the data, not a round trip for each directory and page. The open's metadata is a CBOR `walk-request`; the client then sends one `0x10` frame per tree and a `0x11`, and may send roots while entries come back; the host walks each root in order.
 
 ```text
-walk-request = { ? depth: opt<uint>,                  ; 0: the roots alone (a batched stat), 1: and their names, null: the whole tree
+walk-request = { ? source: text, ? depth: opt<uint>,                  ; 0: the roots alone (a batched stat), 1: and their names, null: the whole tree
                  ? follow: bool,                      ; enter links to directories and describe what a link to a file points at, inside the root only
                  ? include: [* text], ? exclude: [* text],   ; globs on the path below the root (with `/`) or the name
                  ? hashes: [* text],                  ; digests of each regular file's content
@@ -365,14 +365,14 @@ Order. Each root's first entry is the root itself, with an empty `path`; then ea
 
 Filters and depth. `include` limits the entries listed to those whose path or name matches one of its globs (every directory is still entered, and the root is always listed); `exclude` removes entries that match, and a directory's whole subtree with them. A glob that does not parse is `bad_request`. A name that is not valid text is counted in `skipped` and left out. With `follow` a link to a directory is entered under the link's own path, and one already entered (by `device` and `inode`, which covers a loop) is not entered twice; a link that leaves the root is an item error (`outside_root`), and so on a host that cannot report `device` and `inode` is a link to a directory (`unsupported`: it cannot tell a loop).
 
-Errors and bounds. A directory that cannot be read, a root that does not exist or a link that leaves the root is a `0x03` frame and the walk goes on. Each root is decided against the peer's grant as it is when the root is reached, so a grant narrowed while the stream is open refuses the next root (`denied`, `outside_root`). A request an algorithm of `hashes` the host does not offer, or a compression it does not allow, is `unsupported` before any root; past `[walk] max_streams` (default 4) the stream is `busy`; past `[walk] max_entries` (default 1,000,000, `0` is no limit) the walk sends a `busy` `0x03` and `0x04` with what it sent. Digests read every file and are paced by `[hash] rate`. A stream that gets no root for `[filesystem] idle_timeout` ends with `io`. A glob over a tree is this request with `include` set: `bohio remote ... glob` does it, and [`bohio-search/1`](#search-bohio-search1) takes the same `roots`, `depth`, `include` and `exclude`.
+Errors and bounds. A directory that cannot be read, a root that does not exist or a link that leaves the root is a `0x03` frame and the walk goes on. Each root is decided against the peer's grant as it is when the root is reached, so a grant narrowed while the stream is open refuses the next root (`denied`, `outside_root`). A request an algorithm of `hashes` the host does not offer, or a compression it does not allow, is `unsupported` before any root; past `[walk] max_streams` (default 4) the stream is `busy`; past `[walk] max_entries` (entries sent, default 1,000,000) or `[walk] max_visited` (names looked at, sent or not, default 10,000,000; `0` is no limit for each) the walk sends a `busy` `0x03` and `0x04` with what it sent. Digests read every file and are paced by `[hash] rate`. A stream that gets no root for `[filesystem] idle_timeout` ends with `io`. A glob over a tree is this request with `include` set: `bohio remote ... glob` does it, and [`bohio-search/1`](#search-bohio-search1) takes the same `roots`, `depth`, `include` and `exclude`.
 
 ## Search: `bohio-search/1`
 
 The lines of many files that match a pattern, found on the host, so the matches and not the tree cross the link. The open's metadata is a CBOR `search-request`; the client sends nothing more, and closing the stream stops the host. It needs `fs.read` and a root, and no `exec`.
 
 ```text
-search-request = { walk: { roots: [+ text],               ; directories or files, as paths inside the peer's roots
+search-request = { ? source: text, walk: { roots: [+ text],               ; directories or files, as paths inside the peer's roots
                            ? depth: opt<uint>,            ; 0: a root alone, 1: and its names, null: the whole tree
                            ? include: [* text],           ; globs: only files whose path (below the root, with `/`) or name matches are read
                            ? exclude: [* text] },         ; globs: entries that match are left out, a directory with its subtree
@@ -427,7 +427,7 @@ Each item is decided against the peer's grant as it is when the item is reached.
 Digests of many files on one stream, computed on the host, so a client compares files without downloading them and a long hash never holds the control stream. The open's metadata is a CBOR `hash-request`; the client then sends one `0x10` frame per file and a `0x11`, and the host answers each item, in order, on one thread.
 
 ```text
-hash-request = { algorithms: [+ text], ? blocks: opt<block-options> }
+hash-request = { ? source: text, algorithms: [+ text], ? blocks: opt<block-options> }
 block-options = { ? size: opt<uint>, ? weak: opt<text>, ? strong_len: opt<uint> }   ; the signature of each item: see Deltas
 hash-item    = { path: text, ? offset: uint, ? length: opt<uint>, ? if_size: opt<uint>, ? if_modified: opt<timestamp> }
 hash-result  = { index: uint, size: uint, ? modified: opt<timestamp>, length: uint, ? unchanged: bool, hashes: { * text => text },
@@ -483,7 +483,7 @@ delta-base      = { size: uint, ? modified: opt<timestamp>, ? hashes: { * text =
 One process, run to its exit. The open's metadata is a CBOR `exec-request`.
 
 ```text
-exec-request = { command: command, ? cwd: opt<text>, ? env: env, ? stdin: stdin, ? timeout_ms: opt<uint>,
+exec-request = { ? source: text, command: command, ? cwd: opt<text>, ? env: env, ? stdin: stdin, ? timeout_ms: opt<uint>,
                  ? output_compression: compression,             ; how the host sends standard output and standard error
                  ? stdin_compression: compression,              ; how the client sends standard input: a concrete algorithm
                  ? session: session-request }                   ; run detached: see "Detached sessions"
@@ -643,7 +643,7 @@ The error codes of a refused connect: `denied` (the grant stopped covering the t
 One stream is one view of one desktop session. The open's metadata is a `gui-request`; the host answers with `ready`, or with an `error` frame and the end. A client then sends requests, each with a `seq` of its own, and the host answers each with frames that carry the same `seq`. A request that fails is a `request_error` and the stream goes on. Coordinates are physical pixels of one display with its top-left corner as the origin; `display` defaults to the primary one.
 
 ```text
-gui-request = { ? session: opt<text>, ? want: [+ ("view" / "input" / "clipboard")] }   ; want defaults to ["view"]; a wanted item the grant lacks is "denied"
+gui-request = { ? source: text, ? session: opt<text>, ? want: [+ ("view" / "input" / "clipboard")] }   ; want defaults to ["view"]; a wanted item the grant lacks is "denied"
 display     = { id: text, ? name: opt<text>, ? primary: bool, x: int, y: int, width: uint, height: uint, ? scale: float, ? rotation: opt<uint> }
 state       = { ? active: bool, ? locked: opt<bool>, ? displays: [* display] }
 ready       = { session: text, granted: [* ("view" / "input" / "clipboard")], state: state }
@@ -801,14 +801,13 @@ started = { ? pid: uint, ? session: text }              ; no pid for a console; 
 ```
 
 The stream attaches live to the node's console of that source (one session the node owns; a newer attach supersedes, a `kill`
-only detaches); `bohio-attach/1` with `session: "console:<source>"` and `from` replays its kept output. `bohio-gui/1`'s request
-gains `? source: text`. `info` gains the sources the peer reaches, and a list only for a capability whose permission the peer also holds
+only detaches); `bohio-attach/1` with `session: "console:<source>"` and `from` replays its kept output. Every request that a source can serve (the control `request`, and the open's metadata of `bohio-read/1`, `bohio-write/1`, `bohio-walk/1`, `bohio-search/1`, `bohio-hash/1`, `bohio-exec/1` and `bohio-gui/1`) takes an optional `source: text`: the `[source.<name>]` that serves it, one of the entries `info.access` lists for that capability; absent, the node's default source. `info` gains the sources the peer reaches, and a list only for a capability whose permission the peer also holds
 (`terminal` needs `shell`, `desktop` `gui.view` or `gui.input`, `power` `power`, `media` `media`, `exec` `exec`, `fs` `fs.read` or
 `fs.write`); another list is empty and its sources are not asked to describe themselves:
 
 ```cddl
 access-info = { terminal: [* source-entry], desktop: [* source-entry], power: [* source-entry], media: [* source-entry],
-                fs: "native" / "none", exec: "native" / "none" }
+                fs: [* source-entry], exec: [* source-entry] }
 source-entry = { name: text, provider: text, default: bool, available: bool, ? reason: text, offers: [* text], lacks: [* text] }
 ```
 

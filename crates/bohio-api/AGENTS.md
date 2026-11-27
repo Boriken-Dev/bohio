@@ -121,7 +121,7 @@ All derive guatiao's `ToValue`, `FromValue` and `Schema`; an `Option` field is o
 `StateModel { user, active, locked, displays: Vec<DisplayModel> }`; `DisplayModel`; `RectModel`; `FrameHeader { width, height }` (`len()` is
 `width * height * 3`); `InputModel` (a flat event: `kind` is `move`, `button`, `scroll`, `key` or `text`); `PowerState { state, done }`;
 `MediaSlot { slot, inserted, image, size }`; `ExecStart { argv, shell, script, cwd, clear_env, env, stdin, path, listed, on_host_death, reset_signals /* Option<bool>, absent true: SIGINT, SIGQUIT and SIGHUP start at their default action */ }` (`argv` or
-`shell` and `script`; `listed`: `argv[0]` is the one found at that name on `path`). Vocabularies are text, as `bohio_api::vocab` names them: a word a host does not know is carried, never refused.
+`shell` and `script`; `listed`: `argv[0]` is the one found at that name on `path`). Vocabularies are text, as `bohio_api::vocab` names them: a word a host does not know is carried, never refused. `vocab::signal` has the signal words `signal` takes (`interrupt`, `terminate`, `hangup`, `quit`, `user1`, `user2`, `kill`; `ALL`). `bohio-api.kinds.json` types each slot's `value` as `value`, and its `models` object holds the schema of every model a `value` carries (`SourceInfo`, `TerminalOpen`, `ExecStart`, `FileStat`, ...), so a provider in another language reads the fields from it; a test pins it.
 
 ## Contract suite (`bohio_api::contract`)
 

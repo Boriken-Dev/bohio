@@ -135,7 +135,7 @@ looks, `gui.input` for what drives, `gui.clipboard` beside either for the clipbo
 bohio mcp --config agent.cfg --gui --host "desk=tcp://desk.example:7610 --server ID_OF_DESK"
 ```
 
-`--gui-max-image-bytes N` (default 1048576) is where `format: "auto"` turns from PNG to JPEG 80, and `--gui-after-action
+`--gui-max-image-bytes N` (default `[mcp] gui_max_image_bytes`, 1048576) is where `format: "auto"` turns from PNG to JPEG 80, and `--gui-after-action
 screenshot` makes every input tool answer with a settled screenshot of the display it acted on (default `none`; it costs a
 snapshot a call and needs `gui.view`: an input-only key types and the answer carries a `screenshot_error`). The same values are
 `gui_auto_limit` and `gui_after_action` of `bohio_client::tools::Settings`, with `gui_max_width` and `gui_max_height` (1280 and
