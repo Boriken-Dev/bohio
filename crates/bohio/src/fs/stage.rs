@@ -5,7 +5,6 @@ use std::collections::HashSet;
 use std::ffi::OsString;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
@@ -15,13 +14,13 @@ use bohio_proto::{ErrorBody, ErrorCode};
 use super::io_error;
 use super::vfs::{Dir, File, Metadata, OpenOptions};
 
-static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
 /// The resume tokens a stream of this process is writing under: a second stream continuing one of them is `busy`.
 static CLAIMED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
 /// The name prefix of a temporary file kept for a resumable write.
 const RESUME_PREFIX: &str = ".bohio-resume-";
+/// What every temporary this engine stages a write in begins with.
+const TEMP_PREFIX: &str = ".bohio-";
 
 /// A token a running stream holds, released when it drops.
 #[derive(Debug)]
@@ -112,7 +111,7 @@ pub fn sweep_roots(
                 continue;
             }
             let Some(text) = name.to_str() else { continue };
-            if meta.is_file() && text.starts_with(RESUME_PREFIX) && text.ends_with(".tmp") {
+            if meta.is_file() && text.starts_with(TEMP_PREFIX) && text.ends_with(".tmp") {
                 let old = meta
                     .modified()
                     .ok()
@@ -143,6 +142,7 @@ mod sweep_tests {
         let old = |name: &str| format!("{RESUME_PREFIX}{name}.tmp");
         std::fs::write(root.join("a/b").join(old("x-1")), b"part").unwrap();
         std::fs::write(root.join(old("x-2")), b"part").unwrap();
+        std::fs::write(root.join("a/.bohio-0f1e2d.tmp"), b"staged").unwrap();
         std::fs::write(root.join("keep.txt"), b"keep").unwrap();
         std::fs::write(outside.join(old("x-3")), b"part").unwrap();
         std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
@@ -157,6 +157,7 @@ mod sweep_tests {
         );
         assert!(!root.join("a/b").join(old("x-1")).exists());
         assert!(!root.join(old("x-2")).exists());
+        assert!(!root.join("a/.bohio-0f1e2d.tmp").exists());
         assert!(root.join("keep.txt").exists());
         assert!(
             outside.join(old("x-3")).exists(),
@@ -278,11 +279,7 @@ impl Staged {
     }
 
     fn open_temp(&mut self, file_mode: Option<u32>) -> Result<(), ErrorBody> {
-        let temp = OsString::from(format!(
-            ".bohio-{}-{}.tmp",
-            std::process::id(),
-            SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
+        let temp = OsString::from(format!("{TEMP_PREFIX}{}.tmp", super::prepare::token()?));
         self.open_temp_named(file_mode, temp)
     }
 

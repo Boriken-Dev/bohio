@@ -1629,3 +1629,21 @@ fn one_peer_cannot_take_more_than_its_share_of_the_transfer_slots() {
     assert_eq!(code(second), ErrorCode::Busy);
     first.finish(WAIT).unwrap();
 }
+
+#[test]
+fn a_temporary_name_left_by_an_earlier_run_never_stops_a_write() {
+    let f = fixture(&RW);
+    // What a host killed mid-write leaves, under every name a count from zero would draw.
+    for sequence in 0..4000 {
+        std::fs::write(
+            f.root
+                .join(format!(".bohio-{}-{sequence}.tmp", std::process::id())),
+            b"left behind",
+        )
+        .unwrap();
+    }
+    f.put("fresh.txt", b"new");
+    assert_eq!(f.get("fresh.txt").unwrap(), b"new");
+    f.put("fresh.txt", b"newer");
+    assert_eq!(f.get("fresh.txt").unwrap(), b"newer");
+}
