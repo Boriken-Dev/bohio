@@ -11,7 +11,7 @@ Header-file-style reference for `bohio-x11`: the desktop trait, the X11 backend 
 - `GuiError { code: ErrorCode, message }` with `unavailable`, `unsupported`, `not_found`, `io`, `bad_request`; `Frame::new` checks its size.
 - `X11Desktop::new(X11Settings)`: connects at the first call and again after a call that failed on the wire. `X11Settings` fields:
   `display` (a name for messages when `connector` is set), `wayland`/`in_wayland`, `session`/`system_bus`/`bus_wait` (logind, only
-  with the feature), `key_wait`, `clipboard_wait`, `clipboard_max_bytes`, `selection`, `headless` (never locked, never asks logind),
+  with the feature), `key_wait`, `clipboard_wait`, `clipboard_max_bytes`, `selection`, `headless` (never locked, never asks logind), `lock_unknown` (another machine's display: `locked` is `None`, logind is not asked),
   `refused`, `hint`, `max_repeat`, `connector`. `Default` is the node's own display settings with no display.
 - `Connector` (trait, `Debug + Send + Sync`): `connect() -> io::Result<Wire>`, a new connection per call (the screen holds one and each
   clipboard question makes one). `Wire { stream: WireStream, auth_name, auth_data }` (`WireStream::Tcp(TcpStream)`, or on Unix `WireStream::Unix(UnixStream)`): a stream to the X server, already open, and the
@@ -22,5 +22,6 @@ Header-file-style reference for `bohio-x11`: the desktop trait, the X11 backend 
 ## Gotchas
 
 - Without `logind` a desktop never knows whether the screen is locked (`locked: None`, `lock_detection: false`) unless `headless`.
+- Input is not refused at a lock screen here: `[gui] input_when_locked` and `input_when_lock_unknown` in the engine decide.
 - A root window `GetImage` that answers `BadMatch` (XWayland) is composed from the viewable windows over black.
 - XTest pointer events reach a window on XWayland only after a move onto it: send a `move`, wait, then the click.

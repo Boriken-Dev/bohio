@@ -115,8 +115,8 @@ test suites run against it with `BOHIO_TEST_SSH_CLIENT=openssh`; tests of what o
 
 ## Desktop (X11)
 
-With `x11_display` set the source is a `bohio_desktop` source: each connection of the X backend (`bohio_x11::X11Desktop`, headless, no
-lock detection) is a `direct-streamlocal@openssh.com` channel to the display's socket, which does not count against `max_channels`
+With `x11_display` set the source is a `bohio_desktop` source: each connection of the X backend (`bohio_x11::X11Desktop`, `lock_unknown`: the lock
+state is reported unknown, so `[gui] input_when_lock_unknown` decides) is a `direct-streamlocal@openssh.com` channel to the display's socket, which does not count against `max_channels`
 (OpenSSH's `MaxSessions` counts sessions) and is joined to a loopback connection of the node that only the connection made for it can
 take (x11rb reads a socket). The cookie is `xauth list :N` run through an exec channel, asked once and again after a connection
 failed. `describe` says `lock_detection` is lacking; without `x11_display` the source is `unavailable` with that reason. A root that
