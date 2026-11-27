@@ -127,12 +127,15 @@ fn run(
         .transpose()?;
     Hasher::new(&request.algorithms)
         .map_err(|error| ErrorBody::new(ErrorCode::Unsupported, error.to_string()))?;
-    let _permit = context.slots.acquire_for(context.files.peer).ok_or_else(|| {
-        ErrorBody::new(
-            ErrorCode::Busy,
-            "the host is running as many hash streams as it allows",
-        )
-    })?;
+    let _permit = context
+        .slots
+        .acquire_for(context.files.peer)
+        .ok_or_else(|| {
+            ErrorBody::new(
+                ErrorCode::Busy,
+                "the host is running as many hash streams as it allows",
+            )
+        })?;
     let ended = || ErrorBody::new(ErrorCode::Io, "the stream ended before the items were done");
 
     let mut pace = Pace::new(files.hash.rate, files.config.poll_interval.0);
@@ -386,7 +389,8 @@ fn item_result(
     let mut blocks = match plan {
         Some(plan) => {
             let spec = plan.spec(length)?;
-            let per_frame = (chunk_size(channel, files.config.chunk_size).saturating_sub(FRAME_MARGIN)
+            let per_frame = (chunk_size(channel, files.config.chunk_size)
+                .saturating_sub(FRAME_MARGIN)
                 / (5 + plan.strong_len))
                 .max(1);
             let batches = Batches {

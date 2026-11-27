@@ -588,7 +588,10 @@ fn a_descendant_of_an_exited_program_is_ended_though_the_reader_takes_nothing() 
         },
     );
     link.capacity = 4096;
-    let shell = open(&link, &helper_on_terminal(&["orphan-flood", "60000", "8000"]));
+    let shell = open(
+        &link,
+        &helper_on_terminal(&["orphan-flood", "60000", "8000"]),
+    );
     let orphan: u32 = loop {
         if let Some(Event::Data(bytes)) = shell.next(WAIT).expect("events arrive") {
             break text(&bytes)

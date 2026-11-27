@@ -114,7 +114,10 @@ impl Link {
     /// As [`Link::files`], with the `[hash]` settings `hash`.
     pub fn hashing(grant: Grant, files: FilesystemConfig, hash: HashConfig) -> Self {
         let mut link = Self::files(grant, files);
-        link.hash_slots = Arc::new(Slots::with_share(hash.max_streams, hash.max_streams_per_peer));
+        link.hash_slots = Arc::new(Slots::with_share(
+            hash.max_streams,
+            hash.max_streams_per_peer,
+        ));
         link.hash = Arc::new(hash);
         link
     }
@@ -129,7 +132,10 @@ impl Link {
     /// This host with the `[walk]` settings `walk`.
     #[must_use]
     pub fn walking(mut self, walk: WalkConfig) -> Self {
-        self.walk_slots = Arc::new(Slots::with_share(walk.max_streams, walk.max_streams_per_peer));
+        self.walk_slots = Arc::new(Slots::with_share(
+            walk.max_streams,
+            walk.max_streams_per_peer,
+        ));
         self.walk = Arc::new(walk);
         self
     }
@@ -137,7 +143,10 @@ impl Link {
     /// This host with the `[search]` settings `search`.
     #[must_use]
     pub fn searching(mut self, search: SearchConfig) -> Self {
-        self.search_slots = Arc::new(Slots::with_share(search.max_searches, search.max_searches_per_peer));
+        self.search_slots = Arc::new(Slots::with_share(
+            search.max_searches,
+            search.max_searches_per_peer,
+        ));
         self.search = Arc::new(search);
         self
     }

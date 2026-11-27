@@ -124,12 +124,15 @@ fn run(
         .map(|compression| Encoder::new(compression, settings.caps()))
         .transpose()
         .map_err(|error| ErrorBody::new(ErrorCode::Unsupported, error.to_string()))?;
-    let _permit = context.slots.acquire_for(context.files.peer).ok_or_else(|| {
-        ErrorBody::new(
-            ErrorCode::Busy,
-            "the host is running as many walk streams as it allows",
-        )
-    })?;
+    let _permit = context
+        .slots
+        .acquire_for(context.files.peer)
+        .ok_or_else(|| {
+            ErrorBody::new(
+                ErrorCode::Busy,
+                "the host is running as many walk streams as it allows",
+            )
+        })?;
     let ended = || ErrorBody::new(ErrorCode::Io, "the stream ended before the roots were done");
     let header = WalkOutput::Header(WalkHeader {
         compression: encoder.as_ref().map(|encoder| encoder.used().clone()),

@@ -14,7 +14,8 @@ use guatiao::{
 };
 
 /// What a refused interval was expected to be.
-const EXPECTED: &str = "a time: a number of seconds, or a number and ms, s, m or h (`500ms`, `30s`)";
+const EXPECTED: &str =
+    "a time: a number of seconds, or a number and ms, s, m or h (`500ms`, `30s`)";
 
 /// A length of time as a provider's setting reads it: a number of seconds (`5`), or a number and a unit (`500ms`,
 /// `30s`, `5m`, `1h`). `bohio.cfg`'s own times read the same.
@@ -131,7 +132,11 @@ mod tests {
 
     #[test]
     fn a_time_written_out_reads_back_as_itself() {
-        for time in [Interval::from_secs(0), Interval::from_secs(30), Interval::from_millis(1500)] {
+        for time in [
+            Interval::from_secs(0),
+            Interval::from_secs(30),
+            Interval::from_millis(1500),
+        ] {
             assert_eq!(Interval::parse(&time.text()), Some(time));
         }
     }
@@ -140,7 +145,10 @@ mod tests {
     fn a_setting_takes_a_bare_number_and_text_alike() {
         let number = 5_u64.to_value().unwrap();
         let text = "5s".to_value().unwrap();
-        assert_eq!(Interval::from_value(&number).unwrap(), Interval::from_secs(5));
+        assert_eq!(
+            Interval::from_value(&number).unwrap(),
+            Interval::from_secs(5)
+        );
         assert_eq!(Interval::from_value(&text).unwrap(), Interval::from_secs(5));
         assert!(Interval::from_value(&"soon".to_value().unwrap()).is_err());
         assert!(Interval::from_value(&true.to_value().unwrap()).is_err());

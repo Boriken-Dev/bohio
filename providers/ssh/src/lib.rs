@@ -142,8 +142,12 @@ impl Ssh {
         ))?;
         let deadline = Instant::now() + link.settings.operation_timeout;
         let left = || {
-            u64::try_from(deadline.saturating_duration_since(Instant::now()).as_millis())
-                .unwrap_or(u64::MAX)
+            u64::try_from(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .as_millis(),
+            )
+            .unwrap_or(u64::MAX)
         };
         let (mut output, mut chunk) = (Vec::new(), [0_u8; 256]);
         // Read to the end of the output: an rc file may print before the line does. Only the tail is kept.

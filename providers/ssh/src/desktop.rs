@@ -107,7 +107,8 @@ impl Channels {
             }
         }
         // The program has written its answer: how long it may take to end is how long the source waits for any program to.
-        let exit = session.wait(u64::try_from(link.settings.exit_grace.as_millis()).unwrap_or(u64::MAX))?;
+        let exit = session
+            .wait(u64::try_from(link.settings.exit_grace.as_millis()).unwrap_or(u64::MAX))?;
         (exit.code == Some(0)).then(|| String::from_utf8_lossy(&out).into_owned())
     }
 

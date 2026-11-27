@@ -116,20 +116,24 @@ fn run(
         .map_err(|_| bad("the pattern is not a regular expression, or is larger than [search] regex_size_limit"))?;
     let include = globs(&request.walk.include)?;
     let exclude = globs(&request.walk.exclude)?;
-    let _permit = context.slots.acquire_for(context.files.peer).ok_or_else(|| {
-        ErrorBody::new(
-            ErrorCode::Busy,
-            "the host is running as many searches as it allows",
-        )
-    })?;
+    let _permit = context
+        .slots
+        .acquire_for(context.files.peer)
+        .ok_or_else(|| {
+            ErrorBody::new(
+                ErrorCode::Busy,
+                "the host is running as many searches as it allows",
+            )
+        })?;
     // A match frame holds up to `2 * context + 1` lines: the cap on a line keeps it inside what the stream carries.
     let lines = usize::try_from(request.context)
         .unwrap_or(usize::MAX)
         .saturating_mul(2)
         .saturating_add(1);
-    let line_cap = settings
-        .max_line_bytes
-        .min((message_limit(channel.as_ref()).saturating_sub(FRAME_OVERHEAD) / lines).max(MIN_LINE_BYTES));
+    let line_cap = settings.max_line_bytes.min(
+        (message_limit(channel.as_ref()).saturating_sub(FRAME_OVERHEAD) / lines)
+            .max(MIN_LINE_BYTES),
+    );
     let mut searcher = Searcher {
         channel: channel.as_ref(),
         context,
