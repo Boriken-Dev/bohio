@@ -84,7 +84,7 @@ pub(super) fn serve(
         Some(ms) => Duration::from_millis(ms),
         None => context.config.follow_interval.0,
     };
-    let _permit = context.follows.acquire().ok_or_else(|| {
+    let _permit = context.follows.acquire_for(context.peer).ok_or_else(|| {
         ErrorBody::new(
             ErrorCode::Busy,
             "the host is running as many followed reads as it allows",

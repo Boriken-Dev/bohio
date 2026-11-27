@@ -74,7 +74,7 @@ The engines hold memory of their own on top of the link buffers, each bound by i
 - a session keeps its output up to `[sessions] scrollback` (16 MiB) for each of `max_per_peer` (8) sessions: 128 MiB for one peer with `session`;
 - a hash, walk or media stream holds its batch and its window, bound by that engine's `max_streams`.
 
-A host that serves a peer with less trust than that lowers the bounds above, `max_transfers` first. One peer cannot take all of a bound: `[link] max_streams_per_peer` (256) counts its streams over all its links, and `[filesystem] max_transfers_per_peer` (16), `[execution] max_processes_per_peer` (16) and `[shell] max_sessions_per_peer` (8) are its share of the transfer, process and session slots, so another peer still gets one. Their defaults equal the totals' defaults: lower them to share, and raise them with the totals.
+A host that serves a peer with less trust than that lowers the bounds above, `max_transfers` first. One peer cannot take all of a bound: `[link] max_streams_per_peer` (256) counts its streams over all its links, and `[filesystem] max_transfers_per_peer` (16), `[execution] max_processes_per_peer` (16) and `[shell] max_sessions_per_peer` (8) are its share of the transfer, process and session slots, and `[filesystem] max_follows_per_peer` (16), `[hash] max_streams_per_peer` (4), `[walk] max_streams_per_peer` (4) and `[search] max_searches_per_peer` (4) its share of the follow, hash, walk and search slots, so another peer still gets one. Their defaults equal the totals' defaults: lower them to share, and raise them with the totals.
 
 ## Embedding
 

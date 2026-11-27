@@ -244,6 +244,42 @@ fn a_grant_narrowed_while_the_stream_is_open_refuses_the_next_item() {
 }
 
 #[test]
+fn one_peer_cannot_take_more_than_its_share_of_the_hash_slots() {
+    let fixture = fixture_with(
+        &READ,
+        HashConfig {
+            max_streams: 4,
+            max_streams_per_peer: 1,
+            ..HashConfig::default()
+        },
+    );
+    std::fs::write(fixture.root.join("f.txt"), b"data").unwrap();
+    let holder = fixture
+        .link
+        .open(
+            protocol::HASH,
+            &HashRequest::new([Algorithm::Md5]).to_metadata().unwrap(),
+        )
+        .unwrap();
+    holder
+        .send_timeout(
+            &HashInput::Item(HashItem::whole("f.txt")).encode().unwrap(),
+            WAIT,
+        )
+        .unwrap();
+    let frame = holder.receive(WAIT).unwrap().expect("a frame");
+    assert!(matches!(
+        HashOutput::decode(&frame).unwrap(),
+        HashOutput::Result(_)
+    ));
+    assert_eq!(
+        code(hash_file(&fixture.link, "f.txt", &[Algorithm::Md5])),
+        ErrorCode::Busy
+    );
+    holder.close();
+}
+
+#[test]
 fn a_stream_past_max_streams_is_busy_until_one_ends() {
     let fixture = fixture_with(
         &READ,

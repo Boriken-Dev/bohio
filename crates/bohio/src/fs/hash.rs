@@ -21,6 +21,9 @@ use crate::limit::Slots;
 use crate::policy::{Grant, Permission};
 use crate::stream::{chunk_size, send_waiting};
 
+/// What a result frame's header and tag take from the bytes of one frame, before its block hashes.
+const FRAME_MARGIN: usize = 128;
+
 /// What the hash engine needs besides the stream.
 #[derive(Debug, Clone, Copy)]
 pub struct HashContext<'a> {
@@ -124,7 +127,7 @@ fn run(
         .transpose()?;
     Hasher::new(&request.algorithms)
         .map_err(|error| ErrorBody::new(ErrorCode::Unsupported, error.to_string()))?;
-    let _permit = context.slots.acquire().ok_or_else(|| {
+    let _permit = context.slots.acquire_for(context.files.peer).ok_or_else(|| {
         ErrorBody::new(
             ErrorCode::Busy,
             "the host is running as many hash streams as it allows",
@@ -383,7 +386,7 @@ fn item_result(
     let mut blocks = match plan {
         Some(plan) => {
             let spec = plan.spec(length)?;
-            let per_frame = (chunk_size(channel, files.config.chunk_size).saturating_sub(128)
+            let per_frame = (chunk_size(channel, files.config.chunk_size).saturating_sub(FRAME_MARGIN)
                 / (5 + plan.strong_len))
                 .max(1);
             let batches = Batches {

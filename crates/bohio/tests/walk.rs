@@ -437,6 +437,36 @@ fn the_walks_digests_are_the_files_and_max_entries_ends_it_with_an_item_error() 
 }
 
 #[test]
+fn one_peer_cannot_take_more_than_its_share_of_the_walk_slots() {
+    let f = fixture();
+    let link = Link::files(
+        Grant::allowing(READ).with_fs_roots([f.root.clone()]),
+        FilesystemConfig::default(),
+    )
+    .walking(WalkConfig {
+        max_streams: 4,
+        max_streams_per_peer: 1,
+        ..WalkConfig::default()
+    });
+    let holding = link
+        .open(
+            protocol::WALK,
+            &WalkRequest::default().to_metadata().unwrap(),
+        )
+        .unwrap();
+    assert!(matches!(
+        WalkOutput::decode(&holding.receive(WAIT).unwrap().unwrap()).unwrap(),
+        WalkOutput::Header(_)
+    ));
+    // Three of the four slots are free, and the peer has used its share.
+    assert_eq!(
+        code(walk(&link, &["."], &WalkOptions::default()).map(|_| ())),
+        ErrorCode::Busy
+    );
+    holding.close();
+}
+
+#[test]
 fn a_walk_past_max_streams_is_busy_and_the_slot_returns_when_it_ends() {
     let f = fixture();
     let link = Link::files(

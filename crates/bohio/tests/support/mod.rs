@@ -114,7 +114,7 @@ impl Link {
     /// As [`Link::files`], with the `[hash]` settings `hash`.
     pub fn hashing(grant: Grant, files: FilesystemConfig, hash: HashConfig) -> Self {
         let mut link = Self::files(grant, files);
-        link.hash_slots = Arc::new(Slots::new(hash.max_streams));
+        link.hash_slots = Arc::new(Slots::with_share(hash.max_streams, hash.max_streams_per_peer));
         link.hash = Arc::new(hash);
         link
     }
@@ -129,7 +129,7 @@ impl Link {
     /// This host with the `[walk]` settings `walk`.
     #[must_use]
     pub fn walking(mut self, walk: WalkConfig) -> Self {
-        self.walk_slots = Arc::new(Slots::new(walk.max_streams));
+        self.walk_slots = Arc::new(Slots::with_share(walk.max_streams, walk.max_streams_per_peer));
         self.walk = Arc::new(walk);
         self
     }
@@ -137,7 +137,7 @@ impl Link {
     /// This host with the `[search]` settings `search`.
     #[must_use]
     pub fn searching(mut self, search: SearchConfig) -> Self {
-        self.search_slots = Arc::new(Slots::new(search.max_searches));
+        self.search_slots = Arc::new(Slots::with_share(search.max_searches, search.max_searches_per_peer));
         self.search = Arc::new(search);
         self
     }
@@ -167,18 +167,27 @@ impl Link {
     ) -> Self {
         let slots = Slots::with_share(config.max_processes, config.max_processes_per_peer);
         let transfers = Slots::with_share(files.max_transfers, files.max_transfers_per_peer);
-        let follows = Slots::new(files.max_follows);
+        let follows = Slots::with_share(files.max_follows, files.max_follows_per_peer);
         let sessions = Slots::with_share(shells.max_sessions, shells.max_sessions_per_peer);
         Self {
             grant: Arc::new(grant),
             config: Arc::new(config),
             slots: Arc::new(slots),
-            hash_slots: Arc::new(Slots::new(HashConfig::default().max_streams)),
+            hash_slots: Arc::new(Slots::with_share(
+                HashConfig::default().max_streams,
+                HashConfig::default().max_streams_per_peer,
+            )),
             hash: Arc::new(HashConfig::default()),
             walk: Arc::new(WalkConfig::default()),
-            walk_slots: Arc::new(Slots::new(WalkConfig::default().max_streams)),
+            walk_slots: Arc::new(Slots::with_share(
+                WalkConfig::default().max_streams,
+                WalkConfig::default().max_streams_per_peer,
+            )),
             search: Arc::new(SearchConfig::default()),
-            search_slots: Arc::new(Slots::new(SearchConfig::default().max_searches)),
+            search_slots: Arc::new(Slots::with_share(
+                SearchConfig::default().max_searches,
+                SearchConfig::default().max_searches_per_peer,
+            )),
             delta: Arc::new(DeltaConfig::default()),
             compression: Arc::new(CompressionConfig::default()),
             peer: "test-peer".to_owned(),

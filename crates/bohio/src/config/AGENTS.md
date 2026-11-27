@@ -137,6 +137,8 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[execution] max_processes_per_peer` | `16` | the most processes one peer has running of `max_processes`; at least 1 |
 | `[shell] max_sessions_per_peer` | `8` | the most shell sessions one peer has open of `max_sessions`; at least 1 |
 | `[link] max_streams_per_peer` | `256` | the most streams one peer has open over all its links; one past it is refused; at least 1 |
+| `[walk] max_streams_per_peer` | `4` | the most walk streams one peer has running of the `max_streams` across peers; at least 1 |
+| `[search] max_searches_per_peer` | `4` | the most searches one peer has running of the `max_searches` across peers; at least 1 |
 | `[walk] max_visited` | `10000000` | the most names one walk looks at over all its roots, sent or not (an `include` that matches nothing still ends); `0` is no limit |
 | `[walk] recheck_entries` | `1000` | names a walk looks at between looks at the peer's grant; 0: once for each root |
 | `[filesystem] chunk_size` | `65536` | most file bytes in one frame, and the buffer a copy reads with; at least 1; a smaller message bound of the stream wins |
@@ -145,8 +147,10 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[filesystem] resume_ttl` | `0` | how long a resumable `replace` keeps its temporary file after its stream ended early; `0` keeps none, and such a request is `unsupported`; a kept file takes the disk space of what was received |
 | `[filesystem] follow_interval` | `250ms` | how often a followed read looks for appended bytes when its request names no interval; not zero |
 | `[filesystem] max_follows` | `16` | followed reads running at once across peers (a follow holds one of these and no transfer slot; `idle_timeout` does not end it); one past it is `busy`; at least 1 |
+| `[filesystem] max_follows_per_peer` | `16` | the most followed reads one peer has running of the `max_follows` across peers; at least 1 |
 | `[filesystem] write_hashes` | `["sha256"]` | the digests a write answers when its request names none; each must be in `[hash] algorithms`; empty answers none |
 | `[hash] max_streams` | `4` | concurrent `bohio-hash/1` streams across peers (`busy` past it); at least 1 |
+| `[hash] max_streams_per_peer` | `4` | the most hash streams one peer has running of the `max_streams` across peers; at least 1 |
 | `[hash] rate` | `0` | most bytes a second one hash stream reads; `0` is unlimited |
 | `[hash] read_size` | `1048576` | the buffer a hash reads with; at least 1 (a `rate` below twenty times it reads smaller pieces) |
 | `[hash] algorithms` | every one | the digests the host computes, for hash streams, reads and writes; at least one, each known to this build |

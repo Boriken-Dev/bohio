@@ -373,6 +373,29 @@ fn a_follow_is_refused_what_a_read_is_and_what_cannot_follow() {
 }
 
 #[test]
+fn one_peer_cannot_take_more_than_its_share_of_the_follow_slots() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("root");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("app.log"), "x").unwrap();
+    let grant = Grant::allowing([Permission::FsRead]).with_fs_roots([root.clone()]);
+    let link = Link::files(
+        grant,
+        FilesystemConfig {
+            max_follows: 4,
+            max_follows_per_peer: 1,
+            ..FilesystemConfig::default()
+        },
+    );
+    let first = follow(&link, "app.log", &quick(false), WAIT).unwrap();
+    assert_eq!(
+        code(follow(&link, "app.log", &quick(false), WAIT)),
+        ErrorCode::Busy
+    );
+    drop(first);
+}
+
+#[test]
 fn a_follow_holds_a_follow_slot_and_no_transfer_slot() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("root");

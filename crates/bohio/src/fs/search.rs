@@ -17,7 +17,7 @@ use globset::GlobSet;
 use regex::bytes::{Regex, RegexBuilder};
 
 use super::bundle::grant_now;
-use super::ops::{self, Roots};
+use super::ops::{self, Roots, dot};
 use super::walk::globs;
 use super::{Context, authorize, io_error};
 use crate::config::SearchConfig;
@@ -38,6 +38,9 @@ pub struct SearchContext<'a> {
 
 /// Bytes a match frame holds besides its lines: an estimate that keeps a frame inside the stream's message bound.
 const FRAME_OVERHEAD: usize = 256;
+
+/// The shortest a line may be cut to, whatever the stream's message bound leaves for it.
+const MIN_LINE_BYTES: usize = 16;
 
 fn encode_output(output: &SearchOutput) -> Vec<u8> {
     output.encode().unwrap_or_else(|_| vec![0x05])
@@ -113,7 +116,7 @@ fn run(
         .map_err(|_| bad("the pattern is not a regular expression, or is larger than [search] regex_size_limit"))?;
     let include = globs(&request.walk.include)?;
     let exclude = globs(&request.walk.exclude)?;
-    let _permit = context.slots.acquire().ok_or_else(|| {
+    let _permit = context.slots.acquire_for(context.files.peer).ok_or_else(|| {
         ErrorBody::new(
             ErrorCode::Busy,
             "the host is running as many searches as it allows",
@@ -126,7 +129,7 @@ fn run(
         .saturating_add(1);
     let line_cap = settings
         .max_line_bytes
-        .min((message_limit(channel.as_ref()).saturating_sub(FRAME_OVERHEAD) / lines).max(16));
+        .min((message_limit(channel.as_ref()).saturating_sub(FRAME_OVERHEAD) / lines).max(MIN_LINE_BYTES));
     let mut searcher = Searcher {
         channel: channel.as_ref(),
         context,
@@ -235,14 +238,6 @@ struct Pending {
     truncated: bool,
     before: Vec<String>,
     after: Vec<String>,
-}
-
-fn dot(relative: &Path) -> &Path {
-    if relative.as_os_str().is_empty() {
-        Path::new(".")
-    } else {
-        relative
-    }
 }
 
 impl Searcher<'_> {

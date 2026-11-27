@@ -45,6 +45,9 @@ pub struct WalkContext<'a> {
 /// bound.
 const ENTRY_OVERHEAD: usize = 320;
 
+/// What a batch frame's header and tag take from the bytes of one frame, before its entries.
+const BATCH_MARGIN: usize = 1024;
+
 /// Bytes a digest adds to an entry, hex text and its key, at most.
 const DIGEST_OVERHEAD: usize = 150;
 
@@ -121,7 +124,7 @@ fn run(
         .map(|compression| Encoder::new(compression, settings.caps()))
         .transpose()
         .map_err(|error| ErrorBody::new(ErrorCode::Unsupported, error.to_string()))?;
-    let _permit = context.slots.acquire().ok_or_else(|| {
+    let _permit = context.slots.acquire_for(context.files.peer).ok_or_else(|| {
         ErrorBody::new(
             ErrorCode::Busy,
             "the host is running as many walk streams as it allows",
@@ -144,7 +147,7 @@ fn run(
         batch: Vec::new(),
         batch_bytes: 0,
         limit: chunk_size(channel.as_ref(), files.config.chunk_size)
-            .saturating_sub(1024)
+            .saturating_sub(BATCH_MARGIN)
             .max(1),
         sent: 0,
         visited: 0,

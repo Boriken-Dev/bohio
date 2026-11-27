@@ -802,6 +802,9 @@ pub struct FilesystemConfig {
     /// The most followed reads running at once, across peers; a follow holds one of these and no transfer slot, and is
     /// not ended by `idle_timeout` while its client keeps the stream open. One past it is `busy`. At least 1. Default `16`.
     pub max_follows: usize,
+    /// The most followed reads one peer may have running at once, of the `max_follows` there are across peers, so that
+    /// one peer cannot take every slot. At least 1. Default `16`, the default `max_follows`: raise both together.
+    pub max_follows_per_peer: usize,
     /// The most transfers one peer may have running at once, of the `max_transfers` there are across peers, so that one
     /// peer cannot take every slot. At least 1. Default `16`, the default `max_transfers`: raise both together.
     pub max_transfers_per_peer: usize,
@@ -828,6 +831,7 @@ impl Default for FilesystemConfig {
             resume_ttl: Span(Duration::ZERO),
             follow_interval: Span(Duration::from_millis(250)),
             max_follows: 16,
+            max_follows_per_peer: 16,
             max_transfers_per_peer: 16,
             allow_id_bits: false,
         }
@@ -845,6 +849,9 @@ pub struct WalkConfig {
     /// The most `bohio-walk/1` streams running at once, across peers; one past it is `busy`. At least 1.
     /// Default `4`.
     pub max_streams: usize,
+    /// The most walk streams one peer may have running at once, of the `max_streams` there are across peers, so that
+    /// one peer cannot take every slot. At least 1. Default `4`, the default `max_streams`: raise both together.
+    pub max_streams_per_peer: usize,
     /// The most entries one walk stream sends, over all its roots; past it the walk ends with an item error
     /// and `done`. `0` is no limit. Default `1000000`.
     pub max_entries: u64,
@@ -861,6 +868,7 @@ impl Default for WalkConfig {
     fn default() -> Self {
         Self {
             max_streams: 4,
+            max_streams_per_peer: 4,
             max_entries: 1_000_000,
             max_visited: 10_000_000,
             recheck_entries: 1000,
@@ -879,6 +887,9 @@ impl Default for WalkConfig {
 pub struct SearchConfig {
     /// The most `bohio-search/1` streams running at once, across peers; one past it is `busy`. At least 1. Default `4`.
     pub max_searches: usize,
+    /// The most searches one peer may have running at once, of the `max_searches` there are across peers, so that one
+    /// peer cannot take every slot. At least 1. Default `4`, the default `max_searches`: raise both together.
+    pub max_searches_per_peer: usize,
     /// The largest file a search reads, in bytes; a larger one is skipped and counted. The file is read whole, so this
     /// is also the most memory one search holds. At least 1. Default `16777216`.
     pub max_file_bytes: u64,
@@ -907,6 +918,7 @@ impl Default for SearchConfig {
     fn default() -> Self {
         Self {
             max_searches: 4,
+            max_searches_per_peer: 4,
             max_file_bytes: 16 * 1024 * 1024,
             max_line_bytes: 4096,
             max_matches: 10_000,
@@ -931,6 +943,9 @@ pub struct HashConfig {
     /// The most `bohio-hash/1` streams running at once, across peers; one past it is `busy`. At least
     /// 1. Default `4`.
     pub max_streams: usize,
+    /// The most hash streams one peer may have running at once, of the `max_streams` there are across peers, so that
+    /// one peer cannot take every slot. At least 1. Default `4`, the default `max_streams`: raise both together.
+    pub max_streams_per_peer: usize,
     /// The most bytes a second one hash stream reads; `0` is no limit. A limit protects a disk another
     /// service uses, and makes a long hash take as long as the bytes divided by it. Default `0`.
     pub rate: u64,
@@ -947,6 +962,7 @@ impl Default for HashConfig {
     fn default() -> Self {
         Self {
             max_streams: 4,
+            max_streams_per_peer: 4,
             rate: 0,
             read_size: 1024 * 1024,
             algorithms: bohio_transfer::hash::available(),
@@ -2424,6 +2440,16 @@ impl NodeConfig {
             (
                 "shell.max_sessions_per_peer",
                 self.shell.max_sessions_per_peer,
+            ),
+            (
+                "filesystem.max_follows_per_peer",
+                self.filesystem.max_follows_per_peer,
+            ),
+            ("hash.max_streams_per_peer", self.hash.max_streams_per_peer),
+            ("walk.max_streams_per_peer", self.walk.max_streams_per_peer),
+            (
+                "search.max_searches_per_peer",
+                self.search.max_searches_per_peer,
             ),
         ] {
             if value == 0 {

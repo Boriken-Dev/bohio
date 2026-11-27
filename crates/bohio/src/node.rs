@@ -163,10 +163,16 @@ impl Shared {
                 config.filesystem.max_transfers,
                 config.filesystem.max_transfers_per_peer,
             ),
-            follows: Slots::new(config.filesystem.max_follows),
-            hashes: Slots::new(config.hash.max_streams),
-            walks: Slots::new(config.walk.max_streams),
-            searches: Slots::new(config.search.max_searches),
+            follows: Slots::with_share(
+                config.filesystem.max_follows,
+                config.filesystem.max_follows_per_peer,
+            ),
+            hashes: Slots::with_share(config.hash.max_streams, config.hash.max_streams_per_peer),
+            walks: Slots::with_share(config.walk.max_streams, config.walk.max_streams_per_peer),
+            searches: Slots::with_share(
+                config.search.max_searches,
+                config.search.max_searches_per_peer,
+            ),
             sessions: Arc::new(Slots::with_share(
                 config.shell.max_sessions,
                 config.shell.max_sessions_per_peer,

@@ -496,6 +496,23 @@ fn a_peer_without_fs_read_is_denied_and_a_host_at_its_limit_is_busy() {
 }
 
 #[test]
+fn one_peer_cannot_take_more_than_its_share_of_the_search_slots() {
+    let f = fixture_with(SearchConfig {
+        max_searches: 4,
+        max_searches_per_peer: 1,
+        ..SearchConfig::default()
+    });
+    put(&f.root, "a.txt", "hit\n".repeat(100_000));
+    let mut held = search(&f.link, &["."], "hit", &SearchOptions::default()).unwrap();
+    assert!(held.next().is_some());
+    assert_eq!(
+        refused(&f.link, &["."], "hit", &SearchOptions::default()),
+        ErrorCode::Busy
+    );
+    drop(held);
+}
+
+#[test]
 fn closing_the_stream_stops_the_host_and_the_raw_frames_decode() {
     let f = fixture();
     put(&f.root, "a.txt", "hit\n".repeat(50_000));
