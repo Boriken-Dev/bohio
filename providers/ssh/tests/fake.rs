@@ -1077,3 +1077,28 @@ fn an_openssh_exit_of_255_says_it_may_be_sshs_own_failure_and_what_ssh_said() {
     // The last thing ssh said is repeated, so it is what the reader sees last.
     assert!(said.trim_end().ends_with("Connection refused"), "{said}");
 }
+
+#[test]
+fn the_terminal_contract_holds_against_the_fake_server() {
+    need_shell!();
+    let server = FakeSsh::start();
+    let source = ssh(server.settings());
+    // The login shell's answer to arithmetic is not in its echo of the line, so reading it proves the shell ran it.
+    let settings = bohio_api::contract::ContractSettings {
+        terminal_input: b"echo bohio-contract-$((6*7))\n",
+        terminal_output: Some(b"bohio-contract-42"),
+        ..bohio_api::contract::ContractSettings::default()
+    };
+    bohio_api::contract::terminal(&source, TerminalOpen::default(), &settings);
+    // And for a source nobody answers for.
+    let mut unreachable = SshSettings::new("127.0.0.1");
+    unreachable.port = 1;
+    unreachable.user = Some(USER.to_owned());
+    unreachable.agent = false;
+    unreachable.connect_timeout = "2s".to_owned();
+    bohio_api::contract::terminal(
+        &ssh(unreachable),
+        TerminalOpen::default(),
+        &bohio_api::contract::ContractSettings::default(),
+    );
+}

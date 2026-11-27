@@ -454,6 +454,22 @@ fn a_real_terminal_has_a_size_and_follows_a_resize() {
 }
 
 #[test]
+fn a_real_terminal_passes_the_contract_suite() {
+    skip_openssh!(
+        "the system's ssh client lacks `signals` yet sends `interrupt` as a control byte, which the suite reads as a lacked word taken"
+    );
+    let server = sshd!("");
+    let source = server.ssh();
+    // The shell's answer to arithmetic is not in its echo of the line, so reading it proves the shell ran it.
+    let settings = bohio_api::contract::ContractSettings {
+        terminal_input: b"echo bohio-contract-$((6*7))\n",
+        terminal_output: Some(b"bohio-contract-42"),
+        ..bohio_api::contract::ContractSettings::default()
+    };
+    bohio_api::contract::terminal(&source, TerminalOpen::default(), &settings);
+}
+
+#[test]
 fn a_real_login_shell_is_interactive_and_an_interrupt_reaches_the_foreground_program() {
     let server = sshd!("");
     let source = server.ssh();
@@ -964,6 +980,10 @@ fn the_hosts_x_display_is_a_desktop_that_is_seen_and_clicked() {
         );
         std::thread::sleep(Duration::from_millis(100));
     }
+
+    // The same source meets the kind's contract suite: what it offers it does, what it lacks it refuses.
+    drop(session);
+    bohio_api::contract::desktop(&source, &bohio_api::contract::ContractSettings::default());
 }
 
 #[test]
