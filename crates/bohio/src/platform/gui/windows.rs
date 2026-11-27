@@ -278,6 +278,8 @@ impl Desktop for WindowsDesktop {
                 "the session is not at the screen (it is disconnected or another user's is)",
             ));
         }
+        // Unlike the other backends this is not left to `[gui] input_when_locked`: the lock screen is the secure desktop, which
+        // a process on the user's desktop cannot send input to, so the call would fail whatever the setting.
         if state.locked != Some(false) {
             return Err(GuiError::unavailable(session::SECURE_DESKTOP));
         }

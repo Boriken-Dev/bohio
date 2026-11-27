@@ -1195,11 +1195,6 @@ impl Desktop for X11Desktop {
                 ));
             }
             let state = self.state_of(link)?;
-            if state.locked == Some(true) {
-                return Err(GuiError::unavailable(
-                    "the session is locked: input is not sent to a lock screen",
-                ));
-            }
             let map = link.keymap()?;
             // Every event is planned before any is sent, so one that names a point off its display refuses the batch whole.
             let planned: Vec<Vec<Step>> = events
