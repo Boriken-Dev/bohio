@@ -21,6 +21,7 @@ fn every_local_enum_is_tagged_by_a_type_key() {
     let armed = PairReply::Armed {
         pin: "1".into(),
         lifetime_ms: 2,
+        listening: Vec::new(),
     };
     assert_eq!(type_of(&armed), "armed");
     assert_eq!(

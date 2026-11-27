@@ -36,6 +36,22 @@
     },
     {
       "direction": "host_to_client",
+      "hex": "a464747970656561726d65646370696e663132333435366b6c69666574696d655f6d7319ea60696c697374656e696e6782767463703a2f2f3230332e302e3131332e353a373030307577733a2f2f3230332e302e3131332e353a37303031",
+      "kind": "message",
+      "name": "armed_with_endpoints",
+      "type": "local.PairReply",
+      "value": {
+        "lifetime_ms": 60000,
+        "listening": [
+          "tcp://203.0.113.5:7000",
+          "ws://203.0.113.5:7001"
+        ],
+        "pin": "123456",
+        "type": "armed"
+      }
+    },
+    {
+      "direction": "host_to_client",
       "hex": "a26474797065667061697265646470656572697368613235363a3030",
       "kind": "message",
       "name": "paired",

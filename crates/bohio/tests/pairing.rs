@@ -545,6 +545,8 @@ fn arming_again_replaces_the_pin_and_a_withdrawn_pin_pairs_nobody() {
 #[test]
 fn the_local_endpoint_arms_a_pin_and_reports_who_paired() {
     let host = Host::start(true);
+    host.node
+        .set_listening(vec!["tcp://203.0.113.5:7000".to_owned()]);
     let name = format!("pipe://bohio-pairing-control-{}", std::process::id());
     let control = ControlConfig {
         endpoint: Some(name),
@@ -557,6 +559,8 @@ fn the_local_endpoint_arms_a_pin_and_reports_who_paired() {
         let serving = scope.spawn(|| host.node.serve_local(&local, &stop));
         let link = LocalLink::connect(&endpoint, &host.settings).expect("the control connects");
         let pairing = link.pair(None).expect("a PIN is armed");
+        // The reply names the endpoints the node bound, so a person is told where to join.
+        assert_eq!(pairing.listening(), ["tcp://203.0.113.5:7000"]);
         let pin = pairing.pin().to_owned();
         let (learned, joiner, _dir) = host.join(&host.listeners[1], &pin).expect("it pairs");
         assert_eq!(learned, host.node.host());

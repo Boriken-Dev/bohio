@@ -299,6 +299,7 @@ pub(crate) struct PairState {
     setup: RwLock<Option<Setup>>,
     armed: Mutex<Option<Arc<Slot>>>,
     config: PairingConfig,
+    listening: RwLock<Vec<String>>,
 }
 
 impl PairState {
@@ -307,7 +308,22 @@ impl PairState {
             setup: RwLock::new(None),
             armed: Mutex::new(None),
             config,
+            listening: RwLock::new(Vec::new()),
         }
+    }
+
+    pub(crate) fn set_listening(&self, endpoints: Vec<String>) {
+        *self
+            .listening
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = endpoints;
+    }
+
+    pub(crate) fn listening(&self) -> Vec<String> {
+        self.listening
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     pub(crate) fn enable(&self, store: TrustStore) -> Result<(), NodeError> {

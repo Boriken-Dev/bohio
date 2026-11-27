@@ -2260,7 +2260,7 @@ fn forward_cases() -> Vec<Case> {
             "open",
             "forward.ConnectRequest",
             &ConnectRequest::new(Target::Tcp {
-                host: "fd00::5".into(),
+                host: "2001:db8::5".into(),
                 port: 22,
             }),
         ),
@@ -2918,6 +2918,21 @@ fn pair_cases() -> Vec<Case> {
             &PairReply::Armed {
                 pin: "123456".into(),
                 lifetime_ms: 60_000,
+                listening: Vec::new(),
+            },
+        ),
+        message(
+            "armed_with_endpoints",
+            TO_CLIENT,
+            "message",
+            "local.PairReply",
+            &PairReply::Armed {
+                pin: "123456".into(),
+                lifetime_ms: 60_000,
+                listening: vec![
+                    "tcp://203.0.113.5:7000".into(),
+                    "ws://203.0.113.5:7001".into(),
+                ],
             },
         ),
         message(

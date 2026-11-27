@@ -740,6 +740,11 @@ impl Node {
         Ok(self)
     }
 
+    /// Tells the node the endpoints it listens on, as bound, so a `bohio-pair/1` client can say where a joiner connects.
+    pub fn set_listening(&self, endpoints: Vec<String>) {
+        self.pairing.set_listening(endpoints);
+    }
+
     /// Arms a new PIN, lasting `lifetime` (`[pairing] timeout` when `None`), and withdraws the one armed before: a
     /// joiner on any of this node's listeners may try it once.
     ///

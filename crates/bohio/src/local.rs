@@ -2,9 +2,9 @@
 //!
 //! A node holds links to peers, including links a peer dialed, and the only process that can open streams on
 //! them is the node. [`Local`] is the endpoint it listens on (a pipe: a Windows named pipe or a Unix
-//! socket, this user alone by default); [`Node::serve_local`] serves two protocols there, never on a peer's
+//! socket, this user alone by default); [`Node::serve_local`] serves its protocols there, never on a peer's
 //! link: [`bohio_proto::local::VIA`] carries a stream of any other protocol to a peer, and
-//! [`bohio_proto::local::LINKS`] lists the links, [`bohio_proto::local::PROVIDERS`] lists the provider libraries loaded at start, and [`bohio_proto::local::PAIR`] arms the node's pairing PIN. The mux on this endpoint is not sealed: who may connect is
+//! [`bohio_proto::local::LINKS`] lists the links, [`bohio_proto::local::PROVIDERS`] lists the provider libraries loaded at start, [`bohio_proto::local::PAIR`] arms the node's pairing PIN, and [`bohio_proto::local::GUI_APPROVE`] decides a peer's request to look at or drive the screen. The mux on this endpoint is not sealed: who may connect is
 //! the boundary, as for the key file.
 //!
 //! [`Via`] is the client: an [`Open`] whose streams run on a node's link to one peer, so `info`, `exec`, `read`
@@ -132,7 +132,7 @@ impl Local {
     }
 }
 
-/// What the two local protocols read.
+/// What the local protocols read.
 struct Context {
     pairing: Arc<PairState>,
     registry: Arc<Registry>,
@@ -142,7 +142,7 @@ struct Context {
     sources: Arc<crate::access::Sources>,
 }
 
-/// The one local peer: it may open both local protocols.
+/// The one local peer: it may open every local protocol.
 struct Everything;
 
 impl PeerStore for Everything {
@@ -516,6 +516,7 @@ fn pair(context: &Context, stream: &dyn LinkStream, accepted: &Accepted) {
     send(&PairReply::Armed {
         pin: armed.pin().to_owned(),
         lifetime_ms: u64::try_from(armed.lifetime().as_millis()).unwrap_or(u64::MAX),
+        listening: context.pairing.listening(),
     });
     let poll = context.settings.poll_interval.max(Duration::from_millis(1));
     let end = loop {
@@ -668,9 +669,14 @@ impl LocalLink {
             .receive(Some(self.settings.proof_timeout))?
             .ok_or(Error::Closed)?;
         match PairReply::decode(&message).map_err(|error| Error::Link(error.to_string()))? {
-            PairReply::Armed { pin, lifetime_ms } => Ok(Pairing {
+            PairReply::Armed {
+                pin,
+                lifetime_ms,
+                listening,
+            } => Ok(Pairing {
                 stream,
                 pin,
+                listening,
                 lifetime: Duration::from_millis(lifetime_ms),
                 settings: self.settings,
             }),
@@ -783,6 +789,7 @@ impl Drop for LocalLink {
 pub struct Pairing {
     stream: Box<dyn Channel>,
     pin: String,
+    listening: Vec<String>,
     lifetime: Duration,
     settings: Settings,
 }
@@ -791,6 +798,11 @@ impl Pairing {
     /// The PIN, for the person who reads it out.
     pub fn pin(&self) -> &str {
         &self.pin
+    }
+
+    /// The endpoints the node says it listens on, as it bound them; empty when it does not say.
+    pub fn listening(&self) -> &[String] {
+        &self.listening
     }
 
     /// How long the node holds it.

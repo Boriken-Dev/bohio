@@ -204,6 +204,10 @@ pub enum PairReply {
         pin: String,
         /// How long it lasts, in milliseconds.
         lifetime_ms: u64,
+        /// The endpoints the node is listening on, as it bound them (a port of `0` is the port it got); empty when it
+        /// does not say.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        listening: Vec<String>,
     },
     /// A peer paired with it; its `[peer.<id>]` table was written and holds nothing.
     Paired {

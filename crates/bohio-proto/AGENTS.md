@@ -289,11 +289,6 @@ pub struct Listed { id, name: Option<String>, kind, program: String, started: Ti
 
 `bohio-attach/1` answers `0x09` `attached` or `0x05` `error` (`not_found` for an id the peer does not hold), then the exec's or shell's own host frames from `from` and live; the client sends that protocol's client frames. The offset counts standard output and standard error together, in order.
 
-## Gotchas
-
-- Raw output is bounded by the stream's message size, not by this crate: a host splits it into frames of at most that size less one.
-- `Exit::killed` is `true` whenever the host ended the tree (kill frame, closed stream or deadline); `timed_out` says it was the deadline.
-
 ## Local control (`bohio_proto::local`)
 
 Spoken only on a running node's local endpoint, never on a peer's link (CDDL in `docs/protocol.md`, "Local control").
@@ -302,7 +297,7 @@ Spoken only on a running node's local endpoint, never on a peer's link (CDDL in 
 pub const VIA: &str = "bohio-via/1";   pub const LINKS: &str = "bohio-links/1";   pub const PROVIDERS: &str = "bohio-providers/1";   pub const PAIR: &str = "bohio-pair/1";
 pub struct LibraryEntry { path, state /*"loaded"|"skipped"|"failed"*/, detail, digest: Option<String> }   pub struct ProgramEntry { name, path, state /*"running"|"failed"*/, detail, digest: Option<String>, restarts: u32 }   pub struct ProvidersReply { check_access: bool, libraries: Vec<LibraryEntry>, programs: Vec<ProgramEntry> /*default empty*/ }   // encode(), decode(&[u8]); the open has no metadata
 pub struct PairRequest { lifetime_ms: Option<u64> }   // Default; to_metadata(), from_metadata (empty is the default)
-#[non_exhaustive] pub enum PairReply /* tagged by `type`, as ApproveOutput, ApproveInput, HelperChange and HelperMessage are; vectors/pair.json */ { Armed { pin: String, lifetime_ms: u64 }, Paired { peer: String }, Ended { reason: String } }   // encode(), decode(&[u8]); first Armed, then Paired or Ended
+#[non_exhaustive] pub enum PairReply /* tagged by `type`, as ApproveOutput, ApproveInput, HelperChange and HelperMessage are; vectors/pair.json */ { Armed { pin: String, lifetime_ms: u64, listening: Vec<String> /* the endpoints the node bound; left out when empty */ }, Paired { peer: String }, Ended { reason: String } }   // encode(), decode(&[u8]); first Armed, then Paired or Ended
 pub struct ViaRequest { peer: String, protocol: String, metadata: Vec<u8> /* a CBOR byte string */ }   // to_metadata(), from_metadata(&[u8])
 pub struct LinksRequest { wait_ms: Option<u64> }   // Default; to_metadata(), from_metadata (empty is the default)
 pub struct LinkEntry { peer, side: String /* dialed|answered */, endpoint: Option<String>, source: Option<String>, since: u64, mine: Vec<String>, theirs: Option<Vec<String>> }
@@ -346,3 +341,8 @@ pub struct Skipped { binary: u64, large: u64, unreadable: u64 }   pub struct Sea
 
 // info: TransferInfo.search: bool, `search_limits: SearchLimits { max_searches, max_file_bytes, max_line_bytes, max_matches, max_files, max_context, deadline_ms: u64 }` and `follow: bool` are part of TransferInfo
 ```
+
+## Gotchas
+
+- Raw output is bounded by the stream's message size, not by this crate: a host splits it into frames of at most that size less one.
+- `Exit::killed` is `true` whenever the host ended the tree (kill frame, closed stream or deadline); `timed_out` says it was the deadline.

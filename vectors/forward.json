@@ -18,13 +18,13 @@
     },
     {
       "direction": "client_to_host",
-      "hex": "a166746172676574a364747970656374637064686f737467666430303a3a3564706f727416",
+      "hex": "a166746172676574a364747970656374637064686f73746b323030313a6462383a3a3564706f727416",
       "kind": "open",
       "name": "open_tcp_ipv6",
       "type": "forward.ConnectRequest",
       "value": {
         "target": {
-          "host": "fd00::5",
+          "host": "2001:db8::5",
           "port": 22,
           "type": "tcp"
         }
