@@ -545,15 +545,26 @@ fn setter(inputs: &[Input], values: &[Value], segments: &[&str]) -> usize {
 /// Every table name under `[peer]` is a peer id.
 fn check_ids(peers: &Peers, inputs: &[Input], values: &[Value]) -> Result<(), ConfigError> {
     for name in peers.ids() {
-        if name.parse::<PeerId>().is_err() {
-            let at = setter(inputs, values, &["peer", name]);
-            return Err(ConfigError::Invalid {
-                path: inputs[at].label.clone(),
-                key: format!("peer.{name}"),
-                message: "is not a peer id: name each peer table by the id `bohio id` prints"
-                    .to_owned(),
-            });
-        }
+        // The node matches a key by its canonical text, so a table named in another form of the same id would be accepted here
+        // and never match.
+        let canonical = name.parse::<PeerId>().map(|id| id.to_string());
+        let message = match canonical {
+            Err(_) => {
+                "is not a peer id: name each peer table by the id `bohio id` prints".to_owned()
+            }
+            Ok(canonical) if canonical != *name => {
+                format!(
+                    "names a peer id in a form the node does not match: write it as `{canonical}`"
+                )
+            }
+            Ok(_) => continue,
+        };
+        let at = setter(inputs, values, &["peer", name]);
+        return Err(ConfigError::Invalid {
+            path: inputs[at].label.clone(),
+            key: format!("peer.{name}"),
+            message,
+        });
     }
     Ok(())
 }

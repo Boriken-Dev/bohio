@@ -1527,3 +1527,18 @@ fn a_file_that_raises_a_window_past_a_profiles_ceiling_raises_the_ceiling_with_i
             .unwrap();
     assert_eq!(own.link.max_window, Some(4 * MIB));
 }
+
+#[test]
+fn a_peer_table_named_in_another_form_of_an_id_is_refused_naming_the_canonical_one() {
+    let id = peer_id();
+    assert!(parse(&format!("[peer.\"{id}\"]\nallow = [\"info\"]\n")).is_ok());
+    let upper = id.to_uppercase().replace("SHA256:", "sha256:");
+    assert_ne!(upper, id);
+    match parse(&format!("[peer.\"{upper}\"]\nallow = [\"info\"]\n")).unwrap_err() {
+        ConfigError::Invalid { key, message, .. } => {
+            assert_eq!(key, format!("peer.{upper}"));
+            assert!(message.contains(&id), "{message}");
+        }
+        other => panic!("{other:?}"),
+    }
+}

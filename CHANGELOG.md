@@ -193,6 +193,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A `[peer.<id>]` table named in another form of an id (upper case, bare hex) is refused at load, naming the canonical form, where the node used to accept the file and never match the key.
 - A watch survives a display that changes size (a rotation, a docking, an RDP client resizing): it reads the state again and sends a key frame of the new size instead of ending with `internal`.
 - A start on a source whose description fails is refused to a peer that lacks `gui.view`, `gui.input` or `gui.clipboard`: the check that keeps the node's display from an `exec`-only peer failed open.
 - On Linux `[gui] input_when_locked` now takes effect: the X11 and Wayland desktops no longer refuse input at a lock screen themselves. A display reached over ssh reports its lock state as unknown (it was reported unlocked), so `input_when_lock_unknown` decides.
