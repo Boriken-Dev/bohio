@@ -160,3 +160,53 @@ fn a_call_that_times_out_mid_batch_leaves_the_stream_and_the_other_answers_intac
         control.close();
     });
 }
+
+#[test]
+fn an_answer_the_client_cannot_read_fails_its_own_call_and_no_other() {
+    let link = Fake {
+        host: std::sync::Mutex::new(None),
+    };
+    let control = Control::open(&link).unwrap();
+    let host = link.host.lock().unwrap().take().unwrap();
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            // The first call gets an answer whose reply is malformed, the second its own.
+            let first: Request = decode(
+                &host
+                    .receive(Some(Duration::from_secs(20)))
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap();
+            let second: Request = decode(
+                &host
+                    .receive(Some(Duration::from_secs(20)))
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap();
+            let broken =
+                serde_json::json!({"id": first.id, "reply": {"type": "which", "found": 5}});
+            host.send(&encode(&broken).unwrap()).unwrap();
+            let Call::Which { names } = second.call else {
+                panic!("a which call");
+            };
+            let found = names
+                .into_iter()
+                .map(|name| (name.clone(), Some(name)))
+                .collect();
+            host.send(&encode(&Response::ok(second.id, Reply::Which { found })).unwrap())
+                .unwrap();
+        });
+        let (first, second) = (
+            control.submit(which("a"), None).unwrap(),
+            control.submit(which("b"), None).unwrap(),
+        );
+        // The second call reads the first one's broken answer on its way to its own.
+        let answer = control.collect(second, Some(Duration::from_secs(10)));
+        assert!(echoed(&answer, "b"), "{answer:?}");
+        let answer = control.collect(first, Some(Duration::from_secs(10)));
+        assert!(matches!(answer, Err(Error::Protocol(_))), "{answer:?}");
+        control.close();
+    });
+}

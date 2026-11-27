@@ -19,13 +19,19 @@ struct Pending {
     /// The ids sent whose answer has not arrived, oldest first: the host answers in this order.
     awaiting: BTreeSet<u64>,
     /// Answers that arrived before the call that wants them collected them.
-    answers: HashMap<u64, Response>,
+    answers: HashMap<u64, Result<Response, Error>>,
     /// Ids whose caller stopped waiting: their answers are dropped when they come.
     abandoned: HashSet<u64>,
     /// A thread is reading the channel.
     reading: bool,
     /// The host closed the stream.
     closed: bool,
+}
+
+/// The id of a frame that is not a response this client can read.
+#[derive(serde::Deserialize)]
+struct Identified {
+    id: u64,
 }
 
 fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -117,8 +123,8 @@ impl Control {
     fn collect_by(&self, id: u64, deadline: Option<Instant>) -> Result<Reply, Error> {
         let mut pending = locked(&self.pending);
         loop {
-            if let Some(response) = pending.answers.remove(&id) {
-                return response.into_result().map_err(Error::Remote);
+            if let Some(answer) = pending.answers.remove(&id) {
+                return answer?.into_result().map_err(Error::Remote);
             }
             if pending.closed {
                 return Err(Error::Closed);
@@ -157,28 +163,38 @@ impl Control {
                     pending.closed = true;
                     return Err(Error::Closed);
                 }
-                Ok(Some(frame)) => {
-                    let response: Response = decode(&frame)?;
-                    Self::deliver(&mut pending, response);
-                }
+                Ok(Some(frame)) => match decode::<Response>(&frame) {
+                    Ok(response) => Self::deliver(&mut pending, response.id, Ok(response)),
+                    Err(error) => {
+                        // The frame is not an answer this client reads, but its id says whose it is: that call
+                        // fails alone, and the stream goes on for the others.
+                        let Ok(Identified { id }) = decode(&frame) else {
+                            return Err(error.into());
+                        };
+                        Self::deliver(&mut pending, id, Err(Error::Protocol(error)));
+                    }
+                },
             }
         }
     }
 
     /// Files an answer under its call. Id `0` answers a request the host could not read: the oldest one outstanding.
-    fn deliver(pending: &mut Pending, mut response: Response) {
-        let id = if response.id == 0 {
+    fn deliver(pending: &mut Pending, id: u64, answer: Result<Response, Error>) {
+        let id = if id == 0 {
             match pending.awaiting.pop_first() {
                 Some(id) => id,
                 None => return,
             }
         } else {
-            pending.awaiting.remove(&response.id);
-            response.id
+            pending.awaiting.remove(&id);
+            id
         };
         if !pending.abandoned.remove(&id) {
-            response.id = id;
-            pending.answers.insert(id, response);
+            let answer = answer.map(|mut response| {
+                response.id = id;
+                response
+            });
+            pending.answers.insert(id, answer);
         }
     }
 
