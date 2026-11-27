@@ -203,6 +203,30 @@ fn a_login_shell_that_reads_quotes_as_fish_does_starts_no_program_unless_the_che
 }
 
 #[test]
+fn a_start_the_host_refuses_frees_its_channel_on_the_host_too() {
+    need_shell!();
+    // Two channels at most, and a host that refuses every command: each start is refused, and none may keep a channel.
+    let server = FakeSsh::start_with(Options {
+        refuse_commands: true,
+        max_sessions: 2,
+        ..Options::default()
+    });
+    let mut settings = server.settings();
+    settings.login_shell_check = false;
+    let source = ssh(settings);
+    for round in 0..6 {
+        let error = source
+            .start(argv(&["echo", "hi"]))
+            .expect_err("the host refuses the command");
+        let message = error.message().to_string();
+        assert!(
+            message.contains("refused") && !message.contains("MaxSessions"),
+            "round {round}: {message}"
+        );
+    }
+}
+
+#[test]
 fn a_shell_script_runs_on_the_host() {
     need_shell!();
     let server = FakeSsh::start();

@@ -174,12 +174,17 @@ impl Session {
         match tokio::time::timeout(wait, sent).await {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
+                // A channel that is only dropped stays open on the host and keeps counting against its limit.
+                let _ = tokio::time::timeout(wait, channel.close()).await;
                 return Err(refuse(
                     Status::GUATIAO_ERR_GONE,
                     format!("{}: {error}", link.target()),
                 ));
             }
-            Err(_) => return Err(unavailable("the host did not answer in time")),
+            Err(_) => {
+                let _ = tokio::time::timeout(wait, channel.close()).await;
+                return Err(unavailable("the host did not answer in time"));
+            }
         }
         let (mut read, write) = channel.split();
         let queue = link.settings.queue_chunks;
@@ -219,13 +224,17 @@ impl Session {
         match answered {
             Ok(Ok(())) => {}
             Ok(Err(())) => {
+                let _ = tokio::time::timeout(wait, write.close()).await;
                 return Err(refused(if open.pty.is_some() {
                     "the terminal or the command"
                 } else {
                     "to run the command"
                 }));
             }
-            Err(_) => return Err(unavailable("the host did not answer in time")),
+            Err(_) => {
+                let _ = tokio::time::timeout(wait, write.close()).await;
+                return Err(unavailable("the host did not answer in time"));
+            }
         }
         if !open.stdin {
             let _ = write.eof().await;

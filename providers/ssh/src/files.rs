@@ -187,14 +187,17 @@ impl Files {
                 ),
             )
         };
-        channel
-            .request_subsystem(true, "sftp")
-            .await
-            .map_err(|error| no_sftp(&error))?;
+        // A channel that is only dropped stays open on the host and keeps counting against its limit.
+        let wait = settings.operation_timeout;
+        if let Err(error) = channel.request_subsystem(true, "sftp").await {
+            let _ = tokio::time::timeout(wait, channel.close()).await;
+            return Err(no_sftp(&error));
+        }
         loop {
             match channel.wait().await {
                 Some(russh::ChannelMsg::Success) => break,
                 Some(russh::ChannelMsg::Failure) | None => {
+                    let _ = tokio::time::timeout(wait, channel.close()).await;
                     return Err(no_sftp(&"it refused the request"));
                 }
                 Some(_) => {}
