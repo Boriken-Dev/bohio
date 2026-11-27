@@ -13,7 +13,7 @@ impl Environment { pub fn default_data_dir(&self) -> PathBuf; }
 
 pub struct Config { pub service: ServiceConfig, pub profile: ProfileConfig /*`[profile]`: name, default "default"*/, pub listen: Vec<ListenConfig>, pub link: LinkConfig, pub filesystem: FilesystemConfig,
                     pub hash: HashConfig, pub walk: WalkConfig, pub search: SearchConfig, pub delta: DeltaConfig, pub compression: CompressionConfig, pub execution: ExecutionConfig, pub shell: ShellConfig,
-                    pub sessions: SessionsConfig, pub forward: ForwardConfig, pub gui: GuiConfig, pub pairing: PairingConfig, pub waiting: WaitingConfig, pub client: ClientConfig, pub control: ControlConfig,
+                    pub sessions: SessionsConfig, pub forward: ForwardConfig, pub gui: GuiConfig, pub pairing: PairingConfig, pub waiting: WaitingConfig, pub client: ClientConfig, pub mcp: McpConfig, pub control: ControlConfig,
                     pub power: PowerConfig, pub media: MediaConfig, pub secrets: SecretsConfig, pub providers: ProvidersConfig, pub source: SourceTables, pub access: AccessConfig,
                     pub peer: Peers, pub remote: Hosts }     // Default; unknown keys refused; `peer` is `[peer.<id>]`, `remote` is `[remote.<name>]`
 pub struct NodeConfig { pub name: String, pub link: LinkConfig, pub filesystem: FilesystemConfig, pub hash: HashConfig, pub walk: WalkConfig, pub search: SearchConfig, pub delta: DeltaConfig,
@@ -98,6 +98,12 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[client] read_size` | `1048576` | bytes of a local file read at a time by `put`, `get` and a comparison; at least 1 |
 | `[client] input_queue` | `4` | chunks of standard input `listen --keep` holds ahead of a connection; at least 1 |
 | `[client] probe_timeout` | `1s` | how long `status` waits for an endpoint to answer before it reports it unreachable; not zero |
+| `[client] power_wait` | `90s` | the least `remote power` and `remote media` wait for the host's answer; not zero |
+| `[client] kill_after` | `2s` | a second Ctrl-C within this of the first ends the program's whole tree (`--kill-after`); not zero |
+| `[client] sync_bundle_max` | `1048576` | the largest file `put` and `get` of a tree move in a bundle (`--bundle-max`); at least 1 |
+| `[client] sync_bundle_items` | `1000` | the most files in one bundle (`--bundle-items`); at least 1 |
+| `[mcp] max_calls` | `8` | the tool calls `bohio mcp` runs at once (`--max-calls`); at least 1 |
+| `[mcp] gui_max_image_bytes` | `1048576` | where a `gui` tool's `format: "auto"` turns from PNG to JPEG 80 (`--gui-max-image-bytes`) |
 | `[client] links_wait` | `5s` | how long `links` (`--wait`) and `remote --via` wait for each peer to say what it offers; not zero |
 | `[client] parallel_streams` | `1` | streams `get`, `put` and `read` run at once for one file; `remote ... --parallel N`; `1` is the ordinary transfer (a delta where it applies), more moves the whole file in ranges; at least 1 |
 | `[client] parallel_links` | `1` | links those streams are spread over, each a connection of its own with its own proof; `--links M`; through `--via` there is one; at least 1 |
@@ -128,7 +134,8 @@ with file, line, column and key (a value of the file is never quoted). Defaults:
 | `[execution] max_processes_per_peer` | `16` | the most processes one peer has running of `max_processes`; at least 1 |
 | `[shell] max_sessions_per_peer` | `8` | the most shell sessions one peer has open of `max_sessions`; at least 1 |
 | `[link] max_streams_per_peer` | `256` | the most streams one peer has open over all its links; one past it is refused; at least 1 |
-| `[walk] recheck_entries` | `1000` | entries a walk sends between looks at the peer's grant; 0: once for each root |
+| `[walk] max_visited` | `10000000` | the most names one walk looks at over all its roots, sent or not (an `include` that matches nothing still ends); `0` is no limit |
+| `[walk] recheck_entries` | `1000` | names a walk looks at between looks at the peer's grant; 0: once for each root |
 | `[filesystem] chunk_size` | `65536` | most file bytes in one frame, and the buffer a copy reads with; at least 1; a smaller message bound of the stream wins |
 | `[filesystem] max_tree_entries` | `1000000` | entries a recursive `copy`, or a `move` across filesystems, goes through before it stops with `busy`; `0` is no limit |
 | `[filesystem] max_bundle_items` | `1000000` | files one bundle (`bohio-read/1` or `bohio-write/1` with `items`) carries before it stops with `busy`; `0` is no limit |

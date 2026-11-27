@@ -8,9 +8,11 @@ Cargo features: `zstd` (decode zstd), `screen` (the compositor of a watch: `bohi
 `coqui-transport-serial` (each a git revision, one copy), `url`, `socket2`, `serde`, `serde_json`, `tracing` and `thiserror`. Version
 `0.0.0-alpha.0`, not published.
 
-Imports: the root holds `Open` and `Error`. Public modules: `bundle`, `connect`, `control`, `dial`, `exec`, `follow`, `forward`, `fs`, `gui`, `hash`, `keep`, `link`, `media`, `parallel`, `power`, `profile`, `range`, `relay`, `search`, `session`, `shell`, `socks`, `sourced`, `sync`, `tools`, `walk`. No `unsafe` code
-(`#![forbid(unsafe_code)]`). The operations start no threads and do no I/O of their own: every call blocks on the channel it was given
-(only `connect` and `relay` start threads, and `connect` opens a socket).
+Imports: the root holds `Open`, `OpenOptions`, `Sourced` and `Error`. Public modules: `bundle`, `connect`, `control`, `dial`, `exec`, `follow`, `forward`, `fs`, `gui`, `hash`, `keep`, `link`, `media`, `parallel`, `power`, `profile`, `range`, `relay`, `search`, `session`, `shell`, `socks`, `sourced`, `sync`, `tools`, `walk`. No `unsafe` code
+(`#![forbid(unsafe_code)]`). A call blocks on the channel it was given and, unless it is listed here, starts no thread and touches nothing outside the link. Threads: `connect` and
+`relay` (the link), and for the length of a call `bundle`, `control` (`call_many`), `fs`, `hash`, `keep`, `parallel`, `walk`, `socks`, `forward` (with `forward::ipc` and `forward::remote`), `sync` (the tree walks) and `tools` (`net`, `process`).
+Local sockets: `connect` and `link` dial, and `forward`, `forward::remote`, `socks` and `tools::net` bind or connect them. Local files: `fs` (`put`, `get`), `parallel`, `sync` (with its tree walk), `dial` (the CA files of a TLS trust)
+and `tools::files` read and write them.
 
 ## Opening streams (crate root)
 
@@ -21,10 +23,12 @@ pub trait Open: Send + Sync {
     fn bulk_window(&self) -> Option<u32>;                          // provided: None; what `Reader::start` asks for, `Some` only when above the link's `window`
     fn is_up(&self) -> bool;                                       // provided: true; whether the link can still open streams (a local listener of a forward ends when it cannot)
     fn open_cause(&self, protocol: &str, metadata: &[u8]) -> Result<(Box<dyn LinkStream>, connect::Cause), Error>;   // provided: `open` and `Cause::unknown()`; `Opener`, `Connection` and `PeerLink` give the cause that says, once the stream ended, whether the host refused it as over a limit
+    fn files_source(&self) -> Option<&str>;                        // provided: None; the files source this link names (`Sourced`): a `Control` opened through it puts it on its calls
     fn relink_wait(&self) -> Option<Duration>;                     // provided: None; Some for a `keep::Relink`: a forward retries a connect whose link was lost before the answer for that long
 }
 #[derive(Default)] #[non_exhaustive] pub struct OpenOptions { pub receive_window: Option<u32> }   // None: the link's window; `OpenOptions::receive_window(bytes)`. A link grants the difference on the new stream, up to its `max_window`
-#[non_exhaustive] pub enum Error { Remote(ErrorBody), Transport(Failure), Protocol(bohio_proto::Error), Link(String), Timeout, Closed }   // Clone, Eq, std::error::Error
+#[non_exhaustive] pub enum Error { Remote(ErrorBody), Transport(Failure), Protocol(bohio_proto::Error), Link(String), Timeout, Closed,
+                                   Compression(String) /* a codec this build lacks */, Local(String) /* a local file; never a path */, Screen(String) /* an unusable update */, Mismatch /* a rebuilt file's digest differs */ }   // Clone, Eq, std::error::Error
 ```
 
 `Sourced::new(&link, "name")` / `Sourced::shared(arc, "name")` is an `Open` that names the host's files source on every filesystem stream (`bohio-read/1`, `-write/1`, `-hash/1`, `-walk/1`, `-search/1`) and, through `Open::files_source`, on the calls of a `Control` opened through it; `Tools::call` does the same for a file tool's `source` argument.
