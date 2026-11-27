@@ -191,12 +191,17 @@ impl GuiState {
     }
 
     /// A session on the default desktop source: what a stream drives.
-    fn desktop(&self, name: Option<&str>, grant: &Grant) -> Result<Arc<dyn Desktop>, ErrorBody> {
+    fn desktop(
+        &self,
+        name: Option<&str>,
+        grant: &Grant,
+        max_pixels: u64,
+    ) -> Result<Arc<dyn Desktop>, ErrorBody> {
         let source = self.sources.desktop(name)?;
         if !self.sources.permits(grant, source.name()) {
             return Err(denied("this peer may not use that desktop source"));
         }
-        let session = KindDesktop::open(source)?;
+        let session = KindDesktop::open(source)?.bounded(max_pixels);
         Ok(Arc::new(session))
     }
 
@@ -512,9 +517,11 @@ fn open(
             "this host does not serve its desktop",
         ));
     }
-    let desktop = context
-        .state
-        .desktop(request.source.as_deref(), context.grant)?;
+    let desktop = context.state.desktop(
+        request.source.as_deref(),
+        context.grant,
+        context.config.max_snapshot_pixels,
+    )?;
     let wants = request.wants();
     if let Some(missing) = wants.iter().find(|want| !permits(context.grant, **want)) {
         return Err(denied(&format!("this peer may not {missing} the desktop")));

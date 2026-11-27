@@ -19,6 +19,8 @@ use crate::gui::{Capabilities, Desktop, DesktopState, Frame, GuiError};
 pub struct KindDesktop {
     source: Source<dyn DesktopSource>,
     session: Object<dyn DesktopSession>,
+    /// The most pixels a frame may hold; `None` until [`KindDesktop::bounded`] says, which refuses a whole-display capture.
+    max_pixels: Option<u64>,
 }
 
 impl KindDesktop {
@@ -29,7 +31,19 @@ impl KindDesktop {
     /// The source's refusal (`unavailable` when it cannot be reached, with its reason).
     pub fn open(source: Source<dyn DesktopSource>) -> Result<Self, GuiError> {
         let session = source.get().open().map_err(|error| gui_error(&error))?;
-        Ok(Self { source, session })
+        Ok(Self {
+            source,
+            session,
+            max_pixels: None,
+        })
+    }
+
+    /// Bounds every frame to `max_pixels` (the host's `[gui] max_snapshot_pixels`): the provider's own word for the size of
+    /// a frame sizes the buffer only when it is no larger than the region asked, and never above this.
+    #[must_use]
+    pub const fn bounded(mut self, max_pixels: u64) -> Self {
+        self.max_pixels = Some(max_pixels);
+        self
     }
 
     fn live(&self) -> Result<(), GuiError> {
@@ -61,6 +75,23 @@ impl Desktop for KindDesktop {
             .session
             .frame_size(&display.0, region)
             .map_err(|error| gui_error(&error))?;
+        let allowed = match (region, self.max_pixels) {
+            (Some(asked), Some(most)) => asked.width.saturating_mul(asked.height).min(most),
+            (Some(asked), None) => asked.width.saturating_mul(asked.height),
+            (None, Some(most)) => most,
+            (None, None) => {
+                return Err(GuiError::new(
+                    ErrorCode::Internal,
+                    "no bound on the frame of a whole display",
+                ));
+            }
+        };
+        if header.width.saturating_mul(header.height) > allowed {
+            return Err(GuiError::new(
+                ErrorCode::Internal,
+                "the provider sized a frame larger than the region asked",
+            ));
+        }
         let len = usize::try_from(header.len())
             .map_err(|_| GuiError::new(ErrorCode::Internal, "the frame does not fit memory"))?;
         let mut rgb = vec![0_u8; len];

@@ -322,11 +322,19 @@ struct SessionOf {
 }
 
 impl SessionOf {
-    fn region(
-        &self,
-        display: &str,
-        region: Option<RectModel>,
-    ) -> Result<(DisplayId, Option<Rect>, u64, u64), ProviderError> {
+    /// The region asked, as the desktop takes it.
+    fn region_of(region: Option<RectModel>) -> Result<Option<Rect>, ProviderError> {
+        region
+            .map(|model| rect_of(model).map_err(|error| provider_error(&error)))
+            .transpose()
+    }
+
+    /// The width and height of the frame a capture of `display` and `region` makes. The desktop is asked only for a whole
+    /// display, whose size its state says; a region carries its own.
+    fn size(&self, display: &str, region: Option<Rect>) -> Result<(u64, u64), ProviderError> {
+        if let Some(rect) = region {
+            return Ok((u64::from(rect.width), u64::from(rect.height)));
+        }
         let id = DisplayId(display.to_owned());
         let state = self
             .desktop
@@ -335,14 +343,7 @@ impl SessionOf {
         let shown = state
             .display(Some(&id))
             .map_err(|error| provider_error(&error))?;
-        let region = region
-            .map(|model| rect_of(model).map_err(|error| provider_error(&error)))
-            .transpose()?;
-        let (width, height) = region
-            .map_or((u64::from(shown.width), u64::from(shown.height)), |rect| {
-                (u64::from(rect.width), u64::from(rect.height))
-            });
-        Ok((id, region, width, height))
+        Ok((u64::from(shown.width), u64::from(shown.height)))
     }
 }
 
@@ -365,7 +366,7 @@ impl DesktopSession for SessionOf {
         display: &str,
         region: Option<RectModel>,
     ) -> Result<FrameHeader, ProviderError> {
-        let (_, _, width, height) = self.region(display, region)?;
+        let (width, height) = self.size(display, Self::region_of(region)?)?;
         Ok(FrameHeader { width, height })
     }
 
@@ -375,7 +376,8 @@ impl DesktopSession for SessionOf {
         region: Option<RectModel>,
         dst: &mut [u8],
     ) -> Result<FrameHeader, ProviderError> {
-        let (id, region, _, _) = self.region(display, region)?;
+        let id = DisplayId(display.to_owned());
+        let region = Self::region_of(region)?;
         let frame = self
             .desktop
             .capture(&id, region)
