@@ -502,6 +502,27 @@ mod tests {
     use crate::platform::reap::{ended_guardians, sweep};
     use crate::platform::{Spec, spawn};
 
+    /// The guardian a started program has: the process named like one in the program's group (the program leads
+    /// a group of its own, and its guardian is forked into it).
+    fn guardian_of(program: u32) -> i32 {
+        std::fs::read_dir("/proc")
+            .expect("/proc lists")
+            .flatten()
+            .find_map(|entry| {
+                let number = entry.file_name().to_str()?.parse::<i32>().ok()?;
+                let stat = std::fs::read_to_string(entry.path().join("stat")).ok()?;
+                let close = stat.rfind(')')?;
+                let named = &stat[stat.find('(')? + 1..close] == super::NAME;
+                let group = stat[close + 1..]
+                    .split_whitespace()
+                    .nth(2)?
+                    .parse::<u32>()
+                    .ok()?;
+                (named && group == program).then_some(number)
+            })
+            .expect("the program has a guardian")
+    }
+
     /// A process that adopts orphans, as process 1 does, collects the guardians that ended and nothing else.
     #[test]
     fn an_adopted_guardian_that_ended_is_collected_by_the_sweep() {
@@ -520,9 +541,12 @@ mod tests {
             reset_signals: true,
         })
         .expect("sleep starts");
+        // Other tests of this process start programs too, and their guardians are adopted here as well:
+        // only this program's guardian is followed.
+        let guardian = guardian_of(started.control.id());
         started.control.kill().expect("the program ends");
         let until = Instant::now() + Duration::from_secs(10);
-        while ended_guardians(me).is_empty() {
+        while !ended_guardians(me).contains(&guardian) {
             assert!(
                 Instant::now() < until,
                 "the ended guardian never became this process's zombie"
@@ -530,7 +554,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(sweep(me) >= 1);
-        assert!(ended_guardians(me).is_empty());
+        assert!(!ended_guardians(me).contains(&guardian));
     }
 }
 
