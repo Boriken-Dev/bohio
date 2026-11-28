@@ -1089,3 +1089,172 @@ fn forwarding_without_trust_is_refused_when_the_source_is_built() {
         error.message()
     );
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// The connection as a library.
+
+#[test]
+fn a_connection_runs_a_command_and_names_the_hosts_system() {
+    let server = sshd!("");
+    let connection = bohio_provider_ssh::Connection::new(&server.settings()).unwrap();
+
+    let found = connection.run("echo hello; exit 3", 1024).unwrap();
+    assert_eq!(found.stdout, b"hello\n");
+    assert!(!found.truncated);
+    assert_eq!(found.exit.unwrap().code, Some(3));
+
+    let cut = connection.run("echo hello", 2).unwrap();
+    assert_eq!(cut.stdout, b"he");
+    assert!(cut.truncated);
+
+    let platform = connection.platform().unwrap();
+    assert_eq!(platform.os.as_deref(), Some("linux"));
+    assert!(platform.arch.is_some(), "{platform:?}");
+}
+
+#[test]
+fn the_key_trusted_at_first_contact_is_there_to_pin() {
+    skip_openssh!("the system's client keeps its own known_hosts");
+    let server = sshd!("");
+    let mut settings = server.settings();
+    settings.host_key = None;
+    settings.host_key_check = "tofu".to_owned();
+    let known = server.key_dir.path().join("empty_known_hosts");
+    std::fs::write(&known, "").unwrap();
+    settings.known_hosts = Some(known.to_string_lossy().replace('\\', "/"));
+    let connection = bohio_provider_ssh::Connection::new(&settings).unwrap();
+    assert_eq!(connection.trusted_host_key(), None);
+    connection.run("true", 16).unwrap();
+    assert_eq!(connection.trusted_host_key(), Some(server.pin.clone()));
+}
+
+#[test]
+fn a_reverse_forward_carries_the_hosts_connections_here() {
+    skip_openssh!("a reverse forward needs the connection the provider keeps");
+    let server = sshd!("");
+    let connection = bohio_provider_ssh::Connection::new(&server.settings()).unwrap();
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let target = listener.local_addr().unwrap().to_string();
+    let serving = std::thread::spawn(move || {
+        use std::io::{BufRead as _, BufReader};
+        let (stream, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        BufReader::new(stream.try_clone().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        (&stream)
+            .write_all(format!("pong:{}", line.trim()).as_bytes())
+            .unwrap();
+    });
+    let forward = connection.reverse_forward("127.0.0.1", 0, &target).unwrap();
+    assert_ne!(forward.remote_port(), 0);
+    let port = forward.remote_port();
+    let answer = output_of(&format!(
+        "exec 3<>/dev/tcp/127.0.0.1/{port}; echo ping >&3; read -t 10 line <&3; echo \"$line\""
+    ))
+    .unwrap();
+    assert_eq!(answer, "pong:ping");
+    serving.join().unwrap();
+
+    forward.close();
+    let after = output_of(&format!(
+        "(exec 3<>/dev/tcp/127.0.0.1/{port}) 2>/dev/null && echo open || echo closed"
+    ))
+    .unwrap();
+    assert_eq!(after, "closed");
+}
+
+#[test]
+fn a_unix_socket_on_the_host_is_a_stream() {
+    skip_openssh!("a channel to a socket needs the connection the provider keeps");
+    use std::io::Read as _;
+    let server = sshd!("");
+    if output_of("command -v python3").is_err() {
+        eprintln!("SKIPPED: the host has no python3 to listen on a unix socket");
+        return;
+    }
+    let socket = format!("{}/echo.sock", server.dir);
+    output_of(&format!(
+        "cat > {dir}/listen.py <<'PY'\n\
+import os, socket, sys\n\
+path = sys.argv[1]\n\
+s = socket.socket(socket.AF_UNIX)\n\
+s.bind(path)\n\
+s.listen(1)\n\
+c, _ = s.accept()\n\
+data = c.recv(64)\n\
+c.sendall(b'echo:' + data)\n\
+c.close()\n\
+PY\n\
+setsid nohup python3 {dir}/listen.py {socket} > /dev/null 2>&1 < /dev/null &\n\
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do [ -S {socket} ] && break; sleep 0.25; done\n\
+[ -S {socket} ]",
+        dir = server.dir
+    ))
+    .unwrap();
+    let connection = bohio_provider_ssh::Connection::new(&server.settings()).unwrap();
+    let mut stream = connection.open_socket(&socket, 16).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    stream.write_all(b"hi").unwrap();
+    let mut answer = Vec::new();
+    stream.read_to_end(&mut answer).unwrap();
+    assert_eq!(answer, b"echo:hi");
+    let missing = connection
+        .open_socket(&format!("{}/none.sock", server.dir), 16)
+        .unwrap_err();
+    assert!(
+        missing.message().contains("none.sock"),
+        "{}",
+        missing.message()
+    );
+}
+
+#[test]
+fn a_reverse_forward_is_asked_for_again_when_the_connection_is_remade() {
+    skip_openssh!("a reverse forward needs the connection the provider keeps");
+    let server = sshd!("");
+    let connection = bohio_provider_ssh::Connection::new(&server.settings()).unwrap();
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let target = listener.local_addr().unwrap().to_string();
+    let serving = std::thread::spawn(move || {
+        use std::io::{BufRead as _, BufReader};
+        let (stream, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        BufReader::new(stream.try_clone().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        (&stream)
+            .write_all(format!("pong:{}", line.trim()).as_bytes())
+            .unwrap();
+    });
+    let forward = connection.reverse_forward("127.0.0.1", 0, &target).unwrap();
+    let port = forward.remote_port();
+    let reach = format!(
+        "exec 3<>/dev/tcp/127.0.0.1/{port}; echo ping >&3; read -t 10 line <&3; echo \"$line\""
+    );
+    let listening =
+        format!("(exec 3<>/dev/tcp/127.0.0.1/{port}) 2>/dev/null && echo open || echo closed");
+
+    // The host's session process for this connection is killed: it takes its listening socket with it.
+    let _ = connection.run("kill -9 $PPID", 16);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while output_of(&listening).unwrap() != "closed" {
+        assert!(Instant::now() < deadline, "the host kept listening");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    // The next use makes the connection again and asks the host for the same port.
+    let mut answer = String::new();
+    while Instant::now() < deadline {
+        if connection.run("true", 16).is_ok() {
+            answer = output_of(&reach).unwrap();
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert_eq!(answer, "pong:ping");
+    serving.join().unwrap();
+    drop(forward);
+}

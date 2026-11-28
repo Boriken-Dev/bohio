@@ -20,6 +20,7 @@ use tokio::runtime::Runtime;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::forward::Forward;
+use crate::reverse::Reverse;
 use crate::settings::{HostKeyCheck, Settings, home};
 
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -70,7 +71,7 @@ impl Drop for Rt {
 /// refused.
 #[derive(Default)]
 pub(crate) struct HostKeys {
-    trusted: Mutex<Option<String>>,
+    pub(crate) trusted: Mutex<Option<String>>,
     refusal: Mutex<Option<String>>,
 }
 
@@ -78,6 +79,7 @@ pub(crate) struct Client {
     settings: Arc<Settings>,
     keys: Arc<HostKeys>,
     forward: Option<Arc<Forward>>,
+    reverse: Arc<Reverse>,
 }
 
 /// The SHA-256 of the public key blob, as `sha256:HEX`.
@@ -195,6 +197,30 @@ impl client::Handler for Client {
         }
     }
 
+    async fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        channel: Channel<Msg>,
+        _connected_address: &str,
+        connected_port: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        // A port nobody asked for is refused: dropping the reply tells the host no.
+        let Some(target) = self.reverse.target(connected_port) else {
+            return Ok(());
+        };
+        reply.accept().await;
+        tokio::spawn(async move {
+            if let Ok(mut near) = tokio::net::TcpStream::connect(&target).await {
+                let mut far = channel.into_stream();
+                let _ = tokio::io::copy_bidirectional(&mut far, &mut near).await;
+            }
+        });
+        Ok(())
+    }
+
     async fn server_channel_open_x11(
         &mut self,
         channel: Channel<Msg>,
@@ -247,7 +273,9 @@ struct State {
 pub(crate) struct Link {
     pub(crate) settings: Arc<Settings>,
     pub(crate) rt: Arc<Rt>,
-    keys: Arc<HostKeys>,
+    pub(crate) keys: Arc<HostKeys>,
+    /// The reverse forwards the host listens for, kept across reconnects.
+    pub(crate) reverse: Arc<Reverse>,
     state: tokio::sync::Mutex<State>,
     /// What the latest login probe of the system's ssh client found, and when: one probe at a time, kept `probe_every`.
     pub(crate) probed: tokio::sync::Mutex<Option<(Instant, Result<(), String>)>>,
@@ -270,6 +298,7 @@ impl Link {
             settings: Arc::new(settings),
             rt,
             keys: Arc::new(HostKeys::default()),
+            reverse: Arc::new(Reverse::default()),
             state: tokio::sync::Mutex::new(State {
                 conn: None,
                 failed: None,
@@ -312,6 +341,11 @@ impl Link {
         match self.connect().await {
             Ok(conn) => {
                 let conn = Arc::new(conn);
+                // A remade connection asks the host to listen again for every reverse forward still open. A port the
+                // host will not give back leaves that forward closed, as a dropped link does.
+                for (host, port) in self.reverse.listening() {
+                    let _ = conn.handle.tcpip_forward(host, port).await;
+                }
                 state.conn = Some(Arc::clone(&conn));
                 state.failed = None;
                 Ok(conn)
@@ -321,6 +355,12 @@ impl Link {
                 Err(unavailable(&why))
             }
         }
+    }
+
+    /// The live connection if there is one; never makes one.
+    pub(crate) async fn current(&self) -> Option<Arc<Conn>> {
+        let state = self.state.lock().await;
+        state.conn.clone().filter(|conn| !conn.is_closed())
     }
 
     /// Forgets `conn` if it is still the current one, so the next use connects again.
@@ -435,6 +475,7 @@ impl Link {
             settings: Arc::clone(&self.settings),
             keys: Arc::clone(&self.keys),
             forward: self.forward.clone(),
+            reverse: Arc::clone(&self.reverse),
         };
         *lock(&self.keys.refusal) = None;
         let timeout = settings.connect_timeout;

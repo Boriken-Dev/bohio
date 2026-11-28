@@ -8,16 +8,21 @@
 //! (a pseudo-terminal that runs its login shell or a program) and its processes. A source that cannot connect is
 //! reported unavailable with the reason and tried again after `reconnect_after`; building the source never touches the
 //! network. Everything the account on the host can do, a peer holding the source can do.
+//!
+//! Besides the kinds, [`Connection`] is the same connection as a library: a command's output, the host's system, a
+//! channel to a unix socket, and reverse forwards.
 
 #![forbid(unsafe_code)]
 
 mod agent;
 mod command;
+mod connection;
 mod desktop;
 mod files;
 mod forward;
 mod link;
 mod openssh;
+mod reverse;
 mod session;
 mod settings;
 
@@ -34,7 +39,9 @@ use bohio_api::{
 use bohio_x11::source::DesktopOf;
 use russh::Sig;
 
+pub use crate::connection::{Captured, Connection, Platform};
 use crate::link::{Link, Rt, refuse};
+pub use crate::reverse::ReverseForward;
 use crate::session::{Open, Session};
 pub use crate::settings::SshSettings;
 
@@ -89,7 +96,23 @@ impl TryFrom<SshSettings> for Ssh {
     }
 }
 
+impl core::fmt::Debug for Ssh {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Ssh")
+            .field("target", &self.link.as_ref().map(|link| link.target()))
+            .finish()
+    }
+}
+
 impl Ssh {
+    /// The source's connection as a library handle, sharing its login and its limits.
+    ///
+    /// # Errors
+    /// `NULL` for a source built with no host.
+    pub fn connection(&self) -> Result<Connection, ProviderError> {
+        Ok(Connection::of(Arc::clone(self.link()?)))
+    }
+
     fn link(&self) -> Result<&Arc<Link>, ProviderError> {
         self.link
             .as_ref()

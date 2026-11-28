@@ -204,9 +204,51 @@ pub(crate) fn signal_number(name: &str) -> Option<i64> {
     })
 }
 
+/// `(os, arch)` from the output of `uname -sm`, named as `std::env::consts` names them.
+pub(crate) fn parse_uname(output: &str) -> (Option<String>, Option<String>) {
+    let mut words = output.split_whitespace();
+    let os = words
+        .next()
+        .map(|name| match name.to_ascii_lowercase().as_str() {
+            "darwin" => "macos".to_owned(),
+            other => other.to_owned(),
+        });
+    let arch = words.next().map(|name| match name {
+        "arm64" | "aarch64" => "aarch64".to_owned(),
+        "amd64" | "x86_64" => "x86_64".to_owned(),
+        "i386" | "i686" | "i586" => "x86".to_owned(),
+        other => other.to_owned(),
+    });
+    (os, arch)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uname_output_is_named_as_rust_names_it() {
+        let some = |text: &str| Some(text.to_owned());
+        assert_eq!(
+            parse_uname(
+                "Linux aarch64
+"
+            ),
+            (some("linux"), some("aarch64"))
+        );
+        assert_eq!(
+            parse_uname(
+                "Darwin arm64
+"
+            ),
+            (some("macos"), some("aarch64"))
+        );
+        assert_eq!(
+            parse_uname("FreeBSD amd64"),
+            (some("freebsd"), some("x86_64"))
+        );
+        assert_eq!(parse_uname(""), (None, None));
+    }
 
     #[test]
     fn every_word_is_one_word_of_the_shell() {
