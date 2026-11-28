@@ -534,13 +534,17 @@ impl TerminalSource for Native {
     }
 }
 
-/// The environment a request's changes make: from an empty one when `clear_env`, with each variable set or removed.
+/// The environment a request's changes make: from an empty one when `clear_env`, with each variable set or removed. The
+/// engine applies every set before every removal, so a name changed twice keeps only its last change, which is what
+/// applying them in order leaves.
 pub(super) fn env_of(clear_env: bool, changes: &[EnvVar]) -> Env {
     let mut env = Env {
         clear: clear_env,
         ..Env::default()
     };
     for EnvVar { name, value } in changes {
+        env.set.remove(name);
+        env.remove.retain(|removed| removed != name);
         match value {
             Some(value) => {
                 env.set.insert(name.clone(), value.clone());
@@ -549,6 +553,51 @@ pub(super) fn env_of(clear_env: bool, changes: &[EnvVar]) -> Env {
         }
     }
     env
+}
+
+#[cfg(test)]
+mod env_order {
+    use super::{EnvVar, env_of};
+
+    fn set(name: &str, value: &str) -> EnvVar {
+        EnvVar {
+            name: name.to_owned(),
+            value: Some(value.to_owned()),
+        }
+    }
+
+    fn remove(name: &str) -> EnvVar {
+        EnvVar {
+            name: name.to_owned(),
+            value: None,
+        }
+    }
+
+    #[test]
+    fn a_removal_then_a_set_of_one_name_leaves_it_set() {
+        let env = env_of(false, &[remove("A"), set("A", "2")]);
+        assert_eq!(env.set.get("A").map(String::as_str), Some("2"));
+        assert!(env.remove.is_empty(), "{:?}", env.remove);
+    }
+
+    #[test]
+    fn a_set_then_a_removal_of_one_name_leaves_it_removed() {
+        let env = env_of(false, &[set("A", "1"), remove("A")]);
+        assert!(env.set.is_empty(), "{:?}", env.set);
+        assert_eq!(env.remove, ["A"]);
+    }
+
+    #[test]
+    fn a_name_set_twice_keeps_the_last_value_and_other_names_are_untouched() {
+        let env = env_of(
+            true,
+            &[set("A", "1"), remove("B"), set("A", "3"), set("C", "4")],
+        );
+        assert!(env.clear);
+        assert_eq!(env.set.get("A").map(String::as_str), Some("3"));
+        assert_eq!(env.set.get("C").map(String::as_str), Some("4"));
+        assert_eq!(env.remove, ["B"]);
+    }
 }
 
 /// The program and arguments a request names, found on the host as the grant says.

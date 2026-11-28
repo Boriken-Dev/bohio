@@ -7,7 +7,7 @@
 use bohio::access::{Capability, Sources};
 use bohio::policy::{Grant, Permission};
 use bohio_api::contract::{self, ContractSettings};
-use bohio_api::model::ExecStart;
+use bohio_api::model::{EnvVar, ExecStart};
 use bohio_proto::ErrorCode;
 
 fn printing() -> ExecStart {
@@ -65,4 +65,48 @@ fn grant_with_defaults(sources: &Sources, grant: Grant) -> Grant {
             .into_iter()
             .flat_map(|capability| sources.names(capability).into_iter().take(1)),
     )
+}
+
+/// The standard output of a program the native source starts, read to its end.
+fn output_of(start: ExecStart) -> String {
+    let sources = Sources::default();
+    let source = sources.exec(None).expect("the node serves exec");
+    let process = source.get().start(start).expect("the program starts");
+    let (mut out, mut chunk) = (Vec::new(), [0_u8; 1024]);
+    loop {
+        match process.read(bohio_api::exec::STDOUT, &mut chunk, 5000) {
+            Ok(-1) | Err(_) => break,
+            Ok(0) => {}
+            Ok(count) => out.extend_from_slice(&chunk[..usize::try_from(count).unwrap_or(0)]),
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+#[test]
+fn a_variable_removed_and_then_set_has_the_value_it_was_set_to() {
+    let name = "BOHIO_ENV_ORDER";
+    let change = |value: Option<&str>| EnvVar {
+        name: name.to_owned(),
+        value: value.map(str::to_owned),
+    };
+    let echo = ExecStart {
+        script: Some(if cfg!(windows) {
+            format!("echo [%{name}%]")
+        } else {
+            format!("echo \"[${{{name}-unset}}]\"")
+        }),
+        ..printing()
+    };
+    let removed_then_set = ExecStart {
+        env: vec![change(None), change(Some("2"))],
+        ..echo.clone()
+    };
+    assert!(output_of(removed_then_set).contains("[2]"));
+    let set_then_removed = ExecStart {
+        env: vec![change(Some("2")), change(None)],
+        ..echo
+    };
+    let shown = output_of(set_then_removed);
+    assert!(!shown.contains("[2]"), "{shown}");
 }
