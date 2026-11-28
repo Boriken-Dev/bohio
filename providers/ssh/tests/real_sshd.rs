@@ -1082,7 +1082,7 @@ fn forwarding_without_trust_is_refused_when_the_source_is_built() {
     skip_openssh!("X forwarding needs the russh client");
     let mut settings = SshSettings::new("example.invalid");
     settings.x11_forward = true;
-    let error = Ssh::try_from(settings).err().expect("refused");
+    let error = Ssh::try_from(settings).expect_err("refused");
     assert!(
         error.message().contains("x11_trusted"),
         "{}",
