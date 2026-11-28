@@ -496,11 +496,18 @@ fn bind_ipc(
     config: &ForwardConfig,
     options: &cabuya::forward::Options,
 ) -> Result<(Bound, String), ErrorBody> {
-    let name = name
-        .map_err(|_| ErrorBody::new(ErrorCode::BadRequest, "that is not a socket or pipe name"))?;
+    let name = name.map_err(|error| name_failure(&error))?;
     let listener = ipc::listener(&name, options, Some(config.socket_mode.0))
         .map_err(|error| pipe_bind_failure(&error))?;
     Ok((Bound::Ipc(listener), request.to_string()))
+}
+
+/// What a refused socket or pipe name is reported as: a path over the platform limit says its length and the limit.
+fn name_failure(error: &PipeError) -> ErrorBody {
+    match error {
+        PipeError::PathTooLong { .. } => ErrorBody::new(ErrorCode::BadRequest, error.to_string()),
+        _ => ErrorBody::new(ErrorCode::BadRequest, "that is not a socket or pipe name"),
+    }
 }
 
 fn pipe_bind_failure(error: &PipeError) -> ErrorBody {
@@ -566,4 +573,20 @@ fn token() -> Option<String> {
                 text
             }),
     )
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_path_over_the_limit_is_told_apart_from_a_bad_name() {
+        let long = format!("/tmp/{}", "a".repeat(400));
+        let error = PipeName::at(&long).expect_err("a path over sun_path");
+        let body = name_failure(&error);
+        assert_eq!(body.code, ErrorCode::BadRequest);
+        assert!(body.message.contains("over the limit"), "{}", body.message);
+        let body = name_failure(&PipeName::at("").expect_err("an empty path"));
+        assert_eq!(body.message, "that is not a socket or pipe name");
+    }
 }
