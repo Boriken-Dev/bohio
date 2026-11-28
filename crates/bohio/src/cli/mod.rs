@@ -212,7 +212,7 @@ pub(crate) enum PeerAction {
 /// The help of `--allow`: every permission the grant knows, from the enum.
 fn allow_help() -> String {
     format!(
-        "What the peer may do: {} (repeat or separate with commas). Setting any of `--allow`, `--fs-root`, `--program`, `--connect` and `--listen` replaces the peer's whole table; without them an existing table stays and a new peer holds nothing",
+        "What the peer may do: {} (repeat or separate with commas). Setting any of `--allow`, `--fs-root`, `--program`, `--connect` and `--listen` replaces the peer's whole grant (the warning names what that drops) unless `--add` is given; without them an existing table stays and a new peer holds nothing",
         permission_names()
     )
 }
@@ -264,6 +264,11 @@ pub(crate) struct ApproveArgs {
     /// reconnecting after a failure. Written as the table's `endpoint`; the peer's table keeps its other settings.
     #[arg(long, value_name = "ENDPOINT")]
     pub endpoint: Option<String>,
+    /// Add what `--allow`, `--fs-root`, `--program`, `--env`, `--connect` and `--listen` name to the peer's existing grant
+    /// instead of replacing it: nothing it holds is taken away. A peer that may run any program stays that way, since a
+    /// program list narrows; approve without `--add` to set one.
+    #[arg(long)]
+    pub add: bool,
 }
 
 /// `bohio peer revoke`.

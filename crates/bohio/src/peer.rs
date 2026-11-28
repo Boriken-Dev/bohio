@@ -278,10 +278,14 @@ pub struct Approved {
     pub file: PathBuf,
     /// Whether the file was made by this call.
     pub made: bool,
+    /// What the peer's table held and the new grant took away (`allow: exec, info`, `fs_roots: /srv`), one phrase per kind.
+    /// Empty when nothing was lost, and always for [`approve_adding`].
+    pub dropped: Vec<String>,
 }
 
 /// Accepts `id`: its `[peer.<id>]` table is written to a layer, and its waiting entry (and any stored key)
-/// removed. With `grant` the table holds exactly that grant (and keeps its `endpoint` and `[dial]`); without one an existing table stays as it is
+/// removed. With `grant` the table holds exactly that grant (and keeps its `endpoint` and `[dial]`; what the old grant held and
+/// this one does not is in [`Approved::dropped`]); without one an existing table stays as it is
 /// and a new peer holds nothing. `endpoint`, when given, is written as the table's `endpoint`: this node then dials the
 /// peer. Every other byte of the file, its comments and layout, stays.
 ///
@@ -300,6 +304,36 @@ pub fn approve(
     grant: Option<&Grant>,
     endpoint: Option<&str>,
 ) -> Result<Approved, PeerError> {
+    approve_with(files, create, data, id, grant, endpoint, false)
+}
+
+/// As [`approve`], but `grant` is added to what the peer's table already holds instead of replacing it: every permission,
+/// root, environment variable, forward rule and source of `grant` joins the old ones and nothing is taken away. A table that
+/// lists no programs stays open to any program (a program list narrows, so adding one is not an addition).
+///
+/// # Errors
+///
+/// As [`approve`].
+pub fn approve_adding(
+    files: &[PathBuf],
+    create: Option<&Path>,
+    data: &Data,
+    id: &PeerId,
+    grant: Option<&Grant>,
+    endpoint: Option<&str>,
+) -> Result<Approved, PeerError> {
+    approve_with(files, create, data, id, grant, endpoint, true)
+}
+
+fn approve_with(
+    files: &[PathBuf],
+    create: Option<&Path>,
+    data: &Data,
+    id: &PeerId,
+    grant: Option<&Grant>,
+    endpoint: Option<&str>,
+    adding: bool,
+) -> Result<Approved, PeerError> {
     let name = id.to_string();
     let (file, made) = target(files, create, &name)?;
     let mut document = if made {
@@ -308,6 +342,21 @@ pub fn approve(
         read_document(&file)?
     };
     let before = document.to_string();
+    let mut dropped = Vec::new();
+    let merged;
+    let grant = match grant {
+        Some(new) if !made => {
+            let held = Layers::peers(std::slice::from_ref(&file))?.grant_for(&name);
+            if adding {
+                merged = held.merged_with(new);
+                Some(&merged)
+            } else {
+                dropped = held.lost_to(new);
+                Some(new)
+            }
+        }
+        other => other,
+    };
     set_peer(&mut document, &name, grant, endpoint)?;
     let after = document.to_string();
     if made || after != before {
@@ -316,7 +365,11 @@ pub fn approve(
     data.store()?
         .remove(id)
         .map_err(|error| PeerError::Store(error.to_string()))?;
-    Ok(Approved { file, made })
+    Ok(Approved {
+        file,
+        made,
+        dropped,
+    })
 }
 
 /// What [`revoke`] removed.

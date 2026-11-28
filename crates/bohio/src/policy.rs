@@ -375,6 +375,109 @@ impl Grant {
         !self.exec.programs.is_empty()
     }
 
+    /// The programs the peer may run; empty means any.
+    pub fn programs(&self) -> &[String] {
+        &self.exec.programs
+    }
+
+    /// This grant with `added` put on top of it: every permission, root, environment variable, forward rule and source of
+    /// `added` joins what this one holds, and nothing is taken away. A grant that lists no programs may run any, so it stays
+    /// that way: a program list is a restriction, and adding one is not an addition.
+    #[must_use]
+    pub fn merged_with(&self, added: &Self) -> Self {
+        fn union<T: Clone + PartialEq>(held: &[T], more: &[T]) -> Vec<T> {
+            let mut all = held.to_vec();
+            for item in more {
+                if !all.contains(item) {
+                    all.push(item.clone());
+                }
+            }
+            all
+        }
+        let sources = match (&self.sources, &added.sources) {
+            (None, None) => None,
+            (held, more) => Some(union(
+                held.as_deref().unwrap_or_default(),
+                more.as_deref().unwrap_or_default(),
+            )),
+        };
+        Self {
+            allow: self.allow.union(&added.allow).copied().collect(),
+            fs_roots: union(&self.fs_roots, &added.fs_roots),
+            exec: ExecGrant {
+                programs: if self.exec.programs.is_empty() {
+                    Vec::new()
+                } else {
+                    union(&self.exec.programs, &added.exec.programs)
+                },
+                env: union(&self.exec.env, &added.exec.env),
+            },
+            forward: ForwardGrant {
+                connect: union(&self.forward.connect, &added.forward.connect),
+                listen: union(&self.forward.listen, &added.forward.listen),
+            },
+            sources,
+            defaults: self.defaults.clone(),
+        }
+    }
+
+    /// What this grant holds that `replacement` does not, one phrase per kind (`allow: exec, info`, `fs_roots: /srv`):
+    /// what putting `replacement` in its place takes away. Empty when it takes nothing.
+    pub fn lost_to(&self, replacement: &Self) -> Vec<String> {
+        fn missing<T: PartialEq + Clone>(held: &[T], kept: &[T]) -> Vec<T> {
+            held.iter()
+                .filter(|item| !kept.contains(item))
+                .cloned()
+                .collect()
+        }
+        let mut lost = Vec::new();
+        let mut note = |kind: &str, items: Vec<String>| {
+            if !items.is_empty() {
+                lost.push(format!("{kind}: {}", items.join(", ")));
+            }
+        };
+        let permissions: Vec<Permission> = self.permissions().collect();
+        let kept: Vec<Permission> = replacement.permissions().collect();
+        note(
+            "allow",
+            missing(&permissions, &kept)
+                .into_iter()
+                .map(|permission| permission.name().to_owned())
+                .collect(),
+        );
+        note(
+            "fs_roots",
+            missing(&self.fs_roots, &replacement.fs_roots)
+                .iter()
+                .map(|root| root.display().to_string())
+                .collect(),
+        );
+        // A replacement that lists no programs runs any: a held list is gone, though no program in it is missing.
+        let programs = if replacement.exec.programs.is_empty() {
+            self.exec.programs.clone()
+        } else {
+            missing(&self.exec.programs, &replacement.exec.programs)
+        };
+        note("programs", programs);
+        note("env", missing(&self.exec.env, &replacement.exec.env));
+        note(
+            "forward.connect",
+            missing(&self.forward.connect, &replacement.forward.connect),
+        );
+        note(
+            "forward.listen",
+            missing(&self.forward.listen, &replacement.forward.listen),
+        );
+        note(
+            "sources",
+            missing(
+                self.sources.as_deref().unwrap_or_default(),
+                replacement.sources.as_deref().unwrap_or_default(),
+            ),
+        );
+        lost
+    }
+
     /// Whether the peer may hand an explicit script to a shell: only without a program list, since
     /// a shell runs whatever it is given.
     pub fn permits_shell_script(&self) -> bool {

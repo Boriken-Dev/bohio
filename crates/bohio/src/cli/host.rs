@@ -569,7 +569,12 @@ fn peer_approve(args: &ApproveArgs, environment: &Environment) -> Result<(), Str
             .with_connect(args.connect.iter().cloned())
             .with_listen(args.listen.iter().cloned())
     });
-    let approved = peer::approve(
+    let approve = if args.add {
+        peer::approve_adding
+    } else {
+        peer::approve
+    };
+    let approved = approve(
         &found.layered.files,
         found.create.as_deref(),
         &data,
@@ -587,12 +592,25 @@ fn peer_approve(args: &ApproveArgs, environment: &Environment) -> Result<(), Str
     })
     .map_err(|error| error.to_string())?
     .grant_for(&id.to_string());
+    let unlisted = args.add && !args.program.is_empty() && !held.restricts_programs();
+    if !approved.dropped.is_empty() {
+        eprintln!(
+            "warning: replaced the grant of {id}; it no longer holds {} (approve with --add to keep what a peer holds)",
+            approved.dropped.join("; ")
+        );
+    }
+    if unlisted {
+        eprintln!(
+            "warning: --program not added: {id} may run any program, and a program list would narrow that (approve without --add to set one)"
+        );
+    }
     if output::json() {
         let mut grant = grant_json(&held);
         grant["id"] = serde_json::json!(id.to_string());
         output::object(&serde_json::json!({
             "approved": grant,
             "file": approved.file.display().to_string(),
+            "dropped": approved.dropped,
         }));
         return Ok(());
     }

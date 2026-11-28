@@ -1132,3 +1132,133 @@ fn a_zero_for_a_count_or_a_wait_that_cannot_be_zero_is_refused_with_status_2() {
         );
     }
 }
+
+fn host_with_peer(directory: &Path, name: &str) -> (PathBuf, String) {
+    let who = made_id(directory, name);
+    let config = directory.join("host.cfg");
+    std::fs::write(
+        &config,
+        format!(
+            "[service]\ndata_dir = '{}'\n",
+            directory.join("host-data").display()
+        ),
+    )
+    .unwrap();
+    let done = peer(
+        &[
+            "approve",
+            &who,
+            "--allow",
+            "info,fs.read",
+            "--fs-root",
+            "/srv",
+            "--program",
+            "git",
+            "--connect",
+            "db.lan:5432",
+        ],
+        &[&config],
+    );
+    assert_eq!(done.status.code(), Some(0), "{}", text(&done.stderr));
+    (config, who)
+}
+
+#[test]
+fn approve_without_add_replaces_the_grant_and_names_what_it_dropped() {
+    let directory = scratch("approve-drops");
+    let (config, who) = host_with_peer(&directory, "peer");
+    let done = peer(&["approve", &who, "--allow", "exec"], &[&config]);
+    assert_eq!(done.status.code(), Some(0), "{}", text(&done.stderr));
+    let warning = text(&done.stderr);
+    for lost in ["info", "fs.read", "/srv", "git", "db.lan:5432", "--add"] {
+        assert!(
+            warning.contains(lost),
+            "the warning names `{lost}`: {warning}"
+        );
+    }
+    let after = std::fs::read_to_string(&config).unwrap();
+    assert!(!after.contains("/srv") && !after.contains("git"), "{after}");
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn approve_add_merges_into_the_grant_and_takes_nothing_away() {
+    let directory = scratch("approve-add");
+    let (config, who) = host_with_peer(&directory, "peer");
+    let done = peer(
+        &[
+            "approve",
+            &who,
+            "--add",
+            "--allow",
+            "exec",
+            "--fs-root",
+            "/data",
+            "--program",
+            "make",
+            "--connect",
+            "db.lan:5432",
+            "--connect",
+            "cache.lan:6379",
+        ],
+        &[&config],
+    );
+    assert_eq!(done.status.code(), Some(0), "{}", text(&done.stderr));
+    assert!(
+        !text(&done.stderr).contains("warning"),
+        "nothing was dropped: {}",
+        text(&done.stderr)
+    );
+    let after = std::fs::read_to_string(&config).unwrap();
+    for kept in [
+        "info",
+        "fs.read",
+        "exec",
+        "forward.connect",
+        "/srv",
+        "/data",
+        "git",
+        "make",
+        "db.lan:5432",
+        "cache.lan:6379",
+    ] {
+        assert!(after.contains(kept), "`{kept}` is in the table:\n{after}");
+    }
+    assert_eq!(
+        after.matches("db.lan:5432").count(),
+        1,
+        "no repeats:\n{after}"
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn approve_add_leaves_a_peer_that_may_run_any_program_open_and_says_so() {
+    let directory = scratch("approve-add-open");
+    let who = made_id(&directory, "peer");
+    let config = directory.join("host.cfg");
+    std::fs::write(
+        &config,
+        format!(
+            "[service]\ndata_dir = '{}'\n",
+            directory.join("host-data").display()
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        peer(&["approve", &who, "--allow", "exec"], &[&config])
+            .status
+            .code(),
+        Some(0)
+    );
+    let done = peer(&["approve", &who, "--add", "--program", "git"], &[&config]);
+    assert_eq!(done.status.code(), Some(0), "{}", text(&done.stderr));
+    assert!(
+        text(&done.stderr).contains("--program not added"),
+        "{}",
+        text(&done.stderr)
+    );
+    let after = std::fs::read_to_string(&config).unwrap();
+    assert!(!after.contains("git"), "{after}");
+    std::fs::remove_dir_all(directory).unwrap();
+}
