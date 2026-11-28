@@ -120,7 +120,7 @@ approved by its id over any transport (`bohio peer approve`), and pairing by PIN
 bohio config check --config examples/bohio.cfg
 bohio info --config examples/bohio.cfg --format json
 bohio serve | status | id | pair | join <endpoint>
-bohio peer list | approve <id> [--allow ...] | revoke <id>
+bohio peer list | approve <id> [--allow ... [--add]] | revoke <id>
 bohio remote <endpoint> info | exec -- <argv> | read <path> | write <path> | shell | search | glob | stats | which
 bohio remote <endpoint> forward -L ... -R ... -D <port> | connect <target> | listen <bind>
 bohio remote <endpoint> exec --detach -- <argv> | attach <id> | sessions | end <id>

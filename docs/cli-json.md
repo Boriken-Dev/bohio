@@ -42,7 +42,7 @@ info | object | protocol,service,host_id,os,arch,shells,filesystem,exec,shell,se
 id | object | id
 status | object | id,method,data_dir,config,accepted,waiting,listen,dial,keeps
 peer list | object | accepted,waiting
-peer approve | object | approved,file
+peer approve | object | approved,file,dropped
 peer revoke | object | revoked,removed,unwritable
 join | object | paired,file,peer
 hosts | object | hosts
@@ -103,7 +103,7 @@ bytes go to standard output and the exit is `{"done": {"exit": {...}}}` on stand
   of `{endpoint, peer}` and `keeps` of `{direction, entry, peer}`.
 - `peer list`: `accepted` is a list of `{id, allow, fs_roots, programs, env, connect, listen, dial}` (`programs` is `"listed"`
   or null; `dial` the endpoint the table dials, or null) and `waiting` of `{id, source}`. `peer approve` returns the peer
-  as `approved` (the same object) and the `file` it wrote; `peer revoke` the `removed` files and the `unwritable` ones that
+  as `approved` (the same object), the `file` it wrote and `dropped`, what a replaced grant lost (a list of phrases such as `allow: exec`; empty under `--add`); `peer revoke` the `removed` files and the `unwritable` ones that
   still accept the peer.
 - `join`: the host's id as `paired`, the file written, and this side's own id as `peer`.
 - `hosts`: `{"hosts": [{name, endpoint, server, ca, cert_hash, fallback, jump}]}`, in name order.

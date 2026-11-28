@@ -83,7 +83,8 @@ pub fn grant_of(grants: &dyn Grants, peer: &str) -> Result<Grant, GrantsError>;
 pub struct Data;                                                   // Data::new(dir): dir(), identity_path(), identity(), store() (the waiting list), with_waiting(&WaitingConfig) (`[waiting]` bounds for it)
 pub struct LayeredPeers;                                           // Keys + Grants over config layers read again at every question: LayeredPeers::new(files: Vec<PathBuf>, &Data) -> Result<Self, PeerError>; a stranger is recorded as waiting in the Data directory
 pub fn list(files: &[PathBuf], data: &Data) -> Result<Listing, PeerError>;   // Listing { accepted: Vec<Accepted{id, grant, endpoint}>, waiting: Vec<Waiting{id, source}> }
-pub fn approve(files: &[PathBuf], create: Option<&Path>, data: &Data, id: &PeerId, grant: Option<&Grant>, endpoint: Option<&str>) -> Result<Approved, PeerError>;   // Approved { file, made }
+pub fn approve(files: &[PathBuf], create: Option<&Path>, data: &Data, id: &PeerId, grant: Option<&Grant>, endpoint: Option<&str>) -> Result<Approved, PeerError>;   // Approved { file, made, dropped }: `dropped` is what the old grant held and the new one lacks (`allow: exec`, `fs_roots: /srv`), empty when nothing
+// `approve_adding` (same arguments) merges `grant` into the table's instead of replacing it (`Grant::merged_with`; `Grant::lost_to` names what a replace takes away); `dropped` is then empty
 pub fn revoke(files: &[PathBuf], data: &Data, id: &PeerId) -> Result<Revoked, PeerError>;   // Revoked { files, unwritable, key }; NoSuchPeer when nothing was removed and no layer holds it
 #[non_exhaustive] pub enum PeerError { Identity(String), Store(String), Config(ConfigError), Write(String), NoLayer, NoSuchPeer }
 ```
