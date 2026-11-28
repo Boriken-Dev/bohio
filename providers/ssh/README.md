@@ -51,6 +51,24 @@ exec = ["native", "build"]
 
 then `bohio remote HOST exec --source build -- uname -a`.
 
+## The connection as a library
+
+A program that wants the host and not a node's sources builds a `Connection` from the same settings:
+
+```rust,no_run
+use bohio_provider_ssh::{Connection, SshSettings};
+
+let connection = Connection::new(&SshSettings::new("build.example"))?;
+let platform = connection.platform()?;            // os `linux`, arch `x86_64`
+let found = connection.run("echo hello", 1024)?;  // the output, capped, and how the command ended
+let forward = connection.reverse_forward("127.0.0.1", 0, "127.0.0.1:8080")?;
+println!("{platform:?} {:?} port {}", found.stdout, forward.remote_port());
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`open_socket` gives a stream to a unix socket on the host and `trusted_host_key` the key to pin after `host_key_check = "tofu"`;
+`providers/ssh/AGENTS.md` has each call's limits.
+
 ## Development
 
 ```text

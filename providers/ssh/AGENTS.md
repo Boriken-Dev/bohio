@@ -9,7 +9,41 @@ No Cargo features. MSRV Rust 1.89. Depends on `bohio-api` (the kinds), `bohio-x1
 
 Imports: the root holds `Ssh` (the provider), `SshSettings` (its settings; `SshSettings::new(host)` has every default), `ID` (`"ssh"`) and
 `library` (written by `guatiao::local_providers!`: `registry.register_local("bohio-ssh", bohio_provider_ssh::library)`; `bohio` does it with
-feature `ssh`).
+feature `ssh`), `Connection`, `Captured`, `Platform` and `ReverseForward` (below).
+
+## The connection as a library
+
+`Ssh::connection()` (a source built with a host; `NULL` otherwise) or `Connection::new(&SshSettings)` gives a handle that shares the
+source's login, channel limit and timeouts; cloning shares the connection. Nothing touches the network until the first call that needs
+the host. Every call below is blocking and must not run on the runtime's own threads.
+
+```rust
+impl Connection {
+    pub fn new(settings: &SshSettings) -> Result<Self, ProviderError>;
+    pub fn target(&self) -> String;                       // HOST:PORT
+    pub fn trusted_host_key(&self) -> Option<String>;     // with host_key_check = "tofu": the key trusted at first contact, to pin as `host_key`
+    pub fn run(&self, command: &str, max_output: usize) -> Result<Captured, ProviderError>;
+    pub fn platform(&self) -> Result<Platform, ProviderError>;
+    pub fn open_socket(&self, path: &str, max_strangers: usize) -> Result<TcpStream, ProviderError>;
+    pub fn reverse_forward(&self, remote_host: &str, remote_port: u16, target: &str) -> Result<ReverseForward, ProviderError>;
+}
+pub struct Captured { pub stdout: Vec<u8>, pub truncated: bool, pub exit: Option<TerminalExit> }
+pub struct Platform { pub os: Option<String>, pub arch: Option<String> }   // `uname -sm` as std::env::consts names them: linux, macos, freebsd; x86_64, aarch64, x86
+impl ReverseForward { pub fn remote_host(&self) -> &str; pub fn remote_port(&self) -> u16; pub fn close(&self); }
+```
+
+- `run` takes one line for the account's login shell (the caller quotes it), keeps at most `max_output` bytes of standard output (`truncated` says
+  more came), leaves standard error unread, and waits `operation_timeout` for the output to end and `exit_grace` for the exit; `exit` is `None` when
+  it did not end. It counts against `max_channels` (`BUSY` past it); an unreachable host is `GONE`.
+- `platform` is `run("uname -sm")`; a host whose `uname` fails answers a `Platform` of `None`s.
+- `open_socket` opens `direct-streamlocal@openssh.com` to a unix socket on the host and returns one end of a loopback connection the runtime
+  relays to the channel. It does not count against `max_channels`. Other connections that reach the loopback listener first are dropped, at
+  most `max_strangers` of them before the call fails. A socket the host cannot open is `GONE` naming the path.
+- `reverse_forward` sends `tcpip-forward` (`remote_port` 0: the host picks, `remote_port()` says which) and carries each connection the host
+  accepts to `target` (`HOST:PORT` on this machine). The server must allow TCP forwarding; a refusal is `INTERNAL`. A forward outlives its
+  connection: the next use that remakes the connection asks the host for the same port again, and when the host will not give it back the
+  forward stays closed with nothing reported. `close()` (not from the runtime's threads) and drop send `cancel-tcpip-forward`.
+- With `client = "openssh"` `open_socket` and `reverse_forward` are `unsupported`: they need the one connection the provider keeps.
 
 ## The provider
 
@@ -146,7 +180,7 @@ with no X display (Windows) fails each forwarded connection with the reason in t
 - From Windows into WSL's loopback relay a bulk full-duplex transfer has stalled the whole session in measurement: bulk tests run inside WSL.
 
 Tests: `tests/fake.rs` runs the provider against an in-process server (`tests/support/`, with an SFTP subsystem over the real file system; programs need `sh`, or `Options { direct: true }` starts the program of the provider's command line itself, as the helper test does on a machine with no `sh`);
-`tests/real_sshd.rs` starts a private no-root `sshd` on loopback (on Windows inside the WSL distribution `BOHIO_TEST_WSL_DISTRO` names, else WSL's default; `BOHIO_TEST_REQUIRE_SSHD=1` makes a missing one a
+`tests/real_sshd.rs` (it holds the `Connection` tests: platform, the trusted key, a reverse forward and its remake after a dropped connection, a unix socket) starts a private no-root `sshd` on loopback (on Windows inside the WSL distribution `BOHIO_TEST_WSL_DISTRO` names, else WSL's default; `BOHIO_TEST_REQUIRE_SSHD=1` makes a missing one a
 failure instead of a skip). Both run `bohio_api::contract::files`.
 
 `crates/bohio/tests/ssh.rs` has an ignored measurement against a real machine from another site, `a_live_machine_serves_programs_and_files_through_the_ssh_source`
