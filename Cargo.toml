@@ -29,14 +29,14 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["s
 # The channel contract every operation is served over, and the in-process transport the tests use. Alpha, by revision, as the family pins it.
 coqui-transport = { git = "https://github.com/Boriken-Dev/coqui-transport", rev = "2601da58de9cac8f635060e4746864e9b238c6c5", default-features = false, features = ["process"] }
 # The proven link, its streams and pairing, by the revision it was published at.
-cabuya = { git = "https://github.com/Boriken-Dev/cabuya", rev = "7089185fbd047b676ba9a74963b7509136f4637a", features = ["sealed", "forward"] }
+cabuya = { git = "https://github.com/Boriken-Dev/cabuya", rev = "5fb2a34cb2b3fb5b289b6958c145a5f124ff5879", features = ["sealed", "forward"] }
 # The trust store and peer ids, at the revision cabuya names so one copy builds.
-coqui-peer = { git = "https://github.com/Boriken-Dev/coqui-peer", rev = "984db3d54b73de10c7892b06fe269a259de2d1c5" }
+coqui-peer = { git = "https://github.com/Boriken-Dev/coqui-peer", rev = "be72492c89a5a657deb8027aee3c6db27ac14b2f" }
 # The transports a link runs over besides TCP, each at the revision that names the same coqui-transport.
-coqui-transport-pipe = { git = "https://github.com/Boriken-Dev/coqui-transport-pipe", rev = "76d97671d87372be5d29263a98198a08fea5eaed", features = ["channel"] }
-coqui-transport-web = { git = "https://github.com/Boriken-Dev/coqui-transport-web", rev = "c24a35d19df3867e222cb458bce2ad782d98c1eb", features = ["websocket", "webtransport"] }
+coqui-transport-pipe = { git = "https://github.com/Boriken-Dev/coqui-transport-pipe", rev = "08f0e4d27cb714557a926f57e67bfff8dee18c5f", features = ["channel"] }
+coqui-transport-web = { git = "https://github.com/Boriken-Dev/coqui-transport-web", rev = "51ec0f127dbba5100ea709d36724e49c4829c351", features = ["websocket", "webtransport"] }
 # TLS configurations for wss and WebTransport: the server identity (read from files or generated) and the client trust (roots, pins). The same coqui-peer and coqui-builder revisions as the rest.
-coqui-peer-tls = { git = "https://github.com/Boriken-Dev/coqui-peer-tls", rev = "7cbd7ee208595c055d74eed79a4dafcd0175883d", features = ["generate", "platform-roots"] }
+coqui-peer-tls = { git = "https://github.com/Boriken-Dev/coqui-peer-tls", rev = "124f700c3d5ce8c335e838aacd2d1d1b42947214", features = ["generate", "platform-roots"] }
 # The rustls configuration types the TLS endpoints hand to the web transports; ring, as they build it.
 rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 # Reads a certificate's validity and key type to say whether a browser accepts its hash as a pin.
@@ -131,10 +131,10 @@ russh-sftp = "4"
 # Tests: scratch directories that remove themselves.
 tempfile = "3"
 # The provider kinds (guatiao): terminal, desktop, power and media sources. The family pins one guatiao revision.
-guatiao = { git = "https://github.com/Boriken-Dev/guatiao", rev = "3163647ab70bc19bf24125d30e1dc1ee49b10f94", features = ["provider"] }
-guatiao-serde = { git = "https://github.com/Boriken-Dev/guatiao", rev = "3163647ab70bc19bf24125d30e1dc1ee49b10f94", default-features = false }
+guatiao = { git = "https://github.com/Boriken-Dev/guatiao", rev = "1cf0f67f0354d18fbc5684a9a36177afbb20a0fa", features = ["provider"] }
+guatiao-serde = { git = "https://github.com/Boriken-Dev/guatiao", rev = "1cf0f67f0354d18fbc5684a9a36177afbb20a0fa", default-features = false }
 # Providers as programs: a child's standard input and output carry guatiao's remote protocol; no transport feature (no TLS, no sockets).
-guatiao-source-remote = { git = "https://github.com/Boriken-Dev/guatiao", rev = "3163647ab70bc19bf24125d30e1dc1ee49b10f94", default-features = false }
+guatiao-source-remote = { git = "https://github.com/Boriken-Dev/guatiao", rev = "1cf0f67f0354d18fbc5684a9a36177afbb20a0fa", default-features = false }
 bohio-api = { path = "crates/bohio-api" }
 bohio-provider-serial = { path = "providers/terminal/serial" }
 bohio-provider-serial-plugin = { path = "providers/terminal/serial/plugin" }
@@ -147,7 +147,7 @@ bohio-client = { path = "crates/bohio-client" }
 
 # One PeerId type across the graph needs one source: the methods name coqui-peer by version.
 [patch.crates-io]
-coqui-peer = { git = "https://github.com/Boriken-Dev/coqui-peer", rev = "984db3d54b73de10c7892b06fe269a259de2d1c5" }
+coqui-peer = { git = "https://github.com/Boriken-Dev/coqui-peer", rev = "be72492c89a5a657deb8027aee3c6db27ac14b2f" }
 
 [workspace.lints.rust]
 missing_docs = "warn"
