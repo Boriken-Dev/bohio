@@ -2,6 +2,8 @@
 
 Part of the `bohio` API header (`../../AGENTS.md` in the crate root): its features, imports and environment variables are there.
 
+Without feature `node` this module is only `Native`, `NativeSettings`, `NATIVE_ID`, `DesktopOf`, `code_of` and `gui_error` (`native*.rs`); the rest, the registry below, is `registry.rs` and its children and needs `node`.
+
 ## Sources and access (`bohio::access`, `[source.<name>]`, `[access]`)
 
 ```rust

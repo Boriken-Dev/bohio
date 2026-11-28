@@ -35,8 +35,8 @@ use spa::param::video::{VideoFormat, VideoInfoRaw};
 use spa::pod::Pod;
 use xkeysym::{Keysym, key};
 
-use crate::gui::{Capabilities, Desktop, DesktopState, Frame, GuiError};
 use bohio_x11::logind::Logind;
+use bohio_x11::{Capabilities, Desktop, DesktopState, Frame, GuiError};
 use bohio_x11::{display_id, keysym_of, one_primary};
 
 /// What a node says when the portal has no RemoteDesktop interface.

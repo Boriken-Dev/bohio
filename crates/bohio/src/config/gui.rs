@@ -28,18 +28,7 @@ pub enum ApprovalMode {
     Local,
 }
 
-/// How the Windows backend captures the screen.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WindowsCapture {
-    /// DXGI Desktop Duplication, and GDI for a display it cannot duplicate (a rotated one, a remote session, an adapter
-    /// without it).
-    Auto,
-    /// DXGI Desktop Duplication only: a display it cannot duplicate is `unavailable`.
-    Dxgi,
-    /// GDI only: slower on a large screen, and it works wherever a screen is drawn.
-    Gdi,
-}
+pub use crate::knobs::WindowsCapture;
 
 /// `[gui]`: the desktop, as a host offers it. Every permission is off by default: a peer needs `gui.view`, `gui.input` or
 /// `gui.clipboard` in its own table, and the host needs `enabled = true`.

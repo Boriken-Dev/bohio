@@ -9,7 +9,7 @@ use std::path::Path;
 
 use bohio_proto::gui::{Button, ButtonAction, Display, DisplayId, InputEvent, KeyAction};
 
-use crate::gui::{DesktopState, GuiError};
+use bohio_x11::{DesktopState, GuiError};
 
 /// What a node says when no one is logged in at the screen: ScreenCaptureKit and the event system need a window server
 /// session, which a login at the screen (or a LaunchAgent in that session) has and a LaunchDaemon or an ssh login lacks.

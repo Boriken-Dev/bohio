@@ -58,8 +58,8 @@ use bohio_proto::gui::{Display, DisplayId, InputEvent, Rect};
 use super::input::{self, Op, Virtual};
 use super::session::{self, Connection, Facts};
 use super::windows_capture::{self, Duplication, Target, Timing};
-use crate::config::WindowsCapture;
-use crate::gui::{Capabilities, Desktop, DesktopState, Frame, GuiError};
+use crate::knobs::WindowsCapture;
+use bohio_x11::{Capabilities, Desktop, DesktopState, Frame, GuiError};
 
 // The flag and key values `input` writes out are Windows' own.
 const _: () = {

@@ -51,7 +51,6 @@ pub(crate) mod compress;
 mod delta;
 mod follow;
 mod hash;
-pub(crate) mod native;
 mod ops;
 mod path;
 mod prepare;

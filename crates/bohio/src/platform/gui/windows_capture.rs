@@ -35,7 +35,7 @@ use windows::core::Interface;
 
 use bohio_proto::gui::Rect;
 
-use crate::gui::{Frame, GuiError};
+use bohio_x11::{Frame, GuiError};
 
 /// A display to capture: the name Windows gives its device, and where it lies.
 #[derive(Debug, Clone)]

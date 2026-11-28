@@ -37,7 +37,7 @@ use std::time::Duration;
 
 use bohio_proto::exec::Env;
 
-use crate::config::HostDeath;
+use crate::knobs::HostDeath;
 
 use self::tree::{Poll, Tree};
 #[cfg(windows)]

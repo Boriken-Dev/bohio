@@ -39,7 +39,7 @@ pub(super) use self::windows::{Tree, contain_handle, end, end_tree, job, poll};
 #[cfg(unix)]
 mod unix {
     use super::{Child, Command, Poll, io};
-    use crate::config::HostDeath;
+    use crate::knobs::HostDeath;
     use crate::platform::ProcessExit;
 
     /// A process group needs no object of its own: the child leads it.

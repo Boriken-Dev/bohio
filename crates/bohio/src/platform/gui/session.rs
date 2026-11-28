@@ -3,7 +3,7 @@
 
 #![forbid(unsafe_code)]
 
-use crate::gui::GuiError;
+use bohio_x11::GuiError;
 
 /// What a node says when it runs in session 0.
 pub(crate) const SESSION_ZERO: &str =

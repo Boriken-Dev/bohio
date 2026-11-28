@@ -12,7 +12,7 @@ use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use crate::config::HostDeath;
+use crate::knobs::HostDeath;
 use bohio_proto::exec::Env;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 

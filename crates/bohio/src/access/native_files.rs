@@ -20,7 +20,7 @@ use cap_fs_ext::{DirExt, SystemTimeSpec};
 use cap_std::fs::Dir;
 
 use super::native::Native;
-use crate::fs::native;
+use crate::hostfs as native;
 
 fn failed(error: &io::Error) -> ProviderError {
     failure_of(error)

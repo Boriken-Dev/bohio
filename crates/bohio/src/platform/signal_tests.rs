@@ -27,7 +27,7 @@ fn spec(reset_signals: bool) -> Spec {
         cwd: None,
         env: Env::default(),
         stdin: false,
-        on_host_death: crate::config::HostDeath::default(),
+        on_host_death: crate::knobs::HostDeath::default(),
         reset_signals,
     }
 }

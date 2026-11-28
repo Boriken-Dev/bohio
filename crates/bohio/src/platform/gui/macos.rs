@@ -45,7 +45,7 @@ use super::mac_rules::{
     Key, Named, RawDisplay, SessionFacts, Step, accessibility_denied, displays_of, judge,
     packed_of, pixel_of, plan, readable_pixels, rgb_of_packed, screen_recording_denied,
 };
-use crate::gui::{Capabilities, Desktop, DesktopState, Frame, GuiError};
+use bohio_x11::{Capabilities, Desktop, DesktopState, Frame, GuiError};
 
 /// What the user declined, as ScreenCaptureKit numbers it (`SCStreamErrorUserDeclined`).
 const USER_DECLINED: isize = -3801;

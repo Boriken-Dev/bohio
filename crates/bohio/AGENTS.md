@@ -6,6 +6,7 @@ with the source at <https://github.com/Boriken-Dev/bohio>.
 
 | Feature | Adds | Needed for | Default |
 | --- | --- | --- | --- |
+| `node` | everything but `access::Native`: modules `config`, `control`, `exec`, `forward`, `fs`, `gui`, `info`, `limit`, `link`, `listen`, `local`, `mcp`, `media`, `node`, `ownership`, `pair`, `peer`, `policy`, `power`, `profile`, `secret`, `session`, `shell`, `stats`, the registry (`access::Sources` and the rest of `access`), `Config`, `Grant`, `Peers`; `bohio-client`, `bohio-transfer`, `coqui-*`, `cabuya`, `rustls`, `toml*`, `anycfg`, `globset`, `regex`, `sysinfo`, `x509-parser`; every other feature but `gui-wayland` implies it | a node, and its configuration | on |
 | `cli` | module `cli`, the `bohio` binary; `clap`, `tracing-subscriber`, `serde_`, `crossterm`, and `notify` | the command | on |
 | `gui` | snapshot encoding (`image`: PNG, JPEG; `image-webp`: lossless WebP), and a watch's tiles and rectangle encodings (`bohio-transfer/screen`); without it a snapshot and a watch are `unsupported` | `bohio-gui/1` | on |
 | `gui-wayland` | on Linux, `gui::{WaylandDesktop, WaylandSettings, Persist}`: a Wayland session through `xdg-desktop-portal` (`ashpd`, `pollster`) and a PipeWire stream (`pipewire`); it links the system libpipewire-0.3 (pkg-config, libclang), so glibc builds only, and it does nothing off Linux | a Wayland desktop | off |
@@ -15,7 +16,7 @@ with the source at <https://github.com/Boriken-Dev/bohio>.
 | `zstdmt` | `zstd` and `bohio-transfer/zstdmt`: zstd worker threads | `[compression] workers` above 0 | off |
 | `notify` | `gui::DesktopNotifier` (`notify-rust`) | the desktop notice of the presence indicator | on with `cli` |
 
-MSRV Rust 1.89. A library-only build (`default-features = false`) depends on `bohio-proto`, `bohio-client` (the link and its relay),
+MSRV Rust 1.89. Without `node` (`default-features = false`) the library is `access::{Native, NativeSettings, NATIVE_ID, DesktopOf, code_of, gui_error}` and nothing else public; it depends on `bohio-api`, `bohio-proto`, `bohio-x11`, `guatiao`, `portable-pty`, `cap-std`, `cap-fs-ext`, `rustix` or `win32job`, `serde`, `thiserror` and `tracing` (about 70 crates on Linux; the node build is about 290). `src/knobs.rs` holds the settings types it shares with `config` (`HostDeath`, `Span`, `WindowsCapture`) and `src/hostfs.rs` the confined file calls. With `node`, a library-only build depends on `bohio-proto`, `bohio-client` (the link and its relay),
 `coqui-transport`, `cabuya` (with `sealed`), `coqui-peer`, `coqui-transport-pipe` and `coqui-transport-web` (each a git revision; one copy of each builds), `serde`, `toml`,
 `thiserror`, `tracing`, `anycfg` (the layers) and `toml_edit` (in-place edits of a peer table), `portable-pty` (terminals), `cap-std` and `cap-fs-ext` (confined file access), `bohio-transfer` (digests), and `rustix` (Unix) or
 `win32job` (Windows). Version `0.0.0-alpha.0`, not published.

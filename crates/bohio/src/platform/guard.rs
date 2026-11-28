@@ -34,7 +34,7 @@ use std::sync::OnceLock;
 
 use libc::c_int;
 
-use crate::config::HostDeath;
+use crate::knobs::HostDeath;
 
 /// The name a guardian gives itself (`PR_SET_NAME`), by which a host that adopts it as process 1 recognises it when it
 /// ends: nothing else is collected there.
@@ -537,7 +537,7 @@ mod tests {
             cwd: None,
             env: Env::default(),
             stdin: false,
-            on_host_death: crate::config::HostDeath::Kill,
+            on_host_death: crate::knobs::HostDeath::Kill,
             reset_signals: true,
         })
         .expect("sleep starts");

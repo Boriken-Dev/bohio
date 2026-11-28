@@ -46,6 +46,7 @@ cargo add bohio --git https://github.com/Boriken-Dev/bohio
 
 | Feature | Adds | Default |
 | --- | --- | --- |
+| `node` | the node: link, peers and grants, the engines, the configuration file, the provider registry and the client; every feature below but `gui-wayland` implies it | on |
 | `cli` | the `bohio` command and the `bohio::cli` module | on |
 | `zstd` | Zstandard compression through the C library (`lz4` and `deflate` remain without it) | on |
 | `zstdmt` | zstd worker threads (`[compression] workers` above 0) | off |
@@ -55,7 +56,10 @@ cargo add bohio --git https://github.com/Boriken-Dev/bohio
 | `gui-wayland` | the Linux Wayland desktop (portal and PipeWire) | off |
 | `notify` | the desktop notice of the GUI presence indicator | on with `cli` |
 
-An embedding host takes the library alone with `default-features = false`.
+An embedding host takes the library alone with `default-features = false`. That is the light build: without `node` the library is
+`access::{Native, NativeSettings}`, the host's own processes, files, terminal and screen as `bohio-api` sources, and what they stand on
+(`platform`, the settings types). It builds about 70 crates on Linux where the node builds about 290; `tests/light.rs` runs the three
+contract suites against it. A program that wants a node sets `features = ["node"]`.
 
 ## Quick start
 

@@ -25,7 +25,7 @@ use bohio_api::{
 use bohio_proto::exec::Env;
 use bohio_proto::shell::ShellKind;
 
-use crate::config::{HostDeath, Span, WindowsCapture};
+use crate::knobs::{HostDeath, Span, WindowsCapture};
 use crate::platform::{self, ProcessExit, PtySpec, Session, Signal, find_program, resolve_listed};
 use bohio_x11::source::DesktopOf;
 
@@ -270,9 +270,9 @@ impl NativeSettings {
     /// The own session this node is set to serve, and the node's uid when its runtime directory is the account's, or the
     /// refusal naming the directory.
     #[cfg(target_os = "linux")]
-    fn own(&self) -> Option<(crate::gui::OwnSession, Result<u32, String>)> {
-        let kind = crate::gui::OwnSession::parse(&self.own_session)?;
-        let checked = crate::gui::own_uid()
+    fn own(&self) -> Option<(crate::platform::gui::OwnSession, Result<u32, String>)> {
+        let kind = crate::platform::gui::OwnSession::parse(&self.own_session)?;
+        let checked = crate::platform::gui::own_uid()
             .map_err(|error| {
                 format!("own_session: cannot tell which account this node runs as: {error}")
             })
@@ -281,8 +281,8 @@ impl NativeSettings {
                     .own_runtime_dir
                     .as_deref()
                     .filter(|dir| !dir.is_empty())
-                    .map_or_else(|| crate::gui::own_runtime_dir(uid), PathBuf::from);
-                crate::gui::check_runtime_dir(&dir, uid, self.own_runtime_dir_check)
+                    .map_or_else(|| crate::platform::gui::own_runtime_dir(uid), PathBuf::from);
+                crate::platform::gui::check_runtime_dir(&dir, uid, self.own_runtime_dir_check)
                     .map(|()| uid)
                     .map_err(|reason| format!("own_session = \"{}\": {reason}", self.own_session))
             });
@@ -290,7 +290,7 @@ impl NativeSettings {
     }
 
     #[cfg(target_os = "linux")]
-    fn x11(&self) -> crate::gui::X11Settings {
+    fn x11(&self) -> bohio_x11::X11Settings {
         let mut settings = self.x11_plain();
         let Some((kind, checked)) = self.own() else {
             return settings;
@@ -303,7 +303,10 @@ impl NativeSettings {
                 settings.display = None;
                 settings.refused = Some(reason);
             }
-            Ok(_) if kind == crate::gui::OwnSession::Wayland && !cfg!(feature = "gui-wayland") => {
+            Ok(_)
+                if kind == crate::platform::gui::OwnSession::Wayland
+                    && !cfg!(feature = "gui-wayland") =>
+            {
                 settings.refused = Some(
                     "own_session = \"wayland\" needs a build with the gui-wayland feature"
                         .to_owned(),
@@ -311,9 +314,10 @@ impl NativeSettings {
             }
             Ok(uid) => {
                 if settings.display.is_none() {
-                    settings.display = Some(crate::gui::own_display(uid));
+                    settings.display = Some(crate::platform::gui::own_display(uid));
                     if self.own_session_check_server {
-                        settings.connector = Some(Arc::new(crate::gui::OwnServer::new(uid)));
+                        settings.connector =
+                            Some(Arc::new(crate::platform::gui::OwnServer::new(uid)));
                     }
                 }
                 settings.hint = Some(format!(
@@ -326,9 +330,9 @@ impl NativeSettings {
     }
 
     #[cfg(target_os = "linux")]
-    fn x11_plain(&self) -> crate::gui::X11Settings {
+    fn x11_plain(&self) -> bohio_x11::X11Settings {
         let span = |text: &str| Span::parse(text).map_or(Duration::ZERO, |span| span.0);
-        let mut settings = crate::gui::X11Settings::default();
+        let mut settings = bohio_x11::X11Settings::default();
         settings.display = self
             .x11_display
             .clone()
@@ -354,7 +358,7 @@ impl NativeSettings {
     #[cfg(all(target_os = "linux", feature = "gui-wayland"))]
     fn serves_wayland(&self) -> bool {
         if let Some((kind, checked)) = self.own() {
-            return kind == crate::gui::OwnSession::Wayland && checked.is_ok();
+            return kind == crate::platform::gui::OwnSession::Wayland && checked.is_ok();
         }
         !self.x11_in_wayland
             && self
@@ -364,10 +368,11 @@ impl NativeSettings {
     }
 
     #[cfg(all(target_os = "linux", feature = "gui-wayland"))]
-    fn wayland(&self) -> crate::gui::WaylandSettings {
+    fn wayland(&self) -> crate::platform::gui::WaylandSettings {
         let span = |text: &str| Span::parse(text).map_or(Duration::ZERO, |span| span.0);
-        crate::gui::WaylandSettings {
-            persist: crate::gui::Persist::parse(&self.wayland_persist).unwrap_or_default(),
+        crate::platform::gui::WaylandSettings {
+            persist: crate::platform::gui::Persist::parse(&self.wayland_persist)
+                .unwrap_or_default(),
             restore_file: self
                 .wayland_restore_file
                 .clone()
@@ -386,8 +391,8 @@ impl NativeSettings {
     }
 
     #[cfg(target_os = "macos")]
-    fn macos(&self) -> crate::gui::MacosSettings {
-        crate::gui::MacosSettings {
+    fn macos(&self) -> crate::platform::gui::MacosSettings {
+        crate::platform::gui::MacosSettings {
             capture_wait: Span::parse(&self.macos_capture_wait)
                 .map_or(Duration::ZERO, |span| span.0),
             clipboard_max_bytes: usize::try_from(self.clipboard_max_bytes).unwrap_or(usize::MAX),
@@ -396,9 +401,9 @@ impl NativeSettings {
     }
 
     #[cfg(windows)]
-    fn windows(&self) -> crate::gui::WindowsSettings {
+    fn windows(&self) -> crate::platform::gui::WindowsSettings {
         let span = |text: &str| Span::parse(text).map_or(Duration::ZERO, |span| span.0);
-        crate::gui::WindowsSettings {
+        crate::platform::gui::WindowsSettings {
             capture: capture(&self.windows_capture).unwrap_or(WindowsCapture::Auto),
             frame_wait: span(&self.windows_frame_wait),
             capture_idle: span(&self.windows_capture_idle),
@@ -884,9 +889,9 @@ impl Native {
     fn platform_desktop(&self) -> Option<Arc<DesktopOf>> {
         let mut made = lock(&self.desktop);
         Some(Arc::clone(made.get_or_insert_with(|| {
-            Arc::new(DesktopOf::new(Arc::new(crate::gui::WindowsDesktop::new(
-                self.settings.windows(),
-            ))))
+            Arc::new(DesktopOf::new(Arc::new(
+                crate::platform::gui::WindowsDesktop::new(self.settings.windows()),
+            )))
         })))
     }
 
@@ -897,11 +902,11 @@ impl Native {
         Some(Arc::clone(made.get_or_insert_with(|| {
             #[cfg(feature = "gui-wayland")]
             if self.settings.serves_wayland() {
-                return Arc::new(DesktopOf::new(Arc::new(crate::gui::WaylandDesktop::new(
-                    self.settings.wayland(),
-                ))));
+                return Arc::new(DesktopOf::new(Arc::new(
+                    crate::platform::gui::WaylandDesktop::new(self.settings.wayland()),
+                )));
             }
-            Arc::new(DesktopOf::new(Arc::new(crate::gui::X11Desktop::new(
+            Arc::new(DesktopOf::new(Arc::new(bohio_x11::X11Desktop::new(
                 self.settings.x11(),
             ))))
         })))
@@ -912,9 +917,9 @@ impl Native {
     fn platform_desktop(&self) -> Option<Arc<DesktopOf>> {
         let mut made = lock(&self.desktop);
         Some(Arc::clone(made.get_or_insert_with(|| {
-            Arc::new(DesktopOf::new(Arc::new(crate::gui::MacosDesktop::new(
-                self.settings.macos(),
-            ))))
+            Arc::new(DesktopOf::new(Arc::new(
+                crate::platform::gui::MacosDesktop::new(self.settings.macos()),
+            )))
         })))
     }
 
@@ -959,7 +964,7 @@ mod tests {
 
 /// The defaults are written where the file is read (`#[map(default)]`), in `Default`, and in each backend's own settings:
 /// these hold the copies equal.
-#[cfg(test)]
+#[cfg(all(test, feature = "node"))]
 mod defaults {
     use bohio_api::guatiao::{FromValue as _, Value};
 
@@ -967,9 +972,9 @@ mod defaults {
 
     #[test]
     fn an_empty_table_reads_as_the_default() {
-        let read = NativeSettings::from_value(&Value::from(super::super::value::from_table(
-            &toml::Table::new(),
-        )))
+        let read = NativeSettings::from_value(&Value::from(
+            crate::access::registry::value::from_table(&toml::Table::new()),
+        ))
         .expect("an empty table is valid");
         assert_eq!(read, NativeSettings::default());
     }
@@ -979,7 +984,7 @@ mod defaults {
     fn the_x11_backends_default_is_the_native_default() {
         assert_eq!(
             format!("{:?}", NativeSettings::default().x11_plain()),
-            format!("{:?}", crate::gui::X11Settings::default())
+            format!("{:?}", bohio_x11::X11Settings::default())
         );
     }
 
@@ -988,7 +993,7 @@ mod defaults {
     fn the_wayland_backends_default_is_the_native_default() {
         assert_eq!(
             format!("{:?}", NativeSettings::default().wayland()),
-            format!("{:?}", crate::gui::WaylandSettings::default())
+            format!("{:?}", crate::platform::gui::WaylandSettings::default())
         );
     }
 
@@ -997,7 +1002,7 @@ mod defaults {
     fn the_macos_backends_default_is_the_native_default() {
         assert_eq!(
             format!("{:?}", NativeSettings::default().macos()),
-            format!("{:?}", crate::gui::MacosSettings::default())
+            format!("{:?}", crate::platform::gui::MacosSettings::default())
         );
     }
 
@@ -1006,7 +1011,7 @@ mod defaults {
     fn the_windows_backends_default_is_the_native_default() {
         assert_eq!(
             format!("{:?}", NativeSettings::default().windows()),
-            format!("{:?}", crate::gui::WindowsSettings::default())
+            format!("{:?}", crate::platform::gui::WindowsSettings::default())
         );
     }
 }

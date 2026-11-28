@@ -28,22 +28,48 @@ doc = false
 # What a host a person installs wants: the command, the two provider crates, zstd and the desktop encodings. An embedding
 # program that takes the library alone sets `default-features = false`.
 default = ["cli", "serial", "ssh", "zstd", "gui"]
+# The node: the link, peers and grants, the engines, the configuration file, the provider registry and the client. Without it the
+# library is the host's own sources, `access::Native` (processes, files, terminal and screen), and what they stand on: the build
+# for a program that wants this machine's resources and not a node.
+node = [
+    "guatiao/load",
+    "dep:guatiao-source-remote",
+    "dep:bohio-client",
+    "dep:bohio-transfer",
+    "dep:coqui-transport",
+    "dep:cabuya",
+    "dep:coqui-peer",
+    "dep:coqui-transport-pipe",
+    "dep:coqui-transport-web",
+    "dep:coqui-peer-tls",
+    "dep:rustls",
+    "dep:toml",
+    "dep:toml_edit",
+    "dep:anycfg",
+    "dep:globset",
+    "dep:regex",
+    "dep:sysinfo",
+    "dep:getrandom",
+    "dep:x509-parser",
+    "dep:serde_json",
+    "dep:xxhash-rust",
+]
 # Zstandard through the C library, for the compression of reads, writes and exec streams (it compiles C with `cc`). Without it `zstd` is not offered, and `lz4` and `deflate` remain.
-zstd = ["bohio-transfer/zstd", "bohio-client/zstd"]
+zstd = ["node", "bohio-transfer/zstd", "bohio-client/zstd"]
 # zstd worker threads: `[compression] workers` above 0.
 zstdmt = ["zstd", "bohio-transfer/zstdmt"]
 # The serial console provider (`[source.NAME] provider = "serial"`): a terminal source over a serial line, registered with the built-in providers. In `default`, not in `cli`: a build without it can load the same provider as a library (`[providers] paths`).
-serial = ["dep:bohio-provider-serial"]
+serial = ["node", "dep:bohio-provider-serial"]
 # The ssh provider (`[source.NAME] provider = "ssh"`): a machine reached over SSH as terminal and exec sources, registered with the built-in providers. In `default`, not in `cli`: a build without it can load the same provider as a library (`[providers] paths`).
-ssh = ["dep:bohio-provider-ssh"]
+ssh = ["node", "dep:bohio-provider-ssh"]
 # The `bohio` command: arguments, output and the diagnostics subscriber. An embedding host takes the library alone.
-cli = ["dep:clap", "dep:tracing-subscriber", "dep:crossterm", "dep:ctrlc", "dep:windows-service", "notify"]
+cli = ["node", "dep:clap", "dep:tracing-subscriber", "dep:crossterm", "dep:ctrlc", "dep:windows-service", "notify"]
 # Desktop access (`bohio-gui/1`): snapshot encoding (PNG, JPEG, lossless WebP), resizing, and the tiles and rectangle encodings of a watch. Without it a host has the engine and no image format, so a snapshot is `unsupported`.
-gui = ["dep:image", "dep:image-webp", "bohio-transfer/screen", "bohio-client/screen"]
+gui = ["node", "dep:image", "dep:image-webp", "bohio-transfer/screen", "bohio-client/screen"]
 # The Linux Wayland desktop (`platform/gui/wayland.rs`): xdg-desktop-portal ScreenCast and RemoteDesktop and a PipeWire stream. It links the system libpipewire-0.3 (pkg-config, and libclang for the bindings), so it is for glibc builds, and it does nothing off Linux.
 gui-wayland = ["gui", "dep:ashpd", "dep:pipewire", "dep:pollster"]
 # The desktop notification of the GUI's presence notice (`DesktopNotifier`); without it a node logs the notice.
-notify = ["dep:notify-rust"]
+notify = ["node", "dep:notify-rust"]
 
 [dependencies]
 bohio-api.workspace = true
@@ -51,42 +77,42 @@ bohio-x11 = { workspace = true, features = ["logind"] }
 bohio-provider-serial = { workspace = true, optional = true }
 bohio-provider-ssh = { workspace = true, optional = true }
 # The registry that holds the node's providers: the kinds crate brings guatiao without it.
-guatiao = { workspace = true, features = ["load"] }
-guatiao-source-remote.workspace = true
+guatiao.workspace = true
+guatiao-source-remote = { workspace = true, optional = true }
 bohio-proto.workspace = true
-bohio-client.workspace = true
-bohio-transfer.workspace = true
-coqui-transport.workspace = true
-cabuya.workspace = true
-coqui-peer.workspace = true
-coqui-transport-pipe.workspace = true
-coqui-transport-web.workspace = true
-coqui-peer-tls.workspace = true
-rustls.workspace = true
+bohio-client = { workspace = true, optional = true }
+bohio-transfer = { workspace = true, optional = true }
+coqui-transport = { workspace = true, optional = true }
+cabuya = { workspace = true, optional = true }
+coqui-peer = { workspace = true, optional = true }
+coqui-transport-pipe = { workspace = true, optional = true }
+coqui-transport-web = { workspace = true, optional = true }
+coqui-peer-tls = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
 serde.workspace = true
-toml.workspace = true
-toml_edit.workspace = true
-anycfg.workspace = true
+toml = { workspace = true, optional = true }
+toml_edit = { workspace = true, optional = true }
+anycfg = { workspace = true, optional = true }
 portable-pty.workspace = true
 cap-std.workspace = true
 cap-fs-ext.workspace = true
 thiserror.workspace = true
-globset.workspace = true
-regex.workspace = true
+globset = { workspace = true, optional = true }
+regex = { workspace = true, optional = true }
 # Host statistics for the `stats` control call.
-sysinfo.workspace = true
-getrandom.workspace = true
-x509-parser.workspace = true
+sysinfo = { workspace = true, optional = true }
+getrandom = { workspace = true, optional = true }
+x509-parser = { workspace = true, optional = true }
 tracing.workspace = true
 clap = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
-serde_json.workspace = true
+serde_json = { workspace = true, optional = true }
 crossterm = { workspace = true, optional = true }
 ctrlc = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
 image-webp = { workspace = true, optional = true }
 notify-rust = { workspace = true, optional = true }
-xxhash-rust.workspace = true
+xxhash-rust = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 rustix.workspace = true

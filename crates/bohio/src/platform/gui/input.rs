@@ -9,7 +9,7 @@
 
 use bohio_proto::gui::{Button, ButtonAction, Display, InputEvent, KeyAction};
 
-use crate::gui::{DesktopState, GuiError};
+use bohio_x11::{DesktopState, GuiError};
 
 pub(crate) const MOUSEEVENTF_MOVE: u32 = 0x0001;
 pub(crate) const MOUSEEVENTF_LEFTDOWN: u32 = 0x0002;

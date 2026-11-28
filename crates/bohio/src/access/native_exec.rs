@@ -23,7 +23,7 @@ use bohio_api::model::{Delivery, ExecStart, SourceInfo, TerminalExit};
 use bohio_api::{ExecSource, Process, unavailable, vocab};
 
 use super::{ID, Native, env_of, exit_of};
-use crate::config::HostDeath;
+use crate::knobs::HostDeath;
 use crate::platform::{self, Control, ProcessExit, Signal, Spec, resolve_listed};
 
 /// How long the wait for a program's exit sleeps between looks at it when no setting names one: the wait is a
